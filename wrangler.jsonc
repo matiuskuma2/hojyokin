@@ -41,7 +41,7 @@
     {
       "binding": "DB",
       "database_name": "subsidy-matching-production",
-      "database_id": "YOUR_DATABASE_ID_HERE"
+      "database_id": "e53f6185-60a6-45eb-b06d-c710ab3aef56"
     }
   ]
 
