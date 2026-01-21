@@ -10,13 +10,38 @@
 
 import { Hono } from 'hono';
 import type { Env, Variables, ApiResponse } from '../types';
-import { requireAuth, requireCompanyAccess } from '../middleware/auth';
+import { requireAuth } from '../middleware/auth';
 
 const profile = new Hono<{ Bindings: Env; Variables: Variables }>();
 
 // 認証必須
 profile.use('*', requireAuth);
-profile.use('*', requireCompanyAccess);
+
+// ユーザーの会社を自動取得するミドルウェア
+profile.use('*', async (c, next) => {
+  const user = c.get('user');
+  if (!user) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'UNAUTHORIZED', message: 'Authentication required' }
+    }, 401);
+  }
+  
+  // ユーザーがメンバーとなっている会社を取得
+  const membership = await c.env.DB.prepare(`
+    SELECT c.* FROM companies c
+    INNER JOIN company_memberships cm ON c.id = cm.company_id
+    WHERE cm.user_id = ?
+    ORDER BY cm.created_at ASC
+    LIMIT 1
+  `).bind(user.id).first();
+  
+  if (membership) {
+    c.set('company', membership);
+  }
+  
+  await next();
+});
 
 // =====================================================
 // 完成度チェック基準
