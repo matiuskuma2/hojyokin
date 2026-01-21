@@ -7,16 +7,36 @@
     "nodejs_compat"
   ],
   
-  // 環境変数（開発用 - 本番では wrangler secret で設定）
+  // ========================================
+  // 環境変数（開発用）
+  // ========================================
+  // 本番環境では wrangler secret で設定すること
   "vars": {
+    // アプリ用JWT（ユーザー認証）
     "JWT_ISSUER": "subsidy-app",
     "JWT_AUDIENCE": "subsidy-app-users",
+    
+    // 内部API用JWT（AWS↔Cloudflare認証）
+    "INTERNAL_JWT_ISSUER": "subsidy-app-internal",
+    "INTERNAL_JWT_AUDIENCE": "subsidy-app-internal",
+    
+    // Jグランツ API
+    "JGRANTS_MODE": "mock",
+    
+    // 環境識別
     "ENVIRONMENT": "development"
-    // JWT_SECRET は本番環境では secret として設定
-    // SENDGRID_API_KEY も本番環境では secret として設定
+    
+    // 以下は wrangler secret で設定
+    // JWT_SECRET: アプリ用JWTシークレット
+    // INTERNAL_JWT_SECRET: 内部API用JWTシークレット（AWSと共有）
+    // AWS_JOB_API_BASE_URL: AWS API Gatewayエンドポイント
+    // CLOUDFLARE_API_BASE_URL: このアプリの公開URL（AWS→CF用）
+    // SENDGRID_API_KEY: メール送信用
   },
 
+  // ========================================
   // D1 データベース
+  // ========================================
   "d1_databases": [
     {
       "binding": "DB",
@@ -25,7 +45,9 @@
     }
   ]
 
-  // KV Namespace (キャッシュ用 - 将来用)
+  // ========================================
+  // KV Namespace (キャッシュ用 - Phase 1-B)
+  // ========================================
   // "kv_namespaces": [
   //   {
   //     "binding": "KV",
@@ -33,7 +55,9 @@
   //   }
   // ]
 
-  // R2 Storage (ファイル保存用 - Phase 2)
+  // ========================================
+  // R2 Storage (ファイル保存用 - Phase 2オプション)
+  // ========================================
   // "r2_buckets": [
   //   {
   //     "binding": "R2",

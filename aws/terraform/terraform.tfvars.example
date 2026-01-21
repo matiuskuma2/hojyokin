@@ -10,19 +10,21 @@ environment  = "dev"
 project_name = "subsidy-app"
 
 # ============================================================================
-# 必須: JWT認証（CloudflareのJWT_SECRETと同じ値を設定）
+# 必須: 内部JWT認証（CloudflareのINTERNAL_JWT_SECRETと同じ値を設定）
 # ============================================================================
-jwt_secret = "your-jwt-secret-here"
+# AWS↔Cloudflare間の認証に使用
+# Cloudflareの.dev.varsにも同じ値を設定すること
+internal_jwt_secret = "your-internal-jwt-secret-32-chars-minimum"
+
+# ============================================================================
+# 必須: Cloudflare連携（方式A: 内部API経由でD1書き込み）
+# ============================================================================
+# Cloudflare Pages/WorkersのデプロイURL
+# 例: https://subsidy-matching.pages.dev
+cloudflare_api_base_url = ""
 
 # ============================================================================
 # LLM API Keys（どちらか一方、または両方を設定）
 # ============================================================================
-openai_api_key    = ""  # OpenAI API key
-anthropic_api_key = ""  # Anthropic (Claude) API key
-
-# ============================================================================
-# Cloudflare D1連携（eligibility_rulesの書き込み用）
-# ============================================================================
-cloudflare_d1_api_token   = ""  # Cloudflare API token with D1 access
-cloudflare_account_id     = ""  # Your Cloudflare account ID
-cloudflare_d1_database_id = ""  # D1 database ID
+openai_api_key    = ""  # OpenAI API key (gpt-4o-mini使用)
+anthropic_api_key = ""  # Anthropic (Claude) API key (オプション)

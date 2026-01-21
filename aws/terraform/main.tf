@@ -44,8 +44,8 @@ variable "project_name" {
   default     = "subsidy-app"
 }
 
-variable "jwt_secret" {
-  description = "JWT secret for validating Cloudflare requests"
+variable "internal_jwt_secret" {
+  description = "Internal JWT secret for AWS-Cloudflare communication (shared secret)"
   type        = string
   sensitive   = true
 }
@@ -64,21 +64,8 @@ variable "anthropic_api_key" {
   default     = ""
 }
 
-variable "cloudflare_d1_api_token" {
-  description = "Cloudflare API token for D1 access"
-  type        = string
-  sensitive   = true
-  default     = ""
-}
-
-variable "cloudflare_account_id" {
-  description = "Cloudflare account ID"
-  type        = string
-  default     = ""
-}
-
-variable "cloudflare_d1_database_id" {
-  description = "Cloudflare D1 database ID"
+variable "cloudflare_api_base_url" {
+  description = "Cloudflare Pages/Workers public URL for internal API calls"
   type        = string
   default     = ""
 }
@@ -266,7 +253,7 @@ resource "aws_lambda_function" "job_submit" {
       ENVIRONMENT               = var.environment
       S3_BUCKET                 = aws_s3_bucket.attachments.bucket
       SQS_QUEUE_URL             = aws_sqs_queue.jobs.url
-      JWT_SECRET                = var.jwt_secret
+      INTERNAL_JWT_SECRET       = var.internal_jwt_secret
       JGRANTS_API_BASE          = "https://api.jgrants-portal.go.jp"
     }
   }
@@ -297,11 +284,10 @@ resource "aws_lambda_function" "worker" {
       ENVIRONMENT               = var.environment
       S3_BUCKET                 = aws_s3_bucket.attachments.bucket
       SQS_QUEUE_URL             = aws_sqs_queue.jobs.url
+      INTERNAL_JWT_SECRET       = var.internal_jwt_secret
+      CLOUDFLARE_API_BASE_URL   = var.cloudflare_api_base_url
       OPENAI_API_KEY            = var.openai_api_key
       ANTHROPIC_API_KEY         = var.anthropic_api_key
-      CLOUDFLARE_D1_API_TOKEN   = var.cloudflare_d1_api_token
-      CLOUDFLARE_ACCOUNT_ID     = var.cloudflare_account_id
-      CLOUDFLARE_D1_DATABASE_ID = var.cloudflare_d1_database_id
     }
   }
 

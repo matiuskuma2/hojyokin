@@ -7,6 +7,9 @@
  * - POST /jobs/ingest   : 添付取得→S3保存→ジョブ投入
  * - GET  /jobs/{id}/status : ジョブステータス取得
  * - GET  /health        : ヘルスチェック
+ * 
+ * 認証: 内部JWT（INTERNAL_JWT_SECRET）
+ * CloudflareからのリクエストはすべてINTERNAL_JWT_SECRETで署名されたJWTで認証
  */
 
 import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
@@ -31,6 +34,7 @@ interface JobMessage {
 interface IngestRequest {
   subsidy_id: string;
   company_id?: string;
+  user_id?: string;
   attachments?: Array<{
     id: string;
     filename: string;
@@ -49,6 +53,13 @@ interface JobStatus {
   updated_at: string;
 }
 
+interface InternalJWTPayload extends jose.JWTPayload {
+  action?: string;
+  job_id?: string;
+  subsidy_id?: string;
+  company_id?: string;
+}
+
 // -----------------------------------------------------------------------------
 // Clients
 // -----------------------------------------------------------------------------
@@ -56,18 +67,21 @@ const s3 = new S3Client({ region: process.env.AWS_REGION || 'ap-northeast-1' });
 const sqs = new SQSClient({ region: process.env.AWS_REGION || 'ap-northeast-1' });
 
 // -----------------------------------------------------------------------------
-// JWT Verification
+// Internal JWT Verification (方式A: AWS↔Cloudflare共通認証)
 // -----------------------------------------------------------------------------
-async function verifyJWT(token: string): Promise<{ valid: boolean; payload?: jose.JWTPayload }> {
+const INTERNAL_JWT_ISSUER = 'subsidy-app-internal';
+const INTERNAL_JWT_AUDIENCE = 'subsidy-app-internal';
+
+async function verifyInternalJWT(token: string): Promise<{ valid: boolean; payload?: InternalJWTPayload }> {
   try {
-    const secret = new TextEncoder().encode(process.env.JWT_SECRET || '');
+    const secret = new TextEncoder().encode(process.env.INTERNAL_JWT_SECRET || '');
     const { payload } = await jose.jwtVerify(token, secret, {
-      issuer: 'subsidy-app',
-      audience: 'subsidy-app-users',
+      issuer: INTERNAL_JWT_ISSUER,
+      audience: INTERNAL_JWT_AUDIENCE,
     });
-    return { valid: true, payload };
+    return { valid: true, payload: payload as InternalJWTPayload };
   } catch (error) {
-    console.error('JWT verification failed:', error);
+    console.error('Internal JWT verification failed:', error);
     return { valid: false };
   }
 }
@@ -95,16 +109,21 @@ function jsonResponse(statusCode: number, body: Record<string, unknown>): APIGat
  * 添付ファイルを取得してS3に保存し、変換ジョブを投入
  */
 async function handleIngest(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
-  // JWT認証
+  // 内部JWT認証
   const authHeader = event.headers.authorization || event.headers.Authorization;
   if (!authHeader?.startsWith('Bearer ')) {
     return jsonResponse(401, { success: false, error: 'UNAUTHORIZED', message: 'Missing or invalid token' });
   }
 
   const token = authHeader.slice(7);
-  const { valid, payload } = await verifyJWT(token);
+  const { valid, payload } = await verifyInternalJWT(token);
   if (!valid) {
     return jsonResponse(401, { success: false, error: 'INVALID_TOKEN', message: 'Token verification failed' });
+  }
+
+  // アクション検証（オプション）
+  if (payload?.action && payload.action !== 'job:submit') {
+    return jsonResponse(403, { success: false, error: 'FORBIDDEN', message: `Action '${payload.action}' not allowed for this endpoint` });
   }
 
   // リクエストボディ解析
@@ -192,7 +211,7 @@ async function handleIngest(event: APIGatewayProxyEventV2): Promise<APIGatewayPr
     company_id: body.company_id,
     payload: {
       attachments: savedAttachments,
-      user_id: payload?.sub,
+      user_id: body.user_id || payload?.sub,
     },
     created_at: timestamp,
     retry_count: 0,
@@ -213,7 +232,7 @@ async function handleIngest(event: APIGatewayProxyEventV2): Promise<APIGatewayPr
     },
   }));
 
-  console.log(`Job ${jobId} created for subsidy ${body.subsidy_id}`);
+  console.log(`Job ${jobId} created for subsidy ${body.subsidy_id} (attachments: ${savedAttachments.length})`);
 
   return jsonResponse(202, {
     success: true,
@@ -221,6 +240,7 @@ async function handleIngest(event: APIGatewayProxyEventV2): Promise<APIGatewayPr
       job_id: jobId,
       status: 'PENDING',
       subsidy_id: body.subsidy_id,
+      company_id: body.company_id,
       attachments_saved: savedAttachments.length,
       message: 'Job submitted successfully. Use GET /jobs/{job_id}/status to check progress.',
     },
@@ -232,6 +252,16 @@ async function handleIngest(event: APIGatewayProxyEventV2): Promise<APIGatewayPr
  * ジョブステータス取得
  */
 async function handleStatus(event: APIGatewayProxyEventV2): Promise<APIGatewayProxyResultV2> {
+  // 内部JWT認証（オプション - ステータス確認は緩めでもOK）
+  const authHeader = event.headers.authorization || event.headers.Authorization;
+  if (authHeader?.startsWith('Bearer ')) {
+    const token = authHeader.slice(7);
+    const { valid } = await verifyInternalJWT(token);
+    if (!valid) {
+      return jsonResponse(401, { success: false, error: 'INVALID_TOKEN', message: 'Token verification failed' });
+    }
+  }
+
   const jobId = event.pathParameters?.job_id;
   if (!jobId) {
     return jsonResponse(400, { success: false, error: 'MISSING_JOB_ID', message: 'job_id is required' });

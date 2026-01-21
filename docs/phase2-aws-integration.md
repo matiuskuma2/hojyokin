@@ -11,7 +11,7 @@ Phase 2では、Cloudflare Workers（軽量処理）とAWS（重処理）を連�
 
 ---
 
-## アーキテクチャ
+## アーキテクチャ（方式A: 内部API経由）
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -19,14 +19,17 @@ Phase 2では、Cloudflare Workers（軽量処理）とAWS（重処理）を連�
 ├─────────────────────────────────────────────────────────────────┤
 │  Workers/Pages                                                  │
 │  ┌──────────────────────────────────────────────────────────┐   │
-│  │ /api/subsidies/:id/attachments/ingest                    │   │
-│  │   → AWS API Gateway にプロキシ                            │   │
+│  │ /api/jobs/ingest                                         │   │
+│  │   → AWS API Gateway にプロキシ（内部JWT認証）              │   │
 │  │                                                          │   │
 │  │ /api/subsidies/:id/eligibility                           │   │
 │  │   → D1 の eligibility_rules から返却                      │   │
+│  │                                                          │   │
+│  │ /internal/eligibility/upsert  ← AWS workerから呼び出し    │   │
+│  │   → D1に要件ルールを書き込み（内部JWT認証）                │   │
 │  └──────────────────────────────────────────────────────────┘   │
-│                              │                                  │
-│                              │ JWT Bearer Token                 │
+│                              ↑↓                                 │
+│                     Internal JWT (INTERNAL_JWT_SECRET)          │
 └──────────────────────────────┼──────────────────────────────────┘
                                │
                                ▼
@@ -41,25 +44,57 @@ Phase 2では、Cloudflare Workers（軽量処理）とAWS（重処理）を連�
 │                              │                  │               │
 │                              ▼                  ▼               │
 │                     ┌──────────────┐    ┌──────────────┐        │
-│                     │ S3           │◀───│ Lambda       │        │
-│                     │ (attachments)│    │ (worker)     │        │
-│                     └──────────────┘    └──────────────┘        │
-│                                                │                │
-│                                                │ LLM API        │
-│                                                ▼                │
-│                                        ┌──────────────┐         │
-│                                        │ OpenAI/      │         │
-│                                        │ Anthropic    │         │
-│                                        └──────────────┘         │
-│                                                │                │
-│                                                │ D1 REST API    │
-└────────────────────────────────────────────────┼────────────────┘
-                                                 │
-                                                 ▼
-                                        ┌──────────────┐
-                                        │ Cloudflare   │
-                                        │ D1 Database  │
-                                        └──────────────┘
+│                     │ S3           │◀───│ Lambda       │───────┼──┐
+│                     │ (attachments)│    │ (worker)     │       │  │
+│                     └──────────────┘    └──────────────┘       │  │
+│                                                │               │  │
+│                                                │ LLM API       │  │
+│                                                ▼               │  │
+│                                        ┌──────────────┐        │  │
+│                                        │ OpenAI/      │        │  │
+│                                        │ Anthropic    │        │  │
+│                                        └──────────────┘        │  │
+└────────────────────────────────────────────────────────────────┘  │
+                                                                    │
+                    ┌───────────────────────────────────────────────┘
+                    │ POST /internal/eligibility/upsert
+                    │ (Internal JWT認証)
+                    ▼
+            ┌──────────────┐
+            │ Cloudflare   │
+            │ D1 Database  │
+            └──────────────┘
+```
+
+---
+
+## 方式A: Cloudflare内部API経由でD1書き込み
+
+### なぜ方式Aを採用するか
+
+1. **CloudflareがDBの唯一の書き込み口** - 整理しやすく、権限管理が明確
+2. **D1 REST API不要** - Cloudflare API Tokenの管理が不要
+3. **認証の一元化** - 内部JWTで統一（INTERNAL_JWT_SECRET）
+4. **監査ログ** - Cloudflare側でログが取れる
+
+### 内部JWT仕様
+
+```typescript
+// 発行側（Cloudflare/AWS両方）
+const payload = {
+  sub: 'cloudflare-api' | 'aws-worker',  // サービス識別子
+  action: 'job:submit' | 'eligibility:upsert' | 'job:status',
+  job_id?: string,
+  subsidy_id?: string,
+  company_id?: string,
+  iss: 'subsidy-app-internal',
+  aud: 'subsidy-app-internal',
+  iat: number,
+  exp: number  // 5分後
+};
+
+// 共有シークレット（CloudflareとAWSで同じ値）
+INTERNAL_JWT_SECRET=your-internal-secret-32-chars-minimum
 ```
 
 ---
@@ -68,11 +103,11 @@ Phase 2では、Cloudflare Workers（軽量処理）とAWS（重処理）を連�
 
 ### 1. Cloudflare → AWS: ジョブ投入
 
-**Endpoint**: `POST {AWS_API_ENDPOINT}/jobs/ingest`
+**Endpoint**: `POST /api/jobs/ingest`
 
 **Headers**:
 ```http
-Authorization: Bearer {jwt_token}
+Authorization: Bearer {user_jwt}
 Content-Type: application/json
 ```
 
@@ -93,6 +128,11 @@ Content-Type: application/json
 }
 ```
 
+**内部処理**:
+1. ユーザー認証（アプリJWT）
+2. 内部JWT発行（INTERNAL_JWT_SECRET）
+3. AWS API Gatewayにプロキシ
+
 **Response (202 Accepted)**:
 ```json
 {
@@ -107,9 +147,54 @@ Content-Type: application/json
 }
 ```
 
-### 2. ジョブステータス確認
+### 2. AWS → Cloudflare: 要件ルール書き込み
 
-**Endpoint**: `GET {AWS_API_ENDPOINT}/jobs/{job_id}/status`
+**Endpoint**: `POST /internal/eligibility/upsert`
+
+**Headers**:
+```http
+Authorization: Bearer {internal_jwt}
+Content-Type: application/json
+```
+
+**Request Body**:
+```json
+{
+  "subsidy_id": "JGRANTS-12345",
+  "rules": [
+    {
+      "id": "uuid (optional)",
+      "category": "対象者",
+      "rule_text": "従業員数が300人以下の中小企業であること",
+      "check_type": "AUTO",
+      "parameters": { "max": 300 },
+      "source_text": "中小企業基本法に定める中小企業者",
+      "page_number": 5
+    }
+  ],
+  "warnings": ["注意事項があれば"],
+  "summary": "要件の要約",
+  "job_id": "uuid"
+}
+```
+
+**Response (200 OK)**:
+```json
+{
+  "success": true,
+  "data": {
+    "subsidy_id": "JGRANTS-12345",
+    "rules_count": 10,
+    "warnings": [],
+    "summary": "...",
+    "updated_at": "2026-01-21T05:00:00Z"
+  }
+}
+```
+
+### 3. ジョブステータス確認
+
+**Endpoint**: `GET /api/jobs/{job_id}/status`
 
 **Response (200 OK)**:
 ```json
@@ -127,219 +212,60 @@ Content-Type: application/json
 }
 ```
 
-**Status Values**:
-- `PENDING`: キューに投入済み、未処理
-- `PROCESSING`: 処理中
-- `COMPLETED`: 完了
-- `FAILED`: 失敗
+### 4. 内部APIヘルスチェック
 
-### 3. ヘルスチェック
+**Endpoint**: `GET /internal/health`
 
-**Endpoint**: `GET {AWS_API_ENDPOINT}/health`
-
-**Response (200 OK)**:
-```json
-{
-  "success": true,
-  "status": "ok",
-  "service": "job-submit",
-  "timestamp": "2026-01-21T03:00:00Z"
-}
-```
+**Note**: 認証不要
 
 ---
 
-## ジョブメッセージ仕様（SQS）
+## 環境変数
 
-### 共通フォーマット
+### Cloudflare側 (.dev.vars / wrangler secret)
 
-```typescript
-interface JobMessage {
-  job_id: string;          // UUID
-  job_type: JobType;       // ジョブ種別
-  subsidy_id: string;      // 対象補助金ID
-  company_id?: string;     // 関連企業ID（任意）
-  payload: object;         // ジョブ固有のデータ
-  created_at: string;      // ISO8601
-  retry_count: number;     // リトライ回数
-}
+```bash
+# アプリ用JWT（ユーザー認証）
+JWT_SECRET=app-jwt-secret-32-chars
+JWT_ISSUER=subsidy-app
+JWT_AUDIENCE=subsidy-app-users
 
-type JobType = 
-  | 'ATTACHMENT_SAVE'      // Phase 1: 添付保存
-  | 'ATTACHMENT_CONVERT'   // Phase 2: PDF/Word変換
-  | 'ELIGIBILITY_EXTRACT'  // Phase 2: 要件抽出
-  | 'DRAFT_GENERATE';      // Phase 2後半: ドラフト生成
+# 内部API用JWT（AWS↔Cloudflare認証）
+INTERNAL_JWT_SECRET=internal-secret-32-chars  # AWSと同じ値
+INTERNAL_JWT_ISSUER=subsidy-app-internal
+INTERNAL_JWT_AUDIENCE=subsidy-app-internal
+
+# AWS連携
+AWS_JOB_API_BASE_URL=https://xxx.execute-api.ap-northeast-1.amazonaws.com
+
+# このアプリの公開URL（AWS→Cloudflare用）
+CLOUDFLARE_API_BASE_URL=https://subsidy-matching.pages.dev
 ```
 
-### ATTACHMENT_CONVERT
+### AWS側 (terraform.tfvars)
 
-```json
-{
-  "job_id": "550e8400-e29b-41d4-a716-446655440000",
-  "job_type": "ATTACHMENT_CONVERT",
-  "subsidy_id": "JGRANTS-12345",
-  "company_id": "company-uuid",
-  "payload": {
-    "attachments": [
-      {
-        "id": "att-001",
-        "s3_key": "attachments/JGRANTS-12345/att-001/公募要領.pdf"
-      }
-    ],
-    "user_id": "user-uuid"
-  },
-  "created_at": "2026-01-21T03:00:00Z",
-  "retry_count": 0
-}
-```
+```hcl
+# 内部JWT（Cloudflareと同じ値）
+internal_jwt_secret = "internal-secret-32-chars"
 
-### ELIGIBILITY_EXTRACT
+# Cloudflare連携
+cloudflare_api_base_url = "https://subsidy-matching.pages.dev"
 
-```json
-{
-  "job_id": "550e8400-e29b-41d4-a716-446655440000",
-  "job_type": "ELIGIBILITY_EXTRACT",
-  "subsidy_id": "JGRANTS-12345",
-  "company_id": "company-uuid",
-  "payload": {
-    "converted_attachments": [
-      {
-        "id": "att-001",
-        "s3_key": "attachments/JGRANTS-12345/att-001/公募要領.txt",
-        "text_content": "...",
-        "page_count": 15
-      }
-    ],
-    "user_id": "user-uuid"
-  },
-  "created_at": "2026-01-21T03:00:00Z",
-  "retry_count": 0
-}
-```
-
-### DRAFT_GENERATE
-
-```json
-{
-  "job_id": "550e8400-e29b-41d4-a716-446655440000",
-  "job_type": "DRAFT_GENERATE",
-  "subsidy_id": "JGRANTS-12345",
-  "company_id": "company-uuid",
-  "payload": {
-    "eligibility_rules_key": "eligibility/JGRANTS-12345/rules.json",
-    "conversation_id": "conv-uuid",
-    "sections": ["事業概要", "実施体制", "経費内訳"],
-    "user_id": "user-uuid"
-  },
-  "created_at": "2026-01-21T03:00:00Z",
-  "retry_count": 0
-}
-```
-
----
-
-## 認証方式
-
-### JWT認証（Cloudflare → AWS）
-
-CloudflareとAWSで同じJWT_SECRETを共有し、Bearerトークンで認証します。
-
-```typescript
-// JWT検証（AWS Lambda側）
-import * as jose from 'jose';
-
-async function verifyJWT(token: string): Promise<boolean> {
-  const secret = new TextEncoder().encode(process.env.JWT_SECRET);
-  const { payload } = await jose.jwtVerify(token, secret, {
-    issuer: 'subsidy-app',
-    audience: 'subsidy-app-users',
-  });
-  return true;
-}
-```
-
-### 環境変数
-
-**AWS Lambda（共通）**:
-- `JWT_SECRET`: JWT署名シークレット（Cloudflareと同一）
-- `S3_BUCKET`: 添付保存用バケット名
-- `SQS_QUEUE_URL`: ジョブキューURL
-- `ENVIRONMENT`: dev / staging / prod
-
-**Worker Lambda（追加）**:
-- `OPENAI_API_KEY`: OpenAI APIキー
-- `ANTHROPIC_API_KEY`: Anthropic APIキー（任意）
-- `CLOUDFLARE_D1_API_TOKEN`: D1 REST API用トークン
-- `CLOUDFLARE_ACCOUNT_ID`: Cloudflareアカウント
-- `CLOUDFLARE_D1_DATABASE_ID`: D1データベースID
-
----
-
-## Cloudflare側の実装例
-
-### AWSプロキシルート
-
-```typescript
-// src/routes/subsidies.ts に追加
-
-// POST /api/subsidies/:id/attachments/ingest
-app.post('/api/subsidies/:subsidy_id/attachments/ingest', authMiddleware, async (c) => {
-  const subsidyId = c.req.param('subsidy_id');
-  const body = await c.req.json();
-  const token = c.req.header('Authorization');
-
-  // AWS API Gatewayにプロキシ
-  const awsEndpoint = c.env.AWS_API_ENDPOINT;
-  const response = await fetch(`${awsEndpoint}/jobs/ingest`, {
-    method: 'POST',
-    headers: {
-      'Authorization': token!,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      subsidy_id: subsidyId,
-      company_id: body.company_id,
-      attachments: body.attachments,
-    }),
-  });
-
-  const result = await response.json();
-  return c.json(result, response.status);
-});
-
-// GET /api/subsidies/:id/eligibility
-app.get('/api/subsidies/:subsidy_id/eligibility', authMiddleware, async (c) => {
-  const subsidyId = c.req.param('subsidy_id');
-  const { env } = c;
-
-  // D1から要件ルールを取得
-  const rules = await env.DB.prepare(`
-    SELECT * FROM eligibility_rules 
-    WHERE subsidy_id = ? 
-    ORDER BY category, created_at
-  `).bind(subsidyId).all();
-
-  return c.json({
-    success: true,
-    data: {
-      subsidy_id: subsidyId,
-      rules: rules.results,
-      count: rules.results?.length || 0,
-    },
-  });
-});
+# LLM
+openai_api_key = "sk-xxx"
+anthropic_api_key = ""  # オプション
 ```
 
 ---
 
 ## デプロイ手順
 
-### 1. Terraform初期化
+### 1. Terraform初期化・実行
 
 ```bash
 cd aws/terraform
 cp terraform.tfvars.example terraform.tfvars
-# terraform.tfvarsを編集してシークレットを設定
+# terraform.tfvarsを編集
 
 terraform init
 terraform plan
@@ -366,99 +292,75 @@ aws lambda update-function-code \
   --zip-file fileb://dist/function.zip
 ```
 
-### 3. Cloudflare環境変数追加
+### 3. Cloudflare環境変数設定
 
 ```bash
-# wrangler.jsonc に AWS_API_ENDPOINT を追加
-wrangler secret put AWS_API_ENDPOINT
-# 入力: https://xxxxxxxx.execute-api.ap-northeast-1.amazonaws.com
+# 本番用シークレット設定
+wrangler secret put INTERNAL_JWT_SECRET
+wrangler secret put AWS_JOB_API_BASE_URL
+wrangler secret put CLOUDFLARE_API_BASE_URL
+```
+
+### 4. Cloudflareデプロイ
+
+```bash
+npm run build
+npx wrangler pages deploy dist --project-name subsidy-matching
 ```
 
 ---
 
-## エラーハンドリング
+## 処理フロー
 
-### リトライポリシー
-
-- SQSの `maxReceiveCount: 3` でリトライ
-- 3回失敗後はDLQ（Dead Letter Queue）へ
-- DLQは14日間保持
-
-### エラーレスポンス
-
-```json
-{
-  "success": false,
-  "error": "ERROR_CODE",
-  "message": "Human readable message"
-}
 ```
-
-**Error Codes**:
-- `UNAUTHORIZED`: 認証失敗
-- `INVALID_TOKEN`: JWTトークン無効
-- `INVALID_JSON`: リクエストボディ不正
-- `MISSING_FIELD`: 必須フィールド欠落
-- `JOB_NOT_FOUND`: ジョブが存在しない
-- `INTERNAL_ERROR`: 内部エラー
+1. ユーザーが「要件を読み込む」を押す
+   ↓
+2. Cloudflare POST /api/jobs/ingest
+   - ユーザー認証（アプリJWT）
+   - 内部JWT発行
+   ↓
+3. AWS API Gateway POST /jobs/ingest
+   - 内部JWT検証
+   - S3に添付保存
+   - SQSにATTACHMENT_CONVERTジョブ投入
+   ↓
+4. Lambda(worker) SQSトリガー
+   - PDF/Word → テキスト変換
+   - S3に保存
+   - SQSにELIGIBILITY_EXTRACTジョブ投入
+   ↓
+5. Lambda(worker) SQSトリガー
+   - LLM(gpt-4o-mini)で要件JSON抽出
+   - 内部JWT発行
+   ↓
+6. Cloudflare POST /internal/eligibility/upsert
+   - 内部JWT検証
+   - D1にeligibility_rules書き込み
+   ↓
+7. ユーザーがGET /api/subsidies/:id/eligibility
+   - D1から要件ルール返却
+```
 
 ---
 
-## 抽出される要件ルールの形式
+## Cloudflare側のルート一覧
 
-### EligibilityRule
+### 外部API（ユーザー向け）
 
-```typescript
-interface EligibilityRule {
-  id: string;                // UUID
-  subsidy_id: string;        // 補助金ID
-  category: string;          // 対象者 | 地域 | 業種 | 規模 | 財務 | 事業内容 | その他
-  rule_text: string;         // 要件の説明文
-  check_type: 'AUTO' | 'MANUAL' | 'LLM';
-  parameters?: {             // AUTO判定用パラメータ
-    min?: number;
-    max?: number;
-    allowed_values?: string[];
-  };
-  source_text?: string;      // 公募要領からの引用
-  page_number?: number;      // ページ番号
-  created_at: string;
-  updated_at: string;
-}
-```
+| Endpoint | Method | 認証 | 説明 |
+|----------|--------|------|------|
+| `/api/jobs/ingest` | POST | アプリJWT | ジョブ投入（AWSにプロキシ） |
+| `/api/jobs/:job_id/status` | GET | アプリJWT | ジョブステータス確認 |
+| `/api/jobs/subsidies/:subsidy_id/ingest` | POST | アプリJWT | 補助金ID指定でジョブ投入 |
 
-### LLM抽出結果例
+### 内部API（AWS向け）
 
-```json
-{
-  "eligibility_rules": [
-    {
-      "category": "規模",
-      "rule_text": "従業員数が300人以下の中小企業であること",
-      "check_type": "AUTO",
-      "parameters": { "max": 300 },
-      "source_text": "中小企業基本法に定める中小企業者（従業員300人以下）"
-    },
-    {
-      "category": "地域",
-      "rule_text": "東京都内に本社または主たる事業所を有すること",
-      "check_type": "AUTO",
-      "parameters": { "allowed_values": ["東京都"] },
-      "source_text": "都内に本社又は主たる事業所を有する者"
-    },
-    {
-      "category": "事業内容",
-      "rule_text": "DX推進に関する具体的な計画を有すること",
-      "check_type": "LLM",
-      "source_text": "デジタル技術を活用した業務効率化又は新規事業開発に取り組む計画を策定していること"
-    }
-  ],
-  "warnings": [
-    "過去に同様の補助金を受給している場合は対象外となる可能性があります"
-  ],
-  "summary": "東京都内の中小企業（従業員300人以下）を対象とし、DX推進計画の策定が必須要件です。"
-}
-```
+| Endpoint | Method | 認証 | 説明 |
+|----------|--------|------|------|
+| `/internal/eligibility/upsert` | POST | 内部JWT | 要件ルール書き込み |
+| `/internal/eligibility/:subsidy_id` | GET | 内部JWT | 要件ルール取得（デバッグ用） |
+| `/internal/job/status` | POST | 内部JWT | ジョブステータス通知 |
+| `/internal/health` | GET | なし | ヘルスチェック |
 
 ---
 

@@ -4,8 +4,11 @@
  * SQSからジョブを受け取り、以下の処理を実行:
  * 
  * 1. ATTACHMENT_CONVERT: PDF/Word → テキスト変換
- * 2. ELIGIBILITY_EXTRACT: LLMで要件JSON抽出
+ * 2. ELIGIBILITY_EXTRACT: LLMで要件JSON抽出 → Cloudflare内部API経由でD1に書き込み
  * 3. DRAFT_GENERATE: 申請書ドラフト生成（Phase 2後半）
+ * 
+ * 【重要】D1書き込みは方式A（Cloudflare内部API経由）を採用
+ * AWS→Cloudflareの認証は内部JWT（INTERNAL_JWT_SECRET）で行う
  */
 
 import { SQSEvent, SQSRecord } from 'aws-lambda';
@@ -13,6 +16,7 @@ import { S3Client, GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3
 import { SQSClient, SendMessageCommand } from '@aws-sdk/client-sqs';
 import OpenAI from 'openai';
 import { v4 as uuidv4 } from 'uuid';
+import * as jose from 'jose';
 
 // -----------------------------------------------------------------------------
 // Types
@@ -72,6 +76,38 @@ function getOpenAI(): OpenAI {
 }
 
 // -----------------------------------------------------------------------------
+// Internal JWT (AWS→Cloudflare認証)
+// -----------------------------------------------------------------------------
+const INTERNAL_JWT_ISSUER = 'subsidy-app-internal';
+const INTERNAL_JWT_AUDIENCE = 'subsidy-app-internal';
+const INTERNAL_JWT_EXPIRES_IN = '5m';
+
+async function signInternalJWT(payload: {
+  action: string;
+  job_id?: string;
+  subsidy_id?: string;
+  company_id?: string;
+}): Promise<string> {
+  const secret = new TextEncoder().encode(process.env.INTERNAL_JWT_SECRET);
+  
+  const jwt = await new jose.SignJWT({
+    sub: 'aws-worker',
+    action: payload.action,
+    job_id: payload.job_id,
+    subsidy_id: payload.subsidy_id,
+    company_id: payload.company_id,
+  })
+    .setProtectedHeader({ alg: 'HS256' })
+    .setIssuedAt()
+    .setIssuer(INTERNAL_JWT_ISSUER)
+    .setAudience(INTERNAL_JWT_AUDIENCE)
+    .setExpirationTime(INTERNAL_JWT_EXPIRES_IN)
+    .sign(secret);
+
+  return jwt;
+}
+
+// -----------------------------------------------------------------------------
 // Helper Functions
 // -----------------------------------------------------------------------------
 async function updateJobStatus(jobId: string, status: Partial<JobStatus>): Promise<void> {
@@ -103,6 +139,35 @@ async function updateJobStatus(jobId: string, status: Partial<JobStatus>): Promi
     Body: JSON.stringify(updatedStatus),
     ContentType: 'application/json',
   }));
+
+  // Cloudflareにもステータス通知（オプション）
+  if (process.env.CLOUDFLARE_API_BASE_URL && process.env.INTERNAL_JWT_SECRET) {
+    try {
+      await notifyCloudflareJobStatus(jobId, updatedStatus);
+    } catch (error) {
+      console.warn('Failed to notify Cloudflare job status:', error);
+    }
+  }
+}
+
+async function notifyCloudflareJobStatus(jobId: string, status: JobStatus): Promise<void> {
+  const baseUrl = process.env.CLOUDFLARE_API_BASE_URL!;
+  const token = await signInternalJWT({ action: 'job:status', job_id: jobId });
+
+  await fetch(`${baseUrl}/internal/job/status`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      job_id: jobId,
+      status: status.status,
+      progress: status.progress,
+      result: status.result,
+      error: status.error,
+    }),
+  });
 }
 
 async function enqueueNextJob(message: JobMessage, nextJobType: JobMessage['job_type'], additionalPayload: Record<string, unknown> = {}): Promise<void> {
@@ -131,6 +196,66 @@ async function enqueueNextJob(message: JobMessage, nextJobType: JobMessage['job_
   }));
 
   console.log(`Enqueued next job: ${nextJobType} for ${message.subsidy_id}`);
+}
+
+// -----------------------------------------------------------------------------
+// Cloudflare Internal API (方式A)
+// -----------------------------------------------------------------------------
+
+/**
+ * Cloudflare内部APIに要件ルールを書き込み
+ * 方式A: AWS→Cloudflare内部API経由でD1に書き込み
+ */
+async function writeEligibilityToCloudflare(
+  subsidyId: string,
+  rules: EligibilityRule[],
+  warnings: string[],
+  summary: string,
+  jobId: string
+): Promise<boolean> {
+  const baseUrl = process.env.CLOUDFLARE_API_BASE_URL;
+  const internalSecret = process.env.INTERNAL_JWT_SECRET;
+
+  if (!baseUrl || !internalSecret) {
+    console.warn('Cloudflare API not configured, skipping D1 write');
+    return false;
+  }
+
+  try {
+    const token = await signInternalJWT({
+      action: 'eligibility:upsert',
+      job_id: jobId,
+      subsidy_id: subsidyId,
+    });
+
+    const response = await fetch(`${baseUrl}/internal/eligibility/upsert`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        subsidy_id: subsidyId,
+        rules: rules,
+        warnings: warnings,
+        summary: summary,
+        job_id: jobId,
+      }),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('Cloudflare API error:', response.status, errorText);
+      return false;
+    }
+
+    const result = await response.json() as { success: boolean; data?: { rules_count: number } };
+    console.log(`Written ${result.data?.rules_count || rules.length} rules to Cloudflare D1 via internal API`);
+    return true;
+  } catch (error) {
+    console.error('Cloudflare API call failed:', error);
+    return false;
+  }
 }
 
 // -----------------------------------------------------------------------------
@@ -306,13 +431,13 @@ check_typeの判断基準:
     }
 
     const extractedData = JSON.parse(content);
-    const eligibilityRules: EligibilityRule[] = (extractedData.eligibility_rules || []).map((rule: Partial<EligibilityRule>, index: number) => ({
+    const eligibilityRules: EligibilityRule[] = (extractedData.eligibility_rules || []).map((rule: Partial<EligibilityRule>) => ({
       id: uuidv4(),
       subsidy_id: message.subsidy_id,
       ...rule,
     }));
 
-    // 抽出結果をS3に保存
+    // 抽出結果をS3に保存（バックアップ）
     await s3.send(new PutObjectCommand({
       Bucket: s3Bucket,
       Key: `eligibility/${message.subsidy_id}/rules.json`,
@@ -327,10 +452,14 @@ check_typeの判断基準:
       ContentType: 'application/json',
     }));
 
-    // Cloudflare D1への書き込み（オプション）
-    if (process.env.CLOUDFLARE_D1_API_TOKEN && process.env.CLOUDFLARE_D1_DATABASE_ID) {
-      await writeToCloudflareD1(message.subsidy_id, eligibilityRules);
-    }
+    // 【方式A】Cloudflare内部API経由でD1に書き込み
+    const writeSuccess = await writeEligibilityToCloudflare(
+      message.subsidy_id,
+      eligibilityRules,
+      extractedData.warnings || [],
+      extractedData.summary || '',
+      message.job_id
+    );
 
     await updateJobStatus(message.job_id, {
       status: 'COMPLETED',
@@ -339,10 +468,11 @@ check_typeの判断基準:
         eligibility_rules_count: eligibilityRules.length,
         warnings: extractedData.warnings,
         summary: extractedData.summary,
+        d1_written: writeSuccess,
       },
     });
 
-    console.log(`Extracted ${eligibilityRules.length} eligibility rules for ${message.subsidy_id}`);
+    console.log(`Extracted ${eligibilityRules.length} eligibility rules for ${message.subsidy_id} (D1 write: ${writeSuccess})`);
 
   } catch (error) {
     console.error('LLM extraction error:', error);
@@ -351,60 +481,6 @@ check_typeの判断基準:
       progress: 60,
       error: error instanceof Error ? error.message : 'LLM extraction failed',
     });
-  }
-}
-
-/**
- * Cloudflare D1に要件ルールを書き込み
- */
-async function writeToCloudflareD1(subsidyId: string, rules: EligibilityRule[]): Promise<void> {
-  const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
-  const databaseId = process.env.CLOUDFLARE_D1_DATABASE_ID;
-  const apiToken = process.env.CLOUDFLARE_D1_API_TOKEN;
-
-  if (!accountId || !databaseId || !apiToken) {
-    console.log('Cloudflare D1 credentials not configured, skipping D1 write');
-    return;
-  }
-
-  try {
-    // D1 REST APIを使用して書き込み
-    const statements = rules.map(rule => ({
-      sql: `INSERT OR REPLACE INTO eligibility_rules 
-            (id, subsidy_id, category, rule_text, check_type, parameters, source_text, page_number, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))`,
-      params: [
-        rule.id,
-        rule.subsidy_id,
-        rule.category,
-        rule.rule_text,
-        rule.check_type,
-        JSON.stringify(rule.parameters || {}),
-        rule.source_text || null,
-        rule.page_number || null,
-      ],
-    }));
-
-    const response = await fetch(
-      `https://api.cloudflare.com/client/v4/accounts/${accountId}/d1/database/${databaseId}/query`,
-      {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${apiToken}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ statements }),
-      }
-    );
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error('D1 write error:', errorText);
-    } else {
-      console.log(`Written ${rules.length} rules to Cloudflare D1`);
-    }
-  } catch (error) {
-    console.error('D1 write error:', error);
   }
 }
 
