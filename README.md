@@ -2,8 +2,8 @@
 
 ## プロジェクト概要
 
-- **Name**: subsidy-matching
-- **Version**: 1.1.0 (Phase 1-A + Phase 2 設計完了)
+- **Name**: subsidy-matching (hojyokin)
+- **Version**: 1.2.0 (Phase K2 Cron + Consumer 実装完了)
 - **Goal**: 企業情報を登録するだけで、最適な補助金・助成金を自動でマッチング
 
 ### 設計思想
@@ -16,9 +16,9 @@
 
 ## URLs
 
-- **Sandbox (開発)**: https://3000-i8mpy9er0x59p3mbr6pt0-cc2fbc16.sandbox.novita.ai
-- **本番**: デプロイ後に設定
-- **AWS API**: デプロイ後に設定
+- **本番 (Cloudflare Pages)**: https://hojyokin.pages.dev
+- **GitHub**: https://github.com/matiuskuma2/hojyokin
+- **Sandbox (開発)**: PM2 + wrangler pages dev (port 3000)
 
 ---
 
@@ -26,20 +26,29 @@
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                    Cloudflare (Phase 1-A)                       │
+│                    Cloudflare (Phase K2)                        │
 │  ┌───────────────────────────────────────────────────────────┐  │
-│  │ Workers/Pages                                             │  │
+│  │ Pages (hojyokin)                                          │  │
 │  │ - 認証 (JWT + PBKDF2)                                     │  │
 │  │ - 企業CRUD                                                │  │
-│  │ - 補助金検索 (Adapter: live/mock/cached-only)             │  │
-│  │ - 一次スクリーニング (PROCEED/CAUTION/DO_NOT_PROCEED)     │  │
-│  │ - D1キャッシュ                                            │  │
+│  │ - 補助金検索 (JGrants API)                                │  │
+│  │ - ナレッジパイプライン (K1/K2)                            │  │
+│  │ - Consumer (crawl_queue処理)                              │  │
 │  └───────────────────────────────────────────────────────────┘  │
 │                              │                                  │
-│                              │ JWT Bearer Token                 │
-└──────────────────────────────┼──────────────────────────────────┘
+│  ┌───────────────────────────────────────────────────────────┐  │
+│  │ Cron Worker (hojyokin-cron)                              │  │
+│  │ - scheduled: 毎日03:00 JST                                │  │
+│  │ - due抽出 → crawl_queue投入                               │  │
+│  └───────────────────────────────────────────────────────────┘  │
+│                              │                                  │
+│  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐              │
+│  │     D1      │ │     R2      │ │   Firecrawl │              │
+│  │ (SQLite)    │ │ (knowledge) │ │   (Scrape)  │              │
+│  └─────────────┘ └─────────────┘ └─────────────┘              │
+└─────────────────────────────────────────────────────────────────┘
                                │
-                               ▼
+                               ▼ (重処理のみ)
 ┌─────────────────────────────────────────────────────────────────┐
 │                      AWS (Phase 2)                              │
 │  ┌─────────────┐    ┌──────────────┐    ┌─────────────┐        │
@@ -57,184 +66,120 @@
 
 ---
 
-## 実装済み機能 (Phase 1-A) ✅
+## Phase K2: ナレッジパイプライン (実装完了) ✅
 
-### 認証 (Auth)
-| Endpoint | Method | 説明 |
-|----------|--------|------|
-| `/api/auth/register` | POST | ユーザー登録 |
-| `/api/auth/login` | POST | ログイン (JWT発行) |
-| `/api/auth/password-reset/request` | POST | パスワードリセット要求 |
-| `/api/auth/password-reset/confirm` | POST | パスワードリセット確認 |
-| `/api/auth/me` | GET | 現在のユーザー情報取得 |
+### データ取得設計（API × Crawl の役割分担）
 
-### 企業管理 (Companies)
-| Endpoint | Method | 説明 |
-|----------|--------|------|
-| `/api/companies` | GET | 企業一覧取得 |
-| `/api/companies` | POST | 企業作成 |
-| `/api/companies/:id` | GET | 企業詳細取得 |
-| `/api/companies/:id` | PUT | 企業更新 |
-| `/api/companies/:id` | DELETE | 企業削除 |
+| 役割 | API (jGrants) | Crawl (Firecrawl) |
+|------|---------------|-------------------|
+| 目的 | 制度の存在と概要 | 申請に勝つための実務情報 |
+| データ | title, summary, prefecture, max_amount, rate, deadlines | 公募要領PDF, Q&A, 記載例, 審査ポイント |
+| 限界 | 必要書類不完全、審査ポイント無し | - |
 
-### 補助金 (Subsidies)
-| Endpoint | Method | 説明 |
-|----------|--------|------|
-| `/api/subsidies/search` | GET | 補助金検索 (Adapter経由 + スクリーニング) |
-| `/api/subsidies/:id` | GET | 補助金詳細取得 |
-| `/api/subsidies/evaluations/:company_id` | GET | 評価結果一覧 |
-
-### JGrants Adapter (3モード対応)
-- **live**: Jグランツ実API呼び出し（本番用）
-- **mock**: モックデータ返却（開発用、10件のリアルなデータ）
-- **cached-only**: D1キャッシュのみ（オフライン用）
-
----
-
-## Phase 2 AWS構成 (設計完了) 📋
-
-### ディレクトリ構造
-
-```
-aws/
-├── terraform/
-│   ├── main.tf                 # Terraform設定一式
-│   └── terraform.tfvars.example
-└── lambda/
-    ├── job-submit/             # HTTPトリガーLambda
-    │   ├── package.json
-    │   ├── tsconfig.json
-    │   └── src/index.ts
-    └── worker/                 # SQSトリガーLambda
-        ├── package.json
-        ├── tsconfig.json
-        └── src/index.ts
-```
-
-### AWSリソース
-
-| リソース | 説明 |
-|----------|------|
-| S3 | 添付ファイル・変換結果保存 |
-| SQS | ジョブキュー (DLQ付き) |
-| API Gateway | HTTP API (Cloudflare入口) |
-| Lambda (job-submit) | ジョブ投入 (30秒タイムアウト) |
-| Lambda (worker) | 変換・抽出処理 (10分タイムアウト) |
-| CloudWatch | ログ・メトリクス |
-
-### AWS API Endpoints
-
-| Endpoint | Method | 説明 |
-|----------|--------|------|
-| `/jobs/ingest` | POST | 添付取得→S3保存→ジョブ投入 |
-| `/jobs/{job_id}/status` | GET | ジョブステータス取得 |
-| `/health` | GET | ヘルスチェック |
-
-### ジョブタイプ
-
-| JobType | 説明 |
-|---------|------|
-| `ATTACHMENT_CONVERT` | PDF/Word → テキスト変換 |
-| `ELIGIBILITY_EXTRACT` | LLMで要件JSON抽出 |
-| `DRAFT_GENERATE` | 申請書ドラフト生成 (Phase 2後半) |
-
----
-
-## 技術スタック
-
-### Cloudflare (Phase 1)
-- **Runtime**: Cloudflare Workers / Pages
-- **Framework**: Hono 4.x
-- **Database**: Cloudflare D1 (SQLite)
-- **Auth**: JWT (HS256) + PBKDF2 (SHA-256)
-
-### AWS (Phase 2)
-- **Compute**: Lambda (Node.js 20)
-- **Queue**: SQS (DLQ付き)
-- **Storage**: S3
-- **API**: API Gateway (HTTP API)
-- **IaC**: Terraform
-
-### 外部API
-- **Jグランツ公開API**: 補助金データ取得
-- **OpenAI API**: 要件抽出 (gpt-4o-mini)
-- **Cloudflare D1 REST API**: AWS→D1書き込み
-
----
-
-## データモデル
-
-### 主要テーブル (D1)
+### 主要テーブル
 
 | テーブル | 説明 |
 |----------|------|
-| `users` | ユーザー |
-| `companies` | 企業 |
-| `company_memberships` | 企業所属 |
-| `subsidy_cache` | 補助金キャッシュ |
-| `evaluation_runs` | 評価結果 |
-| `search_cache` | 検索キャッシュ |
-| `eligibility_rules` | 要件ルール (Phase 2) |
-| `api_usage` | API使用量 |
+| `source_registry` | 47都道府県クロール台帳 |
+| `crawl_queue` | Cron専用キュー（kind: REGISTRY_CRAWL/SUBSIDY_CHECK/URL_CRAWL） |
+| `subsidy_lifecycle` | 制度のライフサイクル管理 (status/next_check_at) |
+| `domain_policy` | ドメイン単位のクロールポリシー |
+| `doc_object` | R2保存ドキュメント索引 |
 
-### EligibilityRule (Phase 2)
+### Consumer API Endpoints
 
-```typescript
-interface EligibilityRule {
-  id: string;
-  subsidy_id: string;
-  category: "対象者" | "地域" | "業種" | "規模" | "財務" | "事業内容" | "その他";
-  rule_text: string;
-  check_type: "AUTO" | "MANUAL" | "LLM";
-  parameters?: { min?: number; max?: number; allowed_values?: string[] };
-  source_text?: string;
-  page_number?: number;
-}
-```
+| Endpoint | Method | 説明 |
+|----------|--------|------|
+| `/api/consumer/run` | POST | キューからジョブを取得して処理 |
+| `/api/consumer/status` | GET | キュー状態の確認 |
+| `/api/consumer/requeue/:id` | POST | 失敗ジョブの再キュー |
+| `/api/consumer/cleanup` | DELETE | 古いジョブの削除 |
+
+### ナレッジ API Endpoints (K1/K2)
+
+| Endpoint | Method | 説明 |
+|----------|--------|------|
+| `/api/knowledge/crawl/:urlId` | POST | URL単体クロール (K1) |
+| `/api/knowledge/extract/:urlId` | POST | Extract Schema v1 抽出 (K2) |
+| `/api/knowledge/registry` | GET | source_registry一覧 |
+| `/api/knowledge/stats` | GET | ナレッジ統計 |
+
+### ステータス正規化 (subsidy_lifecycle)
+
+| status | 説明 | 更新頻度 |
+|--------|------|----------|
+| `scheduled` | 公募前 | 毎日 |
+| `open` | 受付中 | priority依存 |
+| `closing_soon` | まもなく締切 | 1時間 |
+| `closed_by_deadline` | 期限終了 | 30日 |
+| `closed_by_budget` | 予算枯渇 | 30日 |
+
+### 予算枯渇シグナル (budget_close_signals)
+
+| signal | 検知パターン |
+|--------|-------------|
+| `budget_cap_reached` | 予算上限に達し次第...終了 |
+| `first_come_end` | 先着順 |
+| `quota_reached` | 予定件数に達し |
+| `early_close` | 早期終了の可能性 |
+
+---
+
+## 実装済み機能 ✅
+
+### Phase 1-A (Cloudflare基盤)
+- [x] 認証 (JWT + PBKDF2)
+- [x] 企業CRUD
+- [x] JGrants Adapter (live/mock/cached-only)
+- [x] 一次スクリーニング
+- [x] D1キャッシュ
+
+### Phase K1 (ナレッジ収集)
+- [x] Firecrawl scrape → R2 raw保存
+- [x] source_url管理
+- [x] content_hash差分検知
+
+### Phase K2 (差分更新)
+- [x] Extract Schema v1 (Firecrawl v2 API)
+- [x] 47都道府県台帳 (source_registry)
+- [x] Cron Worker (due抽出 → crawl_queue投入)
+- [x] Consumer (crawl_queue処理)
+- [x] domain_policy (自動ブロック)
 
 ---
 
 ## 開発環境セットアップ
 
-### Cloudflare (Phase 1)
-
 ```bash
 # 依存関係インストール
+cd /home/user/webapp
 npm install
 
 # D1マイグレーション (ローカル)
-npm run db:migrate:local
+npx wrangler d1 migrations apply subsidy-matching-production --local
 
 # 開発サーバー起動
-npm run build && pm2 start ecosystem.config.cjs
+npm run build
+pm2 start ecosystem.config.cjs
 
 # API テスト
 curl http://localhost:3000/api/health
+curl http://localhost:3000/api/consumer/status -H "Authorization: Bearer $JWT"
 ```
 
-### AWS (Phase 2)
+### Consumer テスト
 
 ```bash
-# Terraform初期化
-cd aws/terraform
-cp terraform.tfvars.example terraform.tfvars
-# terraform.tfvarsを編集
-terraform init
-terraform plan
-terraform apply
+# ログインしてJWT取得
+JWT=$(curl -s http://localhost:3000/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"test@example.com","password":"password"}' | jq -r '.data.token')
 
-# Lambdaコードデプロイ
-cd ../lambda/job-submit
-npm install && npm run package
-aws lambda update-function-code \
-  --function-name subsidy-app-dev-job-submit \
-  --zip-file fileb://dist/function.zip
-
-cd ../worker
-npm install && npm run package
-aws lambda update-function-code \
-  --function-name subsidy-app-dev-worker \
-  --zip-file fileb://dist/function.zip
+# Consumer実行
+curl -X POST http://localhost:3000/api/consumer/run \
+  -H "Authorization: Bearer $JWT" \
+  -H "Content-Type: application/json" \
+  -d '{"limit": 10}'
 ```
 
 ---
@@ -247,82 +192,34 @@ JWT_SECRET=your-secret-key-32-chars-minimum
 JWT_ISSUER=subsidy-app
 JWT_AUDIENCE=subsidy-app-users
 JGRANTS_MODE=mock
-AWS_API_ENDPOINT=https://xxx.execute-api.ap-northeast-1.amazonaws.com
+FIRECRAWL_API_KEY=fc-xxx
 ```
 
-### AWS (terraform.tfvars)
-```hcl
-jwt_secret = "same-as-cloudflare"
-openai_api_key = "sk-xxx"
-cloudflare_d1_api_token = "xxx"
-cloudflare_account_id = "xxx"
-cloudflare_d1_database_id = "xxx"
+### Cron Worker (.dev.vars)
 ```
-
----
-
-## 判定ステータス
-
-| ステータス | 表示名 | 意味 |
-|-----------|--------|------|
-| `PROCEED` | 推奨 | 要件を概ね満たし、リスクも低い |
-| `CAUTION` | 注意 | 使える可能性はあるが、確認事項・リスクあり |
-| `DO_NOT_PROCEED` | 非推奨 | 要件未達または高リスク |
-
-## リスクタイプ
-
-| タイプ | 説明 |
-|--------|------|
-| `FINANCING` | 資金スキームリスク |
-| `ORGANIZATION` | 組織・人事リスク |
-| `EXPENSE` | 経費・交付申請リスク |
-| `BUSINESS_MODEL` | 事業内容リスク |
-| `COMPLIANCE` | コンプラ・事故リスク |
-
----
-
-## ドキュメント
-
-| ドキュメント | 説明 |
-|-------------|------|
-| [docs/requirements-v0.9.md](docs/requirements-v0.9.md) | 要件定義書 |
-| [docs/screen-wireframes.md](docs/screen-wireframes.md) | 画面ワイヤー詳細 |
-| [docs/data-dictionary.md](docs/data-dictionary.md) | データ辞書 |
-| [docs/prompts-and-schemas.md](docs/prompts-and-schemas.md) | LLMプロンプト＆スキーマ |
-| [docs/job-specifications.md](docs/job-specifications.md) | ジョブ詳細仕様 |
-| [docs/phase2-aws-integration.md](docs/phase2-aws-integration.md) | **Phase 2 AWS統合仕様** |
+# D1は wrangler.toml で設定
+```
 
 ---
 
 ## 進捗状況
 
-### ✅ Phase 1-A (Cloudflare) - 完了
-- [x] 認証 (JWT + PBKDF2)
-- [x] 企業CRUD
-- [x] JGrants Adapter (live/mock/cached-only)
-- [x] 一次スクリーニング
-- [x] D1キャッシュ
-- [x] モックデータ (10件)
+### ✅ 完了
+- Phase 1-A: Cloudflare基盤
+- Phase K1: ナレッジ収集
+- Phase K2: Cron + Consumer実装
+- 47都道府県台帳投入
+- Extract Schema v1
 
-### 📋 Phase 2 AWS - 設計完了
-- [x] Terraform一式 (S3/SQS/API Gateway/Lambda)
-- [x] Lambda job-submit コード
-- [x] Lambda worker コード
-- [x] Cloudflare→AWS接続仕様
-- [x] ジョブメッセージJSON仕様
-- [ ] Terraformデプロイ
-- [ ] Lambdaデプロイ
+### 📋 次のステップ
+1. Cron Worker本番デプロイ
+2. Extract品質改善 (confidence > 0.8)
+3. 申請書自動生成への接続
 
-### ⏳ Phase 1-B (Cloudflare) - 未着手
-- [ ] KVキャッシュ
-- [ ] レート制限
-- [ ] メール送信 (SendGrid)
-- [ ] UI実装
-
-### ⏳ Phase 2後半 - 未着手
-- [ ] 壁打ちBot実装
-- [ ] ドラフト生成
-- [ ] 自治体サイトスクレイピング
+### ⏳ 未着手
+- UI実装
+- 壁打ちBot
+- 自治体サイトスクレイピング拡張
 
 ---
 
@@ -330,10 +227,9 @@ cloudflare_d1_database_id = "xxx"
 
 Private
 
-## 作成日
-
-2026-01-21
-
 ## 更新履歴
 
-- **2026-01-21**: Phase 1-A 完了、Phase 2 AWS設計完了
+- **2026-01-21**: Phase K2 Cron + Consumer実装完了
+- **2026-01-21**: 47都道府県台帳投入
+- **2026-01-21**: Extract Schema v1実装
+- **2026-01-21**: Phase 1-A完了、Phase 2 AWS設計完了
