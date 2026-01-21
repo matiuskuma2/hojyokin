@@ -31,3 +31,14 @@ lerna-debug.log*
 
 # misc
 .DS_Store
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+tfplan
+.terraform.lock.hcl
+
+# Internal secrets
+.internal-jwt-secret

@@ -221,15 +221,16 @@ app.post('/subsidies/:subsidy_id/ingest', requireAuth, async (c) => {
 
   try {
     // 補助金の添付ファイル情報を取得（キャッシュから）
+    // detail_json カラムを使用（raw_jsonが存在しない場合に対応）
     const subsidyCache = await env.DB.prepare(`
-      SELECT raw_json FROM subsidy_cache WHERE subsidy_id = ?
-    `).bind(subsidyId).first<{ raw_json: string }>();
+      SELECT detail_json FROM subsidy_cache WHERE id = ?
+    `).bind(subsidyId).first<{ detail_json: string | null }>();
 
     let attachments: Array<{ id: string; filename: string; content_type: string; url: string }> = [];
 
-    if (subsidyCache?.raw_json) {
+    if (subsidyCache?.detail_json) {
       try {
-        const subsidyData = JSON.parse(subsidyCache.raw_json);
+        const subsidyData = JSON.parse(subsidyCache.detail_json);
         // Jグランツの添付ファイル情報を抽出
         if (subsidyData.attachments && Array.isArray(subsidyData.attachments)) {
           attachments = subsidyData.attachments.map((att: any, index: number) => ({
