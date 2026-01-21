@@ -19,7 +19,7 @@ database_id = "e53f6185-60a6-45eb-b06d-c710ab3aef56"
 # R2 Bucket Binding（クロール結果保存用）
 [[r2_buckets]]
 binding = "R2"
-bucket_name = "subsidy-app-storage"
+bucket_name = "subsidy-knowledge"
 
 # Environment Variables
 [vars]
