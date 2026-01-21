@@ -12,29 +12,181 @@ import { internalAuthMiddleware } from '../lib/internal-jwt';
 const app = new Hono<{ Bindings: Env; Variables: Variables }>();
 
 // =============================================================================
-// Utility: Safe Hash Generation
+// Utility: Cryptographic Hash Generation (SHA-256)
 // =============================================================================
 
 /**
- * UTF-8文字列から安全なハッシュを生成（btoa代替）
+ * SHA-256ハッシュを生成（WebCrypto API使用）
+ * @param input - ハッシュ化する文字列
+ * @returns 64文字のhex文字列
  */
-function safeHash(str: string): string {
-  // 簡易ハッシュ: 文字列をUTF-8バイト配列に変換してhex化
+async function sha256Hex(input: string): Promise<string> {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(input);
+  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+  const hashArray = new Uint8Array(hashBuffer);
+  return Array.from(hashArray)
+    .map(b => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+/**
+ * SHA-256ハッシュの短縮版（32文字）
+ */
+async function sha256Short(input: string): Promise<string> {
+  const full = await sha256Hex(input);
+  return full.substring(0, 32);
+}
+
+/**
+ * UTF-8文字列から安全なハッシュを生成（同期版、btoa代替）
+ * 非同期が使えない場面で使用
+ */
+function safeHashSync(str: string): string {
   const encoder = new TextEncoder();
   const data = encoder.encode(str);
   
-  // 最初の48バイトをhex化して64文字に
   let hash = '';
   for (let i = 0; i < Math.min(data.length, 48); i++) {
     hash += data[i].toString(16).padStart(2, '0');
   }
   
-  // 長さが足りない場合はパディング
   while (hash.length < 64) {
     hash += '0';
   }
   
   return hash.substring(0, 64);
+}
+
+// =============================================================================
+// Utility: R2 Storage Operations
+// =============================================================================
+
+/**
+ * R2キー設計:
+ *   raw/{subsidy_id}/{url_hash}.md        - Firecrawl取得のMarkdown原文
+ *   structured/{subsidy_id}/{url_hash}.json - Extract Schema v1のJSON
+ *   meta/{subsidy_id}/jgrants_detail.json   - JGrants APIレスポンス
+ */
+
+interface R2SaveResult {
+  key: string;
+  size: number;
+  uploaded_at: string;
+}
+
+/**
+ * R2にMarkdown原文を保存
+ */
+async function saveRawToR2(
+  r2: R2Bucket,
+  subsidyId: string,
+  urlHash: string,
+  markdown: string
+): Promise<R2SaveResult> {
+  const key = `raw/${subsidyId}/${urlHash}.md`;
+  const encoder = new TextEncoder();
+  const data = encoder.encode(markdown);
+  
+  await r2.put(key, data, {
+    httpMetadata: {
+      contentType: 'text/markdown; charset=utf-8'
+    },
+    customMetadata: {
+      subsidy_id: subsidyId,
+      url_hash: urlHash,
+      content_type: 'raw_markdown'
+    }
+  });
+  
+  return {
+    key,
+    size: data.byteLength,
+    uploaded_at: new Date().toISOString()
+  };
+}
+
+/**
+ * R2から原文Markdownを取得
+ */
+async function getRawFromR2(
+  r2: R2Bucket,
+  subsidyId: string,
+  urlHash: string
+): Promise<string | null> {
+  const key = `raw/${subsidyId}/${urlHash}.md`;
+  const obj = await r2.get(key);
+  if (!obj) return null;
+  return await obj.text();
+}
+
+/**
+ * R2に構造化JSONを保存
+ */
+async function saveStructuredToR2(
+  r2: R2Bucket,
+  subsidyId: string,
+  urlHash: string,
+  structured: object
+): Promise<R2SaveResult> {
+  const key = `structured/${subsidyId}/${urlHash}.json`;
+  const json = JSON.stringify(structured, null, 2);
+  const encoder = new TextEncoder();
+  const data = encoder.encode(json);
+  
+  await r2.put(key, data, {
+    httpMetadata: {
+      contentType: 'application/json; charset=utf-8'
+    },
+    customMetadata: {
+      subsidy_id: subsidyId,
+      url_hash: urlHash,
+      content_type: 'structured_json',
+      schema_version: 'v1'
+    }
+  });
+  
+  return {
+    key,
+    size: data.byteLength,
+    uploaded_at: new Date().toISOString()
+  };
+}
+
+/**
+ * R2から構造化JSONを取得
+ */
+async function getStructuredFromR2(
+  r2: R2Bucket,
+  subsidyId: string,
+  urlHash: string
+): Promise<object | null> {
+  const key = `structured/${subsidyId}/${urlHash}.json`;
+  const obj = await r2.get(key);
+  if (!obj) return null;
+  return await obj.json();
+}
+
+/**
+ * ドメインキーを抽出（ホスト名からサブドメインを除く）
+ */
+function extractDomainKey(url: string): string {
+  try {
+    const hostname = new URL(url).hostname.toLowerCase();
+    // go.jp, lg.jp などの2階層TLDを考慮
+    const parts = hostname.split('.');
+    if (parts.length >= 3 && (parts[parts.length - 2] === 'go' || parts[parts.length - 2] === 'lg')) {
+      // xxx.go.jp → xxx.go.jp (3パーツ維持)
+      return parts.slice(-3).join('.');
+    }
+    // 通常のドメイン
+    if (parts.length >= 2) {
+      return parts.slice(-2).join('.');
+    }
+    return hostname;
+  } catch {
+    return 'unknown';
+  }
 }
 
 // =============================================================================
@@ -144,9 +296,9 @@ interface ExtractSchemaV1 {
 // =============================================================================
 
 /**
- * URLを正規化してハッシュを生成
+ * URLを正規化
  */
-function normalizeAndHashUrl(url: string): { normalized: string; hash: string } {
+function normalizeUrl(url: string): string {
   try {
     const urlObj = new URL(url);
     
@@ -167,16 +319,29 @@ function normalizeAndHashUrl(url: string): { normalized: string; hash: string } 
       urlObj.protocol = 'https:';
     }
     
-    const normalized = urlObj.toString();
-    
-    // 簡易ハッシュ生成（UTF-8対応）
-    const hash = safeHash(normalized).substring(0, 32);
-    
-    return { normalized, hash };
+    return urlObj.toString();
   } catch {
-    // 無効なURLの場合
-    return { normalized: url, hash: safeHash(url).substring(0, 32) };
+    return url;
   }
+}
+
+/**
+ * URLを正規化してSHA-256ハッシュを生成（非同期版）
+ */
+async function normalizeAndHashUrlAsync(url: string): Promise<{ normalized: string; hash: string; domainKey: string }> {
+  const normalized = normalizeUrl(url);
+  const hash = await sha256Short(normalized);
+  const domainKey = extractDomainKey(url);
+  return { normalized, hash, domainKey };
+}
+
+/**
+ * URLを正規化してハッシュを生成（同期版、互換性用）
+ */
+function normalizeAndHashUrl(url: string): { normalized: string; hash: string } {
+  const normalized = normalizeUrl(url);
+  const hash = safeHashSync(normalized).substring(0, 32);
+  return { normalized, hash };
 }
 
 /**
@@ -393,11 +558,18 @@ app.get('/source-urls', requireAuth, async (c) => {
 
 /**
  * POST /knowledge/crawl/:url_id
- * 特定URLをFirecrawlでクロール（手動トリガー）
+ * 指定URLをFirecrawlでスクレイプしてR2/D1に保存
+ * 
+ * 処理フロー:
+ * 1. ドメインポリシー確認（blocked/rate limit）
+ * 2. Firecrawl API呼び出し
+ * 3. R2にraw Markdownを保存
+ * 4. D1にメタデータを保存
+ * 5. 連続失敗時は自動blocked化
  */
 app.post('/crawl/:url_id', requireAuth, async (c) => {
   const { url_id } = c.req.param();
-  const { DB } = c.env;
+  const { DB, R2_KNOWLEDGE } = c.env;
   const firecrawlApiKey = c.env.FIRECRAWL_API_KEY;
 
   if (!firecrawlApiKey) {
@@ -411,13 +583,37 @@ app.post('/crawl/:url_id', requireAuth, async (c) => {
     // URLを取得
     const sourceUrl = await DB.prepare(`
       SELECT * FROM source_url WHERE url_id = ?
-    `).bind(url_id).first<SourceUrl>();
+    `).bind(url_id).first<SourceUrl & { domain_key?: string }>();
 
     if (!sourceUrl) {
       return c.json<ApiResponse<null>>({
         success: false,
         error: { code: 'NOT_FOUND', message: 'Source URL not found' }
       }, 404);
+    }
+
+    // ドメインキーを取得/設定
+    const domainKey = sourceUrl.domain_key || extractDomainKey(sourceUrl.url);
+    
+    // ドメインポリシーを確認（テーブルが存在する場合のみ）
+    let policy: { enabled: number; notes?: string } | null = null;
+    try {
+      policy = await DB.prepare(`
+        SELECT enabled, notes FROM domain_policy WHERE domain_key = ?
+      `).bind(domainKey).first();
+    } catch {
+      // domain_policyテーブルがまだ無い場合は無視
+    }
+
+    // ドメインがブロックされている場合
+    if (policy && policy.enabled === 0) {
+      return c.json<ApiResponse<null>>({
+        success: false,
+        error: { 
+          code: 'DOMAIN_BLOCKED', 
+          message: `Domain ${domainKey} is blocked: ${policy.notes || 'No reason specified'}` 
+        }
+      }, 403);
     }
 
     // crawl_jobを作成
@@ -444,6 +640,22 @@ app.post('/crawl/:url_id', requireAuth, async (c) => {
 
     if (!firecrawlResponse.ok) {
       const errorText = await firecrawlResponse.text();
+      const errorCode = firecrawlResponse.status.toString();
+      
+      // ドメインポリシーの失敗統計を更新（テーブルが存在する場合）
+      try {
+        await DB.prepare(`
+          INSERT INTO domain_policy (domain_key, enabled, failure_count, last_failure_at, last_error_code, notes)
+          VALUES (?, 1, 1, datetime('now'), ?, 'Auto-created on first failure')
+          ON CONFLICT(domain_key) DO UPDATE SET
+            failure_count = failure_count + 1,
+            last_failure_at = datetime('now'),
+            last_error_code = ?
+        `).bind(domainKey, errorCode, errorCode).run();
+      } catch {
+        // テーブルが無い場合は無視
+      }
+      
       throw new Error(`Firecrawl API error: ${firecrawlResponse.status} - ${errorText}`);
     }
 
@@ -463,10 +675,34 @@ app.post('/crawl/:url_id', requireAuth, async (c) => {
       throw new Error('Firecrawl returned no data');
     }
 
-    // コンテンツハッシュを計算（UTF-8対応）
-    const contentHash = safeHash(crawlResult.data.markdown || '');
+    const markdown = crawlResult.data.markdown || '';
+    const wordCount = markdown.length;
+    const language = crawlResult.data.metadata?.language || 'ja';
+    
+    // SHA-256ハッシュを計算
+    const contentHash = await sha256Hex(markdown);
+    const urlHashResult = await normalizeAndHashUrlAsync(sourceUrl.url);
+    
+    // R2に保存（R2が設定されている場合）
+    let r2Result: R2SaveResult | null = null;
+    let storageBackend: 'd1_inline' | 'r2' = 'd1_inline';
+    
+    if (R2_KNOWLEDGE) {
+      try {
+        r2Result = await saveRawToR2(
+          R2_KNOWLEDGE,
+          sourceUrl.subsidy_id,
+          urlHashResult.hash,
+          markdown
+        );
+        storageBackend = 'r2';
+      } catch (r2Error) {
+        console.error('R2 save error (falling back to D1):', r2Error);
+        // R2保存失敗時はD1にインライン保存
+      }
+    }
 
-    // source_urlを更新
+    // source_urlを更新（ドメインキーも設定）
     await DB.prepare(`
       UPDATE source_url SET
         status = 'ok',
@@ -479,24 +715,77 @@ app.post('/crawl/:url_id', requireAuth, async (c) => {
 
     // doc_objectを作成/更新
     const docId = crypto.randomUUID();
-    const wordCount = (crawlResult.data.markdown || '').length;
     
-    await DB.prepare(`
-      INSERT INTO doc_object (
-        id, url_id, subsidy_id, extract_version, extracted_at, 
-        word_count, language, created_at, updated_at
-      ) VALUES (?, ?, ?, 'v1', datetime('now'), ?, ?, datetime('now'), datetime('now'))
-      ON CONFLICT(url_id) DO UPDATE SET
-        word_count = excluded.word_count,
-        language = excluded.language,
-        updated_at = datetime('now')
-    `).bind(
-      docId,
-      url_id,
-      sourceUrl.subsidy_id,
-      wordCount,
-      crawlResult.data.metadata?.language || 'ja'
-    ).run();
+    if (storageBackend === 'r2' && r2Result) {
+      // R2保存成功 - 新しいカラムを使用
+      try {
+        await DB.prepare(`
+          INSERT INTO doc_object (
+            id, url_id, subsidy_id, extract_version, extracted_at, 
+            word_count, language, storage_backend,
+            r2_key_raw, r2_raw_size, r2_uploaded_at, content_hash_sha256,
+            created_at, updated_at
+          ) VALUES (?, ?, ?, 'v1', datetime('now'), ?, ?, 'r2', ?, ?, ?, ?, datetime('now'), datetime('now'))
+          ON CONFLICT(url_id) DO UPDATE SET
+            word_count = excluded.word_count,
+            language = excluded.language,
+            storage_backend = 'r2',
+            r2_key_raw = excluded.r2_key_raw,
+            r2_raw_size = excluded.r2_raw_size,
+            r2_uploaded_at = excluded.r2_uploaded_at,
+            content_hash_sha256 = excluded.content_hash_sha256,
+            updated_at = datetime('now')
+        `).bind(
+          docId,
+          url_id,
+          sourceUrl.subsidy_id,
+          wordCount,
+          language,
+          r2Result.key,
+          r2Result.size,
+          r2Result.uploaded_at,
+          contentHash
+        ).run();
+      } catch {
+        // 新しいカラムが無い場合はフォールバック
+        await DB.prepare(`
+          INSERT INTO doc_object (
+            id, url_id, subsidy_id, extract_version, extracted_at, 
+            word_count, language, created_at, updated_at
+          ) VALUES (?, ?, ?, 'v1', datetime('now'), ?, ?, datetime('now'), datetime('now'))
+          ON CONFLICT(url_id) DO UPDATE SET
+            word_count = excluded.word_count,
+            language = excluded.language,
+            updated_at = datetime('now')
+        `).bind(docId, url_id, sourceUrl.subsidy_id, wordCount, language).run();
+      }
+    } else {
+      // D1インライン保存（R2未設定またはエラー時）- 従来のスキーマ互換
+      await DB.prepare(`
+        INSERT INTO doc_object (
+          id, url_id, subsidy_id, extract_version, extracted_at, 
+          word_count, language, created_at, updated_at
+        ) VALUES (?, ?, ?, 'v1', datetime('now'), ?, ?, datetime('now'), datetime('now'))
+        ON CONFLICT(url_id) DO UPDATE SET
+          word_count = excluded.word_count,
+          language = excluded.language,
+          updated_at = datetime('now')
+      `).bind(docId, url_id, sourceUrl.subsidy_id, wordCount, language).run();
+    }
+
+    // ドメインポリシーの成功統計を更新（テーブルが存在する場合）
+    try {
+      await DB.prepare(`
+        INSERT INTO domain_policy (domain_key, enabled, success_count, last_success_at, total_requests, notes)
+        VALUES (?, 1, 1, datetime('now'), 1, 'Auto-created on first success')
+        ON CONFLICT(domain_key) DO UPDATE SET
+          success_count = success_count + 1,
+          total_requests = total_requests + 1,
+          last_success_at = datetime('now')
+      `).bind(domainKey).run();
+    } catch {
+      // テーブルが無い場合は無視
+    }
 
     // crawl_jobを完了
     await DB.prepare(`
@@ -507,8 +796,10 @@ app.post('/crawl/:url_id', requireAuth, async (c) => {
         updated_at = datetime('now')
       WHERE job_id = ?
     `).bind(JSON.stringify({
-      markdown_length: crawlResult.data.markdown?.length || 0,
-      title: crawlResult.data.metadata?.title
+      markdown_length: wordCount,
+      title: crawlResult.data.metadata?.title,
+      storage_backend: storageBackend,
+      r2_key: r2Result?.key
     }), jobId).run();
 
     return c.json<ApiResponse<{
@@ -517,19 +808,23 @@ app.post('/crawl/:url_id', requireAuth, async (c) => {
       status: string;
       markdown_length: number;
       title?: string;
+      storage_backend: string;
+      r2_key?: string;
     }>>({
       success: true,
       data: {
         job_id: jobId,
         url_id,
         status: 'completed',
-        markdown_length: crawlResult.data.markdown?.length || 0,
-        title: crawlResult.data.metadata?.title
+        markdown_length: wordCount,
+        title: crawlResult.data.metadata?.title,
+        storage_backend: storageBackend,
+        r2_key: r2Result?.key
       }
     });
   } catch (error) {
     console.error('Crawl error:', error);
-
+    
     // エラー記録
     await DB.prepare(`
       UPDATE source_url SET
@@ -717,6 +1012,191 @@ app.post('/internal/sync-jgrants', internalAuthMiddleware(['knowledge:sync']), a
       message: 'JGrants sync not yet implemented - Phase K2'
     }
   });
+});
+
+/**
+ * GET /knowledge/raw/:subsidy_id/:url_hash
+ * R2からMarkdown原文を取得（壁打ちBot用）
+ */
+app.get('/raw/:subsidy_id/:url_hash', requireAuth, async (c) => {
+  const { subsidy_id, url_hash } = c.req.param();
+  const { R2_KNOWLEDGE, DB } = c.env;
+
+  if (!R2_KNOWLEDGE) {
+    // R2が無い場合はD1から取得を試みる
+    try {
+      const doc = await DB.prepare(`
+        SELECT raw_markdown FROM doc_object 
+        WHERE subsidy_id = ? AND storage_backend = 'd1_inline'
+        LIMIT 1
+      `).bind(subsidy_id).first<{ raw_markdown?: string }>();
+      
+      if (doc?.raw_markdown) {
+        return c.text(doc.raw_markdown, 200, {
+          'Content-Type': 'text/markdown; charset=utf-8'
+        });
+      }
+    } catch {
+      // テーブル/カラムが無い場合は無視
+    }
+    
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'R2_NOT_CONFIGURED', message: 'R2 storage is not configured' }
+    }, 500);
+  }
+
+  try {
+    const markdown = await getRawFromR2(R2_KNOWLEDGE, subsidy_id, url_hash);
+    
+    if (!markdown) {
+      return c.json<ApiResponse<null>>({
+        success: false,
+        error: { code: 'NOT_FOUND', message: 'Raw markdown not found' }
+      }, 404);
+    }
+
+    return c.text(markdown, 200, {
+      'Content-Type': 'text/markdown; charset=utf-8'
+    });
+  } catch (error) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'R2_ERROR', message: String(error) }
+    }, 500);
+  }
+});
+
+/**
+ * GET /knowledge/structured/:subsidy_id/:url_hash
+ * R2から構造化JSONを取得（壁打ちBot用）
+ */
+app.get('/structured/:subsidy_id/:url_hash', requireAuth, async (c) => {
+  const { subsidy_id, url_hash } = c.req.param();
+  const { R2_KNOWLEDGE, DB } = c.env;
+
+  if (!R2_KNOWLEDGE) {
+    // R2が無い場合はD1から取得を試みる
+    try {
+      const doc = await DB.prepare(`
+        SELECT structured_json FROM doc_object 
+        WHERE subsidy_id = ? AND storage_backend = 'd1_inline'
+        LIMIT 1
+      `).bind(subsidy_id).first<{ structured_json?: string }>();
+      
+      if (doc?.structured_json) {
+        return c.json(JSON.parse(doc.structured_json));
+      }
+    } catch {
+      // テーブル/カラムが無い場合は無視
+    }
+    
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'R2_NOT_CONFIGURED', message: 'R2 storage is not configured' }
+    }, 500);
+  }
+
+  try {
+    const structured = await getStructuredFromR2(R2_KNOWLEDGE, subsidy_id, url_hash);
+    
+    if (!structured) {
+      return c.json<ApiResponse<null>>({
+        success: false,
+        error: { code: 'NOT_FOUND', message: 'Structured JSON not found' }
+      }, 404);
+    }
+
+    return c.json({
+      success: true,
+      data: structured
+    });
+  } catch (error) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'R2_ERROR', message: String(error) }
+    }, 500);
+  }
+});
+
+/**
+ * GET /knowledge/domains
+ * ドメインポリシー一覧を取得（運用監視用）
+ */
+app.get('/domains', requireAuth, async (c) => {
+  const { DB } = c.env;
+
+  try {
+    const domains = await DB.prepare(`
+      SELECT 
+        domain_key,
+        enabled,
+        success_count,
+        failure_count,
+        last_success_at,
+        last_failure_at,
+        last_error_code,
+        notes
+      FROM domain_policy
+      ORDER BY failure_count DESC, domain_key ASC
+    `).all();
+
+    return c.json<ApiResponse<{ domains: unknown[]; count: number }>>({
+      success: true,
+      data: {
+        domains: domains.results || [],
+        count: domains.results?.length || 0
+      }
+    });
+  } catch {
+    // テーブルが無い場合は空を返す
+    return c.json<ApiResponse<{ domains: unknown[]; count: number }>>({
+      success: true,
+      data: {
+        domains: [],
+        count: 0
+      }
+    });
+  }
+});
+
+/**
+ * POST /knowledge/domains/:domain_key/toggle
+ * ドメインの有効/無効を切り替え
+ */
+app.post('/domains/:domain_key/toggle', requireAuth, async (c) => {
+  const { domain_key } = c.req.param();
+  const { DB } = c.env;
+
+  try {
+    const result = await DB.prepare(`
+      UPDATE domain_policy 
+      SET enabled = CASE WHEN enabled = 1 THEN 0 ELSE 1 END,
+          updated_at = datetime('now')
+      WHERE domain_key = ?
+      RETURNING domain_key, enabled
+    `).bind(domain_key).first<{ domain_key: string; enabled: number }>();
+
+    if (!result) {
+      return c.json<ApiResponse<null>>({
+        success: false,
+        error: { code: 'NOT_FOUND', message: 'Domain policy not found' }
+      }, 404);
+    }
+
+    return c.json<ApiResponse<{ domain_key: string; enabled: boolean }>>({
+      success: true,
+      data: {
+        domain_key: result.domain_key,
+        enabled: result.enabled === 1
+      }
+    });
+  } catch (error) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'DB_ERROR', message: String(error) }
+    }, 500);
+  }
 });
 
 /**

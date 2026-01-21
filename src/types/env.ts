@@ -50,7 +50,11 @@ export interface Env {
   // ========================================
   // R2 Storage (Phase K1: ナレッジ保存)
   // ========================================
-  R2?: R2Bucket;
+  // キー設計:
+  //   raw/{subsidy_id}/{url_hash}.md       - Firecrawl取得のMarkdown原文
+  //   structured/{subsidy_id}/{url_hash}.json - Extract Schema v1のJSON
+  //   meta/{subsidy_id}/jgrants_detail.json   - JGrants APIレスポンス
+  R2_KNOWLEDGE: R2Bucket;
   
   // 環境識別
   ENVIRONMENT?: 'development' | 'staging' | 'production';

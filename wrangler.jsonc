@@ -43,7 +43,7 @@
       "database_name": "subsidy-matching-production",
       "database_id": "e53f6185-60a6-45eb-b06d-c710ab3aef56"
     }
-  ]
+  ],
 
   // ========================================
   // KV Namespace (キャッシュ用 - Phase 1-B)
@@ -56,12 +56,16 @@
   // ]
 
   // ========================================
-  // R2 Storage (ファイル保存用 - Phase 2オプション)
+  // R2 Storage (ナレッジ保存用)
   // ========================================
-  // "r2_buckets": [
-  //   {
-  //     "binding": "R2",
-  //     "bucket_name": "subsidy-attachments"
-  //   }
-  // ]
+  // キー設計:
+  //   raw/{subsidy_id}/{url_hash}.md       - Firecrawl取得のMarkdown原文
+  //   structured/{subsidy_id}/{url_hash}.json - Extract Schema v1のJSON
+  //   meta/{subsidy_id}/jgrants_detail.json   - JGrants APIレスポンス
+  "r2_buckets": [
+    {
+      "binding": "R2_KNOWLEDGE",
+      "bucket_name": "subsidy-knowledge"
+    }
+  ]
 }
