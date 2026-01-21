@@ -1,0 +1,27 @@
+{
+  "name": "subsidy-worker",
+  "version": "1.0.0",
+  "description": "Worker Lambda for Subsidy Matching System (PDF conversion, LLM processing)",
+  "main": "dist/index.js",
+  "type": "module",
+  "scripts": {
+    "build": "esbuild src/index.ts --bundle --platform=node --target=node20 --outfile=dist/index.js --external:@aws-sdk/*",
+    "package": "npm run build && cd dist && zip -r function.zip index.js",
+    "deploy": "npm run package && aws lambda update-function-code --function-name subsidy-app-dev-worker --zip-file fileb://dist/function.zip"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.500.0",
+    "@aws-sdk/client-sqs": "^3.500.0",
+    "openai": "^4.28.0",
+    "pdf-parse": "^1.1.1",
+    "uuid": "^9.0.0"
+  },
+  "devDependencies": {
+    "@types/aws-lambda": "^8.10.131",
+    "@types/node": "^20.11.0",
+    "@types/pdf-parse": "^1.1.4",
+    "@types/uuid": "^9.0.7",
+    "esbuild": "^0.20.0",
+    "typescript": "^5.3.3"
+  }
+}
