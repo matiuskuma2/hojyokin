@@ -42,3 +42,4 @@ tfplan
 
 # Internal secrets
 .internal-jwt-secret
+core
