@@ -110,6 +110,19 @@ export interface InternalAuthContext {
 // Hono Variables (Context内で使用)
 export interface Variables {
   user?: AuthUser;
+  company?: {
+    id: string;
+    name: string;
+    prefecture: string;
+    city?: string;
+    industry_major: string;
+    employee_count: number;
+    employee_band: string;
+    capital?: number;
+    annual_revenue?: number;
+    established_date?: string;
+    [key: string]: any;
+  };
   internalAuth?: InternalAuthContext;
   requestId?: string;
 }
