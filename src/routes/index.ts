@@ -7,3 +7,4 @@ export { default as knowledgeRoutes } from './knowledge';
 export { default as consumerRoutes } from './consumer';
 export { default as kpiRoutes } from './kpi';
 export { default as adminRoutes } from './admin';
+export { default as profileRoutes } from './profile';

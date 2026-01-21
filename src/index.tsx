@@ -11,7 +11,7 @@ import { HTTPException } from 'hono/http-exception';
 import { jsxRenderer } from 'hono/jsx-renderer';
 
 import type { Env, Variables, ApiResponse } from './types';
-import { authRoutes, companiesRoutes, subsidiesRoutes, jobsRoutes, internalRoutes, knowledgeRoutes, consumerRoutes, kpiRoutes, adminRoutes } from './routes';
+import { authRoutes, companiesRoutes, subsidiesRoutes, jobsRoutes, internalRoutes, knowledgeRoutes, consumerRoutes, kpiRoutes, adminRoutes, profileRoutes } from './routes';
 import authPages from './pages/auth';
 import dashboardPages from './pages/dashboard';
 import adminPages from './pages/admin';
@@ -98,6 +98,9 @@ app.route('/api/kpi', kpiRoutes);
 
 // 管理者ルート（U2）
 app.route('/api/admin', adminRoutes);
+
+// プロフィールルート（会社プロフィール拡張）
+app.route('/api/profile', profileRoutes);
 
 // ============================================================
 // UI ページルート（U1）
