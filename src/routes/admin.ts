@@ -617,6 +617,92 @@ admin.get('/audit', async (c) => {
 });
 
 /**
+ * 管理者ダッシュボード統計
+ */
+admin.get('/stats', async (c) => {
+  const db = c.env.DB;
+  
+  try {
+    // ユーザー統計
+    const userStats = await db
+      .prepare(`
+        SELECT 
+          COUNT(*) as total,
+          SUM(CASE WHEN is_disabled = 1 THEN 1 ELSE 0 END) as disabled,
+          SUM(CASE WHEN lockout_until > datetime('now') THEN 1 ELSE 0 END) as locked,
+          SUM(CASE WHEN role = 'admin' THEN 1 ELSE 0 END) as admins,
+          SUM(CASE WHEN created_at > datetime('now', '-7 days') THEN 1 ELSE 0 END) as new_week,
+          SUM(CASE WHEN last_login_at > datetime('now', '-7 days') THEN 1 ELSE 0 END) as active_week
+        FROM users
+      `)
+      .first();
+    
+    // 会社統計
+    const companyStats = await db
+      .prepare(`
+        SELECT 
+          COUNT(*) as total,
+          SUM(CASE WHEN created_at > datetime('now', '-7 days') THEN 1 ELSE 0 END) as new_week
+        FROM companies
+      `)
+      .first();
+    
+    // 監査ログサマリー（直近7日）
+    const auditSummary = await db
+      .prepare(`
+        SELECT 
+          action_category,
+          severity,
+          COUNT(*) as count
+        FROM audit_log
+        WHERE created_at > datetime('now', '-7 days')
+        GROUP BY action_category, severity
+      `)
+      .all();
+    
+    // 最近の重要イベント
+    const criticalEvents = await db
+      .prepare(`
+        SELECT 
+          al.action, al.action_category, al.created_at,
+          actor.email as actor_email,
+          target.email as target_email
+        FROM audit_log al
+        LEFT JOIN users actor ON al.actor_user_id = actor.id
+        LEFT JOIN users target ON al.target_user_id = target.id
+        WHERE al.severity = 'critical' AND al.created_at > datetime('now', '-7 days')
+        ORDER BY al.created_at DESC
+        LIMIT 10
+      `)
+      .all();
+    
+    return c.json<ApiResponse<{
+      users: unknown;
+      companies: unknown;
+      audit_summary: unknown[];
+      critical_events: unknown[];
+    }>>({
+      success: true,
+      data: {
+        users: userStats,
+        companies: companyStats,
+        audit_summary: auditSummary.results || [],
+        critical_events: criticalEvents.results || [],
+      },
+    });
+  } catch (error) {
+    console.error('Get admin stats error:', error);
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: 'INTERNAL_ERROR',
+        message: 'Failed to get statistics',
+      },
+    }, 500);
+  }
+});
+
+/**
  * 監査ログ統計
  */
 admin.get('/audit/stats', async (c) => {

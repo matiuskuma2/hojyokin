@@ -15,6 +15,7 @@ import { authRoutes, companiesRoutes, subsidiesRoutes, jobsRoutes, internalRoute
 import authPages from './pages/auth';
 import dashboardPages from './pages/dashboard';
 import adminPages from './pages/admin';
+import adminPages from './pages/admin';
 
 // アプリケーション初期化
 const app = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -107,6 +108,9 @@ app.route('/', authPages);
 
 // ダッシュボード・プロフィールページ（/dashboard, /profile, /company）
 app.route('/', dashboardPages);
+
+// 管理画面ページ（/admin, /admin/users, /admin/kpi, /admin/audit）
+app.route('/', adminPages);
 
 // 管理画面ページ（/admin, /admin/users, /admin/kpi, /admin/audit）
 app.route('/', adminPages);
