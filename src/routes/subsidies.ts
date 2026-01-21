@@ -1,48 +1,23 @@
 /**
- * 補助金ルート
+ * 補助金ルート（Adapter経由版）
  * 
- * GET /api/subsidies/search - 補助金検索（Jグランツ + スクリーニング）
+ * GET /api/subsidies/search - 補助金検索（Jグランツ Adapter + スクリーニング）
  * GET /api/subsidies/:subsidy_id - 補助金詳細取得
+ * GET /api/subsidies/evaluations/:company_id - 評価結果一覧
  */
 
 import { Hono } from 'hono';
 import { v4 as uuidv4 } from 'uuid';
 import type { Env, Variables, Company, Subsidy, ApiResponse, MatchResult, SubsidySearchParams } from '../types';
 import { requireAuth, requireCompanyAccess, getCurrentUser } from '../middleware/auth';
-import { JGrantsClient, JGrantsError } from '../lib/jgrants';
+import { createJGrantsAdapter, getJGrantsMode } from '../lib/jgrants-adapter';
+import { JGrantsError } from '../lib/jgrants';
 import { performBatchScreening, sortByStatus, sortByScore } from '../lib/screening';
 
 const subsidies = new Hono<{ Bindings: Env; Variables: Variables }>();
 
 // 認証必須
 subsidies.use('/*', requireAuth);
-
-// キャッシュ有効期限（秒）
-const SEARCH_CACHE_TTL = 300;     // 5分
-const DETAIL_CACHE_TTL = 3600;    // 1時間
-
-/**
- * 検索条件からキャッシュキーを生成
- */
-function generateCacheKey(params: Record<string, any>): string {
-  const sorted = Object.keys(params)
-    .filter(k => params[k] !== undefined && params[k] !== null && params[k] !== '')
-    .sort()
-    .map(k => `${k}=${params[k]}`)
-    .join('&');
-  return sorted;
-}
-
-/**
- * キャッシュキーのハッシュ化
- */
-async function hashCacheKey(key: string): Promise<string> {
-  const encoder = new TextEncoder();
-  const data = encoder.encode(key);
-  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
-  const hashArray = Array.from(new Uint8Array(hashBuffer));
-  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('').substring(0, 32);
-}
 
 /**
  * 補助金検索（企業情報とマッチング）
@@ -95,8 +70,13 @@ subsidies.get('/search', requireCompanyAccess(), async (c) => {
       }, 404);
     }
     
-    // キャッシュキー生成
-    const searchParams = {
+    // Adapter経由で補助金検索
+    const adapter = createJGrantsAdapter(c.env);
+    const mode = getJGrantsMode(c.env);
+    
+    console.log(`JGrants Adapter mode: ${mode}`);
+    
+    const searchResponse = await adapter.search({
       keyword,
       acceptance,
       target_area_search: company.prefecture,
@@ -104,70 +84,11 @@ subsidies.get('/search', requireCompanyAccess(), async (c) => {
       offset,
       sort,
       order,
-    };
-    const cacheKey = generateCacheKey(searchParams);
-    const cacheHash = await hashCacheKey(cacheKey);
+    });
     
-    // キャッシュ確認
-    const cached = await db
-      .prepare(`
-        SELECT result_json, total_count 
-        FROM search_cache 
-        WHERE query_hash = ? AND expires_at > datetime('now')
-      `)
-      .bind(cacheHash)
-      .first<{ result_json: string; total_count: number }>();
-    
-    let jgrantsResults;
-    let totalCount;
-    
-    if (cached) {
-      // キャッシュヒット
-      jgrantsResults = JSON.parse(cached.result_json);
-      totalCount = cached.total_count;
-    } else {
-      // Jグランツ API 呼び出し
-      const client = new JGrantsClient({
-        baseUrl: c.env.JGRANTS_API_BASE_URL,
-      });
-      
-      try {
-        const response = await client.search({
-          keyword,
-          acceptance,
-          target_area_search: company.prefecture,
-          limit,
-          offset,
-          sort,
-          order,
-        });
-        
-        jgrantsResults = response.subsidies;
-        totalCount = response.total_count;
-        
-        // キャッシュ保存
-        const expiresAt = new Date(Date.now() + SEARCH_CACHE_TTL * 1000).toISOString();
-        await db
-          .prepare(`
-            INSERT OR REPLACE INTO search_cache (id, query_hash, result_json, total_count, cached_at, expires_at)
-            VALUES (?, ?, ?, ?, datetime('now'), ?)
-          `)
-          .bind(uuidv4(), cacheHash, JSON.stringify(jgrantsResults), totalCount, expiresAt)
-          .run();
-      } catch (error) {
-        if (error instanceof JGrantsError) {
-          console.error('JGrants API error:', error);
-          return c.json<ApiResponse<null>>({
-            success: false,
-            error: {
-              code: 'JGRANTS_ERROR',
-              message: error.message,
-            },
-          }, error.statusCode >= 500 ? 502 : 400);
-        }
-        throw error;
-      }
-    }
+    const jgrantsResults = searchResponse.subsidies;
+    const totalCount = searchResponse.total_count;
+    const source = searchResponse.source;
     
     // スクリーニング実行
     const matchResults = performBatchScreening(company, jgrantsResults);
@@ -176,26 +97,25 @@ subsidies.get('/search', requireCompanyAccess(), async (c) => {
     const sortedResults = sortByStatus(matchResults);
     
     // 評価結果をD1に保存（バッチ）
-    const evaluationStatements = sortedResults.map(result => {
-      const evalId = uuidv4();
-      return db.prepare(`
-        INSERT OR REPLACE INTO evaluation_runs 
-        (id, company_id, subsidy_id, status, match_score, match_reasons, risk_flags, explanation, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
-      `).bind(
-        evalId,
-        companyId,
-        result.subsidy.id,
-        result.evaluation.status,
-        result.evaluation.score,
-        JSON.stringify(result.evaluation.match_reasons),
-        JSON.stringify(result.evaluation.risk_flags),
-        result.evaluation.explanation
-      );
-    });
-    
-    // バッチ実行（並列で評価結果を保存）
-    if (evaluationStatements.length > 0) {
+    if (sortedResults.length > 0) {
+      const evaluationStatements = sortedResults.map(result => {
+        const evalId = uuidv4();
+        return db.prepare(`
+          INSERT OR REPLACE INTO evaluation_runs 
+          (id, company_id, subsidy_id, status, match_score, match_reasons, risk_flags, explanation, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+        `).bind(
+          evalId,
+          companyId,
+          result.subsidy.id,
+          result.evaluation.status,
+          result.evaluation.score,
+          JSON.stringify(result.evaluation.match_reasons),
+          JSON.stringify(result.evaluation.risk_flags),
+          result.evaluation.explanation
+        );
+      });
+      
       await db.batch(evaluationStatements);
     }
     
@@ -207,10 +127,22 @@ subsidies.get('/search', requireCompanyAccess(), async (c) => {
         page: Math.floor(offset / limit) + 1,
         limit,
         has_more: offset + limit < totalCount,
+        source, // データソース（live / mock / cache）
       },
     });
   } catch (error) {
     console.error('Search subsidies error:', error);
+    
+    if (error instanceof JGrantsError) {
+      return c.json<ApiResponse<null>>({
+        success: false,
+        error: {
+          code: 'JGRANTS_ERROR',
+          message: error.message,
+        },
+      }, error.statusCode >= 500 ? 502 : 400);
+    }
+    
     return c.json<ApiResponse<null>>({
       success: false,
       error: {
@@ -233,78 +165,12 @@ subsidies.get('/:subsidy_id', async (c) => {
   const companyId = c.req.query('company_id');
   
   try {
-    // キャッシュ確認
-    const cached = await db
-      .prepare(`
-        SELECT * FROM subsidy_cache 
-        WHERE id = ? AND expires_at > datetime('now')
-      `)
-      .bind(subsidyId)
-      .first<Subsidy>();
+    // Adapter経由で詳細取得
+    const adapter = createJGrantsAdapter(c.env);
     
-    let subsidyDetail;
-    
-    if (cached && cached.detail_json) {
-      // キャッシュヒット（詳細あり）
-      subsidyDetail = JSON.parse(cached.detail_json);
-    } else {
-      // Jグランツ API 呼び出し
-      const client = new JGrantsClient({
-        baseUrl: c.env.JGRANTS_API_BASE_URL,
-      });
-      
-      try {
-        subsidyDetail = await client.getDetail(subsidyId);
-        
-        // キャッシュ保存
-        const expiresAt = new Date(Date.now() + DETAIL_CACHE_TTL * 1000).toISOString();
-        await db
-          .prepare(`
-            INSERT OR REPLACE INTO subsidy_cache 
-            (id, source, title, subsidy_max_limit, subsidy_rate, 
-             target_area_search, target_industry, target_number_of_employees,
-             acceptance_start_datetime, acceptance_end_datetime, request_reception_display_flag,
-             detail_json, cached_at, expires_at)
-            VALUES (?, 'jgrants', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?)
-          `)
-          .bind(
-            subsidyId,
-            subsidyDetail.title || '',
-            subsidyDetail.subsidy_max_limit || null,
-            subsidyDetail.subsidy_rate || null,
-            subsidyDetail.target_area_search || null,
-            subsidyDetail.target_industry || null,
-            subsidyDetail.target_number_of_employees || null,
-            subsidyDetail.acceptance_start_datetime || null,
-            subsidyDetail.acceptance_end_datetime || null,
-            subsidyDetail.request_reception_display_flag || 0,
-            JSON.stringify(subsidyDetail),
-            expiresAt
-          )
-          .run();
-      } catch (error) {
-        if (error instanceof JGrantsError) {
-          if (error.statusCode === 404) {
-            return c.json<ApiResponse<null>>({
-              success: false,
-              error: {
-                code: 'NOT_FOUND',
-                message: 'Subsidy not found',
-              },
-            }, 404);
-          }
-          console.error('JGrants API error:', error);
-          return c.json<ApiResponse<null>>({
-            success: false,
-            error: {
-              code: 'JGRANTS_ERROR',
-              message: error.message,
-            },
-          }, error.statusCode >= 500 ? 502 : 400);
-        }
-        throw error;
-      }
-    }
+    const detailResponse = await adapter.getDetail(subsidyId);
+    const subsidyDetail = detailResponse;
+    const source = detailResponse.source;
     
     // 評価結果取得（company_id が指定されている場合）
     let evaluation = null;
@@ -347,16 +213,38 @@ subsidies.get('/:subsidy_id', async (c) => {
       subsidy: typeof subsidyDetail;
       attachments: typeof attachments;
       evaluation: typeof evaluation;
+      source: string;
     }>>({
       success: true,
       data: {
         subsidy: subsidyDetail,
         attachments,
         evaluation,
+        source,
       },
     });
   } catch (error) {
     console.error('Get subsidy detail error:', error);
+    
+    if (error instanceof JGrantsError) {
+      if (error.statusCode === 404) {
+        return c.json<ApiResponse<null>>({
+          success: false,
+          error: {
+            code: 'NOT_FOUND',
+            message: 'Subsidy not found',
+          },
+        }, 404);
+      }
+      return c.json<ApiResponse<null>>({
+        success: false,
+        error: {
+          code: 'JGRANTS_ERROR',
+          message: error.message,
+        },
+      }, error.statusCode >= 500 ? 502 : 400);
+    }
+    
     return c.json<ApiResponse<null>>({
       success: false,
       error: {
