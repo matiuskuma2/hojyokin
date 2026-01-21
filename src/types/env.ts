@@ -42,6 +42,16 @@ export interface Env {
   JGRANTS_API_BASE_URL?: string;
   JGRANTS_MODE?: 'live' | 'mock' | 'cached-only';  // デフォルト: 'mock'
   
+  // ========================================
+  // Firecrawl API (Phase K1: ナレッジパイプライン)
+  // ========================================
+  FIRECRAWL_API_KEY?: string;
+  
+  // ========================================
+  // R2 Storage (Phase K1: ナレッジ保存)
+  // ========================================
+  R2?: R2Bucket;
+  
   // 環境識別
   ENVIRONMENT?: 'development' | 'staging' | 'production';
 }

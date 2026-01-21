@@ -11,7 +11,7 @@ import { HTTPException } from 'hono/http-exception';
 import { jsxRenderer } from 'hono/jsx-renderer';
 
 import type { Env, Variables, ApiResponse } from './types';
-import { authRoutes, companiesRoutes, subsidiesRoutes, jobsRoutes, internalRoutes } from './routes';
+import { authRoutes, companiesRoutes, subsidiesRoutes, jobsRoutes, internalRoutes, knowledgeRoutes } from './routes';
 
 // アプリケーション初期化
 const app = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -82,6 +82,9 @@ app.route('/api/jobs', jobsRoutes);
 
 // 内部APIルート（AWS→Cloudflare）
 app.route('/internal', internalRoutes);
+
+// ナレッジパイプラインルート（Phase K1）
+app.route('/api/knowledge', knowledgeRoutes);
 
 // ============================================================
 // エラーハンドリング
