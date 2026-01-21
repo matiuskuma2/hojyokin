@@ -116,11 +116,12 @@ auth.post('/register', async (c) => {
     }, 201);
   } catch (error) {
     console.error('Register error:', error);
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
     return c.json<ApiResponse<null>>({
       success: false,
       error: {
         code: 'INTERNAL_ERROR',
-        message: 'Registration failed',
+        message: `Registration failed: ${errorMessage}`,
       },
     }, 500);
   }

@@ -7,7 +7,7 @@
 
 const ALGORITHM = 'PBKDF2';
 const HASH_ALGORITHM = 'SHA-256';
-const ITERATIONS = 210000;  // OWASP推奨値 (2023)
+const ITERATIONS = 100000;  // Cloudflare Workers limit (max 100000)
 const KEY_LENGTH = 32;      // 256 bits
 const SALT_LENGTH = 16;     // 128 bits
 
