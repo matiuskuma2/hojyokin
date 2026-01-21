@@ -529,37 +529,37 @@ admin.get('/audit', async (c) => {
     // 日付計算用
     const sinceDate = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
     
-    let whereClause = `al.created_at > ?`;
+    let whereClause = `created_at > ?`;
     const params: unknown[] = [sinceDate];
     
     if (category) {
-      whereClause += ' AND al.action_category = ?';
+      whereClause += ' AND action_category = ?';
       params.push(category);
     }
     
     if (severity) {
-      whereClause += ' AND al.severity = ?';
+      whereClause += ' AND severity = ?';
       params.push(severity);
     }
     
     if (action) {
-      whereClause += ' AND al.action = ?';
+      whereClause += ' AND action = ?';
       params.push(action);
     }
     
     if (userId) {
-      whereClause += ' AND (al.actor_user_id = ? OR al.target_user_id = ?)';
+      whereClause += ' AND (actor_user_id = ? OR target_user_id = ?)';
       params.push(userId, userId);
     }
     
-    // 総数取得（al.プレフィックスを削除した簡易版WHERE使用）
-    const simpleWhereClause = whereClause.replace(/al\./g, '');
+    // 総数取得
     const countResult = await db
-      .prepare(`SELECT COUNT(*) as total FROM audit_log WHERE ${simpleWhereClause}`)
+      .prepare(`SELECT COUNT(*) as total FROM audit_log WHERE ${whereClause}`)
       .bind(...params)
       .first<{ total: number }>();
     
-    // 監査ログ取得
+    // 監査ログ取得（JOINクエリ用にal.プレフィックスを追加）
+    const joinWhereClause = whereClause.replace(/\b(created_at|action_category|severity|action|actor_user_id|target_user_id)\b/g, 'al.$1');
     const logs = await db
       .prepare(`
         SELECT 
@@ -570,14 +570,14 @@ admin.get('/audit', async (c) => {
         FROM audit_log al
         LEFT JOIN users actor ON actor.id = al.actor_user_id
         LEFT JOIN users target ON target.id = al.target_user_id
-        WHERE ${whereClause}
+        WHERE ${joinWhereClause}
         ORDER BY al.created_at DESC
         LIMIT ? OFFSET ?
       `)
       .bind(...params, limit, offset)
       .all();
     
-    // サマリー（al.プレフィックスを削除）
+    // サマリー
     const summary = await db
       .prepare(`
         SELECT 
@@ -585,7 +585,7 @@ admin.get('/audit', async (c) => {
           severity,
           COUNT(*) as count
         FROM audit_log 
-        WHERE ${simpleWhereClause}
+        WHERE ${whereClause}
         GROUP BY action_category, severity
       `)
       .bind(...params)
