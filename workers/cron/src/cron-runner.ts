@@ -1,9 +1,13 @@
 /**
- * Cron Runner - due抽出 → crawl_job投入 → next更新
+ * Cron Runner - due抽出 → crawl_queue投入 → next更新
+ * 
+ * 変更点: crawl_job → crawl_queue へ移行
+ * - crawl_job は url_id/subsidy_id NOT NULL で Cron 用途に不適
+ * - crawl_queue は Cron 専用キュー（kind/scope/url ベース）
  * 
  * 冪等性:
- * - 先に next_* を更新してから crawl_job を投入
- * - 重複投入は24h以内の同一job_type+root_urlをスキップ
+ * - 先に next_* を更新してから crawl_queue を投入
+ * - 重複投入は24h以内の同一kind+urlをスキップ
  */
 
 import { extractDomainKey } from './domain-utils';
@@ -20,7 +24,11 @@ export type CronRunResult = {
 
 type DueRegistryRow = {
   registry_id: string;
+  scope: string;
+  geo_id: string | null;
   root_url: string;
+  crawl_strategy: string;
+  max_depth: number;
   update_freq: UpdateFrequency;
   priority: number;
   enabled: number;
@@ -31,6 +39,9 @@ type DueLifecycleRow = {
   status: string;
   priority: number;
 };
+
+type JobKind = 'REGISTRY_CRAWL' | 'SUBSIDY_CHECK' | 'URL_CRAWL';
+type CrawlStrategy = 'scrape' | 'crawl' | 'map';
 
 /**
  * domain_policy でブロックされているか確認
@@ -47,55 +58,63 @@ async function isDomainBlocked(db: D1Database, domainKey: string): Promise<boole
 }
 
 /**
- * crawl_job に投入（重複ガード付き）
+ * crawl_queue にジョブ投入（重複ガード付き）
  */
-async function insertCrawlJob(
+async function insertQueue(
   db: D1Database,
   job: {
-    job_type: 'JOB_REGISTRY_CRAWL' | 'JOB_SUBSIDY_CHECK';
-    root_url: string;
-    source_registry_id?: string | null;
+    kind: JobKind;
+    scope: string;
+    geo_id?: string | null;
     subsidy_id?: string | null;
+    source_registry_id?: string | null;
+    url: string;
+    domain_key: string;
+    crawl_strategy: CrawlStrategy;
+    max_depth: number;
     priority: number;
   }
 ): Promise<{ inserted: boolean; skippedDuplicate: boolean }> {
-  // 直近24hで同じjob_type+root_url が queued/running ならスキップ
+  // 直近24hで同じkind+url が queued/running ならスキップ
   const dup = await db.prepare(`
-    SELECT job_id
-    FROM crawl_job
-    WHERE job_type = ?
-      AND root_url = ?
-      AND status IN ('queued','running','pending')
+    SELECT queue_id
+    FROM crawl_queue
+    WHERE kind = ?
+      AND url = ?
+      AND status IN ('queued','running')
       AND created_at >= datetime('now','-1 day')
     LIMIT 1
-  `).bind(job.job_type, job.root_url).first<{ job_id: string }>();
+  `).bind(job.kind, job.url).first<{ queue_id: string }>();
 
-  if (dup?.job_id) return { inserted: false, skippedDuplicate: true };
+  if (dup?.queue_id) return { inserted: false, skippedDuplicate: true };
 
-  const jobId = crypto.randomUUID();
-  // 既存スキーマ: job_id, url_id(NOT NULL), subsidy_id(NOT NULL), job_type, status
-  // 新規追加: root_url, source_registry_id, priority
-  // Registry起点では subsidy_id/url_id は一時的に job_id を入れる（Consumerで更新）
-  const urlId = job.subsidy_id ? jobId : `registry-${jobId}`;
-  const subsidyId = job.subsidy_id ?? `REGISTRY-${job.source_registry_id ?? 'UNKNOWN'}`;
+  const queueId = crypto.randomUUID();
   
   await db.prepare(`
-    INSERT INTO crawl_job (
-      job_id, job_type, status, root_url,
-      source_registry_id, subsidy_id, url_id,
-      priority, created_at, updated_at
+    INSERT INTO crawl_queue (
+      queue_id, kind, scope, geo_id,
+      subsidy_id, source_registry_id,
+      url, domain_key,
+      crawl_strategy, max_depth, priority,
+      status, scheduled_at, created_at, updated_at
     ) VALUES (
-      ?, ?, 'queued', ?,
+      ?, ?, ?, ?,
+      ?, ?,
+      ?, ?,
       ?, ?, ?,
-      ?, datetime('now'), datetime('now')
+      'queued', datetime('now'), datetime('now'), datetime('now')
     )
   `).bind(
-    jobId,
-    job.job_type,
-    job.root_url,
+    queueId,
+    job.kind,
+    job.scope,
+    job.geo_id ?? null,
+    job.subsidy_id ?? null,
     job.source_registry_id ?? null,
-    subsidyId,
-    urlId,
+    job.url,
+    job.domain_key,
+    job.crawl_strategy,
+    job.max_depth,
     job.priority
   ).run();
 
@@ -132,9 +151,9 @@ async function bumpLifecycleNextCheckAt(db: D1Database, subsidyId: string, statu
 export async function runCronOnce(db: D1Database, limitRegistry = 200, limitLifecycle = 50): Promise<CronRunResult> {
   const now = new Date().toISOString();
 
-  // 1) source_registry の due 抽出
+  // 1) source_registry の due 抽出（scope/geo_id/crawl_strategy/max_depth も取得）
   const registry = await db.prepare(`
-    SELECT registry_id, root_url, update_freq, priority, enabled
+    SELECT registry_id, scope, geo_id, root_url, crawl_strategy, max_depth, update_freq, priority, enabled
     FROM source_registry
     WHERE enabled = 1
       AND (next_crawl_at IS NULL OR next_crawl_at <= datetime('now'))
@@ -163,25 +182,30 @@ export async function runCronOnce(db: D1Database, limitRegistry = 200, limitLife
     await bumpLifecycleNextCheckAt(db, s.subsidy_id, s.status, s.priority);
   }
 
-  // 4) registry → JOB_REGISTRY_CRAWL
+  // 4) registry → REGISTRY_CRAWL (crawl_queue へ)
   for (const r of registry.results ?? []) {
     const domainKey = extractDomainKey(r.root_url);
     if (await isDomainBlocked(db, domainKey)) {
       jobs_skipped_domain_blocked++;
       continue;
     }
-    const ins = await insertCrawlJob(db, {
-      job_type: 'JOB_REGISTRY_CRAWL',
-      root_url: r.root_url,
-      source_registry_id: r.registry_id,
+    const ins = await insertQueue(db, {
+      kind: 'REGISTRY_CRAWL',
+      scope: r.scope ?? 'prefecture',
+      geo_id: r.geo_id,
       subsidy_id: null,
+      source_registry_id: r.registry_id,
+      url: r.root_url,
+      domain_key: domainKey,
+      crawl_strategy: (r.crawl_strategy as CrawlStrategy) ?? 'scrape',
+      max_depth: r.max_depth ?? 1,
       priority: r.priority ?? 4
     });
     if (ins.skippedDuplicate) jobs_skipped_duplicate_guard++;
     if (ins.inserted) jobs_enqueued++;
   }
 
-  // 5) lifecycle → 代表URL（最大3件）→ JOB_SUBSIDY_CHECK
+  // 5) lifecycle → 代表URL（最大3件）→ SUBSIDY_CHECK
   for (const s of lifecycle.results ?? []) {
     // 代表URL候補: source_type/doc_type の優先順位で最大3件
     const urls = await db.prepare(`
@@ -214,11 +238,21 @@ export async function runCronOnce(db: D1Database, limitRegistry = 200, limitLife
         jobs_skipped_domain_blocked++;
         continue;
       }
-      const ins = await insertCrawlJob(db, {
-        job_type: 'JOB_SUBSIDY_CHECK',
-        root_url: u.url,
-        source_registry_id: null,
+      // SUBSIDY_CHECK の scope は source_type を使う
+      const scope = ['secretariat', 'prefecture', 'city'].includes(u.source_type)
+        ? u.source_type
+        : 'national';
+      
+      const ins = await insertQueue(db, {
+        kind: 'SUBSIDY_CHECK',
+        scope: scope,
+        geo_id: null, // subsidy から取得可能だが、今回は省略
         subsidy_id: s.subsidy_id,
+        source_registry_id: null,
+        url: u.url,
+        domain_key: domainKey,
+        crawl_strategy: 'scrape', // check は単ページ
+        max_depth: 0,
         priority: s.priority ?? 3
       });
       if (ins.skippedDuplicate) jobs_skipped_duplicate_guard++;

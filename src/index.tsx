@@ -11,7 +11,7 @@ import { HTTPException } from 'hono/http-exception';
 import { jsxRenderer } from 'hono/jsx-renderer';
 
 import type { Env, Variables, ApiResponse } from './types';
-import { authRoutes, companiesRoutes, subsidiesRoutes, jobsRoutes, internalRoutes, knowledgeRoutes } from './routes';
+import { authRoutes, companiesRoutes, subsidiesRoutes, jobsRoutes, internalRoutes, knowledgeRoutes, consumerRoutes } from './routes';
 
 // アプリケーション初期化
 const app = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -86,6 +86,9 @@ app.route('/internal', internalRoutes);
 // ナレッジパイプラインルート（Phase K1）
 app.route('/api/knowledge', knowledgeRoutes);
 
+// Consumerルート（crawl_queue処理）
+app.route('/api/consumer', consumerRoutes);
+
 // ============================================================
 // エラーハンドリング
 // ============================================================
@@ -104,6 +107,7 @@ app.notFound((c) => {
 // グローバルエラーハンドラ
 app.onError((err, c) => {
   console.error('Unhandled error:', err);
+  console.error('Error stack:', err.stack);
   
   if (err instanceof HTTPException) {
     return c.json<ApiResponse<null>>({
@@ -115,11 +119,13 @@ app.onError((err, c) => {
     }, err.status);
   }
   
+  // 開発環境では詳細なエラーを返す
+  const isDev = c.env.ENVIRONMENT === 'development' || !c.env.ENVIRONMENT;
   return c.json<ApiResponse<null>>({
     success: false,
     error: {
       code: 'INTERNAL_ERROR',
-      message: 'An unexpected error occurred',
+      message: isDev ? `${err.name}: ${err.message}` : 'An unexpected error occurred',
     },
   }, 500);
 });

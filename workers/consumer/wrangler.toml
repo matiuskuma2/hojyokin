@@ -1,0 +1,28 @@
+# =====================================================
+# Consumer Worker - crawl_queue 処理
+# =====================================================
+name = "hojyokin-consumer"
+main = "src/index.ts"
+compatibility_date = "2024-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Cronでも動かす（5分ごと、Cron Worker とは別タイミング）
+[triggers]
+crons = ["*/5 * * * *"]  # 毎5分
+
+# D1 Database Binding（Cron Workerと同じDB）
+[[d1_databases]]
+binding = "DB"
+database_name = "subsidy-matching-production"
+database_id = "e53f6185-60a6-45eb-b06d-c710ab3aef56"
+
+# R2 Bucket Binding（クロール結果保存用）
+[[r2_buckets]]
+binding = "R2"
+bucket_name = "subsidy-app-storage"
+
+# Environment Variables
+[vars]
+ENVIRONMENT = "production"
+CONSUMER_BATCH_SIZE = "10"         # 1回で処理するジョブ数
+CONSUMER_TIMEOUT_MS = "30000"      # Firecrawl タイムアウト
