@@ -1,0 +1,43 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "subsidy-matching",
+  "compatibility_date": "2026-01-21",
+  "pages_build_output_dir": "./dist",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  
+  // 環境変数（開発用 - 本番では wrangler secret で設定）
+  "vars": {
+    "JWT_ISSUER": "subsidy-app",
+    "JWT_AUDIENCE": "subsidy-app-users",
+    "ENVIRONMENT": "development"
+    // JWT_SECRET は本番環境では secret として設定
+    // SENDGRID_API_KEY も本番環境では secret として設定
+  },
+
+  // D1 データベース
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "subsidy-matching-production",
+      "database_id": "YOUR_DATABASE_ID_HERE"
+    }
+  ]
+
+  // KV Namespace (キャッシュ用 - 将来用)
+  // "kv_namespaces": [
+  //   {
+  //     "binding": "KV",
+  //     "id": "YOUR_KV_ID_HERE"
+  //   }
+  // ]
+
+  // R2 Storage (ファイル保存用 - Phase 2)
+  // "r2_buckets": [
+  //   {
+  //     "binding": "R2",
+  //     "bucket_name": "subsidy-attachments"
+  //   }
+  // ]
+}

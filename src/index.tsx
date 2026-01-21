@@ -1,0 +1,271 @@
+/**
+ * 補助金マッチングシステム - Hono アプリケーション
+ * 
+ * Phase 1-A: Cloudflare Workers + D1 + Jグランツ API
+ */
+
+import { Hono } from 'hono';
+import { cors } from 'hono/cors';
+import { logger } from 'hono/logger';
+import { HTTPException } from 'hono/http-exception';
+import { jsxRenderer } from 'hono/jsx-renderer';
+
+import type { Env, Variables, ApiResponse } from './types';
+import { authRoutes, companiesRoutes, subsidiesRoutes } from './routes';
+
+// アプリケーション初期化
+const app = new Hono<{ Bindings: Env; Variables: Variables }>();
+
+// ============================================================
+// グローバルミドルウェア
+// ============================================================
+
+// CORSミドルウェア
+app.use('/api/*', cors({
+  origin: ['http://localhost:3000', 'http://localhost:5173'],
+  allowHeaders: ['Content-Type', 'Authorization'],
+  allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  exposeHeaders: ['Content-Length', 'X-Request-Id'],
+  maxAge: 86400,
+  credentials: true,
+}));
+
+// ロガーミドルウェア
+app.use('/api/*', logger());
+
+// リクエストIDミドルウェア
+app.use('/api/*', async (c, next) => {
+  const requestId = crypto.randomUUID();
+  c.set('requestId', requestId);
+  c.header('X-Request-Id', requestId);
+  await next();
+});
+
+// ============================================================
+// API ルート
+// ============================================================
+
+// ヘルスチェック
+app.get('/api/health', (c) => {
+  return c.json<ApiResponse<{ status: string; timestamp: string }>>({
+    success: true,
+    data: {
+      status: 'ok',
+      timestamp: new Date().toISOString(),
+    },
+  });
+});
+
+// API バージョン情報
+app.get('/api', (c) => {
+  return c.json<ApiResponse<{ version: string; name: string; description: string }>>({
+    success: true,
+    data: {
+      version: '1.0.0',
+      name: 'Subsidy Matching API',
+      description: '補助金・助成金 自動マッチング＆申請書作成支援システム API',
+    },
+  });
+});
+
+// 認証ルート
+app.route('/api/auth', authRoutes);
+
+// 企業ルート
+app.route('/api/companies', companiesRoutes);
+
+// 補助金ルート
+app.route('/api/subsidies', subsidiesRoutes);
+
+// ============================================================
+// エラーハンドリング
+// ============================================================
+
+// 404 Not Found
+app.notFound((c) => {
+  return c.json<ApiResponse<null>>({
+    success: false,
+    error: {
+      code: 'NOT_FOUND',
+      message: `Route not found: ${c.req.method} ${c.req.path}`,
+    },
+  }, 404);
+});
+
+// グローバルエラーハンドラ
+app.onError((err, c) => {
+  console.error('Unhandled error:', err);
+  
+  if (err instanceof HTTPException) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: 'HTTP_ERROR',
+        message: err.message,
+      },
+    }, err.status);
+  }
+  
+  return c.json<ApiResponse<null>>({
+    success: false,
+    error: {
+      code: 'INTERNAL_ERROR',
+      message: 'An unexpected error occurred',
+    },
+  }, 500);
+});
+
+// ============================================================
+// フロントエンド（開発用）
+// ============================================================
+
+// JSXレンダラー
+const renderer = jsxRenderer(({ children }) => {
+  return (
+    <html lang="ja">
+      <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>補助金マッチングシステム</title>
+        <script src="https://cdn.tailwindcss.com"></script>
+        <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet" />
+      </head>
+      <body class="bg-gray-50 min-h-screen">{children}</body>
+    </html>
+  );
+});
+
+app.use('/', renderer);
+app.use('/*', renderer);
+
+// ホームページ
+app.get('/', (c) => {
+  return c.render(
+    <div class="container mx-auto px-4 py-8">
+      <header class="mb-8">
+        <h1 class="text-3xl font-bold text-gray-800 flex items-center gap-3">
+          <i class="fas fa-coins text-yellow-500"></i>
+          補助金マッチングシステム
+        </h1>
+        <p class="text-gray-600 mt-2">
+          企業情報を登録するだけで、最適な補助金・助成金を自動でマッチング
+        </p>
+      </header>
+
+      <main>
+        <div class="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
+          {/* API Status Card */}
+          <div class="bg-white rounded-lg shadow-md p-6">
+            <h2 class="text-xl font-semibold text-gray-700 mb-4 flex items-center gap-2">
+              <i class="fas fa-server text-green-500"></i>
+              API Status
+            </h2>
+            <div id="api-status" class="text-gray-600">
+              Loading...
+            </div>
+          </div>
+
+          {/* Quick Links Card */}
+          <div class="bg-white rounded-lg shadow-md p-6">
+            <h2 class="text-xl font-semibold text-gray-700 mb-4 flex items-center gap-2">
+              <i class="fas fa-link text-blue-500"></i>
+              API Endpoints
+            </h2>
+            <ul class="space-y-2 text-sm">
+              <li>
+                <code class="bg-gray-100 px-2 py-1 rounded">POST /api/auth/register</code>
+              </li>
+              <li>
+                <code class="bg-gray-100 px-2 py-1 rounded">POST /api/auth/login</code>
+              </li>
+              <li>
+                <code class="bg-gray-100 px-2 py-1 rounded">GET /api/companies</code>
+              </li>
+              <li>
+                <code class="bg-gray-100 px-2 py-1 rounded">GET /api/subsidies/search</code>
+              </li>
+            </ul>
+          </div>
+
+          {/* Design Philosophy Card */}
+          <div class="bg-white rounded-lg shadow-md p-6">
+            <h2 class="text-xl font-semibold text-gray-700 mb-4 flex items-center gap-2">
+              <i class="fas fa-shield-alt text-purple-500"></i>
+              設計思想
+            </h2>
+            <blockquote class="text-gray-600 italic border-l-4 border-purple-500 pl-4">
+              「補助金を"通す"ツール」ではなく<br />
+              「補助金で人生を壊させないツール」
+            </blockquote>
+          </div>
+        </div>
+
+        {/* Features Section */}
+        <section class="mt-12">
+          <h2 class="text-2xl font-bold text-gray-800 mb-6">主な機能</h2>
+          <div class="grid md:grid-cols-2 gap-6">
+            <div class="bg-white rounded-lg shadow-md p-6">
+              <h3 class="text-lg font-semibold text-gray-700 mb-3 flex items-center gap-2">
+                <i class="fas fa-building text-indigo-500"></i>
+                企業情報管理
+              </h3>
+              <p class="text-gray-600">
+                所在地、業種、従業員数、資本金などを登録して、最適な補助金を自動検索
+              </p>
+            </div>
+            <div class="bg-white rounded-lg shadow-md p-6">
+              <h3 class="text-lg font-semibold text-gray-700 mb-3 flex items-center gap-2">
+                <i class="fas fa-search text-indigo-500"></i>
+                一次スクリーニング
+              </h3>
+              <p class="text-gray-600">
+                Jグランツ公開APIから補助金を取得し、企業情報と自動マッチング
+              </p>
+            </div>
+            <div class="bg-white rounded-lg shadow-md p-6">
+              <h3 class="text-lg font-semibold text-gray-700 mb-3 flex items-center gap-2">
+                <i class="fas fa-exclamation-triangle text-yellow-500"></i>
+                リスク警告
+              </h3>
+              <p class="text-gray-600">
+                危険度メーターで事故リスクを可視化。非推奨の判定も出します
+              </p>
+            </div>
+            <div class="bg-white rounded-lg shadow-md p-6">
+              <h3 class="text-lg font-semibold text-gray-700 mb-3 flex items-center gap-2">
+                <i class="fas fa-check-circle text-green-500"></i>
+                3段階評価
+              </h3>
+              <p class="text-gray-600">
+                推奨・注意・非推奨の3段階で判定し、根拠も提示します
+              </p>
+            </div>
+          </div>
+        </section>
+      </main>
+
+      <footer class="mt-12 text-center text-gray-500 text-sm">
+        <p>&copy; 2026 Subsidy Matching System. Phase 1-A (Cloudflare)</p>
+      </footer>
+
+      {/* Status Check Script */}
+      <script dangerouslySetInnerHTML={{
+        __html: `
+          fetch('/api/health')
+            .then(res => res.json())
+            .then(data => {
+              document.getElementById('api-status').innerHTML = 
+                '<span class="text-green-600 font-semibold">✓ API is running</span><br>' +
+                '<small class="text-gray-500">' + data.data.timestamp + '</small>';
+            })
+            .catch(err => {
+              document.getElementById('api-status').innerHTML = 
+                '<span class="text-red-600">✗ API Error</span>';
+            });
+        `
+      }} />
+    </div>
+  );
+});
+
+export default app;
