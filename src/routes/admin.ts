@@ -524,34 +524,38 @@ admin.get('/audit', async (c) => {
     const severity = c.req.query('severity'); // info, warning, critical
     const action = c.req.query('action');
     const userId = c.req.query('user_id');
-    const days = parseInt(c.req.query('days') || '7');
+    const days = Math.min(Math.max(parseInt(c.req.query('days') || '7'), 1), 90);
     
-    let whereClause = `created_at > datetime('now', '-${days} days')`;
-    const params: unknown[] = [];
+    // 日付計算用
+    const sinceDate = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+    
+    let whereClause = `al.created_at > ?`;
+    const params: unknown[] = [sinceDate];
     
     if (category) {
-      whereClause += ' AND action_category = ?';
+      whereClause += ' AND al.action_category = ?';
       params.push(category);
     }
     
     if (severity) {
-      whereClause += ' AND severity = ?';
+      whereClause += ' AND al.severity = ?';
       params.push(severity);
     }
     
     if (action) {
-      whereClause += ' AND action = ?';
+      whereClause += ' AND al.action = ?';
       params.push(action);
     }
     
     if (userId) {
-      whereClause += ' AND (actor_user_id = ? OR target_user_id = ?)';
+      whereClause += ' AND (al.actor_user_id = ? OR al.target_user_id = ?)';
       params.push(userId, userId);
     }
     
-    // 総数取得
+    // 総数取得（al.プレフィックスを削除した簡易版WHERE使用）
+    const simpleWhereClause = whereClause.replace(/al\./g, '');
     const countResult = await db
-      .prepare(`SELECT COUNT(*) as total FROM audit_log WHERE ${whereClause}`)
+      .prepare(`SELECT COUNT(*) as total FROM audit_log WHERE ${simpleWhereClause}`)
       .bind(...params)
       .first<{ total: number }>();
     
@@ -573,7 +577,7 @@ admin.get('/audit', async (c) => {
       .bind(...params, limit, offset)
       .all();
     
-    // サマリー
+    // サマリー（al.プレフィックスを削除）
     const summary = await db
       .prepare(`
         SELECT 
@@ -581,7 +585,7 @@ admin.get('/audit', async (c) => {
           severity,
           COUNT(*) as count
         FROM audit_log 
-        WHERE ${whereClause}
+        WHERE ${simpleWhereClause}
         GROUP BY action_category, severity
       `)
       .bind(...params)
@@ -709,7 +713,8 @@ admin.get('/audit/stats', async (c) => {
   const db = c.env.DB;
   
   try {
-    const days = parseInt(c.req.query('days') || '7');
+    const days = Math.min(Math.max(parseInt(c.req.query('days') || '7'), 1), 90);
+    const sinceDate = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
     
     // 日別アクション数
     const dailyStats = await db
@@ -719,10 +724,11 @@ admin.get('/audit/stats', async (c) => {
           action_category,
           COUNT(*) as count
         FROM audit_log 
-        WHERE created_at > datetime('now', '-${days} days')
+        WHERE created_at > ?
         GROUP BY date(created_at), action_category
         ORDER BY date DESC
       `)
+      .bind(sinceDate)
       .all();
     
     // 重要度別カウント
@@ -732,9 +738,10 @@ admin.get('/audit/stats', async (c) => {
           severity,
           COUNT(*) as count
         FROM audit_log 
-        WHERE created_at > datetime('now', '-${days} days')
+        WHERE created_at > ?
         GROUP BY severity
       `)
+      .bind(sinceDate)
       .all();
     
     // 最近のcriticalログ
@@ -747,10 +754,11 @@ admin.get('/audit/stats', async (c) => {
         FROM audit_log al
         LEFT JOIN users actor ON actor.id = al.actor_user_id
         LEFT JOIN users target ON target.id = al.target_user_id
-        WHERE al.severity = 'critical' AND al.created_at > datetime('now', '-${days} days')
+        WHERE al.severity = 'critical' AND al.created_at > ?
         ORDER BY al.created_at DESC
         LIMIT 10
       `)
+      .bind(sinceDate)
       .all();
     
     return c.json<ApiResponse<{
