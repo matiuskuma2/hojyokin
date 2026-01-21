@@ -11,11 +11,12 @@ import { HTTPException } from 'hono/http-exception';
 import { jsxRenderer } from 'hono/jsx-renderer';
 
 import type { Env, Variables, ApiResponse } from './types';
-import { authRoutes, companiesRoutes, subsidiesRoutes, jobsRoutes, internalRoutes, knowledgeRoutes, consumerRoutes, kpiRoutes, adminRoutes, profileRoutes } from './routes';
+import { authRoutes, companiesRoutes, subsidiesRoutes, jobsRoutes, internalRoutes, knowledgeRoutes, consumerRoutes, kpiRoutes, adminRoutes, profileRoutes, chatRoutes } from './routes';
 import authPages from './pages/auth';
 import dashboardPages from './pages/dashboard';
 import adminPages from './pages/admin';
 import subsidyPages from './pages/subsidies';
+import chatPages from './pages/chat';
 
 // アプリケーション初期化
 const app = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -102,6 +103,9 @@ app.route('/api/admin', adminRoutes);
 // プロフィールルート（会社プロフィール拡張）
 app.route('/api/profile', profileRoutes);
 
+// チャットルート（S3: 壁打ちチャット）
+app.route('/api/chat', chatRoutes);
+
 // ============================================================
 // UI ページルート（U1）
 // ============================================================
@@ -117,6 +121,9 @@ app.route('/', subsidyPages);
 
 // 管理画面ページ（/admin, /admin/users, /admin/kpi, /admin/audit）
 app.route('/', adminPages);
+
+// 壁打ちチャットページ（/chat）
+app.route('/', chatPages);
 
 // ============================================================
 // エラーハンドリング
