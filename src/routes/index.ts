@@ -6,3 +6,4 @@ export { default as internalRoutes } from './internal';
 export { default as knowledgeRoutes } from './knowledge';
 export { default as consumerRoutes } from './consumer';
 export { default as kpiRoutes } from './kpi';
+export { default as adminRoutes } from './admin';

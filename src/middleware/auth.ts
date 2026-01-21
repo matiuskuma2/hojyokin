@@ -110,6 +110,29 @@ export function requireRole(
 }
 
 /**
+ * 管理者権限ミドルウェア（requireAuth の後に使用）
+ * 
+ * role が admin または super_admin であることを確認
+ */
+export const requireAdmin: MiddlewareHandler<{ Bindings: Env; Variables: Variables }> = async (c, next) => {
+  const user = c.get('user');
+  
+  if (!user) {
+    throw new HTTPException(401, {
+      message: 'Authentication required',
+    });
+  }
+  
+  if (user.role !== 'admin' && user.role !== 'super_admin') {
+    throw new HTTPException(403, {
+      message: 'Admin access required',
+    });
+  }
+  
+  await next();
+};
+
+/**
  * 企業アクセス権チェックミドルウェア
  * 
  * リクエストパラメータの company_id に対するアクセス権を確認

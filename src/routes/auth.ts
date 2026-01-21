@@ -6,8 +6,6 @@
  * POST /api/auth/password-reset/request - パスワードリセット要求
  * POST /api/auth/password-reset/confirm - パスワードリセット確認
  * GET  /api/auth/me - 現在のユーザー情報取得
- * PUT  /api/auth/profile - プロフィール更新
- * PUT  /api/auth/password - パスワード変更
  */
 
 import { Hono } from 'hono';
@@ -17,108 +15,67 @@ import { hashPassword, verifyPassword, validatePasswordStrength } from '../lib/p
 import { signJWT } from '../lib/jwt';
 import { requireAuth, getCurrentUser } from '../middleware/auth';
 
-const auth = new Hono<{ Bindings: Env; Variables: Variables }>();
-
-// ========================================
-// ヘルパー関数
-// ========================================
-
 /**
- * SHA-256ハッシュ生成（トークン用）
+ * SHA-256ハッシュ生成（トークン保存用）
  */
-async function sha256(str: string): Promise<string> {
+async function sha256Hash(input: string): Promise<string> {
   const encoder = new TextEncoder();
-  const data = encoder.encode(str);
+  const data = encoder.encode(input);
   const hashBuffer = await crypto.subtle.digest('SHA-256', data);
   const hashArray = Array.from(new Uint8Array(hashBuffer));
   return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
 /**
- * 監査ログ記録
+ * 監査ログを記録
  */
 async function writeAuditLog(
   db: D1Database,
   params: {
     actorUserId?: string | null;
     targetUserId?: string | null;
-    targetCompanyId?: string | null;
-    targetResourceType?: string;
-    targetResourceId?: string;
     action: string;
     actionCategory: 'auth' | 'admin' | 'data' | 'system';
     severity?: 'info' | 'warning' | 'critical';
-    details?: Record<string, unknown>;
+    detailsJson?: Record<string, unknown>;
     ip?: string | null;
     userAgent?: string | null;
     requestId?: string | null;
   }
 ): Promise<void> {
-  try {
-    await db
-      .prepare(`
-        INSERT INTO audit_log (
-          id, actor_user_id, target_user_id, target_company_id,
-          target_resource_type, target_resource_id,
-          action, action_category, severity, details_json,
-          ip, user_agent, request_id, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `)
-      .bind(
-        uuidv4(),
-        params.actorUserId || null,
-        params.targetUserId || null,
-        params.targetCompanyId || null,
-        params.targetResourceType || null,
-        params.targetResourceId || null,
-        params.action,
-        params.actionCategory,
-        params.severity || 'info',
-        params.details ? JSON.stringify(params.details) : null,
-        params.ip || null,
-        params.userAgent || null,
-        params.requestId || null,
-        new Date().toISOString()
-      )
-      .run();
-  } catch (error) {
-    console.error('Failed to write audit log:', error);
-    // 監査ログの失敗はメイン処理を止めない
-  }
+  const id = uuidv4();
+  const now = new Date().toISOString();
+  
+  await db.prepare(`
+    INSERT INTO audit_log (
+      id, actor_user_id, target_user_id, action, action_category, severity,
+      details_json, ip, user_agent, request_id, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).bind(
+    id,
+    params.actorUserId || null,
+    params.targetUserId || null,
+    params.action,
+    params.actionCategory,
+    params.severity || 'info',
+    params.detailsJson ? JSON.stringify(params.detailsJson) : null,
+    params.ip || null,
+    params.userAgent || null,
+    params.requestId || null,
+    now
+  ).run();
 }
 
-/**
- * リクエストからIP/UserAgentを取得
- */
-function getRequestMeta(c: { req: { header: (name: string) => string | undefined } }): { ip: string | null; userAgent: string | null } {
-  return {
-    ip: c.req.header('cf-connecting-ip') || c.req.header('x-forwarded-for') || null,
-    userAgent: c.req.header('user-agent') || null,
-  };
-}
-
-// ========================================
-// ブルートフォース対策の定数
-// ========================================
-const MAX_FAILED_ATTEMPTS = 5;
-const LOCKOUT_DURATION_MS = 15 * 60 * 1000; // 15分
-
-// ========================================
-// パスワードリセットのレート制限
-// ========================================
-const RESET_TOKEN_EXPIRY_MS = 60 * 60 * 1000; // 1時間
-const RESET_REQUEST_COOLDOWN_MS = 60 * 1000; // 1分（同一ユーザーへの連続リクエスト制限）
-
-// ========================================
-// ルート定義
-// ========================================
+const auth = new Hono<{ Bindings: Env; Variables: Variables }>();
 
 /**
  * ユーザー登録
  */
 auth.post('/register', async (c) => {
   const db = c.env.DB;
-  const { ip, userAgent } = getRequestMeta(c);
+  const requestIp = c.req.header('cf-connecting-ip') || c.req.header('x-forwarded-for') || null;
+  const userAgent = c.req.header('user-agent') || null;
+  const requestId = c.req.header('x-request-id') || null;
   
   try {
     const body = await c.req.json();
@@ -185,28 +142,29 @@ auth.post('/register', async (c) => {
     
     await db
       .prepare(`
-        INSERT INTO users (id, email, password_hash, name, role, created_ip, created_at, updated_at)
+        INSERT INTO users (id, email, password_hash, name, role, created_at, updated_at, created_ip)
         VALUES (?, ?, ?, ?, 'user', ?, ?, ?)
       `)
-      .bind(userId, email.toLowerCase(), passwordHash, name || null, ip, now, now)
+      .bind(userId, email.toLowerCase(), passwordHash, name || null, now, now, requestIp)
       .run();
+    
+    // 監査ログ記録
+    await writeAuditLog(db, {
+      targetUserId: userId,
+      action: 'REGISTER',
+      actionCategory: 'auth',
+      severity: 'info',
+      detailsJson: { email: email.toLowerCase() },
+      ip: requestIp,
+      userAgent,
+      requestId,
+    });
     
     // JWT発行
     const token = await signJWT(
       { id: userId, email: email.toLowerCase(), role: 'user' },
       c.env
     );
-    
-    // 監査ログ
-    await writeAuditLog(db, {
-      actorUserId: userId,
-      targetUserId: userId,
-      action: 'REGISTER',
-      actionCategory: 'auth',
-      details: { email: email.toLowerCase() },
-      ip,
-      userAgent,
-    });
     
     // レスポンス
     const user: UserPublic = {
@@ -240,7 +198,9 @@ auth.post('/register', async (c) => {
  */
 auth.post('/login', async (c) => {
   const db = c.env.DB;
-  const { ip, userAgent } = getRequestMeta(c);
+  const requestIp = c.req.header('cf-connecting-ip') || c.req.header('x-forwarded-for') || null;
+  const userAgent = c.req.header('user-agent') || null;
+  const requestId = c.req.header('x-request-id') || null;
   
   try {
     const body = await c.req.json();
@@ -258,30 +218,11 @@ auth.post('/login', async (c) => {
     
     // ユーザー検索
     const user = await db
-      .prepare(`
-        SELECT id, email, password_hash, name, role, email_verified_at, created_at,
-               is_disabled, disabled_reason, failed_login_attempts, lockout_until
-        FROM users WHERE email = ?
-      `)
+      .prepare('SELECT * FROM users WHERE email = ?')
       .bind(email.toLowerCase())
-      .first<User & { 
-        is_disabled: number | null; 
-        disabled_reason: string | null;
-        failed_login_attempts: number | null;
-        lockout_until: string | null;
-      }>();
+      .first<User & { is_disabled?: number; lockout_until?: string; failed_login_attempts?: number }>();
     
     if (!user) {
-      // ユーザーが存在しない場合も同じエラーメッセージ
-      await writeAuditLog(db, {
-        action: 'LOGIN_FAILED',
-        actionCategory: 'auth',
-        severity: 'warning',
-        details: { email: email.toLowerCase(), reason: 'user_not_found' },
-        ip,
-        userAgent,
-      });
-      
       return c.json<ApiResponse<null>>({
         success: false,
         error: {
@@ -291,16 +232,17 @@ auth.post('/login', async (c) => {
       }, 401);
     }
     
-    // アカウント無効チェック
+    // 凍結チェック
     if (user.is_disabled) {
       await writeAuditLog(db, {
         targetUserId: user.id,
         action: 'LOGIN_FAILED',
         actionCategory: 'auth',
         severity: 'warning',
-        details: { reason: 'account_disabled', disabled_reason: user.disabled_reason },
-        ip,
+        detailsJson: { email: user.email, reason: 'account_disabled' },
+        ip: requestIp,
         userAgent,
+        requestId,
       });
       
       return c.json<ApiResponse<null>>({
@@ -313,64 +255,57 @@ auth.post('/login', async (c) => {
     }
     
     // ロックアウトチェック
-    if (user.lockout_until) {
-      const lockoutEnd = new Date(user.lockout_until);
-      if (lockoutEnd > new Date()) {
-        const remainingMinutes = Math.ceil((lockoutEnd.getTime() - Date.now()) / 60000);
-        
-        await writeAuditLog(db, {
-          targetUserId: user.id,
-          action: 'LOGIN_FAILED',
-          actionCategory: 'auth',
-          severity: 'warning',
-          details: { reason: 'account_locked', lockout_until: user.lockout_until },
-          ip,
-          userAgent,
-        });
-        
-        return c.json<ApiResponse<null>>({
-          success: false,
-          error: {
-            code: 'ACCOUNT_LOCKED',
-            message: `Account is temporarily locked. Try again in ${remainingMinutes} minutes.`,
-          },
-        }, 429);
-      }
+    if (user.lockout_until && new Date(user.lockout_until) > new Date()) {
+      await writeAuditLog(db, {
+        targetUserId: user.id,
+        action: 'LOGIN_FAILED',
+        actionCategory: 'auth',
+        severity: 'warning',
+        detailsJson: { email: user.email, reason: 'lockout', lockout_until: user.lockout_until },
+        ip: requestIp,
+        userAgent,
+        requestId,
+      });
+      
+      return c.json<ApiResponse<null>>({
+        success: false,
+        error: {
+          code: 'ACCOUNT_LOCKED',
+          message: 'Account is temporarily locked due to too many failed attempts',
+        },
+      }, 403);
     }
     
     // パスワード検証
     const isValid = await verifyPassword(password, user.password_hash);
     
     if (!isValid) {
-      // 失敗回数をインクリメント
-      const newFailedAttempts = (user.failed_login_attempts || 0) + 1;
-      let lockoutUntil: string | null = null;
+      // 失敗回数をカウント
+      const failedAttempts = (user.failed_login_attempts || 0) + 1;
+      const now = new Date().toISOString();
       
-      if (newFailedAttempts >= MAX_FAILED_ATTEMPTS) {
-        lockoutUntil = new Date(Date.now() + LOCKOUT_DURATION_MS).toISOString();
-      }
+      // 5回失敗でロックアウト（15分）
+      const lockoutUntil = failedAttempts >= 5 
+        ? new Date(Date.now() + 15 * 60 * 1000).toISOString() 
+        : null;
       
       await db
         .prepare(`
-          UPDATE users 
-          SET failed_login_attempts = ?, lockout_until = ?, updated_at = ?
+          UPDATE users SET failed_login_attempts = ?, lockout_until = ?, updated_at = ?
           WHERE id = ?
         `)
-        .bind(newFailedAttempts, lockoutUntil, new Date().toISOString(), user.id)
+        .bind(failedAttempts, lockoutUntil, now, user.id)
         .run();
       
       await writeAuditLog(db, {
         targetUserId: user.id,
         action: 'LOGIN_FAILED',
         actionCategory: 'auth',
-        severity: newFailedAttempts >= MAX_FAILED_ATTEMPTS ? 'critical' : 'warning',
-        details: { 
-          reason: 'invalid_password', 
-          failed_attempts: newFailedAttempts,
-          locked: !!lockoutUntil,
-        },
-        ip,
+        severity: failedAttempts >= 5 ? 'warning' : 'info',
+        detailsJson: { email: user.email, reason: 'invalid_password', failedAttempts, locked: !!lockoutUntil },
+        ip: requestIp,
         userAgent,
+        requestId,
       });
       
       return c.json<ApiResponse<null>>({
@@ -382,33 +317,38 @@ auth.post('/login', async (c) => {
       }, 401);
     }
     
-    // ログイン成功 - 失敗カウントをリセット、最終ログイン記録
+    // ログイン成功時: 失敗回数リセット、最終ログイン更新
     const now = new Date().toISOString();
     await db
       .prepare(`
-        UPDATE users 
-        SET failed_login_attempts = 0, lockout_until = NULL, 
-            last_login_at = ?, last_login_ip = ?, updated_at = ?
+        UPDATE users SET 
+          failed_login_attempts = 0, 
+          lockout_until = NULL, 
+          last_login_at = ?, 
+          last_login_ip = ?,
+          updated_at = ?
         WHERE id = ?
       `)
-      .bind(now, ip, now, user.id)
+      .bind(now, requestIp, now, user.id)
       .run();
+    
+    // 監査ログ記録
+    await writeAuditLog(db, {
+      targetUserId: user.id,
+      action: 'LOGIN_SUCCESS',
+      actionCategory: 'auth',
+      severity: 'info',
+      detailsJson: { email: user.email },
+      ip: requestIp,
+      userAgent,
+      requestId,
+    });
     
     // JWT発行
     const token = await signJWT(
       { id: user.id, email: user.email, role: user.role },
       c.env
     );
-    
-    // 監査ログ
-    await writeAuditLog(db, {
-      actorUserId: user.id,
-      targetUserId: user.id,
-      action: 'LOGIN_SUCCESS',
-      actionCategory: 'auth',
-      ip,
-      userAgent,
-    });
     
     // レスポンス
     const userPublic: UserPublic = {
@@ -438,10 +378,15 @@ auth.post('/login', async (c) => {
 
 /**
  * パスワードリセット要求
+ * - password_reset_tokensテーブルへハッシュ化トークンを保存
+ * - レート制限: 1時間に3回まで
+ * - audit_logへ記録
  */
 auth.post('/password-reset/request', async (c) => {
   const db = c.env.DB;
-  const { ip, userAgent } = getRequestMeta(c);
+  const requestIp = c.req.header('cf-connecting-ip') || c.req.header('x-forwarded-for') || null;
+  const userAgent = c.req.header('user-agent') || null;
+  const requestId = c.req.header('x-request-id') || null;
   
   try {
     const body = await c.req.json();
@@ -461,18 +406,10 @@ auth.post('/password-reset/request', async (c) => {
     const user = await db
       .prepare('SELECT id, email FROM users WHERE email = ?')
       .bind(email.toLowerCase())
-      .first<{ id: string; email: string }>();
+      .first<User>();
     
     // ユーザーが存在しなくても同じレスポンスを返す（セキュリティ）
     if (!user) {
-      await writeAuditLog(db, {
-        action: 'PASSWORD_RESET_REQUESTED',
-        actionCategory: 'auth',
-        details: { email: email.toLowerCase(), user_found: false },
-        ip,
-        userAgent,
-      });
-      
       return c.json<ApiResponse<{ message: string }>>({
         success: true,
         data: {
@@ -481,78 +418,80 @@ auth.post('/password-reset/request', async (c) => {
       });
     }
     
-    // レート制限: 最後のリクエストから1分以内かチェック
-    const recentToken = await db
+    // レート制限チェック: 過去1時間で3回以上発行済みの場合は拒否
+    const oneHourAgo = new Date(Date.now() - 3600000).toISOString();
+    const recentTokens = await db
       .prepare(`
-        SELECT created_at FROM password_reset_tokens 
-        WHERE user_id = ? 
-        ORDER BY created_at DESC 
-        LIMIT 1
+        SELECT COUNT(*) as count FROM password_reset_tokens
+        WHERE user_id = ? AND created_at > ?
       `)
-      .bind(user.id)
-      .first<{ created_at: string }>();
+      .bind(user.id, oneHourAgo)
+      .first<{ count: number }>();
     
-    if (recentToken) {
-      const lastRequestTime = new Date(recentToken.created_at).getTime();
-      const now = Date.now();
-      if (now - lastRequestTime < RESET_REQUEST_COOLDOWN_MS) {
-        const waitSeconds = Math.ceil((RESET_REQUEST_COOLDOWN_MS - (now - lastRequestTime)) / 1000);
-        return c.json<ApiResponse<null>>({
-          success: false,
-          error: {
-            code: 'RATE_LIMITED',
-            message: `Please wait ${waitSeconds} seconds before requesting another reset`,
-          },
-        }, 429);
-      }
+    if (recentTokens && recentTokens.count >= 3) {
+      // 監査ログ: レート制限
+      await writeAuditLog(db, {
+        targetUserId: user.id,
+        action: 'PASSWORD_RESET_RATE_LIMITED',
+        actionCategory: 'auth',
+        severity: 'warning',
+        detailsJson: { email: user.email, recentCount: recentTokens.count },
+        ip: requestIp,
+        userAgent,
+        requestId,
+      });
+      
+      // セキュリティ上同じレスポンス
+      return c.json<ApiResponse<{ message: string }>>({
+        success: true,
+        data: {
+          message: 'If the email exists, a reset link will be sent',
+        },
+      });
     }
     
     // リセットトークン生成
     const rawToken = uuidv4();
-    const tokenHash = await sha256(rawToken);
-    const expiresAt = new Date(Date.now() + RESET_TOKEN_EXPIRY_MS).toISOString();
+    const tokenHash = await sha256Hash(rawToken);
+    const expiresAt = new Date(Date.now() + 3600000).toISOString(); // 1時間後
     const tokenId = uuidv4();
+    const now = new Date().toISOString();
     
-    // password_reset_tokens テーブルに保存
+    // password_reset_tokensテーブルに保存
     await db
       .prepare(`
         INSERT INTO password_reset_tokens (
-          id, user_id, token_hash, expires_at, issued_by, 
+          id, user_id, token_hash, expires_at, issued_by,
           request_ip, request_user_agent, created_at
         ) VALUES (?, ?, ?, ?, NULL, ?, ?, ?)
       `)
-      .bind(
-        tokenId,
-        user.id,
-        tokenHash,
-        expiresAt,
-        ip,
-        userAgent,
-        new Date().toISOString()
-      )
+      .bind(tokenId, user.id, tokenHash, expiresAt, requestIp, userAgent, now)
       .run();
     
-    // 旧フィールドも互換性のため更新（既存UIとの互換）
+    // 後方互換性のためusersテーブルも更新（フェーズアウト後削除可）
     await db
       .prepare(`
         UPDATE users 
         SET password_reset_token = ?, password_reset_expires = ?, updated_at = ?
         WHERE id = ?
       `)
-      .bind(rawToken, expiresAt, new Date().toISOString(), user.id)
+      .bind(rawToken, expiresAt, now, user.id)
       .run();
     
-    // 監査ログ
+    // 監査ログ記録
     await writeAuditLog(db, {
       targetUserId: user.id,
       action: 'PASSWORD_RESET_REQUESTED',
       actionCategory: 'auth',
-      details: { token_id: tokenId },
-      ip,
+      severity: 'info',
+      detailsJson: { email: user.email, tokenId },
+      ip: requestIp,
       userAgent,
+      requestId,
     });
     
     // TODO: SendGrid でメール送信
+    // 開発環境ではトークンをレスポンスに含める（本番では削除）
     console.log(`Password reset token for ${email}: ${rawToken}`);
     
     return c.json<ApiResponse<{ message: string; debug_token?: string }>>({
@@ -577,10 +516,15 @@ auth.post('/password-reset/request', async (c) => {
 
 /**
  * パスワードリセット確認
+ * - password_reset_tokensテーブルを使用
+ * - 使用済みトークンはused_atを更新
+ * - audit_logへ記録
  */
 auth.post('/password-reset/confirm', async (c) => {
   const db = c.env.DB;
-  const { ip, userAgent } = getRequestMeta(c);
+  const usedIp = c.req.header('cf-connecting-ip') || c.req.header('x-forwarded-for') || null;
+  const userAgent = c.req.header('user-agent') || null;
+  const requestId = c.req.header('x-request-id') || null;
   
   try {
     const body = await c.req.json();
@@ -609,47 +553,40 @@ auth.post('/password-reset/confirm', async (c) => {
       }, 400);
     }
     
-    // トークンハッシュ化して検索
-    const tokenHash = await sha256(token);
+    // トークンをハッシュ化して検索
+    const tokenHash = await sha256Hash(token);
     
-    // password_reset_tokens テーブルから検索
-    const resetRecord = await db
+    // password_reset_tokensテーブルで検索
+    const tokenRecord = await db
       .prepare(`
-        SELECT prt.id, prt.user_id, prt.expires_at, prt.used_at
+        SELECT prt.id as token_id, prt.user_id, prt.expires_at, prt.used_at,
+               u.id, u.email
         FROM password_reset_tokens prt
+        JOIN users u ON prt.user_id = u.id
         WHERE prt.token_hash = ?
       `)
       .bind(tokenHash)
-      .first<{ id: string; user_id: string; expires_at: string; used_at: string | null }>();
+      .first<{ token_id: string; user_id: string; expires_at: string; used_at: string | null; id: string; email: string }>();
     
-    // トークンが見つからない場合、旧フィールドも確認（互換性）
+    // フォールバック: 旧方式（usersテーブル直接）も確認
     let userId: string | null = null;
-    let tokenRecordId: string | null = null;
-    let useLegacy = false;
+    let userEmail: string | null = null;
+    let tokenId: string | null = null;
+    let isLegacyToken = false;
     
-    if (resetRecord) {
-      // 使用済みチェック
-      if (resetRecord.used_at) {
-        await writeAuditLog(db, {
-          action: 'PASSWORD_RESET_FAILED',
-          actionCategory: 'auth',
-          severity: 'warning',
-          details: { reason: 'token_already_used', token_id: resetRecord.id },
-          ip,
-          userAgent,
-        });
-        
+    if (tokenRecord) {
+      // 新方式で発見
+      if (tokenRecord.used_at) {
         return c.json<ApiResponse<null>>({
           success: false,
           error: {
             code: 'TOKEN_USED',
-            message: 'This reset token has already been used',
+            message: 'Reset token has already been used',
           },
         }, 400);
       }
       
-      // 有効期限チェック
-      if (new Date(resetRecord.expires_at) < new Date()) {
+      if (new Date(tokenRecord.expires_at) < new Date()) {
         return c.json<ApiResponse<null>>({
           success: false,
           error: {
@@ -659,29 +596,21 @@ auth.post('/password-reset/confirm', async (c) => {
         }, 400);
       }
       
-      userId = resetRecord.user_id;
-      tokenRecordId = resetRecord.id;
+      userId = tokenRecord.user_id;
+      userEmail = tokenRecord.email;
+      tokenId = tokenRecord.token_id;
     } else {
-      // 旧フィールドで検索（互換性）
-      const legacyUser = await db
+      // 旧方式フォールバック
+      const user = await db
         .prepare(`
-          SELECT id, password_reset_expires 
+          SELECT id, email, password_reset_expires 
           FROM users 
           WHERE password_reset_token = ?
         `)
         .bind(token)
-        .first<{ id: string; password_reset_expires: string }>();
+        .first<User & { password_reset_expires: string }>();
       
-      if (!legacyUser) {
-        await writeAuditLog(db, {
-          action: 'PASSWORD_RESET_FAILED',
-          actionCategory: 'auth',
-          severity: 'warning',
-          details: { reason: 'invalid_token' },
-          ip,
-          userAgent,
-        });
-        
+      if (!user) {
         return c.json<ApiResponse<null>>({
           success: false,
           error: {
@@ -691,8 +620,7 @@ auth.post('/password-reset/confirm', async (c) => {
         }, 400);
       }
       
-      // 有効期限チェック
-      if (new Date(legacyUser.password_reset_expires) < new Date()) {
+      if (new Date(user.password_reset_expires) < new Date()) {
         return c.json<ApiResponse<null>>({
           success: false,
           error: {
@@ -702,8 +630,9 @@ auth.post('/password-reset/confirm', async (c) => {
         }, 400);
       }
       
-      userId = legacyUser.id;
-      useLegacy = true;
+      userId = user.id;
+      userEmail = user.email;
+      isLegacyToken = true;
     }
     
     // パスワード更新
@@ -719,29 +648,32 @@ auth.post('/password-reset/confirm', async (c) => {
       .bind(passwordHash, now, userId)
       .run();
     
-    // password_reset_tokens を使用済みに更新
-    if (tokenRecordId) {
+    // 新方式の場合、トークンを使用済みにする
+    if (tokenId) {
       await db
         .prepare(`
-          UPDATE password_reset_tokens 
+          UPDATE password_reset_tokens
           SET used_at = ?, used_ip = ?, used_user_agent = ?
           WHERE id = ?
         `)
-        .bind(now, ip, userAgent, tokenRecordId)
+        .bind(now, usedIp, userAgent, tokenId)
         .run();
     }
     
-    // 監査ログ
+    // 監査ログ記録
     await writeAuditLog(db, {
       targetUserId: userId,
       action: 'PASSWORD_RESET_COMPLETED',
       actionCategory: 'auth',
-      details: { 
-        token_id: tokenRecordId,
-        legacy_mode: useLegacy,
+      severity: 'info',
+      detailsJson: {
+        email: userEmail,
+        tokenId: tokenId || 'legacy',
+        isLegacyToken,
       },
-      ip,
+      ip: usedIp,
       userAgent,
+      requestId,
     });
     
     return c.json<ApiResponse<{ message: string }>>({
@@ -771,13 +703,9 @@ auth.get('/me', requireAuth, async (c) => {
   
   try {
     const user = await db
-      .prepare(`
-        SELECT id, email, name, role, email_verified_at, created_at, 
-               last_login_at, is_disabled
-        FROM users WHERE id = ?
-      `)
+      .prepare('SELECT id, email, name, role, email_verified_at, created_at FROM users WHERE id = ?')
       .bind(currentUser.id)
-      .first<UserPublic & { last_login_at: string | null; is_disabled: number | null }>();
+      .first<UserPublic>();
     
     if (!user) {
       return c.json<ApiResponse<null>>({
@@ -789,17 +717,9 @@ auth.get('/me', requireAuth, async (c) => {
       }, 404);
     }
     
-    return c.json<ApiResponse<UserPublic & { last_login_at: string | null }>>({
+    return c.json<ApiResponse<UserPublic>>({
       success: true,
-      data: {
-        id: user.id,
-        email: user.email,
-        name: user.name,
-        role: user.role,
-        email_verified_at: user.email_verified_at,
-        created_at: user.created_at,
-        last_login_at: user.last_login_at,
-      },
+      data: user,
     });
   } catch (error) {
     console.error('Get me error:', error);
@@ -808,186 +728,6 @@ auth.get('/me', requireAuth, async (c) => {
       error: {
         code: 'INTERNAL_ERROR',
         message: 'Failed to get user info',
-      },
-    }, 500);
-  }
-});
-
-/**
- * プロフィール更新
- */
-auth.put('/profile', requireAuth, async (c) => {
-  const db = c.env.DB;
-  const currentUser = getCurrentUser(c);
-  const { ip, userAgent } = getRequestMeta(c);
-  
-  try {
-    const body = await c.req.json();
-    const { name } = body;
-    
-    if (name !== undefined && typeof name !== 'string') {
-      return c.json<ApiResponse<null>>({
-        success: false,
-        error: {
-          code: 'VALIDATION_ERROR',
-          message: 'name must be a string',
-        },
-      }, 400);
-    }
-    
-    const now = new Date().toISOString();
-    
-    await db
-      .prepare(`
-        UPDATE users SET name = ?, updated_at = ? WHERE id = ?
-      `)
-      .bind(name || null, now, currentUser.id)
-      .run();
-    
-    // 監査ログ
-    await writeAuditLog(db, {
-      actorUserId: currentUser.id,
-      targetUserId: currentUser.id,
-      action: 'PROFILE_UPDATED',
-      actionCategory: 'data',
-      details: { name },
-      ip,
-      userAgent,
-    });
-    
-    // 更新後のユーザー情報を返す
-    const user = await db
-      .prepare(`
-        SELECT id, email, name, role, email_verified_at, created_at
-        FROM users WHERE id = ?
-      `)
-      .bind(currentUser.id)
-      .first<UserPublic>();
-    
-    return c.json<ApiResponse<UserPublic>>({
-      success: true,
-      data: user!,
-    });
-  } catch (error) {
-    console.error('Update profile error:', error);
-    return c.json<ApiResponse<null>>({
-      success: false,
-      error: {
-        code: 'INTERNAL_ERROR',
-        message: 'Failed to update profile',
-      },
-    }, 500);
-  }
-});
-
-/**
- * パスワード変更（ログイン中のユーザー）
- */
-auth.put('/password', requireAuth, async (c) => {
-  const db = c.env.DB;
-  const currentUser = getCurrentUser(c);
-  const { ip, userAgent } = getRequestMeta(c);
-  
-  try {
-    const body = await c.req.json();
-    const { current_password, new_password } = body;
-    
-    if (!current_password || !new_password) {
-      return c.json<ApiResponse<null>>({
-        success: false,
-        error: {
-          code: 'VALIDATION_ERROR',
-          message: 'current_password and new_password are required',
-        },
-      }, 400);
-    }
-    
-    // パスワード強度チェック
-    const passwordErrors = validatePasswordStrength(new_password);
-    if (passwordErrors.length > 0) {
-      return c.json<ApiResponse<null>>({
-        success: false,
-        error: {
-          code: 'VALIDATION_ERROR',
-          message: passwordErrors.join(', '),
-          details: passwordErrors,
-        },
-      }, 400);
-    }
-    
-    // 現在のパスワードを確認
-    const user = await db
-      .prepare('SELECT password_hash FROM users WHERE id = ?')
-      .bind(currentUser.id)
-      .first<{ password_hash: string }>();
-    
-    if (!user) {
-      return c.json<ApiResponse<null>>({
-        success: false,
-        error: {
-          code: 'USER_NOT_FOUND',
-          message: 'User not found',
-        },
-      }, 404);
-    }
-    
-    const isValid = await verifyPassword(current_password, user.password_hash);
-    
-    if (!isValid) {
-      await writeAuditLog(db, {
-        actorUserId: currentUser.id,
-        targetUserId: currentUser.id,
-        action: 'PASSWORD_CHANGE_FAILED',
-        actionCategory: 'auth',
-        severity: 'warning',
-        details: { reason: 'invalid_current_password' },
-        ip,
-        userAgent,
-      });
-      
-      return c.json<ApiResponse<null>>({
-        success: false,
-        error: {
-          code: 'INVALID_PASSWORD',
-          message: 'Current password is incorrect',
-        },
-      }, 401);
-    }
-    
-    // パスワード更新
-    const passwordHash = await hashPassword(new_password);
-    const now = new Date().toISOString();
-    
-    await db
-      .prepare(`
-        UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?
-      `)
-      .bind(passwordHash, now, currentUser.id)
-      .run();
-    
-    // 監査ログ
-    await writeAuditLog(db, {
-      actorUserId: currentUser.id,
-      targetUserId: currentUser.id,
-      action: 'PASSWORD_CHANGED',
-      actionCategory: 'auth',
-      ip,
-      userAgent,
-    });
-    
-    return c.json<ApiResponse<{ message: string }>>({
-      success: true,
-      data: {
-        message: 'Password has been changed successfully',
-      },
-    });
-  } catch (error) {
-    console.error('Change password error:', error);
-    return c.json<ApiResponse<null>>({
-      success: false,
-      error: {
-        code: 'INTERNAL_ERROR',
-        message: 'Failed to change password',
       },
     }, 500);
   }

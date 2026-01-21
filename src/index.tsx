@@ -11,9 +11,10 @@ import { HTTPException } from 'hono/http-exception';
 import { jsxRenderer } from 'hono/jsx-renderer';
 
 import type { Env, Variables, ApiResponse } from './types';
-import { authRoutes, companiesRoutes, subsidiesRoutes, jobsRoutes, internalRoutes, knowledgeRoutes, consumerRoutes, kpiRoutes } from './routes';
+import { authRoutes, companiesRoutes, subsidiesRoutes, jobsRoutes, internalRoutes, knowledgeRoutes, consumerRoutes, kpiRoutes, adminRoutes } from './routes';
 import authPages from './pages/auth';
 import dashboardPages from './pages/dashboard';
+import adminPages from './pages/admin';
 
 // アプリケーション初期化
 const app = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -94,6 +95,9 @@ app.route('/api/consumer', consumerRoutes);
 // KPIルート（監視・統計）
 app.route('/api/kpi', kpiRoutes);
 
+// 管理者ルート（U2）
+app.route('/api/admin', adminRoutes);
+
 // ============================================================
 // UI ページルート（U1）
 // ============================================================
@@ -103,6 +107,9 @@ app.route('/', authPages);
 
 // ダッシュボード・プロフィールページ（/dashboard, /profile, /company）
 app.route('/', dashboardPages);
+
+// 管理画面ページ（/admin, /admin/users, /admin/kpi, /admin/audit）
+app.route('/', adminPages);
 
 // ============================================================
 // エラーハンドリング
