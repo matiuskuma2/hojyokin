@@ -12,6 +12,8 @@ import { jsxRenderer } from 'hono/jsx-renderer';
 
 import type { Env, Variables, ApiResponse } from './types';
 import { authRoutes, companiesRoutes, subsidiesRoutes, jobsRoutes, internalRoutes, knowledgeRoutes, consumerRoutes, kpiRoutes } from './routes';
+import authPages from './pages/auth';
+import dashboardPages from './pages/dashboard';
 
 // アプリケーション初期化
 const app = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -91,6 +93,16 @@ app.route('/api/consumer', consumerRoutes);
 
 // KPIルート（監視・統計）
 app.route('/api/kpi', kpiRoutes);
+
+// ============================================================
+// UI ページルート（U1）
+// ============================================================
+
+// 認証ページ（/login, /register, /forgot, /reset）
+app.route('/', authPages);
+
+// ダッシュボード・プロフィールページ（/dashboard, /profile, /company）
+app.route('/', dashboardPages);
 
 // ============================================================
 // エラーハンドリング
