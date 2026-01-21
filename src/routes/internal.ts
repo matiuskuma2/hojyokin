@@ -93,14 +93,29 @@ app.post('/eligibility/upsert', internalAuthMiddleware(['eligibility:upsert']), 
       );
     }
 
-    // 3. サマリーをsubsidy_cacheに更新（存在すれば）
-    if (body.summary) {
+    // 3. サマリーをeligibility_extractionsに保存/更新
+    if (body.summary || body.warnings || body.job_id) {
+      const extractionId = uuidv4();
       statements.push(
         env.DB.prepare(`
-          UPDATE subsidy_cache 
-          SET eligibility_summary = ?, eligibility_updated_at = ?, updated_at = ?
-          WHERE subsidy_id = ?
-        `).bind(body.summary, now, now, subsidyId)
+          INSERT INTO eligibility_extractions (id, subsidy_id, job_id, rules_count, warnings, summary, extracted_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(subsidy_id) DO UPDATE SET
+            job_id = excluded.job_id,
+            rules_count = excluded.rules_count,
+            warnings = excluded.warnings,
+            summary = excluded.summary,
+            updated_at = excluded.updated_at
+        `).bind(
+          extractionId,
+          subsidyId,
+          body.job_id || null,
+          rules.length,
+          body.warnings ? JSON.stringify(body.warnings) : null,
+          body.summary || null,
+          now,
+          now
+        )
       );
     }
 
