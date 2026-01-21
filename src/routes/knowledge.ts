@@ -12,6 +12,32 @@ import { internalAuthMiddleware } from '../lib/internal-jwt';
 const app = new Hono<{ Bindings: Env; Variables: Variables }>();
 
 // =============================================================================
+// Utility: Safe Hash Generation
+// =============================================================================
+
+/**
+ * UTF-8文字列から安全なハッシュを生成（btoa代替）
+ */
+function safeHash(str: string): string {
+  // 簡易ハッシュ: 文字列をUTF-8バイト配列に変換してhex化
+  const encoder = new TextEncoder();
+  const data = encoder.encode(str);
+  
+  // 最初の48バイトをhex化して64文字に
+  let hash = '';
+  for (let i = 0; i < Math.min(data.length, 48); i++) {
+    hash += data[i].toString(16).padStart(2, '0');
+  }
+  
+  // 長さが足りない場合はパディング
+  while (hash.length < 64) {
+    hash += '0';
+  }
+  
+  return hash.substring(0, 64);
+}
+
+// =============================================================================
 // Types
 // =============================================================================
 
@@ -143,18 +169,13 @@ function normalizeAndHashUrl(url: string): { normalized: string; hash: string } 
     
     const normalized = urlObj.toString();
     
-    // SHA256ハッシュ生成
-    const encoder = new TextEncoder();
-    const data = encoder.encode(normalized);
-    
-    // Web Crypto APIでハッシュ
-    // 同期的に生成できないため、一時的にbase64エンコードで代用
-    const hash = btoa(normalized).replace(/[^a-zA-Z0-9]/g, '').substring(0, 32);
+    // 簡易ハッシュ生成（UTF-8対応）
+    const hash = safeHash(normalized).substring(0, 32);
     
     return { normalized, hash };
   } catch {
     // 無効なURLの場合
-    return { normalized: url, hash: btoa(url).replace(/[^a-zA-Z0-9]/g, '').substring(0, 32) };
+    return { normalized: url, hash: safeHash(url).substring(0, 32) };
   }
 }
 
@@ -260,7 +281,7 @@ app.post('/subsidies/:subsidy_id/extract-urls', requireAuth, async (c) => {
     }
 
     // subsidy_metadataにupsert
-    const contentHash = btoa(JSON.stringify(detailJson)).substring(0, 64);
+    const contentHash = safeHash(JSON.stringify(detailJson));
     await DB.prepare(`
       INSERT INTO subsidy_metadata (
         subsidy_id, title, inquiry_url, external_links, jgrants_raw_json, content_hash, last_seen_at, updated_at
@@ -442,8 +463,8 @@ app.post('/crawl/:url_id', requireAuth, async (c) => {
       throw new Error('Firecrawl returned no data');
     }
 
-    // コンテンツハッシュを計算
-    const contentHash = btoa(crawlResult.data.markdown || '').substring(0, 64);
+    // コンテンツハッシュを計算（UTF-8対応）
+    const contentHash = safeHash(crawlResult.data.markdown || '');
 
     // source_urlを更新
     await DB.prepare(`
