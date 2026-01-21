@@ -1,0 +1,15 @@
+{
+  "name": "hojyokin-cron",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "lint": "echo \"(optional)\""
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250705.0",
+    "typescript": "^5.0.0",
+    "wrangler": "^3.78.0"
+  }
+}

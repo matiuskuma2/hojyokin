@@ -1,0 +1,18 @@
+name = "hojyokin-cron"
+main = "src/index.ts"
+compatibility_date = "2026-01-21"
+compatibility_flags = ["nodejs_compat"]
+
+# 毎日03:00 JST = 18:00 UTC
+[triggers]
+crons = ["0 18 * * *"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "subsidy-matching-production"
+database_id = "e53f6185-60a6-45eb-b06d-c710ab3aef56"
+
+[vars]
+ENVIRONMENT = "production"
+CRON_REGISTRY_LIMIT = "200"
+CRON_LIFECYCLE_LIMIT = "50"
