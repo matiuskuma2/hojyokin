@@ -25,4 +25,4 @@ bucket_name = "subsidy-app-storage"
 [vars]
 ENVIRONMENT = "production"
 CONSUMER_BATCH_SIZE = "10"         # 1回で処理するジョブ数
-CONSUMER_TIMEOUT_MS = "30000"      # Firecrawl タイムアウト
+CONSUMER_TIMEOUT_MS = "60000"      # Firecrawl タイムアウト（60秒）
