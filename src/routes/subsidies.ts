@@ -341,4 +341,81 @@ subsidies.get('/evaluations/:company_id', requireCompanyAccess(), async (c) => {
   }
 });
 
+/**
+ * 補助金の申請要件取得
+ */
+subsidies.get('/:subsidy_id/eligibility', async (c) => {
+  const db = c.env.DB;
+  const subsidyId = c.req.param('subsidy_id');
+  
+  try {
+    const rules = await db
+      .prepare(`
+        SELECT 
+          id, subsidy_id, category, rule_text, check_type, 
+          parameters, source_text, page_number, created_at
+        FROM eligibility_rules
+        WHERE subsidy_id = ?
+        ORDER BY category, created_at
+      `)
+      .bind(subsidyId)
+      .all();
+    
+    return c.json<ApiResponse<unknown[]>>({
+      success: true,
+      data: rules.results.map((rule: any) => ({
+        ...rule,
+        parameters: rule.parameters ? JSON.parse(rule.parameters) : null,
+      })),
+    });
+  } catch (error) {
+    console.error('Get eligibility rules error:', error);
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: 'INTERNAL_ERROR',
+        message: 'Failed to get eligibility rules',
+      },
+    }, 500);
+  }
+});
+
+/**
+ * 補助金の必要書類取得
+ */
+subsidies.get('/:subsidy_id/documents', async (c) => {
+  const db = c.env.DB;
+  const subsidyId = c.req.param('subsidy_id');
+  
+  try {
+    const docs = await db
+      .prepare(`
+        SELECT 
+          rds.id, rds.subsidy_id, rds.doc_code, rds.required_level,
+          rds.notes, rds.confidence, rds.needs_review,
+          rdm.name, rdm.phase, rdm.description, rdm.sort_order
+        FROM required_documents_by_subsidy rds
+        LEFT JOIN required_documents_master rdm ON rds.doc_code = rdm.doc_code
+        WHERE rds.subsidy_id = ?
+        ORDER BY rdm.sort_order, rds.doc_code
+      `)
+      .bind(subsidyId)
+      .all();
+    
+    return c.json<ApiResponse<unknown[]>>({
+      success: true,
+      data: docs.results,
+    });
+  } catch (error) {
+    console.error('Get required documents error:', error);
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: 'INTERNAL_ERROR',
+        message: 'Failed to get required documents',
+      },
+    }, 500);
+  }
+});
+
 export default subsidies;
