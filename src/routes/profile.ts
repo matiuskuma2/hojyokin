@@ -572,7 +572,241 @@ profile.delete('/documents/:id', async (c) => {
 });
 
 // =====================================================
+// POST /api/profile/documents/:id/text - PDFテキスト保存（クライアントでPDF.js抽出後）
+// =====================================================
+
+profile.post('/documents/:id/text', async (c) => {
+  const companyId = c.get('company')?.id;
+  const documentId = c.req.param('id');
+  
+  if (!companyId) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'NO_COMPANY', message: 'Company not found' }
+    }, 404);
+  }
+  
+  try {
+    const body = await c.req.json();
+    const text: string = body.text || '';
+    
+    if (!text || text.trim().length < 10) {
+      return c.json<ApiResponse<null>>({
+        success: false,
+        error: { code: 'VALIDATION_ERROR', message: 'Text is too short or empty' }
+      }, 400);
+    }
+    
+    // 所有権確認
+    const doc = await c.env.DB.prepare(`
+      SELECT id FROM company_documents WHERE id = ? AND company_id = ?
+    `).bind(documentId, companyId).first();
+    
+    if (!doc) {
+      return c.json<ApiResponse<null>>({
+        success: false,
+        error: { code: 'NOT_FOUND', message: 'Document not found' }
+      }, 404);
+    }
+    
+    const now = new Date().toISOString();
+    
+    // DBにテキストを保存
+    await c.env.DB.prepare(`
+      UPDATE company_documents 
+      SET raw_text = ?, updated_at = ?
+      WHERE id = ? AND company_id = ?
+    `).bind(text.substring(0, 100000), now, documentId, companyId).run();
+    
+    return c.json<ApiResponse<{ saved: boolean }>>({
+      success: true,
+      data: { saved: true }
+    });
+  } catch (error) {
+    console.error('Save document text error:', error);
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'INTERNAL_ERROR', message: 'Failed to save text' }
+    }, 500);
+  }
+});
+
+// =====================================================
+// 正規表現ベースのテキスト解析（Phase 1 ローカル抽出）
+// =====================================================
+
+/**
+ * 登記簿テキストから情報を抽出
+ */
+function extractCorpRegistryFromText(text: string): Partial<CorpRegistryExtracted> {
+  const result: Partial<CorpRegistryExtracted> = {
+    source: 'corp_registry',
+    confidence: 0
+  };
+  
+  let matchCount = 0;
+  const totalFields = 7;
+  
+  // 商号（会社名）
+  const companyNameMatch = text.match(/商\s*号[：:\s]*([\s\S]*?)(?=\n|本店|$)/);
+  if (companyNameMatch) {
+    result.company_name = companyNameMatch[1].trim().replace(/\s+/g, '');
+    matchCount++;
+  }
+  
+  // 本店所在地
+  const addressMatch = text.match(/本\s*店[：:\s]*([\s\S]*?)(?=\n(?:会社成立|公告|目的|資本金|役員)|$)/);
+  if (addressMatch) {
+    result.address = addressMatch[1].trim().replace(/\s+/g, '');
+    matchCount++;
+  }
+  
+  // 設立年月日（会社成立の年月日）
+  const establishedMatch = text.match(/(?:会社成立の年月日|設立)[：:\s]*(?:令和|平成|昭和)?(\d+)年(\d+)月(\d+)日/);
+  if (establishedMatch) {
+    // 和暦→西暦変換
+    const yearText = text.match(/(?:会社成立の年月日|設立)[：:\s]*(令和|平成|昭和)(\d+)年/);
+    let year = parseInt(establishedMatch[1]);
+    if (yearText) {
+      const era = yearText[1];
+      const eraYear = parseInt(yearText[2]);
+      if (era === '令和') year = 2018 + eraYear;
+      else if (era === '平成') year = 1988 + eraYear;
+      else if (era === '昭和') year = 1925 + eraYear;
+    }
+    result.established_date = `${year}-${establishedMatch[2].padStart(2, '0')}-${establishedMatch[3].padStart(2, '0')}`;
+    matchCount++;
+  }
+  
+  // 資本金
+  const capitalMatch = text.match(/資本金[：:\s]*(?:金)?([0-9,，]+)(?:万)?円/);
+  if (capitalMatch) {
+    let capital = parseInt(capitalMatch[1].replace(/[,，]/g, ''));
+    if (text.includes('万円') && capital < 100000) {
+      capital *= 10000;
+    }
+    result.capital = capital;
+    matchCount++;
+  }
+  
+  // 代表者
+  const representativeMatch = text.match(/(?:代表取締役|取締役|代表社員)[：:\s]*([^\n\d]+?)(?:\s|$)/);
+  if (representativeMatch) {
+    result.representative_name = representativeMatch[1].trim();
+    result.representative_title = representativeMatch[0].includes('代表取締役') ? '代表取締役' : 
+                                   representativeMatch[0].includes('代表社員') ? '代表社員' : '取締役';
+    matchCount++;
+  }
+  
+  // 目的（事業内容）
+  const purposeMatch = text.match(/目\s*的[：:\s]*([\s\S]*?)(?=\n(?:発行可能株式|資本金|役員|$))/);
+  if (purposeMatch) {
+    const purposes = purposeMatch[1]
+      .split(/[。\n]/)
+      .map(p => p.trim().replace(/^[\d１２３４５６７８９０]+[\s\.、．]?/, ''))
+      .filter(p => p.length > 3 && p.length < 100);
+    if (purposes.length > 0) {
+      result.business_purpose = purposes.slice(0, 5);
+      matchCount++;
+    }
+  }
+  
+  // 法人番号
+  const corpNumberMatch = text.match(/法人番号[：:\s]*(\d{13})/);
+  if (corpNumberMatch) {
+    result.corp_number = corpNumberMatch[1];
+    matchCount++;
+  }
+  
+  result.confidence = Math.round((matchCount / totalFields) * 100);
+  
+  return result;
+}
+
+/**
+ * 決算書テキストから情報を抽出
+ */
+function extractFinancialsFromText(text: string): Partial<FinancialsExtracted> {
+  const result: Partial<FinancialsExtracted> = {
+    source: 'financials',
+    confidence: 0
+  };
+  
+  let matchCount = 0;
+  const totalFields = 7;
+  
+  // 決算期
+  const fiscalYearMatch = text.match(/(?:第\d+期|令和\d+年度?|平成\d+年度?|20\d{2}年度?)[^\n]*(?:決算|事業報告)?/);
+  if (fiscalYearMatch) {
+    result.fiscal_year = fiscalYearMatch[0].trim();
+    matchCount++;
+  }
+  
+  // 決算月
+  const fiscalMonthMatch = text.match(/(?:事業年度|決算期)[：:\s]*[^\n]*(\d{1,2})月/);
+  if (fiscalMonthMatch) {
+    result.fiscal_year_end = `${fiscalMonthMatch[1]}月`;
+    matchCount++;
+  }
+  
+  // 売上高
+  const salesMatch = text.match(/(?:売上高|売上|営業収益)[：:\s]*(?:金)?([0-9,，]+)(?:千円|百万円|円)?/);
+  if (salesMatch) {
+    let sales = parseInt(salesMatch[1].replace(/[,，]/g, ''));
+    if (text.includes('千円')) sales *= 1000;
+    else if (text.includes('百万円')) sales *= 1000000;
+    result.sales = sales;
+    matchCount++;
+  }
+  
+  // 営業利益
+  const opProfitMatch = text.match(/営業利益[：:\s]*(?:金)?([△▲\-])?([0-9,，]+)(?:千円|百万円|円)?/);
+  if (opProfitMatch) {
+    let profit = parseInt(opProfitMatch[2].replace(/[,，]/g, ''));
+    if (opProfitMatch[1]) profit = -profit;
+    if (text.includes('千円')) profit *= 1000;
+    else if (text.includes('百万円')) profit *= 1000000;
+    result.operating_profit = profit;
+    matchCount++;
+  }
+  
+  // 当期純利益
+  const netProfitMatch = text.match(/(?:当期純利益|純利益|税引後利益)[：:\s]*(?:金)?([△▲\-])?([0-9,，]+)(?:千円|百万円|円)?/);
+  if (netProfitMatch) {
+    let profit = parseInt(netProfitMatch[2].replace(/[,，]/g, ''));
+    if (netProfitMatch[1]) profit = -profit;
+    if (text.includes('千円')) profit *= 1000;
+    else if (text.includes('百万円')) profit *= 1000000;
+    result.net_profit = profit;
+    result.is_profitable = profit > 0;
+    matchCount++;
+  }
+  
+  // 従業員数
+  const employeeMatch = text.match(/(?:従業員数|従業員)[：:\s]*([0-9,，]+)\s*(?:名|人)/);
+  if (employeeMatch) {
+    result.employee_count = parseInt(employeeMatch[1].replace(/[,，]/g, ''));
+    matchCount++;
+  }
+  
+  // 総資産
+  const assetsMatch = text.match(/(?:総資産|資産合計|資産の部合計)[：:\s]*(?:金)?([0-9,，]+)(?:千円|百万円|円)?/);
+  if (assetsMatch) {
+    let assets = parseInt(assetsMatch[1].replace(/[,，]/g, ''));
+    if (text.includes('千円')) assets *= 1000;
+    else if (text.includes('百万円')) assets *= 1000000;
+    result.total_assets = assets;
+    matchCount++;
+  }
+  
+  result.confidence = Math.round((matchCount / totalFields) * 100);
+  
+  return result;
+}
+
+// =====================================================
 // POST /api/profile/documents/:id/extract - 抽出開始
+// （ローカルテキスト解析版）
 // =====================================================
 
 profile.post('/documents/:id/extract', async (c) => {
@@ -588,9 +822,13 @@ profile.post('/documents/:id/extract', async (c) => {
   }
   
   try {
-    // 所有権確認とドキュメント取得
+    // リクエストボディからテキストを取得（クライアント側でPDF.jsで抽出したテキスト）
+    const body = await c.req.json().catch(() => ({}));
+    let extractedText: string = body.text || '';
+    
+    // 所有権確認とドキュメント取得（raw_textも取得）
     const doc = await c.env.DB.prepare(`
-      SELECT id, doc_type, original_filename, content_type, size_bytes, r2_key, status
+      SELECT id, doc_type, original_filename, content_type, size_bytes, r2_key, status, raw_text
       FROM company_documents 
       WHERE id = ? AND company_id = ?
     `).bind(documentId, companyId).first() as {
@@ -601,6 +839,7 @@ profile.post('/documents/:id/extract', async (c) => {
       size_bytes: number;
       r2_key: string;
       status: DocumentStatus;
+      raw_text: string | null;
     } | null;
     
     if (!doc) {
@@ -608,14 +847,6 @@ profile.post('/documents/:id/extract', async (c) => {
         success: false,
         error: { code: 'NOT_FOUND', message: 'Document not found' }
       }, 404);
-    }
-    
-    // 既に抽出中または抽出済みの場合
-    if (doc.status === 'extracting') {
-      return c.json<ApiResponse<null>>({
-        success: false,
-        error: { code: 'ALREADY_PROCESSING', message: 'Document is already being processed' }
-      }, 400);
     }
     
     // doc_type が Phase 1 対象でない場合
@@ -627,120 +858,86 @@ profile.post('/documents/:id/extract', async (c) => {
     }
     
     const now = new Date().toISOString();
-    const jobId = crypto.randomUUID();
     
-    // ステータスを extracting に更新
+    // リクエストにテキストがない場合、DBに保存されたraw_textを使用
+    if (!extractedText || extractedText.trim().length < 10) {
+      if (doc.raw_text && doc.raw_text.trim().length >= 10) {
+        extractedText = doc.raw_text;
+      } else {
+        return c.json<ApiResponse<null>>({
+          success: false,
+          error: { code: 'NO_TEXT', message: 'テキストが提供されていません。PDFからテキストを抽出してから再試行してください。' }
+        }, 400);
+      }
+    } else {
+      // 新しいテキストが提供された場合、DBに保存
+      await c.env.DB.prepare(`
+        UPDATE company_documents SET raw_text = ?, updated_at = ? WHERE id = ?
+      `).bind(extractedText.substring(0, 100000), now, documentId).run();
+    }
+    
+    // ローカルテキスト解析を実行
+    let extracted: DocumentExtracted;
+    
+    if (doc.doc_type === 'corp_registry') {
+      extracted = extractCorpRegistryFromText(extractedText) as CorpRegistryExtracted;
+    } else if (doc.doc_type === 'financials') {
+      extracted = extractFinancialsFromText(extractedText) as FinancialsExtracted;
+    } else {
+      return c.json<ApiResponse<null>>({
+        success: false,
+        error: { code: 'UNSUPPORTED_DOC_TYPE', message: 'Unsupported document type' }
+      }, 400);
+    }
+    
+    // 信頼度が低すぎる場合は警告
+    const confidence = extracted.confidence || 0;
+    
+    // DB更新 - 抽出結果を保存
     await c.env.DB.prepare(`
       UPDATE company_documents 
-      SET status = 'extracting', updated_at = ?
+      SET status = 'extracted', 
+          extracted_json = ?, 
+          confidence = ?,
+          updated_at = ?
       WHERE id = ?
-    `).bind(now, documentId).run();
+    `).bind(
+      JSON.stringify(extracted),
+      confidence,
+      now,
+      documentId
+    ).run();
     
     // 監査ログ
     await c.env.DB.prepare(`
       INSERT INTO audit_log (id, actor_user_id, target_company_id, target_resource_type, target_resource_id, action, action_category, severity, details_json, created_at)
-      VALUES (?, ?, ?, 'document', ?, 'DOCUMENT_EXTRACT_REQUESTED', 'document', 'info', ?, ?)
+      VALUES (?, ?, ?, 'document', ?, 'DOCUMENT_EXTRACTED', 'document', 'info', ?, ?)
     `).bind(
       crypto.randomUUID(),
       user?.id || null,
       companyId,
       documentId,
-      JSON.stringify({ doc_type: doc.doc_type, job_id: jobId }),
+      JSON.stringify({ doc_type: doc.doc_type, confidence, extracted_fields: Object.keys(extracted).filter(k => k !== 'source' && k !== 'confidence') }),
       now
     ).run();
-    
-    // AWS ジョブ投入（環境変数が設定されている場合のみ）
-    const awsJobUrl = c.env.AWS_JOB_SUBMIT_URL;
-    const internalSecret = c.env.INTERNAL_JWT_SECRET;
-    
-    let jobSubmitted = false;
-    let jobError: string | null = null;
-    
-    if (awsJobUrl && internalSecret) {
-      try {
-        // R2からの署名付きURLを生成するか、直接R2キーを渡す
-        const jobPayload = {
-          job_id: jobId,
-          job_type: 'document_extraction',
-          document_id: documentId,
-          company_id: companyId,
-          doc_type: doc.doc_type,
-          r2_key: doc.r2_key,
-          content_type: doc.content_type,
-          callback_url: `${c.req.url.split('/api/')[0]}/internal/document-extraction-callback`
-        };
-        
-        // 内部JWT生成（簡易版）
-        const tokenPayload = {
-          iss: 'cloudflare-worker',
-          sub: 'job-submit',
-          scope: ['document:extract'],
-          iat: Math.floor(Date.now() / 1000),
-          exp: Math.floor(Date.now() / 1000) + 300 // 5分有効
-        };
-        const tokenHeader = btoa(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
-        const tokenPayloadB64 = btoa(JSON.stringify(tokenPayload));
-        // 簡易的なHMAC署名（本番では適切な署名ライブラリを使用）
-        const encoder = new TextEncoder();
-        const key = await crypto.subtle.importKey(
-          'raw',
-          encoder.encode(internalSecret),
-          { name: 'HMAC', hash: 'SHA-256' },
-          false,
-          ['sign']
-        );
-        const signature = await crypto.subtle.sign(
-          'HMAC',
-          key,
-          encoder.encode(`${tokenHeader}.${tokenPayloadB64}`)
-        );
-        const signatureB64 = btoa(String.fromCharCode(...new Uint8Array(signature)));
-        const internalToken = `${tokenHeader}.${tokenPayloadB64}.${signatureB64}`;
-        
-        const response = await fetch(awsJobUrl, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${internalToken}`
-          },
-          body: JSON.stringify(jobPayload)
-        });
-        
-        if (response.ok) {
-          jobSubmitted = true;
-        } else {
-          jobError = `AWS job submission failed: ${response.status}`;
-          console.error('[Extract] AWS job submission failed:', response.status, await response.text());
-        }
-      } catch (e) {
-        jobError = `AWS job submission error: ${e instanceof Error ? e.message : String(e)}`;
-        console.error('[Extract] AWS job submission error:', e);
-      }
-    } else {
-      // AWS連携が設定されていない場合はモック（開発用）
-      console.log('[Extract] AWS_JOB_SUBMIT_URL not configured, using mock mode');
-      jobSubmitted = false;
-      jobError = 'AWS integration not configured (dev mode)';
-    }
     
     return c.json<ApiResponse<any>>({
       success: true,
       data: {
         document_id: documentId,
-        job_id: jobId,
-        status: 'extracting',
-        job_submitted: jobSubmitted,
-        job_error: jobError,
-        message: jobSubmitted 
-          ? '抽出処理を開始しました。完了までしばらくお待ちください。' 
-          : '抽出リクエストを受け付けました（AWS連携未設定のため、手動で結果を登録してください）'
+        status: 'extracted',
+        extracted: extracted,
+        confidence: confidence,
+        message: confidence >= 50 
+          ? '情報を抽出しました。確認後、プロフィールに反映できます。' 
+          : '抽出できましたが、信頼度が低いため確認が必要です。手入力での補完をお勧めします。'
       }
     });
   } catch (error) {
     console.error('Extract document error:', error);
     return c.json<ApiResponse<null>>({
       success: false,
-      error: { code: 'INTERNAL_ERROR', message: 'Failed to start extraction' }
+      error: { code: 'INTERNAL_ERROR', message: 'Failed to extract data' }
     }, 500);
   }
 });

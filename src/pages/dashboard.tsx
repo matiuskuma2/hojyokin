@@ -20,6 +20,8 @@ const AppLayout = ({ children, title, activeNav }: { children: any; title: strin
       <title>{title} - 補助金マッチング</title>
       <script src="https://cdn.tailwindcss.com"></script>
       <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet" />
+      {/* PDF.js for client-side PDF text extraction */}
+      <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
     </head>
     <body class="bg-gray-50 min-h-screen">
       {/* ナビゲーション */}
@@ -971,32 +973,152 @@ pages.get('/company', (c) => {
           }
         }
         
-        // 書類から情報を抽出
+        // PDFからテキストを抽出する関数
+        async function extractTextFromPDF(file) {
+          return new Promise(async (resolve, reject) => {
+            try {
+              // PDF.js workerを設定
+              pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+              
+              const arrayBuffer = await file.arrayBuffer();
+              const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+              
+              let fullText = '';
+              for (let i = 1; i <= pdf.numPages; i++) {
+                const page = await pdf.getPage(i);
+                const textContent = await page.getTextContent();
+                const pageText = textContent.items
+                  .map(item => item.str)
+                  .join(' ');
+                fullText += pageText + '\\n';
+              }
+              
+              resolve(fullText);
+            } catch (error) {
+              reject(error);
+            }
+          });
+        }
+        
+        // 書類から情報を抽出（サーバー側解析）
         async function extractDocument(docId) {
-          const list = document.getElementById('documents-list');
+          const errorDiv = document.getElementById('error-message');
+          const successDiv = document.getElementById('success-message');
+          errorDiv.classList.add('hidden');
+          successDiv.classList.add('hidden');
+          
+          // ローディング表示
+          const btn = event?.target;
+          if (btn) {
+            btn.disabled = true;
+            btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>解析中...';
+          }
           
           try {
-            const res = await apiCall('/api/profile/documents/' + docId + '/extract', { method: 'POST' });
+            successDiv.textContent = '情報を解析中...';
+            successDiv.classList.remove('hidden');
+            
+            // まずテキストなしで抽出を試みる（サーバーに保存済みのraw_textを使用）
+            const res = await apiCall('/api/profile/documents/' + docId + '/extract', {
+              method: 'POST',
+              body: JSON.stringify({})
+            });
+            
             if (res.success) {
-              document.getElementById('success-message').textContent = res.data.message || '抽出処理を開始しました';
-              document.getElementById('success-message').classList.remove('hidden');
+              successDiv.textContent = res.data.message || '情報を抽出しました';
               loadDocuments();
               
-              // AWS連携がない場合（開発モード）、3秒後にモック完了
-              if (!res.data.job_submitted) {
-                setTimeout(async () => {
-                  // モック: 抽出完了をシミュレート（開発用）
-                  console.log('Dev mode: simulating extraction completion');
-                  loadDocuments();
-                }, 3000);
+              // 抽出結果を即座に表示
+              if (res.data.extracted) {
+                setTimeout(() => showExtractedData(docId), 500);
               }
+            } else if (res.error?.code === 'NO_TEXT') {
+              // サーバーにテキストがない場合、PDFを再選択させる
+              successDiv.classList.add('hidden');
+              
+              const fileInput = document.createElement('input');
+              fileInput.type = 'file';
+              fileInput.accept = '.pdf';
+              fileInput.style.display = 'none';
+              document.body.appendChild(fileInput);
+              
+              fileInput.onchange = async function() {
+                const file = fileInput.files[0];
+                if (!file) {
+                  if (btn) {
+                    btn.disabled = false;
+                    btn.innerHTML = '<i class="fas fa-magic mr-1"></i>情報を抽出';
+                  }
+                  document.body.removeChild(fileInput);
+                  return;
+                }
+                
+                try {
+                  if (btn) btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>PDF読取中...';
+                  successDiv.textContent = 'PDFからテキストを読み取り中...';
+                  successDiv.classList.remove('hidden');
+                  
+                  const extractedText = await extractTextFromPDF(file);
+                  
+                  if (!extractedText || extractedText.trim().length < 50) {
+                    errorDiv.textContent = 'PDFからテキストを抽出できませんでした。スキャンPDFの場合は、テキスト認識可能なPDFをご用意ください。';
+                    errorDiv.classList.remove('hidden');
+                    successDiv.classList.add('hidden');
+                    return;
+                  }
+                  
+                  if (btn) btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>解析中...';
+                  successDiv.textContent = '情報を解析中...';
+                  
+                  // サーバーに抽出テキストを送信
+                  const retryRes = await apiCall('/api/profile/documents/' + docId + '/extract', {
+                    method: 'POST',
+                    body: JSON.stringify({ text: extractedText })
+                  });
+                  
+                  if (retryRes.success) {
+                    successDiv.textContent = retryRes.data.message || '情報を抽出しました';
+                    loadDocuments();
+                    if (retryRes.data.extracted) {
+                      setTimeout(() => showExtractedData(docId), 500);
+                    }
+                  } else {
+                    errorDiv.textContent = retryRes.error?.message || '抽出に失敗しました';
+                    errorDiv.classList.remove('hidden');
+                    successDiv.classList.add('hidden');
+                  }
+                } catch (err) {
+                  console.error('PDF extraction error:', err);
+                  errorDiv.textContent = 'PDFの解析中にエラーが発生しました';
+                  errorDiv.classList.remove('hidden');
+                  successDiv.classList.add('hidden');
+                } finally {
+                  if (btn) {
+                    btn.disabled = false;
+                    btn.innerHTML = '<i class="fas fa-magic mr-1"></i>情報を抽出';
+                  }
+                  document.body.removeChild(fileInput);
+                }
+              };
+              
+              alert('PDFファイルを選択してください。\\n（アップロード時にテキスト読取ができなかった場合、再度ファイルを選択する必要があります）');
+              fileInput.click();
+              return;
             } else {
-              document.getElementById('error-message').textContent = res.error?.message || '抽出の開始に失敗しました';
-              document.getElementById('error-message').classList.remove('hidden');
+              errorDiv.textContent = res.error?.message || '抽出に失敗しました';
+              errorDiv.classList.remove('hidden');
+              successDiv.classList.add('hidden');
             }
           } catch (err) {
-            document.getElementById('error-message').textContent = '通信エラーが発生しました';
-            document.getElementById('error-message').classList.remove('hidden');
+            console.error('Extract error:', err);
+            errorDiv.textContent = '通信エラーが発生しました';
+            errorDiv.classList.remove('hidden');
+            successDiv.classList.add('hidden');
+          } finally {
+            if (btn) {
+              btn.disabled = false;
+              btn.innerHTML = '<i class="fas fa-magic mr-1"></i>情報を抽出';
+            }
           }
         }
         window.extractDocument = extractDocument;
@@ -1300,6 +1422,11 @@ pages.get('/company', (c) => {
             return;
           }
           
+          const errorDiv = document.getElementById('error-message');
+          const successDiv = document.getElementById('success-message');
+          errorDiv.classList.add('hidden');
+          successDiv.classList.add('hidden');
+          
           uploadBtn.disabled = true;
           uploadBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> アップロード中...';
           
@@ -1307,7 +1434,25 @@ pages.get('/company', (c) => {
           formData.append('file', selectedFile);
           formData.append('doc_type', document.getElementById('doc-type').value);
           
+          // PDFの場合、テキストを事前抽出
+          let pdfText = '';
+          const docType = document.getElementById('doc-type').value;
+          const isPdfExtractable = selectedFile.type === 'application/pdf' && 
+                                   ['corp_registry', 'financials'].includes(docType);
+          
+          if (isPdfExtractable && typeof pdfjsLib !== 'undefined') {
+            try {
+              uploadBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> PDF読取中...';
+              pdfText = await extractTextFromPDF(selectedFile);
+              console.log('PDF text extracted, length:', pdfText.length);
+            } catch (pdfErr) {
+              console.warn('PDF text extraction failed:', pdfErr);
+              // PDFテキスト抽出に失敗しても、アップロードは続行
+            }
+          }
+          
           try {
+            uploadBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> アップロード中...';
             const token = localStorage.getItem('token');
             const res = await fetch('/api/profile/documents', {
               method: 'POST',
@@ -1319,8 +1464,24 @@ pages.get('/company', (c) => {
             const data = await res.json();
             
             if (data.success) {
-              document.getElementById('success-message').textContent = 'ファイルをアップロードしました';
-              document.getElementById('success-message').classList.remove('hidden');
+              const docId = data.data.id;
+              
+              // PDFテキストが抽出できた場合、サーバーに保存
+              if (pdfText && pdfText.length > 50) {
+                try {
+                  await apiCall('/api/profile/documents/' + docId + '/text', {
+                    method: 'POST',
+                    body: JSON.stringify({ text: pdfText })
+                  });
+                  console.log('PDF text saved to server');
+                } catch (textErr) {
+                  console.warn('Failed to save PDF text:', textErr);
+                }
+              }
+              
+              successDiv.textContent = 'ファイルをアップロードしました' + 
+                (pdfText.length > 50 ? '（テキスト読取済み）' : '');
+              successDiv.classList.remove('hidden');
               
               // リセット
               selectedFile = null;
@@ -1332,12 +1493,12 @@ pages.get('/company', (c) => {
               loadDocuments();
               loadCompleteness();
             } else {
-              document.getElementById('error-message').textContent = data.error?.message || 'アップロードに失敗しました';
-              document.getElementById('error-message').classList.remove('hidden');
+              errorDiv.textContent = data.error?.message || 'アップロードに失敗しました';
+              errorDiv.classList.remove('hidden');
             }
           } catch (err) {
-            document.getElementById('error-message').textContent = '通信エラーが発生しました';
-            document.getElementById('error-message').classList.remove('hidden');
+            errorDiv.textContent = '通信エラーが発生しました';
+            errorDiv.classList.remove('hidden');
           } finally {
             uploadBtn.disabled = true;
             uploadBtn.innerHTML = '<i class="fas fa-upload"></i> アップロード';
