@@ -1378,7 +1378,7 @@ adminPages.get('/admin/ops', (c) => {
           </h1>
           <p class="text-gray-600 mt-1">30分で「回ってる証拠」を確認するダッシュボード</p>
         </div>
-        <button onclick="runAllChecks()" class="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700">
+        <button id="btn-run-checks" onclick="runAllChecks()" class="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700">
           <i class="fas fa-sync-alt mr-1"></i>全チェック実行
         </button>
       </div>
@@ -1635,17 +1635,181 @@ adminPages.get('/admin/ops', (c) => {
         }
       }
 
+      // 進捗表示用の状態
+      window.__opsState = {
+        running: false,
+        startedAt: null,
+        finishedAt: null,
+        lastError: null,
+      };
+
+      // 画面上にステータス行を出す（なければ作る）
+      function ensureOpsStatusBar() {
+        let bar = document.getElementById('ops-status-bar');
+        if (!bar) {
+          const h1 = document.querySelector('h1');
+          const header = h1 ? h1.closest('div.mb-8') : null;
+          if (header) {
+            const el = document.createElement('div');
+            el.id = 'ops-status-bar';
+            el.className = 'mt-3 p-3 rounded-lg bg-gray-50 border text-sm text-gray-700';
+            el.innerHTML = '<div class="flex flex-wrap items-center gap-3">' +
+              '<span id="ops-status-text" class="font-medium">待機中</span>' +
+              '<span id="ops-status-time" class="text-xs text-gray-500"></span>' +
+              '<span id="ops-status-duration" class="text-xs text-gray-500"></span>' +
+              '</div>' +
+              '<div class="mt-2 grid grid-cols-1 md:grid-cols-3 gap-2 text-xs">' +
+              '<div class="p-2 rounded bg-white border">' +
+              'Coverage: <span id="ops-step-coverage" class="text-gray-400">未実行</span>' +
+              '</div>' +
+              '<div class="p-2 rounded bg-white border">' +
+              'Dashboard: <span id="ops-step-dashboard" class="text-gray-400">未実行</span>' +
+              '</div>' +
+              '<div class="p-2 rounded bg-white border">' +
+              'Data-freshness: <span id="ops-step-freshness" class="text-gray-400">未実行</span>' +
+              '</div>' +
+              '</div>' +
+              '<div id="ops-status-error" class="mt-2 text-xs text-red-600 hidden"></div>';
+            header.appendChild(el);
+          }
+        }
+      }
+
+      function setStep(id, state, msg) {
+        const el = document.getElementById(id);
+        if (!el) return;
+        const map = {
+          idle: 'text-gray-400',
+          running: 'text-blue-600',
+          ok: 'text-green-600',
+          fail: 'text-red-600',
+        };
+        el.className = map[state] || 'text-gray-400';
+        el.textContent = msg || '';
+      }
+
+      function formatTime(d) {
+        if (!d) return '';
+        try { return new Date(d).toLocaleString('ja-JP'); } catch(e){ return String(d); }
+      }
+
+      function setStatus(text, startedAt, finishedAt) {
+        const t = document.getElementById('ops-status-text');
+        const tm = document.getElementById('ops-status-time');
+        const dur = document.getElementById('ops-status-duration');
+        if (t) t.textContent = text;
+
+        if (tm) {
+          if (startedAt && !finishedAt) tm.textContent = '開始: ' + formatTime(startedAt);
+          else if (startedAt && finishedAt) tm.textContent = '開始: ' + formatTime(startedAt) + ' / 完了: ' + formatTime(finishedAt);
+          else tm.textContent = '';
+        }
+
+        if (dur) {
+          if (startedAt && finishedAt) {
+            const ms = new Date(finishedAt).getTime() - new Date(startedAt).getTime();
+            dur.textContent = '所要: ' + Math.max(0, Math.round(ms/1000)) + '秒';
+          } else {
+            dur.textContent = '';
+          }
+        }
+      }
+
+      function showError(msg) {
+        const el = document.getElementById('ops-status-error');
+        if (!el) return;
+        el.textContent = msg || '';
+        el.classList.remove('hidden');
+      }
+
+      function hideError() {
+        const el = document.getElementById('ops-status-error');
+        if (!el) return;
+        el.classList.add('hidden');
+        el.textContent = '';
+      }
+
+      // タイムアウト付きでPromiseを実行
+      async function withTimeout(promise, ms, label) {
+        let timer;
+        const timeout = new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error(label + ' がタイムアウトしました（' + ms + 'ms）')), ms);
+        });
+        try {
+          return await Promise.race([promise, timeout]);
+        } finally {
+          clearTimeout(timer);
+        }
+      }
+
+      // ✅ ボタン用：実行中/完了が見える runAllChecks
       window.runAllChecks = async function() {
         console.log('[OPS] Starting all checks...');
+        ensureOpsStatusBar();
+        if (window.__opsState.running) {
+          console.log('[OPS] Already running, skipping');
+          return;
+        }
+
+        window.__opsState.running = true;
+        window.__opsState.startedAt = new Date().toISOString();
+        window.__opsState.finishedAt = null;
+        window.__opsState.lastError = null;
+
+        hideError();
+        setStatus('実行中…', window.__opsState.startedAt, null);
+
+        setStep('ops-step-coverage', 'running', '実行中…');
+        setStep('ops-step-dashboard', 'idle', '待機');
+        setStep('ops-step-freshness', 'idle', '待機');
+
+        // ボタンをロック＆スピナー
+        const btn = document.getElementById('btn-run-checks');
+        if (btn) {
+          btn.disabled = true;
+          btn.classList.add('opacity-70', 'cursor-not-allowed');
+          btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>チェック実行中…';
+        }
+
         try {
-          await Promise.all([
-            loadCoverageData(),
-            loadDashboardData()
-          ]);
+          // Coverage → Dashboard → Freshness の順に実行（どこで止まったか分かる）
+          console.log('[OPS] Loading coverage data...');
+          await withTimeout(loadCoverageData(), 15000, 'Coverage');
+          setStep('ops-step-coverage', 'ok', 'OK');
+
+          setStep('ops-step-dashboard', 'running', '実行中…');
+          console.log('[OPS] Loading dashboard data...');
+          await withTimeout(loadDashboardData(), 15000, 'Dashboard');
+          setStep('ops-step-dashboard', 'ok', 'OK');
+
+          setStep('ops-step-freshness', 'ok', '（Coverage内）');
+
+          window.__opsState.finishedAt = new Date().toISOString();
+          setStatus('完了 ✅', window.__opsState.startedAt, window.__opsState.finishedAt);
           console.log('[OPS] All checks completed');
-        } catch (error) {
-          console.error('[OPS] Check failed:', error);
-          alert('チェック実行中にエラーが発生しました: ' + error.message);
+
+        } catch (e) {
+          window.__opsState.lastError = (e && e.message) ? e.message : String(e);
+          window.__opsState.finishedAt = new Date().toISOString();
+
+          setStatus('失敗 ❌', window.__opsState.startedAt, window.__opsState.finishedAt);
+          showError(window.__opsState.lastError);
+
+          // どこで失敗したか分かるように赤表示
+          if (String(window.__opsState.lastError).includes('Coverage')) setStep('ops-step-coverage', 'fail', '失敗');
+          else if (String(window.__opsState.lastError).includes('Dashboard')) setStep('ops-step-dashboard', 'fail', '失敗');
+          else if (String(window.__opsState.lastError).includes('Data-freshness')) setStep('ops-step-freshness', 'fail', '失敗');
+
+          console.error('[OPS] Check failed:', e);
+
+        } finally {
+          window.__opsState.running = false;
+
+          if (btn) {
+            btn.disabled = false;
+            btn.classList.remove('opacity-70', 'cursor-not-allowed');
+            btn.innerHTML = '<i class="fas fa-sync-alt mr-1"></i>全チェック実行';
+          }
         }
       };
       
