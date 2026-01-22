@@ -54,6 +54,17 @@ const commonScripts = `
     try {
       var res = await fetch(url, fetchOptions);
       var data = await res.json();
+      
+      // 認証エラー時は自動ログアウト
+      if (res.status === 401 || (data && data.error && data.error.code === 'UNAUTHORIZED')) {
+        console.warn('認証エラー: 自動ログアウトします');
+        localStorage.removeItem('token');
+        localStorage.removeItem('user');
+        alert('セッションの有効期限が切れました。再度ログインしてください。');
+        window.location.href = '/login';
+        return data;
+      }
+      
       return data;
     } catch (err) {
       console.error('API呼び出しエラー:', err);
@@ -1011,11 +1022,13 @@ pages.get('/company', (c) => {
                   if (form.postal_code) form.postal_code.value = company.postal_code || '';
                   if (form.prefecture) form.prefecture.value = company.prefecture || '';
                   if (form.city) form.city.value = company.city || '';
-                  if (form.industry) form.industry.value = company.industry || '';
+                  // DB は industry_major カラムに保存
+                  if (form.industry) form.industry.value = company.industry_major || company.industry || '';
                   if (form.employee_count) form.employee_count.value = company.employee_count || '';
                   if (form.capital) form.capital.value = company.capital || '';
                   if (form.annual_revenue) form.annual_revenue.value = company.annual_revenue || '';
-                  if (form.founded_date) form.founded_date.value = company.founded_date || '';
+                  // DB は established_date カラムに保存
+                  if (form.founded_date) form.founded_date.value = company.established_date || company.founded_date || '';
                 }
               }
               
@@ -1053,11 +1066,11 @@ pages.get('/company', (c) => {
                   postal_code: form.postal_code.value || null,
                   prefecture: form.prefecture.value,
                   city: form.city.value || null,
-                  industry: form.industry.value,
+                  industry_major: form.industry.value,  // API は industry_major を期待
                   employee_count: parseInt(form.employee_count.value) || null,
                   capital: parseInt(form.capital.value) || null,
                   annual_revenue: parseInt(form.annual_revenue.value) || null,
-                  founded_date: form.founded_date.value || null
+                  established_date: form.founded_date.value || null  // API は established_date を期待
                 };
                 
                 try {

@@ -153,6 +153,17 @@ const adminLayout = (title: string, content: string, activeTab: string = '') => 
         try {
           var res = await fetch(path, fetchOptions);
           var data = await res.json();
+          
+          // 認証エラー時は自動ログアウト
+          if (res.status === 401 || (data && data.error && data.error.code === 'UNAUTHORIZED')) {
+            console.warn('認証エラー: 自動ログアウトします');
+            localStorage.removeItem('token');
+            localStorage.removeItem('user');
+            alert('セッションの有効期限が切れました。再度ログインしてください。');
+            window.location.href = '/login';
+            return data;
+          }
+          
           return data;
         } catch (err) {
           console.error('API呼び出しエラー:', err);
