@@ -381,11 +381,11 @@ subsidyPages.get('/subsidies', (c) => {
       async function loadCompanies() {
         try {
           const res = await api('/api/companies');
-          console.log('Companies API response:', res);
+          console.log('[補助金検索] Companies API response:', JSON.stringify(res, null, 2));
           
           // APIエラーの場合
           if (!res || !res.success) {
-            console.error('API error:', res?.error);
+            console.error('[補助金検索] API error:', res?.error);
             // 認証エラーの場合はログインページへリダイレクトされるはずなので、ここでは別のエラー
             showNoCompanyAlert();
             return;
@@ -394,7 +394,7 @@ subsidyPages.get('/subsidies', (c) => {
           if (res.data && res.data.length > 0) {
             const select = document.getElementById('company-select');
             if (!select) {
-              console.error('company-select element not found');
+              console.error('[補助金検索] company-select element not found');
               return;
             }
             
@@ -403,7 +403,7 @@ subsidyPages.get('/subsidies', (c) => {
             let firstSearchableValue = null;
             
             res.data.forEach(company => {
-              console.log('Company data:', company);
+              console.log('[補助金検索] Company data:', JSON.stringify(company, null, 2));
               
               // 必須4項目のチェック（フィールド名のバリエーションに対応）
               const hasName = !!company.name;
@@ -412,7 +412,14 @@ subsidyPages.get('/subsidies', (c) => {
               const hasEmployees = company.employee_count !== null && company.employee_count !== undefined && company.employee_count > 0;
               const isSearchable = hasName && hasPref && hasIndustry && hasEmployees;
               
-              console.log('Searchable check:', { hasName, hasPref, hasIndustry, hasEmployees, isSearchable });
+              console.log('[補助金検索] Searchable check:', { 
+                companyName: company.name,
+                hasName, hasPref, hasIndustry, hasEmployees, isSearchable,
+                industry_major: company.industry_major,
+                industry: company.industry,
+                employee_count: company.employee_count,
+                prefecture: company.prefecture
+              });
               
               const option = document.createElement('option');
               option.value = company.id;

@@ -259,37 +259,48 @@ pages.get('/dashboard', (c) => {
         <p class="text-gray-600 mt-1">補助金申請までのステップを確認できます</p>
       </div>
       
-      {/* 重要なお知らせボックス（検索条件の説明）*/}
-      <div id="info-box" class="mb-6 bg-blue-50 border border-blue-200 rounded-xl p-5 hidden">
+      {/* 会社情報登録状況カード - 4項目完了時にチェックボックス化 */}
+      <div id="info-box" class="mb-6 rounded-xl p-5 hidden transition-all">
         <div class="flex items-start gap-4">
-          <div class="w-10 h-10 bg-blue-100 rounded-full flex items-center justify-center flex-shrink-0">
-            <i class="fas fa-info-circle text-blue-600"></i>
+          <div id="info-box-icon" class="w-12 h-12 bg-blue-100 rounded-full flex items-center justify-center flex-shrink-0">
+            <i class="fas fa-building text-blue-600 text-xl"></i>
           </div>
           <div class="flex-1">
-            <h3 class="font-semibold text-blue-800 mb-2">補助金検索について</h3>
-            <p class="text-sm text-blue-700 mb-3">
-              補助金を検索するには、以下の<strong>4つの情報</strong>が最低限必要です。
-              これらの情報で、あなたの会社に合った補助金を絞り込みます。
+            <div class="flex items-center gap-2 mb-2">
+              <h3 id="info-box-title" class="font-semibold text-blue-800">補助金検索に必要な情報</h3>
+              <span id="info-box-badge" class="hidden px-2 py-0.5 text-xs rounded-full"></span>
+            </div>
+            <p id="info-box-desc" class="text-sm text-blue-700 mb-3">
+              補助金を検索するには、以下の<strong>4つの情報</strong>が必要です。
             </p>
+            {/* 4項目チェックボックス */}
             <div class="grid grid-cols-2 md:grid-cols-4 gap-2">
-              <div id="req-name" class="flex items-center gap-2 px-3 py-2 bg-white rounded-lg border border-blue-200">
-                <i class="fas fa-circle text-gray-300 text-xs"></i>
+              <div id="req-name" class="flex items-center gap-2 px-3 py-2 bg-white rounded-lg border border-gray-200 transition-all cursor-pointer hover:shadow-sm" onclick="window.location.href='/company'">
+                <div class="w-5 h-5 border-2 border-gray-300 rounded flex items-center justify-center">
+                  <i class="fas fa-check text-white text-xs hidden"></i>
+                </div>
                 <span class="text-sm text-gray-700">会社名</span>
               </div>
-              <div id="req-pref" class="flex items-center gap-2 px-3 py-2 bg-white rounded-lg border border-blue-200">
-                <i class="fas fa-circle text-gray-300 text-xs"></i>
+              <div id="req-pref" class="flex items-center gap-2 px-3 py-2 bg-white rounded-lg border border-gray-200 transition-all cursor-pointer hover:shadow-sm" onclick="window.location.href='/company'">
+                <div class="w-5 h-5 border-2 border-gray-300 rounded flex items-center justify-center">
+                  <i class="fas fa-check text-white text-xs hidden"></i>
+                </div>
                 <span class="text-sm text-gray-700">都道府県</span>
               </div>
-              <div id="req-industry" class="flex items-center gap-2 px-3 py-2 bg-white rounded-lg border border-blue-200">
-                <i class="fas fa-circle text-gray-300 text-xs"></i>
+              <div id="req-industry" class="flex items-center gap-2 px-3 py-2 bg-white rounded-lg border border-gray-200 transition-all cursor-pointer hover:shadow-sm" onclick="window.location.href='/company'">
+                <div class="w-5 h-5 border-2 border-gray-300 rounded flex items-center justify-center">
+                  <i class="fas fa-check text-white text-xs hidden"></i>
+                </div>
                 <span class="text-sm text-gray-700">業種</span>
               </div>
-              <div id="req-employees" class="flex items-center gap-2 px-3 py-2 bg-white rounded-lg border border-blue-200">
-                <i class="fas fa-circle text-gray-300 text-xs"></i>
+              <div id="req-employees" class="flex items-center gap-2 px-3 py-2 bg-white rounded-lg border border-gray-200 transition-all cursor-pointer hover:shadow-sm" onclick="window.location.href='/company'">
+                <div class="w-5 h-5 border-2 border-gray-300 rounded flex items-center justify-center">
+                  <i class="fas fa-check text-white text-xs hidden"></i>
+                </div>
                 <span class="text-sm text-gray-700">従業員数</span>
               </div>
             </div>
-            <p class="text-xs text-blue-600 mt-3">
+            <p id="info-box-hint" class="text-xs text-blue-600 mt-3">
               <i class="fas fa-lightbulb mr-1"></i>
               追加で資本金や設立年月を入力すると、より精度の高いマッチングが可能になります
             </p>
@@ -473,11 +484,45 @@ pages.get('/dashboard', (c) => {
                 // 検索準備完了かどうか
                 window.searchReady = reqName && reqPref && reqIndustry && reqEmployees;
                 
-                // 必須項目の表示を更新
+                // 必須項目の表示を更新（チェックボックス化）
                 updateRequiredField('req-name', reqName);
                 updateRequiredField('req-pref', reqPref);
                 updateRequiredField('req-industry', reqIndustry);
                 updateRequiredField('req-employees', reqEmployees);
+                
+                // 入力済みの数をカウント
+                var filledCount = [reqName, reqPref, reqIndustry, reqEmployees].filter(Boolean).length;
+                updateInfoBox(window.searchReady, filledCount);
+                
+                // インラインステータスも更新
+                updateInlineStatus('inline-name', reqName);
+                updateInlineStatus('inline-pref', reqPref);
+                updateInlineStatus('inline-industry', reqIndustry);
+                updateInlineStatus('inline-employees', reqEmployees);
+                
+                // インラインステータスを表示
+                var inlineContainer = document.getElementById('required-items-inline');
+                if (inlineContainer) inlineContainer.classList.remove('hidden');
+                
+                // 必須ステータスバッジを更新
+                var statusBadge = document.getElementById('required-status-badge');
+                if (statusBadge) {
+                  if (window.searchReady) {
+                    statusBadge.className = 'px-2 py-0.5 text-xs rounded-full bg-green-100 text-green-700';
+                    statusBadge.textContent = '検索可能';
+                    statusBadge.classList.remove('hidden');
+                  } else {
+                    statusBadge.className = 'px-2 py-0.5 text-xs rounded-full bg-yellow-100 text-yellow-700';
+                    statusBadge.textContent = 'あと' + (4 - filledCount) + '項目';
+                    statusBadge.classList.remove('hidden');
+                  }
+                }
+                
+                // 完成度カードの色も変更
+                var completenessCard = document.getElementById('completeness-card');
+                if (completenessCard && window.searchReady) {
+                  completenessCard.className = 'bg-gradient-to-r from-green-50 to-emerald-50 rounded-xl shadow-sm border border-green-200 p-6 mb-6 transition-all';
+                }
                 
                 // ステップ1の状態更新
                 var step1Required = document.getElementById('step1-required');
@@ -604,14 +649,94 @@ pages.get('/dashboard', (c) => {
             var el = document.getElementById(id);
             if (!el) return;
             
-            var icon = el.querySelector('i');
-            if (icon) {
+            var checkbox = el.querySelector('div');
+            var checkIcon = el.querySelector('i');
+            
+            if (checkbox && checkIcon) {
               if (filled) {
-                icon.className = 'fas fa-check-circle text-green-500 text-xs';
-                el.className = 'flex items-center gap-2 px-3 py-2 bg-green-50 rounded-lg border border-green-300';
+                // チェック済み状態 - 緑色のチェックボックス
+                checkbox.className = 'w-5 h-5 bg-green-500 border-2 border-green-500 rounded flex items-center justify-center';
+                checkIcon.classList.remove('hidden');
+                el.className = 'flex items-center gap-2 px-3 py-2 bg-green-50 rounded-lg border border-green-300 transition-all cursor-pointer hover:shadow-sm';
               } else {
-                icon.className = 'fas fa-circle text-gray-300 text-xs';
-                el.className = 'flex items-center gap-2 px-3 py-2 bg-white rounded-lg border border-blue-200';
+                // 未チェック状態 - 空のチェックボックス
+                checkbox.className = 'w-5 h-5 border-2 border-gray-300 rounded flex items-center justify-center';
+                checkIcon.classList.add('hidden');
+                el.className = 'flex items-center gap-2 px-3 py-2 bg-white rounded-lg border border-gray-200 transition-all cursor-pointer hover:shadow-sm';
+              }
+            }
+          }
+          
+          function updateInlineStatus(id, filled) {
+            var el = document.getElementById(id);
+            if (!el) return;
+            var icon = el.querySelector('i');
+            if (filled) {
+              el.className = 'flex items-center gap-1 text-green-600';
+              if (icon) icon.className = 'fas fa-check-circle';
+            } else {
+              el.className = 'flex items-center gap-1 text-gray-400';
+              if (icon) icon.className = 'fas fa-circle';
+            }
+          }
+          
+          function updateInfoBox(allFilled, filledCount) {
+            var infoBox = document.getElementById('info-box');
+            var infoBoxIcon = document.getElementById('info-box-icon');
+            var infoBoxTitle = document.getElementById('info-box-title');
+            var infoBoxBadge = document.getElementById('info-box-badge');
+            var infoBoxDesc = document.getElementById('info-box-desc');
+            var infoBoxHint = document.getElementById('info-box-hint');
+            
+            if (!infoBox) return;
+            
+            if (allFilled) {
+              // 4項目全て完了 - 緑色の成功スタイル
+              infoBox.className = 'mb-6 bg-gradient-to-r from-green-50 to-emerald-50 border border-green-300 rounded-xl p-5 transition-all';
+              if (infoBoxIcon) {
+                infoBoxIcon.className = 'w-12 h-12 bg-green-500 rounded-full flex items-center justify-center flex-shrink-0';
+                infoBoxIcon.innerHTML = '<i class="fas fa-check text-white text-xl"></i>';
+              }
+              if (infoBoxTitle) {
+                infoBoxTitle.className = 'font-semibold text-green-800';
+                infoBoxTitle.textContent = '補助金検索の準備完了！';
+              }
+              if (infoBoxBadge) {
+                infoBoxBadge.className = 'px-2 py-0.5 text-xs rounded-full bg-green-100 text-green-700';
+                infoBoxBadge.textContent = '4/4 完了';
+                infoBoxBadge.classList.remove('hidden');
+              }
+              if (infoBoxDesc) {
+                infoBoxDesc.className = 'text-sm text-green-700 mb-3';
+                infoBoxDesc.innerHTML = '必要な情報がすべて入力されています。<strong>「補助金を探す」</strong>から検索を始められます。';
+              }
+              if (infoBoxHint) {
+                infoBoxHint.className = 'text-xs text-green-600 mt-3';
+                infoBoxHint.innerHTML = '<i class="fas fa-arrow-right mr-1"></i><a href="/subsidies" class="underline hover:no-underline">補助金を探す →</a>';
+              }
+            } else {
+              // 未完了 - 青色の情報スタイル
+              infoBox.className = 'mb-6 bg-blue-50 border border-blue-200 rounded-xl p-5 transition-all';
+              if (infoBoxIcon) {
+                infoBoxIcon.className = 'w-12 h-12 bg-blue-100 rounded-full flex items-center justify-center flex-shrink-0';
+                infoBoxIcon.innerHTML = '<i class="fas fa-building text-blue-600 text-xl"></i>';
+              }
+              if (infoBoxTitle) {
+                infoBoxTitle.className = 'font-semibold text-blue-800';
+                infoBoxTitle.textContent = '補助金検索に必要な情報';
+              }
+              if (infoBoxBadge) {
+                infoBoxBadge.className = 'px-2 py-0.5 text-xs rounded-full bg-yellow-100 text-yellow-700';
+                infoBoxBadge.textContent = filledCount + '/4 入力済';
+                infoBoxBadge.classList.remove('hidden');
+              }
+              if (infoBoxDesc) {
+                infoBoxDesc.className = 'text-sm text-blue-700 mb-3';
+                infoBoxDesc.innerHTML = '補助金を検索するには、以下の<strong>4つの情報</strong>が必要です。';
+              }
+              if (infoBoxHint) {
+                infoBoxHint.className = 'text-xs text-blue-600 mt-3';
+                infoBoxHint.innerHTML = '<i class="fas fa-lightbulb mr-1"></i>追加で資本金や設立年月を入力すると、より精度の高いマッチングが可能になります';
               }
             }
           }
@@ -899,15 +1024,18 @@ pages.get('/company', (c) => {
         </div>
       </div>
       
-      {/* プロフィール完成度 */}
-      <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-6">
+      {/* プロフィール完成度 + 4項目ステータス */}
+      <div id="completeness-card" class="bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-6 transition-all">
         <div class="flex items-center justify-between">
           <div class="flex items-center gap-3">
             <div id="completeness-icon" class="w-10 h-10 bg-gray-100 rounded-full flex items-center justify-center">
               <i class="fas fa-spinner fa-spin text-gray-400"></i>
             </div>
             <div>
-              <span class="text-sm text-gray-500">プロフィール完成度</span>
+              <div class="flex items-center gap-2">
+                <span class="text-sm text-gray-500">プロフィール完成度</span>
+                <span id="required-status-badge" class="hidden px-2 py-0.5 text-xs rounded-full"></span>
+              </div>
               <div id="next-action" class="text-sm text-gray-600 mt-1"></div>
             </div>
           </div>
@@ -918,6 +1046,23 @@ pages.get('/company', (c) => {
         </div>
         <div class="mt-4 w-full bg-gray-200 rounded-full h-2">
           <div id="completeness-bar" class="bg-blue-600 h-2 rounded-full transition-all" style="width: 0%"></div>
+        </div>
+        {/* 必須4項目のインラインステータス */}
+        <div id="required-items-inline" class="mt-4 pt-4 border-t border-gray-100 hidden">
+          <div class="flex flex-wrap gap-3 text-xs">
+            <span id="inline-name" class="flex items-center gap-1 text-gray-400">
+              <i class="fas fa-circle"></i>会社名
+            </span>
+            <span id="inline-pref" class="flex items-center gap-1 text-gray-400">
+              <i class="fas fa-circle"></i>都道府県
+            </span>
+            <span id="inline-industry" class="flex items-center gap-1 text-gray-400">
+              <i class="fas fa-circle"></i>業種
+            </span>
+            <span id="inline-employees" class="flex items-center gap-1 text-gray-400">
+              <i class="fas fa-circle"></i>従業員数
+            </span>
+          </div>
         </div>
       </div>
       
