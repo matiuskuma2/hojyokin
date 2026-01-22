@@ -1613,25 +1613,21 @@ adminPages.get('/admin/ops', (c) => {
     </div>
 
     <script>
-      const user = JSON.parse(localStorage.getItem('user') || 'null');
-      if (user?.role !== 'super_admin') {
-        document.getElementById('access-denied').classList.remove('hidden');
-        document.getElementById('ops-content').classList.add('hidden');
-      } else {
-        runAllChecks();
-      }
-
       // チェック結果を更新
       function updateCheckStatus(elementId, passed, detail) {
         const el = document.getElementById(elementId);
+        if (!el) return;
+        
         if (passed) {
           el.classList.remove('border-gray-200');
           el.classList.add('border-green-500', 'bg-green-50');
-          el.querySelector('div').textContent = '✅';
+          var iconEl = el.querySelector('div');
+          if (iconEl) iconEl.textContent = '✅';
         } else {
           el.classList.remove('border-gray-200');
           el.classList.add('border-red-500', 'bg-red-50');
-          el.querySelector('div').textContent = '❌';
+          var iconEl = el.querySelector('div');
+          if (iconEl) iconEl.textContent = '❌';
         }
         if (detail) {
           const detailEl = el.querySelector('p.text-xs');
@@ -1639,12 +1635,49 @@ adminPages.get('/admin/ops', (c) => {
         }
       }
 
-      async function runAllChecks() {
-        await Promise.all([
-          loadCoverageData(),
-          loadDashboardData()
-        ]);
-      }
+      window.runAllChecks = async function() {
+        console.log('[OPS] Starting all checks...');
+        try {
+          await Promise.all([
+            loadCoverageData(),
+            loadDashboardData()
+          ]);
+          console.log('[OPS] All checks completed');
+        } catch (error) {
+          console.error('[OPS] Check failed:', error);
+          alert('チェック実行中にエラーが発生しました: ' + error.message);
+        }
+      };
+      
+      // 初期化処理
+      (function() {
+        'use strict';
+        
+        var user = null;
+        try {
+          var userStr = localStorage.getItem('user');
+          user = userStr ? JSON.parse(userStr) : null;
+        } catch (e) {
+          console.error('[OPS] User parse error:', e);
+        }
+        
+        if (!user || user.role !== 'super_admin') {
+          var deniedEl = document.getElementById('access-denied');
+          var contentEl = document.getElementById('ops-content');
+          if (deniedEl) deniedEl.classList.remove('hidden');
+          if (contentEl) contentEl.classList.add('hidden');
+          return;
+        }
+        
+        // 初回実行（ページロード後に実行）
+        setTimeout(function() {
+          if (typeof window.runAllChecks === 'function') {
+            window.runAllChecks().catch(function(err) {
+              console.error('[OPS] Initial check failed:', err);
+            });
+          }
+        }, 100);
+      })();
 
       async function loadCoverageData() {
         try {
