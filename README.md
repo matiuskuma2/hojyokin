@@ -391,8 +391,91 @@ FIRECRAWL_API_KEY=fc-xxx
 | ... | ... |
 | 0015_company_profile.sql | 会社プロフィール拡張 |
 | 0016_s3_s4_chat_draft.sql | S3/S4: チャット＋ドラフト |
+| 0017_company_documents_raw_text.sql | 書類テキスト抽出 |
+| 0017_security_tables.sql | セキュリティテーブル |
+| 0018_usage_events.sql | 利用イベント |
+| 0019_agency_tables.sql | Agency（士業）機能: agencies, agency_members, agency_clients, access_links, intake_submissions, chat_answers, notifications |
+| 0020_agency_intake_extension.sql | Intake強化: intake_link_templates, intake_field_mappings, agency_client_history |
+| 0021_superadmin_kpi_cost.sql | Superadmin KPI: event_log, cost_usage_log, data_freshness_log, kpi_daily_snapshots, alert_rules, alert_history |
 
 ---
+
+## Agency（士業）機能
+
+### ロール定義
+- **user**: 自社の利用（現状の申請導線）
+- **agency**: 顧客企業を複数管理し、顧客の代理で検索・壁打ち・ドラフト作成まで可能
+- **superadmin**: 全体管理（ユーザー数/KPI/コスト/クロール状況/監査）
+
+### Agency 機能の2種類のリンク
+
+#### Link-1: 企業情報入力リンク（Company Intake Link）
+- **目的**: 顧客に渡して企業情報を入力してもらう
+- **URL**: `/intake?code=XXXXXXXX`
+- **認証**: ログイン不要（短縮コードで認証）
+- **機能**: 会社名・所在地・業種・従業員数・資本金等の入力
+
+#### Link-2: 壁打ち回答リンク（Chat Answer Link）
+- **目的**: 壁打ちで発生した追加質問に顧客が回答
+- **URL**: `/answer?code=XXXXXXXX`
+- **認証**: ログイン不要
+- **機能**: 補助金申請に必要な追加情報の回答
+
+### Agency API エンドポイント
+
+| エンドポイント | メソッド | 説明 |
+|---------------|---------|------|
+| `/api/agency/me` | GET | 自分のagency情報取得 |
+| `/api/agency/me` | PUT | agency情報更新 |
+| `/api/agency/dashboard` | GET | ダッシュボード統計 |
+| `/api/agency/clients` | GET | 顧客一覧 |
+| `/api/agency/clients` | POST | 顧客追加 |
+| `/api/agency/clients/:id` | GET | 顧客詳細 |
+| `/api/agency/clients/:id` | PUT | 顧客更新 |
+| `/api/agency/links` | POST | リンク発行 |
+| `/api/agency/links` | GET | リンク一覧 |
+| `/api/agency/links/:id` | DELETE | リンク無効化 |
+| `/api/agency/submissions` | GET | 入力受付一覧 |
+| `/api/agency/submissions/:id/approve` | POST | 入力承認（会社情報に反映） |
+| `/api/agency/submissions/:id/reject` | POST | 入力却下 |
+
+### 顧客ポータル API
+
+| エンドポイント | メソッド | 説明 |
+|---------------|---------|------|
+| `/api/portal/verify` | GET | リンク検証 |
+| `/api/portal/company` | GET | 会社情報取得 |
+| `/api/portal/intake` | POST | 企業情報入力 |
+| `/api/portal/questions` | GET | 壁打ち質問取得 |
+| `/api/portal/answer` | POST | 壁打ち質問回答 |
+
+---
+
+## Superadmin KPI・監視機能
+
+### KPI ダッシュボード API
+
+| エンドポイント | メソッド | 説明 | アクセス |
+|---------------|---------|------|---------|
+| `/api/admin/dashboard` | GET | KPI + キュー状況 | admin, super_admin |
+| `/api/admin/costs` | GET | コスト集計 | super_admin のみ |
+| `/api/admin/updates` | GET | 更新状況一覧 | admin, super_admin |
+| `/api/admin/agency-kpi` | GET | Agency統計 | super_admin のみ |
+| `/api/admin/data-freshness` | GET | データ鮮度監視 | super_admin のみ |
+| `/api/admin/alerts` | GET | アラート一覧 | super_admin のみ |
+| `/api/admin/kpi-history` | GET | KPI履歴取得 | super_admin のみ |
+| `/api/admin/generate-daily-snapshot` | POST | 日次KPIスナップショット生成 | super_admin のみ |
+
+### 監視テーブル
+
+| テーブル | 用途 |
+|----------|------|
+| event_log | 汎用イベントログ（監査・分析） |
+| cost_usage_log | コスト詳細ログ（請求・予算管理） |
+| data_freshness_log | データ鮮度監視 |
+| kpi_daily_snapshots | 日次KPIスナップショット |
+| alert_rules | アラートルール設定 |
+| alert_history | アラート発報履歴 |
 
 ---
 
@@ -558,6 +641,8 @@ Private
 
 ## 更新履歴
 
+- **2026-01-22**: Agency Intake強化 (0020), Superadmin KPI・監視機能 (0021) マイグレーション追加
+- **2026-01-22**: admin-dashboard.ts に agency-kpi, data-freshness, alerts, kpi-history API追加
 - **2026-01-22**: 全ページコードレビュー完了、subsidies.tsx境界値処理追加、agency.ts JSON.parse try-catch追加
 - **2026-01-22**: コード品質ガイドライン整備、全ページの技術負債解消
 - **2026-01-22**: S4 申請書ドラフト生成 完了

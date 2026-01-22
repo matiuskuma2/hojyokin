@@ -402,4 +402,565 @@ adminDashboard.get('/updates', async (c) => {
   }
 });
 
+// ============================================================
+// Agency KPI（superadmin向け）
+// ============================================================
+
+adminDashboard.get('/agency-kpi', async (c) => {
+  const db = c.env.DB;
+  const user = getCurrentUser(c);
+  
+  // super_admin限定
+  if (user.role !== 'super_admin') {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: 'FORBIDDEN',
+        message: 'Super admin access required',
+      },
+    }, 403);
+  }
+
+  try {
+    const today = new Date().toISOString().split('T')[0];
+    const weekAgo = new Date(Date.now() - 7 * 86400000).toISOString().split('T')[0];
+    const monthAgo = new Date(Date.now() - 30 * 86400000).toISOString().split('T')[0];
+
+    // Agency 統計
+    const agencyStats = await db.prepare(`
+      SELECT 
+        COUNT(*) as total_agencies,
+        SUM(CASE WHEN date(created_at) >= ? THEN 1 ELSE 0 END) as new_agencies_month,
+        SUM(CASE WHEN plan = 'pro' OR plan = 'enterprise' THEN 1 ELSE 0 END) as paid_agencies
+      FROM agencies
+    `).bind(monthAgo).first<{
+      total_agencies: number;
+      new_agencies_month: number;
+      paid_agencies: number;
+    }>();
+
+    // 顧客企業統計
+    const clientStats = await db.prepare(`
+      SELECT 
+        COUNT(*) as total_clients,
+        SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) as active_clients,
+        SUM(CASE WHEN date(created_at) >= ? THEN 1 ELSE 0 END) as new_clients_month
+      FROM agency_clients
+    `).bind(monthAgo).first<{
+      total_clients: number;
+      active_clients: number;
+      new_clients_month: number;
+    }>();
+
+    // リンク発行統計
+    const linkStats = await db.prepare(`
+      SELECT 
+        type,
+        COUNT(*) as total,
+        SUM(CASE WHEN date(created_at) = ? THEN 1 ELSE 0 END) as today,
+        SUM(CASE WHEN date(created_at) >= ? THEN 1 ELSE 0 END) as week,
+        SUM(used_count) as total_uses
+      FROM access_links
+      GROUP BY type
+    `).bind(today, weekAgo).all<{
+      type: string;
+      total: number;
+      today: number;
+      week: number;
+      total_uses: number;
+    }>();
+
+    // Intake 提出統計
+    const intakeStats = await db.prepare(`
+      SELECT 
+        status,
+        COUNT(*) as count
+      FROM intake_submissions
+      GROUP BY status
+    `).all<{ status: string; count: number }>();
+
+    // 上位 Agency（顧客数順）
+    const topAgencies = await db.prepare(`
+      SELECT 
+        a.id,
+        a.name,
+        a.plan,
+        COUNT(ac.id) as client_count,
+        (SELECT COUNT(*) FROM access_links al WHERE al.agency_id = a.id) as links_issued,
+        (SELECT COUNT(*) FROM application_drafts ad 
+         JOIN agency_clients ac2 ON ad.company_id = ac2.company_id 
+         WHERE ac2.agency_id = a.id) as drafts_created
+      FROM agencies a
+      LEFT JOIN agency_clients ac ON a.id = ac.agency_id
+      GROUP BY a.id
+      ORDER BY client_count DESC
+      LIMIT 10
+    `).all<{
+      id: string;
+      name: string;
+      plan: string;
+      client_count: number;
+      links_issued: number;
+      drafts_created: number;
+    }>();
+
+    // 日別 Agency 活動
+    const dailyActivity = await db.prepare(`
+      SELECT 
+        date(created_at) as date,
+        'intake' as type,
+        COUNT(*) as count
+      FROM intake_submissions
+      WHERE created_at >= ?
+      GROUP BY date(created_at)
+      UNION ALL
+      SELECT 
+        date(created_at) as date,
+        'link' as type,
+        COUNT(*) as count
+      FROM access_links
+      WHERE created_at >= ?
+      GROUP BY date(created_at)
+      ORDER BY date DESC
+    `).bind(weekAgo, weekAgo).all<{ date: string; type: string; count: number }>();
+
+    return c.json<ApiResponse<any>>({
+      success: true,
+      data: {
+        agencies: agencyStats,
+        clients: clientStats,
+        links: {
+          byType: linkStats.results || [],
+        },
+        intake: {
+          byStatus: Object.fromEntries((intakeStats.results || []).map(r => [r.status, r.count])),
+        },
+        topAgencies: topAgencies.results || [],
+        dailyActivity: dailyActivity.results || [],
+        generated_at: new Date().toISOString(),
+      },
+    });
+  } catch (error) {
+    console.error('Agency KPI error:', error);
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: 'AGENCY_KPI_ERROR',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      },
+    }, 500);
+  }
+});
+
+// ============================================================
+// データ鮮度監視（superadmin向け）
+// ============================================================
+
+adminDashboard.get('/data-freshness', async (c) => {
+  const db = c.env.DB;
+  const user = getCurrentUser(c);
+  
+  // super_admin限定
+  if (user.role !== 'super_admin') {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: 'FORBIDDEN',
+        message: 'Super admin access required',
+      },
+    }, 403);
+  }
+
+  try {
+    // ソース別の最終更新状況
+    const sourceStatus = await db.prepare(`
+      SELECT 
+        scope,
+        COUNT(*) as total,
+        SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) as active,
+        SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as error,
+        MAX(last_crawl_at) as last_update,
+        MIN(CASE WHEN status = 'active' AND next_crawl_at < datetime('now') THEN next_crawl_at END) as overdue_since
+      FROM source_registry
+      GROUP BY scope
+    `).all<{
+      scope: string;
+      total: number;
+      active: number;
+      error: number;
+      last_update: string | null;
+      overdue_since: string | null;
+    }>();
+
+    // 24時間以上更新がないソース
+    const staleSources = await db.prepare(`
+      SELECT 
+        id,
+        name,
+        scope,
+        status,
+        last_crawl_at,
+        next_crawl_at,
+        last_error
+      FROM source_registry
+      WHERE status = 'active'
+        AND (last_crawl_at IS NULL OR last_crawl_at < datetime('now', '-24 hours'))
+      ORDER BY last_crawl_at ASC
+      LIMIT 20
+    `).all<{
+      id: string;
+      name: string;
+      scope: string;
+      status: string;
+      last_crawl_at: string | null;
+      next_crawl_at: string | null;
+      last_error: string | null;
+    }>();
+
+    // 補助金データの鮮度
+    const subsidyFreshness = await db.prepare(`
+      SELECT 
+        source,
+        COUNT(*) as total,
+        SUM(CASE WHEN date(updated_at) = date('now') THEN 1 ELSE 0 END) as updated_today,
+        SUM(CASE WHEN date(updated_at) >= date('now', '-7 days') THEN 1 ELSE 0 END) as updated_week,
+        MIN(updated_at) as oldest_update
+      FROM subsidy_cache
+      GROUP BY source
+    `).all<{
+      source: string;
+      total: number;
+      updated_today: number;
+      updated_week: number;
+      oldest_update: string | null;
+    }>();
+
+    // 最近のクロールエラー
+    const recentErrors = await db.prepare(`
+      SELECT 
+        domain_key,
+        url,
+        status,
+        last_error,
+        attempts,
+        finished_at
+      FROM crawl_queue
+      WHERE status = 'failed'
+      ORDER BY finished_at DESC
+      LIMIT 20
+    `).all<{
+      domain_key: string;
+      url: string;
+      status: string;
+      last_error: string | null;
+      attempts: number;
+      finished_at: string | null;
+    }>();
+
+    // ドメイン別エラー率
+    const domainHealth = await db.prepare(`
+      SELECT 
+        domain_key,
+        enabled,
+        blocked,
+        blocked_until,
+        blocked_reason,
+        success_count,
+        failure_count,
+        CASE 
+          WHEN (success_count + failure_count) > 0 
+          THEN ROUND(CAST(failure_count AS REAL) / (success_count + failure_count) * 100, 2)
+          ELSE 0 
+        END as failure_rate
+      FROM domain_policy
+      WHERE failure_count > 0 OR blocked = 1
+      ORDER BY failure_rate DESC, failure_count DESC
+      LIMIT 20
+    `).all<{
+      domain_key: string;
+      enabled: number;
+      blocked: number;
+      blocked_until: string | null;
+      blocked_reason: string | null;
+      success_count: number;
+      failure_count: number;
+      failure_rate: number;
+    }>();
+
+    return c.json<ApiResponse<any>>({
+      success: true,
+      data: {
+        sources: sourceStatus.results || [],
+        staleSources: staleSources.results || [],
+        subsidyFreshness: subsidyFreshness.results || [],
+        recentErrors: recentErrors.results || [],
+        domainHealth: domainHealth.results || [],
+        generated_at: new Date().toISOString(),
+      },
+    });
+  } catch (error) {
+    console.error('Data freshness error:', error);
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: 'DATA_FRESHNESS_ERROR',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      },
+    }, 500);
+  }
+});
+
+// ============================================================
+// アラート管理（superadmin向け）
+// ============================================================
+
+adminDashboard.get('/alerts', async (c) => {
+  const db = c.env.DB;
+  const user = getCurrentUser(c);
+  
+  // super_admin限定
+  if (user.role !== 'super_admin') {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: 'FORBIDDEN',
+        message: 'Super admin access required',
+      },
+    }, 403);
+  }
+
+  try {
+    // アラートルール一覧
+    const rules = await db.prepare(`
+      SELECT * FROM alert_rules ORDER BY enabled DESC, metric ASC
+    `).all();
+
+    // 最近のアラート履歴
+    const recentAlerts = await db.prepare(`
+      SELECT ah.*, ar.name as rule_name, ar.metric
+      FROM alert_history ah
+      JOIN alert_rules ar ON ah.rule_id = ar.id
+      ORDER BY ah.created_at DESC
+      LIMIT 50
+    `).all();
+
+    // 未解決のアラート数
+    const unresolvedCount = await db.prepare(`
+      SELECT COUNT(*) as count
+      FROM alert_history
+      WHERE status IN ('fired', 'acknowledged')
+    `).first<{ count: number }>();
+
+    return c.json<ApiResponse<any>>({
+      success: true,
+      data: {
+        rules: rules.results || [],
+        recentAlerts: recentAlerts.results || [],
+        unresolvedCount: unresolvedCount?.count || 0,
+        generated_at: new Date().toISOString(),
+      },
+    });
+  } catch (error) {
+    console.error('Alerts error:', error);
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: 'ALERTS_ERROR',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      },
+    }, 500);
+  }
+});
+
+// ============================================================
+// 日次KPIスナップショット生成（内部用/Cron用）
+// ============================================================
+
+adminDashboard.post('/generate-daily-snapshot', async (c) => {
+  const db = c.env.DB;
+  const user = getCurrentUser(c);
+  
+  // super_admin限定
+  if (user.role !== 'super_admin') {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: 'FORBIDDEN',
+        message: 'Super admin access required',
+      },
+    }, 403);
+  }
+
+  try {
+    const yesterday = new Date(Date.now() - 86400000).toISOString().split('T')[0];
+    
+    // 既存チェック
+    const existing = await db.prepare(`
+      SELECT id FROM kpi_daily_snapshots WHERE date = ?
+    `).bind(yesterday).first();
+    
+    if (existing) {
+      return c.json<ApiResponse<any>>({
+        success: true,
+        data: { message: 'Snapshot already exists', date: yesterday },
+      });
+    }
+
+    // 各種統計を集計
+    const [users, agencies, clients, searches, chats, drafts, intakes, links, costs, subsidies, crawl] = await Promise.all([
+      // ユーザー
+      db.prepare(`
+        SELECT 
+          (SELECT COUNT(*) FROM users WHERE date(created_at) <= ?) as total,
+          (SELECT COUNT(*) FROM users WHERE date(created_at) = ?) as new_users,
+          (SELECT COUNT(DISTINCT user_id) FROM usage_events WHERE date(created_at) = ?) as active
+        FROM (SELECT 1)
+      `).bind(yesterday, yesterday, yesterday).first<{ total: number; new_users: number; active: number }>(),
+      
+      // Agency
+      db.prepare(`SELECT COUNT(*) as count FROM agencies WHERE date(created_at) <= ?`).bind(yesterday).first<{ count: number }>(),
+      db.prepare(`SELECT COUNT(*) as count FROM agency_clients WHERE date(created_at) <= ?`).bind(yesterday).first<{ count: number }>(),
+      
+      // 検索
+      db.prepare(`SELECT COUNT(*) as count FROM usage_events WHERE event_type = 'SUBSIDY_SEARCH' AND date(created_at) = ?`).bind(yesterday).first<{ count: number }>(),
+      
+      // チャット
+      db.prepare(`
+        SELECT 
+          COUNT(DISTINCT cs.id) as sessions,
+          COUNT(cm.id) as messages
+        FROM chat_sessions cs
+        LEFT JOIN chat_messages cm ON cs.id = cm.session_id AND date(cm.created_at) = ?
+        WHERE date(cs.created_at) = ?
+      `).bind(yesterday, yesterday).first<{ sessions: number; messages: number }>(),
+      
+      // ドラフト
+      db.prepare(`
+        SELECT 
+          COUNT(CASE WHEN date(created_at) = ? THEN 1 END) as created,
+          COUNT(CASE WHEN status = 'final' AND date(updated_at) = ? THEN 1 END) as finalized
+        FROM application_drafts
+      `).bind(yesterday, yesterday).first<{ created: number; finalized: number }>(),
+      
+      // Intake
+      db.prepare(`SELECT COUNT(*) as count FROM intake_submissions WHERE date(created_at) = ?`).bind(yesterday).first<{ count: number }>(),
+      
+      // リンク
+      db.prepare(`SELECT COUNT(*) as count FROM access_links WHERE date(created_at) = ?`).bind(yesterday).first<{ count: number }>(),
+      
+      // コスト
+      db.prepare(`
+        SELECT 
+          COALESCE(SUM(estimated_cost_usd), 0) as total,
+          COALESCE(SUM(CASE WHEN provider = 'openai' THEN estimated_cost_usd ELSE 0 END), 0) as openai,
+          COALESCE(SUM(CASE WHEN provider = 'firecrawl' THEN estimated_cost_usd ELSE 0 END), 0) as firecrawl
+        FROM usage_events
+        WHERE date(created_at) = ?
+      `).bind(yesterday).first<{ total: number; openai: number; firecrawl: number }>(),
+      
+      // 補助金
+      db.prepare(`
+        SELECT 
+          COUNT(*) as total,
+          SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) as active
+        FROM subsidy_lifecycle
+      `).first<{ total: number; active: number }>(),
+      
+      // クロール
+      db.prepare(`
+        SELECT 
+          SUM(CASE WHEN status = 'done' AND date(finished_at) = ? THEN 1 ELSE 0 END) as success,
+          SUM(CASE WHEN status = 'failed' AND date(finished_at) = ? THEN 1 ELSE 0 END) as failed
+        FROM crawl_queue
+      `).bind(yesterday, yesterday).first<{ success: number; failed: number }>(),
+    ]);
+
+    // スナップショット挿入
+    const snapshotId = crypto.randomUUID();
+    await db.prepare(`
+      INSERT INTO kpi_daily_snapshots (
+        id, date, total_users, new_users, active_users, agency_users,
+        searches, chat_sessions, chat_messages, drafts_created, drafts_finalized,
+        total_agencies, total_clients, intake_submissions, links_issued,
+        total_cost_usd, openai_cost_usd, firecrawl_cost_usd, other_cost_usd,
+        subsidies_total, subsidies_active, crawl_success, crawl_failed, generated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).bind(
+      snapshotId, yesterday,
+      users?.total || 0, users?.new_users || 0, users?.active || 0, 0,
+      searches?.count || 0, chats?.sessions || 0, chats?.messages || 0, drafts?.created || 0, drafts?.finalized || 0,
+      agencies?.count || 0, clients?.count || 0, intakes?.count || 0, links?.count || 0,
+      costs?.total || 0, costs?.openai || 0, costs?.firecrawl || 0, (costs?.total || 0) - (costs?.openai || 0) - (costs?.firecrawl || 0),
+      subsidies?.total || 0, subsidies?.active || 0, crawl?.success || 0, crawl?.failed || 0,
+      new Date().toISOString()
+    ).run();
+
+    return c.json<ApiResponse<any>>({
+      success: true,
+      data: { 
+        message: 'Snapshot generated',
+        date: yesterday,
+        id: snapshotId,
+      },
+    });
+  } catch (error) {
+    console.error('Snapshot generation error:', error);
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: 'SNAPSHOT_ERROR',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      },
+    }, 500);
+  }
+});
+
+// ============================================================
+// KPI履歴取得
+// ============================================================
+
+adminDashboard.get('/kpi-history', async (c) => {
+  const db = c.env.DB;
+  const user = getCurrentUser(c);
+  
+  // super_admin限定
+  if (user.role !== 'super_admin') {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: 'FORBIDDEN',
+        message: 'Super admin access required',
+      },
+    }, 403);
+  }
+
+  try {
+    const days = Math.min(parseInt(c.req.query('days') || '30'), 365);
+    
+    const snapshots = await db.prepare(`
+      SELECT * FROM kpi_daily_snapshots
+      WHERE date >= date('now', '-' || ? || ' days')
+      ORDER BY date DESC
+    `).bind(days).all();
+
+    return c.json<ApiResponse<any>>({
+      success: true,
+      data: {
+        snapshots: snapshots.results || [],
+        days,
+        generated_at: new Date().toISOString(),
+      },
+    });
+  } catch (error) {
+    console.error('KPI history error:', error);
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: 'KPI_HISTORY_ERROR',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      },
+    }, 500);
+  }
+});
+
 export default adminDashboard;
