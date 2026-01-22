@@ -125,7 +125,7 @@ adminDashboard.get('/dashboard', async (c) => {
         ue.company_id,
         c.name as company_name,
         ue.estimated_cost_usd,
-        ue.metadata,
+        ue.metadata_json as metadata,
         ue.created_at
       FROM usage_events ue
       LEFT JOIN users u ON ue.user_id = u.id
@@ -1158,7 +1158,7 @@ adminDashboard.get('/coverage', async (c) => {
         SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) as active,
         SUM(CASE WHEN application_end < datetime('now') THEN 1 ELSE 0 END) as expired,
         SUM(CASE WHEN date(updated_at) >= date('now', '-7 days') THEN 1 ELSE 0 END) as updated_week
-      FROM subsidies
+      FROM subsidy_cache
       GROUP BY target_area
       ORDER BY total DESC
     `).all<{
@@ -1178,7 +1178,7 @@ adminDashboard.get('/coverage', async (c) => {
         SUM(CASE WHEN date(updated_at) >= date('now', '-7 days') THEN 1 ELSE 0 END) as updated_week,
         MIN(updated_at) as oldest_update,
         MAX(updated_at) as latest_update
-      FROM subsidies
+      FROM subsidy_cache
     `).first<{
       total: number;
       active: number;
