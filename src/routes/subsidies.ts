@@ -96,6 +96,35 @@ subsidies.get('/search', requireCompanyAccess(), async (c) => {
     // ステータスでソート（推奨 > 注意 > 非推奨）
     const sortedResults = sortByStatus(matchResults);
     
+    // === usage_events に検索イベントを必ず記録 ===
+    const user = getCurrentUser(c);
+    const eventId = uuidv4();
+    try {
+      await db.prepare(`
+        INSERT INTO usage_events (
+          id, user_id, company_id, event_type, provider, 
+          tokens_in, tokens_out, estimated_cost_usd, metadata, created_at
+        ) VALUES (?, ?, ?, 'SUBSIDY_SEARCH', 'jgrants', 0, 0, 0, ?, datetime('now'))
+      `).bind(
+        eventId,
+        user.id,
+        companyId,
+        JSON.stringify({
+          keyword: keyword || null,
+          acceptance,
+          results_count: sortedResults.length,
+          total_count: totalCount,
+          source,
+          proceed_count: sortedResults.filter(r => r.evaluation.status === 'PROCEED').length,
+          caution_count: sortedResults.filter(r => r.evaluation.status === 'CAUTION').length,
+          no_count: sortedResults.filter(r => r.evaluation.status === 'NO').length,
+        })
+      ).run();
+    } catch (eventError) {
+      // イベント記録失敗はログに出すが、検索自体は続行
+      console.error('Failed to record search event:', eventError);
+    }
+    
     // 評価結果をD1に保存（バッチ）
     if (sortedResults.length > 0) {
       const evaluationStatements = sortedResults.map(result => {

@@ -1,0 +1,74 @@
+registry_id,scope,geo_id,program_key,root_url,domain_key,crawl_strategy,max_depth,update_freq,enabled,priority,authority,data_scope,stop_condition,access_constraint,notes
+# =====================================================
+# 国レベル補助金ソース（priority 1-3）
+# daily: priority=1 重要事務局
+# weekly: priority=2-3 省庁系
+# =====================================================
+reg-jgrants,national,,jgrants,https://www.jgrants-portal.go.jp/,jgrants-portal.go.jp,scrape,0,daily,1,1,official,guideline;faq;news,unknown,public,Jグランツポータル（API連携推奨）
+sec-it-hojo,national,,it-hojo,https://www.it-hojo.jp/,it-hojo.jp,crawl,2,daily,1,1,official,guideline;faq;forms;how_to_write;news,deadline,public,IT導入補助金事務局
+sec-monodukuri,national,,monodukuri-hojo,https://portal.monodukuri-hojo.jp/,monodukuri-hojo.jp,crawl,2,daily,1,1,official,guideline;faq;forms;how_to_write;examples;news,deadline,public,ものづくり補助金事務局
+sec-jizokuka,national,,jizokuka-hojo,https://www.jizokuka-hojo.jp/,jizokuka-hojo.jp,crawl,2,daily,1,1,official,guideline;faq;forms;how_to_write;news,deadline,public,持続化補助金事務局
+sec-saikouchiku,national,,saikouchiku,https://jigyou-saikouchiku.go.jp/,jigyou-saikouchiku.go.jp,crawl,2,daily,1,2,official,guideline;faq;forms;how_to_write;examples;news,deadline,public,事業再構築補助金事務局
+reg-meti-chusho,national,,chusho,https://www.chusho.meti.go.jp/keiei/sapoin/,chusho.meti.go.jp,crawl,2,weekly,1,2,official,guideline;faq;news,unknown,public,中小企業庁（経産省）
+reg-mhlw-joseikin,national,,mhlw-joseikin,https://www.mhlw.go.jp/stf/seisakunitsuite/bunya/koyou_roudou/koyou/kyufukin/,mhlw.go.jp,crawl,2,weekly,1,2,official,guideline;faq;news,unknown,public,厚労省助成金一覧
+reg-maff-hojo,national,,maff,https://www.maff.go.jp/j/supply/hozyo/,maff.go.jp,crawl,1,monthly,1,3,official,guideline;faq;news,unknown,public,農水省補助金一覧
+sec-smrj,national,,smrj-portal,https://www.smrj.go.jp/,smrj.go.jp,crawl,2,weekly,1,3,official,news;guideline;faq,unknown,public,中小機構ポータル
+sec-chusho,national,,chusho-meti,https://www.chusho.meti.go.jp/,chusho.meti.go.jp,scrape,1,weekly,1,3,official,news;guideline,unknown,public,中小企業庁トップ
+sec-mhlw,national,,mhlw-subsidy,https://www.mhlw.go.jp/,mhlw.go.jp,crawl,2,weekly,1,3,official,guideline;faq;forms;news,unknown,public,厚労省トップ
+sec-maff,national,,maff-grants,https://www.maff.go.jp/,maff.go.jp,crawl,2,monthly,1,4,official,guideline;news,unknown,public,農水省トップ
+sec-jnet21,national,,jnet21,https://j-net21.smrj.go.jp/,j-net21.smrj.go.jp,crawl,2,weekly,1,4,third_party,guideline;news,unknown,public,J-Net21（中小機構）
+
+# =====================================================
+# 47都道府県補助金ソース（priority 1-4）
+# priority=1: 主要都市圏（東京,神奈川,大阪,愛知,埼玉,福岡）
+# priority=2: 経済規模大（北海道,宮城,千葉,京都,兵庫）
+# priority=3: 中規模（茨城,栃木,群馬,新潟,静岡,滋賀等）
+# priority=4: その他
+# =====================================================
+pref-01,prefecture,01,pref-01,https://www.hsc.or.jp/,or.jp,scrape,1,weekly,1,2,semi_official,guideline;faq;news,unknown,public,北海道中小企業総合支援センター
+pref-02,prefecture,02,pref-02,https://www.aomori-sangyo.or.jp/,or.jp,scrape,1,weekly,1,4,semi_official,guideline;faq;news,unknown,public,21あおもり産業総合支援センター
+pref-03,prefecture,03,pref-03,https://www.joho-iwate.or.jp/,or.jp,scrape,1,weekly,1,4,semi_official,guideline;faq;news,unknown,public,いわて産業振興センター
+pref-04,prefecture,04,pref-04,https://www.joho-miyagi.or.jp/,or.jp,scrape,1,weekly,1,2,semi_official,guideline;faq;news,unknown,public,みやぎ産業振興機構
+pref-05,prefecture,05,pref-05,https://www.bic-akita.or.jp/,or.jp,scrape,1,weekly,1,4,semi_official,guideline;faq;news,unknown,public,あきた企業活性化センター
+pref-06,prefecture,06,pref-06,https://www.ysic.or.jp/,or.jp,scrape,1,weekly,1,4,semi_official,guideline;faq;news,unknown,public,山形県企業振興公社
+pref-07,prefecture,07,pref-07,https://www.fukushima-iri.jp/,fukushima-iri.jp,scrape,1,weekly,1,4,semi_official,guideline;faq;news,unknown,public,福島県産業振興センター
+pref-08,prefecture,08,pref-08,https://www.ibarakig.jp/,ibarakig.jp,scrape,1,weekly,1,3,semi_official,guideline;faq;news,unknown,public,茨城県中小企業振興公社
+pref-09,prefecture,09,pref-09,https://www.tochigi-iin.or.jp/,or.jp,scrape,1,weekly,1,3,semi_official,guideline;faq;news,unknown,public,栃木県産業振興センター
+pref-10,prefecture,10,pref-10,https://www.g-inf.or.jp/,or.jp,scrape,1,weekly,1,3,semi_official,guideline;faq;news,unknown,public,群馬県産業支援機構
+pref-11,prefecture,11,pref-11,https://www.saitama-j.or.jp/,or.jp,scrape,1,weekly,1,1,semi_official,guideline;faq;news,unknown,public,埼玉県産業振興公社
+pref-12,prefecture,12,pref-12,https://www.ccjc-net.or.jp/,or.jp,scrape,1,weekly,1,2,semi_official,guideline;faq;news,unknown,public,千葉県産業振興センター
+pref-13,prefecture,13,pref-13,https://www.tokyo-kosha.or.jp/,or.jp,scrape,1,weekly,1,1,semi_official,guideline;faq;news,unknown,public,東京都中小企業振興公社
+pref-14,prefecture,14,pref-14,https://www.kipc.or.jp/,or.jp,scrape,1,weekly,1,1,semi_official,guideline;faq;news,unknown,public,神奈川県産業振興センター
+pref-15,prefecture,15,pref-15,https://www.nico.or.jp/,or.jp,scrape,1,weekly,1,3,semi_official,guideline;faq;news,unknown,public,にいがた産業創造機構
+pref-16,prefecture,16,pref-16,https://www.tonio.or.jp/,or.jp,scrape,1,weekly,1,4,semi_official,guideline;faq;news,unknown,public,富山県新世紀産業機構
+pref-17,prefecture,17,pref-17,https://www.isico.or.jp/,or.jp,scrape,1,weekly,1,4,semi_official,guideline;faq;news,unknown,public,石川県産業創出支援機構
+pref-18,prefecture,18,pref-18,https://www.fisc.jp/,fisc.jp,scrape,1,weekly,1,4,semi_official,guideline;faq;news,unknown,public,ふくい産業支援センター
+pref-19,prefecture,19,pref-19,https://www.yiso.or.jp/,or.jp,scrape,1,weekly,1,4,semi_official,guideline;faq;news,unknown,public,やまなし産業支援機構
+pref-20,prefecture,20,pref-20,https://www.nice-o.or.jp/,or.jp,scrape,1,weekly,1,4,semi_official,guideline;faq;news,unknown,public,長野県中小企業振興センター
+pref-21,prefecture,21,pref-21,https://www.gpc.pref.gifu.jp/,gifu.jp,scrape,1,weekly,1,4,semi_official,guideline;faq;news,unknown,public,岐阜県産業経済振興センター
+pref-22,prefecture,22,pref-22,https://www.ric-shizuoka.or.jp/,or.jp,scrape,1,weekly,1,3,semi_official,guideline;faq;news,unknown,public,静岡県産業振興財団
+pref-23,prefecture,23,pref-23,https://www.aibsc.jp/,aibsc.jp,scrape,1,weekly,1,1,semi_official,guideline;faq;news,unknown,public,あいち産業振興機構
+pref-24,prefecture,24,pref-24,https://www.miesc.or.jp/,or.jp,scrape,1,weekly,1,4,semi_official,guideline;faq;news,unknown,public,三重県産業支援センター
+pref-25,prefecture,25,pref-25,https://www.shigaplaza.or.jp/,or.jp,scrape,1,weekly,1,3,semi_official,guideline;faq;news,unknown,public,滋賀県産業支援プラザ
+pref-26,prefecture,26,pref-26,https://www.ki21.jp/,ki21.jp,scrape,1,weekly,1,2,semi_official,guideline;faq;news,unknown,public,京都産業21
+pref-27,prefecture,27,pref-27,https://www.obda.or.jp/,or.jp,scrape,1,weekly,1,1,semi_official,guideline;faq;news,unknown,public,大阪産業局
+pref-28,prefecture,28,pref-28,https://web.hyogo-iic.ne.jp/,ne.jp,scrape,1,weekly,1,2,semi_official,guideline;faq;news,unknown,public,ひょうご産業活性化センター
+pref-29,prefecture,29,pref-29,https://www.nara-sangyoshinko.or.jp/,or.jp,scrape,1,weekly,1,4,semi_official,guideline;faq;news,unknown,public,奈良県産業振興総合センター
+pref-30,prefecture,30,pref-30,https://www.yarukiouendan.jp/,yarukiouendan.jp,scrape,1,weekly,1,4,semi_official,guideline;faq;news,unknown,public,わかやま産業振興財団
+pref-31,prefecture,31,pref-31,https://www.toriton.or.jp/,or.jp,scrape,1,weekly,1,4,semi_official,guideline;faq;news,unknown,public,鳥取県産業振興機構
+pref-32,prefecture,32,pref-32,https://www.shimane-ric.jp/,shimane-ric.jp,scrape,1,weekly,1,4,semi_official,guideline;faq;news,unknown,public,しまね産業振興財団
+pref-33,prefecture,33,pref-33,https://www.optic.or.jp/,or.jp,scrape,1,weekly,1,4,semi_official,guideline;faq;news,unknown,public,岡山県産業振興財団
+pref-34,prefecture,34,pref-34,https://www.hiwave.or.jp/,or.jp,scrape,1,weekly,1,4,semi_official,guideline;faq;news,unknown,public,ひろしま産業振興機構
+pref-35,prefecture,35,pref-35,https://www.y-sunnet.or.jp/,or.jp,scrape,1,weekly,1,4,semi_official,guideline;faq;news,unknown,public,やまぐち産業振興財団
+pref-36,prefecture,36,pref-36,https://www.tokushima-sangyo.jp/,tokushima-sangyo.jp,scrape,1,weekly,1,4,semi_official,guideline;faq;news,unknown,public,とくしま産業振興機構
+pref-37,prefecture,37,pref-37,https://www.kagawa-isf.jp/,kagawa-isf.jp,scrape,1,weekly,1,4,semi_official,guideline;faq;news,unknown,public,かがわ産業支援財団
+pref-38,prefecture,38,pref-38,https://www.ehime-iinet.or.jp/,or.jp,scrape,1,weekly,1,4,semi_official,guideline;faq;news,unknown,public,えひめ産業振興財団
+pref-39,prefecture,39,pref-39,https://www.joho-kochi.or.jp/,or.jp,scrape,1,weekly,1,4,semi_official,guideline;faq;news,unknown,public,高知県産業振興センター
+pref-40,prefecture,40,pref-40,https://www.joho-fukuoka.or.jp/,or.jp,scrape,1,weekly,1,1,semi_official,guideline;faq;news,unknown,public,福岡県中小企業振興センター
+pref-41,prefecture,41,pref-41,https://www.spia.or.jp/,or.jp,scrape,1,weekly,1,4,semi_official,guideline;faq;news,unknown,public,佐賀県産業振興機構
+pref-42,prefecture,42,pref-42,https://www.nagasaki-ic.or.jp/,or.jp,scrape,1,weekly,1,4,semi_official,guideline;faq;news,unknown,public,長崎県産業振興財団
+pref-43,prefecture,43,pref-43,https://www.kmt-ti.or.jp/,or.jp,scrape,1,weekly,1,4,semi_official,guideline;faq;news,unknown,public,くまもと産業支援財団
+pref-44,prefecture,44,pref-44,https://www.oec.or.jp/,or.jp,scrape,1,weekly,1,4,semi_official,guideline;faq;news,unknown,public,大分県産業創造機構
+pref-45,prefecture,45,pref-45,https://www.mcic.or.jp/,or.jp,scrape,1,weekly,1,4,semi_official,guideline;faq;news,unknown,public,宮崎県産業振興機構
+pref-46,prefecture,46,pref-46,https://www.kagoshima-it.go.jp/,kagoshima-it.go.jp,scrape,1,weekly,1,4,semi_official,guideline;faq;news,unknown,public,鹿児島県産業振興協会
+pref-47,prefecture,47,pref-47,https://www.okinawa-ric.jp/,okinawa-ric.jp,scrape,1,weekly,1,4,semi_official,guideline;faq;news,unknown,public,沖縄県産業振興公社

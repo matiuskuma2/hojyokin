@@ -538,6 +538,30 @@ chat.post('/sessions', async (c) => {
       messages.push({ id: questionMsgId, role: 'assistant', content: questionContent, structured_key: firstQuestion.key, created_at: now });
     }
     
+    // === usage_events に壁打ちセッション開始イベントを必ず記録 ===
+    const eventId = crypto.randomUUID();
+    try {
+      await c.env.DB.prepare(`
+        INSERT INTO usage_events (
+          id, user_id, company_id, event_type, provider, 
+          tokens_in, tokens_out, estimated_cost_usd, metadata, created_at
+        ) VALUES (?, ?, ?, 'CHAT_SESSION_STARTED', 'internal', 0, 0, 0, ?, datetime('now'))
+      `).bind(
+        eventId,
+        user.id,
+        targetCompanyId,
+        JSON.stringify({
+          session_id: sessionId,
+          subsidy_id,
+          precheck_status: precheckResult.status,
+          missing_items_count: precheckResult.missing_items.length,
+          blocked_reasons_count: precheckResult.blocked_reasons.length,
+        })
+      ).run();
+    } catch (eventError) {
+      console.error('Failed to record chat session event:', eventError);
+    }
+    
     return c.json<ApiResponse<any>>({
       success: true,
       data: {

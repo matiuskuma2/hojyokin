@@ -646,6 +646,10 @@ Private
 
 ## 更新履歴
 
+- **2026-01-22**: 運用監視強化: /api/admin/coverage の本番スキーマ対応（geo_id, queue_id, source_registry_id等）、ドメイン別エラー率Top20、重複クロール検知、キュー滞留警告
+- **2026-01-22**: usage_events記録強化: SUBSIDY_SEARCH, CHAT_SESSION_STARTED, DRAFT_GENERATED を各APIで自動記録
+- **2026-01-22**: 管理画面改善: 「今日の直近イベント」セクション追加、/api/admin/debug/company-check（ユーザー会社紐づけ1発診断）
+- **2026-01-22**: ドキュメント整備: docs/weekly_crawl_plan.md（週1全量クロール計画）、docs/cost_estimation_template.md（コスト概算テンプレ）
 - **2026-01-22**: Migration整合強化: 0099_reconcile_schema.sql（冪等統合マイグレーション）作成、tools/snapshot_production_schema.mjs（本番スキーマスナップショットツール）追加
 - **2026-01-22**: 網羅性監視機能: 0022_program_items.sql（募集案件台帳）追加、/api/admin/coverage エンドポイント追加（L1/L2/L3網羅性チェック）
 - **2026-01-22**: UI共通化: public/static/common.js にapiCall集約、認証エラー時の自動ログアウト機能

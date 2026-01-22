@@ -364,6 +364,30 @@ draft.post('/generate', async (c) => {
       now
     ).run();
 
+    // === usage_events にドラフト生成イベントを必ず記録 ===
+    const eventId = crypto.randomUUID();
+    try {
+      await db.prepare(`
+        INSERT INTO usage_events (
+          id, user_id, company_id, event_type, provider, 
+          tokens_in, tokens_out, estimated_cost_usd, metadata, created_at
+        ) VALUES (?, ?, ?, 'DRAFT_GENERATED', 'internal', 0, 0, 0, ?, datetime('now'))
+      `).bind(
+        eventId,
+        user.id,
+        session.company_id,
+        JSON.stringify({
+          draft_id: draftId,
+          session_id: session.id,
+          subsidy_id: session.subsidy_id,
+          mode: body.mode || 'template',
+          ng_count: ng.has_ng ? ng.items.length : 0,
+        })
+      ).run();
+    } catch (eventError) {
+      console.error('Failed to record draft generation event:', eventError);
+    }
+
     return c.json<ApiResponse<{ draft_id: string; sections: Sections; ng: NgResult; is_new: boolean }>>({
       success: true,
       data: {

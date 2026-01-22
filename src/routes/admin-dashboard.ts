@@ -115,6 +115,36 @@ adminDashboard.get('/dashboard', async (c) => {
       ORDER BY date DESC
     `).bind(weekAgo).all<{ date: string; count: number }>();
 
+    // 今日の直近イベント（リアルタイム確認用）
+    const recentEvents = await db.prepare(`
+      SELECT 
+        ue.id,
+        ue.event_type,
+        ue.user_id,
+        u.email as user_email,
+        ue.company_id,
+        c.name as company_name,
+        ue.estimated_cost_usd,
+        ue.metadata,
+        ue.created_at
+      FROM usage_events ue
+      LEFT JOIN users u ON ue.user_id = u.id
+      LEFT JOIN companies c ON ue.company_id = c.id
+      WHERE date(ue.created_at) = ?
+      ORDER BY ue.created_at DESC
+      LIMIT 20
+    `).bind(today).all<{
+      id: string;
+      event_type: string;
+      user_id: string;
+      user_email: string | null;
+      company_id: string | null;
+      company_name: string | null;
+      estimated_cost_usd: number;
+      metadata: string | null;
+      created_at: string;
+    }>();
+
     return c.json<ApiResponse<any>>({
       success: true,
       data: {
@@ -129,6 +159,7 @@ adminDashboard.get('/dashboard', async (c) => {
           events: dailyStats.results || [],
           users: dailyUsers.results || [],
         },
+        recent_events: recentEvents.results || [],
         generated_at: new Date().toISOString(),
       },
     });
@@ -295,15 +326,15 @@ adminDashboard.get('/updates', async (c) => {
   const db = c.env.DB;
   
   try {
-    // source_registry の更新状況
+    // source_registry の更新状況（本番スキーマ対応）
     const registryStats = await db.prepare(`
       SELECT 
         scope,
         COUNT(*) as total,
-        SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) as active,
-        SUM(CASE WHEN status = 'paused' THEN 1 ELSE 0 END) as paused,
-        SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as error,
-        MAX(last_crawl_at) as last_crawl,
+        SUM(CASE WHEN enabled = 1 THEN 1 ELSE 0 END) as active,
+        SUM(CASE WHEN enabled = 0 THEN 1 ELSE 0 END) as paused,
+        SUM(CASE WHEN last_crawl_status = 'error' OR last_crawl_status = 'blocked' THEN 1 ELSE 0 END) as error,
+        MAX(last_crawled_at) as last_crawl,
         MIN(next_crawl_at) as next_crawl
       FROM source_registry
       GROUP BY scope
@@ -323,10 +354,10 @@ adminDashboard.get('/updates', async (c) => {
       GROUP BY kind, status
     `).all<{ kind: string; status: string; count: number; latest: string }>();
 
-    // domain_policy 状況
+    // domain_policy 状況（本番スキーマ対応）
     const domainStats = await db.prepare(`
       SELECT 
-        blocked,
+        CASE WHEN blocked_until IS NOT NULL AND blocked_until > datetime('now') THEN 1 ELSE 0 END as blocked,
         COUNT(*) as count,
         SUM(success_count) as total_success,
         SUM(failure_count) as total_failures
@@ -572,15 +603,15 @@ adminDashboard.get('/data-freshness', async (c) => {
   }
 
   try {
-    // ソース別の最終更新状況
+    // ソース別の最終更新状況（本番スキーマ対応）
     const sourceStatus = await db.prepare(`
       SELECT 
         scope,
         COUNT(*) as total,
-        SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) as active,
-        SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as error,
-        MAX(last_crawl_at) as last_update,
-        MIN(CASE WHEN status = 'active' AND next_crawl_at < datetime('now') THEN next_crawl_at END) as overdue_since
+        SUM(CASE WHEN enabled = 1 THEN 1 ELSE 0 END) as active,
+        SUM(CASE WHEN last_crawl_status = 'error' OR last_crawl_status = 'blocked' THEN 1 ELSE 0 END) as error,
+        MAX(last_crawled_at) as last_update,
+        MIN(CASE WHEN enabled = 1 AND next_crawl_at < datetime('now') THEN next_crawl_at END) as overdue_since
       FROM source_registry
       GROUP BY scope
     `).all<{
@@ -592,20 +623,20 @@ adminDashboard.get('/data-freshness', async (c) => {
       overdue_since: string | null;
     }>();
 
-    // 24時間以上更新がないソース
+    // 24時間以上更新がないソース（本番スキーマ対応）
     const staleSources = await db.prepare(`
       SELECT 
-        id,
-        name,
+        registry_id as id,
+        program_key as name,
         scope,
-        status,
-        last_crawl_at,
+        CASE WHEN enabled = 1 THEN 'active' ELSE 'paused' END as status,
+        last_crawled_at as last_crawl_at,
         next_crawl_at,
-        last_error
+        last_crawl_status as last_error
       FROM source_registry
-      WHERE status = 'active'
-        AND (last_crawl_at IS NULL OR last_crawl_at < datetime('now', '-24 hours'))
-      ORDER BY last_crawl_at ASC
+      WHERE enabled = 1
+        AND (last_crawled_at IS NULL OR last_crawled_at < datetime('now', '-24 hours'))
+      ORDER BY last_crawled_at ASC
       LIMIT 20
     `).all<{
       id: string;
@@ -657,12 +688,12 @@ adminDashboard.get('/data-freshness', async (c) => {
       finished_at: string | null;
     }>();
 
-    // ドメイン別エラー率
+    // ドメイン別エラー率（本番スキーマ対応）
     const domainHealth = await db.prepare(`
       SELECT 
         domain_key,
         enabled,
-        blocked,
+        CASE WHEN blocked_until IS NOT NULL AND blocked_until > datetime('now') THEN 1 ELSE 0 END as blocked,
         blocked_until,
         blocked_reason,
         success_count,
@@ -673,7 +704,7 @@ adminDashboard.get('/data-freshness', async (c) => {
           ELSE 0 
         END as failure_rate
       FROM domain_policy
-      WHERE failure_count > 0 OR blocked = 1
+      WHERE failure_count > 0 OR (blocked_until IS NOT NULL AND blocked_until > datetime('now'))
       ORDER BY failure_rate DESC, failure_count DESC
       LIMIT 20
     `).all<{
@@ -995,7 +1026,7 @@ adminDashboard.get('/coverage', async (c) => {
       FROM crawl_queue
       WHERE created_at >= datetime('now', '-7 day')
       GROUP BY domain_key
-      HAVING total >= 5
+      HAVING COUNT(*) >= 3
       ORDER BY failed_pct DESC, failed DESC
       LIMIT 20
     `).all<{
@@ -1009,6 +1040,7 @@ adminDashboard.get('/coverage', async (c) => {
 
     // ===================
     // 同じURL叩きすぎ検知（無駄クロール）
+    // 本番スキーマ: source_idカラムを使用
     // ===================
     const duplicateCrawls = await db.prepare(`
       SELECT 
@@ -1024,20 +1056,19 @@ adminDashboard.get('/coverage', async (c) => {
     `).all<{ source_registry_id: string | null; url: string; cnt: number }>();
 
     // ===================
-    // L1: 入口網羅性（source_registry × geo_region）
+    // L1: 入口網羅性（source_registry × geo_id）
     // ===================
-    // 47都道府県のソースが登録されているか
-    // geo_regionテーブルがない場合があるので、source_registryから直接取得
+    // 47都道府県のソースが登録されているか（本番スキーマ: geo_idカラムを使用）
     const l1_registered = await db.prepare(`
       SELECT 
-        geo_region,
+        geo_id as geo_region,
         scope,
         COUNT(*) as source_count,
         SUM(CASE WHEN enabled = 1 THEN 1 ELSE 0 END) as enabled_count
       FROM source_registry
-      WHERE geo_region IS NOT NULL
-      GROUP BY geo_region, scope
-      ORDER BY geo_region, scope
+      WHERE geo_id IS NOT NULL
+      GROUP BY geo_id, scope
+      ORDER BY geo_id, scope
     `).all<{
       geo_region: string;
       scope: string;
@@ -1068,20 +1099,21 @@ adminDashboard.get('/coverage', async (c) => {
 
     // ===================
     // L2: 実稼働網羅性（実際にクロールが回っているか）
+    // 本番スキーマ: registry_id, geo_id, source_registry_id
     // ===================
     const l2_activity = await db.prepare(`
       SELECT 
-        sr.geo_region,
+        sr.geo_id as geo_region,
         sr.scope,
-        COUNT(DISTINCT sr.id) as sources,
-        COUNT(DISTINCT cq.id) as queue_items,
+        COUNT(DISTINCT sr.registry_id) as sources,
+        COUNT(DISTINCT cq.queue_id) as queue_items,
         SUM(CASE WHEN cq.status = 'done' THEN 1 ELSE 0 END) as done_count,
         SUM(CASE WHEN cq.status = 'failed' THEN 1 ELSE 0 END) as failed_count,
         MAX(cq.finished_at) as last_crawl
       FROM source_registry sr
-      LEFT JOIN crawl_queue cq ON sr.id = cq.source_id
-      WHERE sr.geo_region IS NOT NULL
-      GROUP BY sr.geo_region, sr.scope
+      LEFT JOIN crawl_queue cq ON sr.registry_id = cq.source_registry_id AND cq.created_at >= datetime('now', '-7 day')
+      WHERE sr.geo_id IS NOT NULL
+      GROUP BY sr.geo_id, sr.scope
       ORDER BY done_count ASC
     `).all<{
       geo_region: string;
@@ -1093,15 +1125,15 @@ adminDashboard.get('/coverage', async (c) => {
       last_crawl: string | null;
     }>();
 
-    // 7日間クロールなしの地域
+    // 7日間クロールなしの地域（本番スキーマ対応）
     const staleRegions = await db.prepare(`
       SELECT 
-        geo_region,
+        geo_id as geo_region,
         MAX(last_crawled_at) as last_crawl,
         ROUND(julianday('now') - julianday(MAX(last_crawled_at))) as days_since
       FROM source_registry
-      WHERE geo_region IS NOT NULL AND enabled = 1
-      GROUP BY geo_region
+      WHERE geo_id IS NOT NULL AND enabled = 1
+      GROUP BY geo_id
       HAVING MAX(last_crawled_at) < datetime('now', '-7 days') OR MAX(last_crawled_at) IS NULL
       ORDER BY last_crawl ASC
     `).all<{
@@ -1243,6 +1275,204 @@ adminDashboard.get('/kpi-history', async (c) => {
       success: false,
       error: {
         code: 'KPI_HISTORY_ERROR',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      },
+    }, 500);
+  }
+});
+
+// ============================================================
+// ユーザー会社紐づけ診断API（superadmin向け）
+// ブラウザなしで「会社が選べない」問題を1発診断
+// ============================================================
+
+adminDashboard.get('/debug/company-check', async (c) => {
+  const db = c.env.DB;
+  const user = getCurrentUser(c);
+  
+  // super_admin限定
+  if (user.role !== 'super_admin') {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: 'FORBIDDEN',
+        message: 'Super admin access required',
+      },
+    }, 403);
+  }
+
+  const email = c.req.query('email');
+  if (!email) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: 'VALIDATION_ERROR',
+        message: 'email query parameter required',
+      },
+    }, 400);
+  }
+
+  try {
+    // 1. ユーザー存在確認
+    const targetUser = await db.prepare(`
+      SELECT id, email, name, role, created_at, last_login_at
+      FROM users 
+      WHERE email = ?
+    `).bind(email).first<{
+      id: string;
+      email: string;
+      name: string | null;
+      role: string;
+      created_at: string;
+      last_login_at: string | null;
+    }>();
+
+    if (!targetUser) {
+      return c.json<ApiResponse<any>>({
+        success: true,
+        data: {
+          diagnosis: 'USER_NOT_FOUND',
+          message: 'ユーザーが存在しません',
+          email,
+          user: null,
+          memberships: [],
+          companies: [],
+          api_simulation: null,
+        },
+      });
+    }
+
+    // 2. メンバーシップ確認
+    const memberships = await db.prepare(`
+      SELECT 
+        cm.id as membership_id,
+        cm.company_id,
+        cm.role as membership_role,
+        cm.created_at as membership_created
+      FROM company_memberships cm
+      WHERE cm.user_id = ?
+      ORDER BY cm.created_at DESC
+    `).bind(targetUser.id).all<{
+      membership_id: string;
+      company_id: string;
+      membership_role: string;
+      membership_created: string;
+    }>();
+
+    // 3. 紐づいている会社の詳細
+    const companies = await db.prepare(`
+      SELECT 
+        c.*,
+        cm.role as membership_role
+      FROM companies c
+      INNER JOIN company_memberships cm ON c.id = cm.company_id
+      WHERE cm.user_id = ?
+      ORDER BY c.created_at DESC
+    `).bind(targetUser.id).all<{
+      id: string;
+      name: string;
+      postal_code: string | null;
+      prefecture: string;
+      city: string | null;
+      industry_major: string;
+      industry_minor: string | null;
+      employee_count: number;
+      employee_band: string;
+      capital: number | null;
+      established_date: string | null;
+      annual_revenue: number | null;
+      created_at: string;
+      updated_at: string;
+      membership_role: string;
+    }>();
+
+    // 4. UI判定シミュレーション（同じロジックで検査）
+    const apiSimulation = {
+      would_return_companies: (companies.results?.length || 0) > 0,
+      companies_count: companies.results?.length || 0,
+      searchable_companies: [] as any[],
+      non_searchable_companies: [] as any[],
+    };
+
+    for (const company of companies.results || []) {
+      const hasName = !!(company.name && company.name.trim());
+      const hasPref = !!(company.prefecture && company.prefecture.trim());
+      const hasIndustry = !!((company.industry_major && company.industry_major.trim()));
+      const hasEmployees = company.employee_count !== null && 
+                          company.employee_count !== undefined && 
+                          Number(company.employee_count) > 0;
+      const isSearchable = hasName && hasPref && hasIndustry && hasEmployees;
+
+      const companyCheck = {
+        id: company.id,
+        name: company.name,
+        prefecture: company.prefecture,
+        industry_major: company.industry_major,
+        employee_count: company.employee_count,
+        employee_count_type: typeof company.employee_count,
+        checks: {
+          hasName,
+          hasPref,
+          hasIndustry,
+          hasEmployees,
+        },
+        isSearchable,
+      };
+
+      if (isSearchable) {
+        apiSimulation.searchable_companies.push(companyCheck);
+      } else {
+        const missing: string[] = [];
+        if (!hasName) missing.push('会社名');
+        if (!hasPref) missing.push('都道府県');
+        if (!hasIndustry) missing.push('業種');
+        if (!hasEmployees) missing.push('従業員数');
+        apiSimulation.non_searchable_companies.push({
+          ...companyCheck,
+          missing_fields: missing,
+        });
+      }
+    }
+
+    // 5. 診断結果
+    let diagnosis: string;
+    let message: string;
+
+    if (!memberships.results || memberships.results.length === 0) {
+      diagnosis = 'NO_MEMBERSHIP';
+      message = 'ユーザーに会社メンバーシップがありません。/api/companies は空を返します。';
+    } else if (apiSimulation.searchable_companies.length === 0) {
+      diagnosis = 'COMPANIES_INCOMPLETE';
+      message = '会社はありますが、必須4項目（会社名/都道府県/業種/従業員数）が不完全です。';
+    } else {
+      diagnosis = 'OK';
+      message = `検索可能な会社が ${apiSimulation.searchable_companies.length} 件あります。UIの問題（localStorage/キャッシュ）の可能性があります。`;
+    }
+
+    return c.json<ApiResponse<any>>({
+      success: true,
+      data: {
+        diagnosis,
+        message,
+        email,
+        user: targetUser,
+        memberships: memberships.results || [],
+        companies: companies.results || [],
+        api_simulation: apiSimulation,
+        recommendation: diagnosis === 'OK' 
+          ? 'ユーザーにブラウザの localStorage クリア（Ctrl+Shift+Delete → "すべての期間"）を依頼してください' 
+          : diagnosis === 'NO_MEMBERSHIP'
+          ? '会社を作成するか、既存の会社に招待してください'
+          : '会社情報ページで不足項目を入力してください',
+        generated_at: new Date().toISOString(),
+      },
+    });
+  } catch (error) {
+    console.error('Company check error:', error);
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: 'COMPANY_CHECK_ERROR',
         message: error instanceof Error ? error.message : 'Unknown error',
       },
     }, 500);

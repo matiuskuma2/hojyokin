@@ -295,6 +295,25 @@ adminPages.get('/admin', (c) => {
       </div>
     </div>
 
+    <!-- 今日の直近イベント（リアルタイム確認用） -->
+    <div class="bg-white rounded-xl shadow p-6 mb-8">
+      <div class="flex items-center justify-between mb-4">
+        <h2 class="text-lg font-bold text-gray-800">
+          <i class="fas fa-bolt text-yellow-500 mr-2"></i>今日の直近イベント
+        </h2>
+        <button onclick="loadDashboard()" class="text-sm text-indigo-600 hover:text-indigo-800">
+          <i class="fas fa-sync-alt mr-1"></i>更新
+        </button>
+      </div>
+      <div id="recent-events" class="overflow-x-auto">
+        <div class="loading text-gray-400 p-4">読み込み中...</div>
+      </div>
+      <p class="text-xs text-gray-400 mt-3">
+        <i class="fas fa-info-circle mr-1"></i>
+        検索・壁打ち・ドラフト生成が行われると、ここにリアルタイムで表示されます
+      </p>
+    </div>
+
     <!-- 網羅性・運用監視（super_admin のみ） -->
     <div id="coverage-section" class="hidden mb-8">
       <div class="bg-white rounded-xl shadow p-6">
@@ -450,6 +469,44 @@ adminPages.get('/admin', (c) => {
             </div>\`;
           }).join('');
           document.getElementById('queue-status').innerHTML = queueHtml || '<p class="text-gray-400">キューは空です</p>';
+
+          // 今日の直近イベント
+          const recentEvents = data.data.recent_events || [];
+          const eventsEl = document.getElementById('recent-events');
+          if (recentEvents.length > 0) {
+            const eventTypeLabels = {
+              'SUBSIDY_SEARCH': { label: '補助金検索', color: 'bg-green-100 text-green-800', icon: 'fas fa-search' },
+              'CHAT_SESSION_STARTED': { label: '壁打ち開始', color: 'bg-purple-100 text-purple-800', icon: 'fas fa-comments' },
+              'DRAFT_GENERATED': { label: 'ドラフト生成', color: 'bg-orange-100 text-orange-800', icon: 'fas fa-file-alt' },
+            };
+            const eventsHtml = '<table class="min-w-full text-sm">' +
+              '<thead><tr class="bg-gray-50"><th class="px-3 py-2 text-left">時刻</th><th class="px-3 py-2 text-left">イベント</th><th class="px-3 py-2 text-left">ユーザー</th><th class="px-3 py-2 text-left">会社</th><th class="px-3 py-2 text-left">詳細</th></tr></thead>' +
+              '<tbody>' + recentEvents.map(e => {
+                const config = eventTypeLabels[e.event_type] || { label: e.event_type, color: 'bg-gray-100 text-gray-800', icon: 'fas fa-circle' };
+                const time = e.created_at ? new Date(e.created_at).toLocaleTimeString('ja-JP') : '-';
+                let detail = '';
+                try {
+                  const meta = e.metadata ? JSON.parse(e.metadata) : {};
+                  if (e.event_type === 'SUBSIDY_SEARCH') {
+                    detail = '結果: ' + (meta.results_count || 0) + '件';
+                  } else if (e.event_type === 'CHAT_SESSION_STARTED') {
+                    detail = 'ステータス: ' + (meta.precheck_status || '-');
+                  } else if (e.event_type === 'DRAFT_GENERATED') {
+                    detail = 'NG: ' + (meta.ng_count || 0) + '件';
+                  }
+                } catch (err) {}
+                return '<tr class="border-b hover:bg-gray-50">' +
+                  '<td class="px-3 py-2 text-gray-500 text-xs">' + time + '</td>' +
+                  '<td class="px-3 py-2"><span class="inline-flex items-center px-2 py-1 rounded text-xs font-medium ' + config.color + '"><i class="' + config.icon + ' mr-1"></i>' + config.label + '</span></td>' +
+                  '<td class="px-3 py-2 text-xs">' + (e.user_email || '-') + '</td>' +
+                  '<td class="px-3 py-2 text-xs">' + (e.company_name || '-') + '</td>' +
+                  '<td class="px-3 py-2 text-xs text-gray-500">' + detail + '</td>' +
+                  '</tr>';
+              }).join('') + '</tbody></table>';
+            eventsEl.innerHTML = eventsHtml;
+          } else {
+            eventsEl.innerHTML = '<div class="text-center py-8 text-gray-400"><i class="fas fa-inbox text-4xl mb-2"></i><p>今日のイベントはまだありません</p><p class="text-xs mt-1">検索・壁打ち・ドラフト生成を行うとここに表示されます</p></div>';
+          }
 
           // 日別チャート
           const dates = [...new Set(daily.users.map(d => d.date))].sort();
