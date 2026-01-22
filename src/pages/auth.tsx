@@ -150,8 +150,15 @@ pages.get('/login', (c) => {
               // JWT保存
               localStorage.setItem('token', data.data.token);
               localStorage.setItem('user', JSON.stringify(data.data.user));
-              // ダッシュボードへリダイレクト
-              window.location.href = '/dashboard';
+              // ロールに応じてリダイレクト
+              const role = data.data.user.role;
+              if (role === 'agency') {
+                window.location.href = '/agency';
+              } else if (role === 'admin' || role === 'super_admin') {
+                window.location.href = '/admin';
+              } else {
+                window.location.href = '/dashboard';
+              }
             } else {
               errorDiv.textContent = data.error.message || 'ログインに失敗しました';
               errorDiv.classList.remove('hidden');
@@ -241,6 +248,35 @@ pages.get('/register', (c) => {
             />
           </div>
           
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-3">
+              <i class="fas fa-user-tag mr-1 text-gray-400"></i>
+              ご利用形態
+            </label>
+            <div class="grid grid-cols-2 gap-3">
+              <label class="relative">
+                <input type="radio" name="accountType" value="user" class="peer sr-only" checked />
+                <div class="p-4 border-2 rounded-lg cursor-pointer peer-checked:border-blue-500 peer-checked:bg-blue-50 hover:bg-gray-50 transition">
+                  <div class="flex items-center gap-2 mb-1">
+                    <i class="fas fa-user text-blue-600"></i>
+                    <span class="font-medium">一般</span>
+                  </div>
+                  <p class="text-xs text-gray-500">自社の補助金申請に利用</p>
+                </div>
+              </label>
+              <label class="relative">
+                <input type="radio" name="accountType" value="agency" class="peer sr-only" />
+                <div class="p-4 border-2 rounded-lg cursor-pointer peer-checked:border-emerald-500 peer-checked:bg-emerald-50 hover:bg-gray-50 transition">
+                  <div class="flex items-center gap-2 mb-1">
+                    <i class="fas fa-briefcase text-emerald-600"></i>
+                    <span class="font-medium">士業・顧問</span>
+                  </div>
+                  <p class="text-xs text-gray-500">顧客企業の代理で利用</p>
+                </div>
+              </label>
+            </div>
+          </div>
+          
           <button
             type="submit"
             class="w-full bg-green-600 hover:bg-green-700 text-white font-semibold py-3 px-4 rounded-lg transition flex items-center justify-center gap-2"
@@ -279,7 +315,8 @@ pages.get('/register', (c) => {
                 name: form.name.value,
                 email: form.email.value,
                 password: form.password.value,
-                companyName: form.companyName.value || undefined
+                companyName: form.companyName.value || undefined,
+                accountType: form.accountType.value
               })
             });
             
@@ -288,7 +325,13 @@ pages.get('/register', (c) => {
             if (data.success) {
               localStorage.setItem('token', data.data.token);
               localStorage.setItem('user', JSON.stringify(data.data.user));
-              window.location.href = '/dashboard';
+              // ロールに応じてリダイレクト
+              const role = data.data.user.role;
+              if (role === 'agency') {
+                window.location.href = '/agency';
+              } else {
+                window.location.href = '/dashboard';
+              }
             } else {
               errorDiv.textContent = data.error.message || '登録に失敗しました';
               errorDiv.classList.remove('hidden');

@@ -79,7 +79,10 @@ auth.post('/register', async (c) => {
   
   try {
     const body = await c.req.json();
-    const { email, password, name } = body;
+    const { email, password, name, accountType } = body;
+    
+    // ロール決定（user または agency）
+    const role = accountType === 'agency' ? 'agency' : 'user';
     
     // バリデーション
     if (!email || !password) {
@@ -143,10 +146,19 @@ auth.post('/register', async (c) => {
     await db
       .prepare(`
         INSERT INTO users (id, email, password_hash, name, role, created_at, updated_at, created_ip)
-        VALUES (?, ?, ?, ?, 'user', ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       `)
-      .bind(userId, email.toLowerCase(), passwordHash, name || null, now, now, requestIp)
+      .bind(userId, email.toLowerCase(), passwordHash, name || null, role, now, now, requestIp)
       .run();
+    
+    // agencyの場合、自動的にagencyを作成
+    if (role === 'agency') {
+      const agencyId = uuidv4();
+      await db.prepare(`
+        INSERT INTO agencies (id, name, owner_user_id, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+      `).bind(agencyId, `${name || email}の事務所`, userId, now, now).run();
+    }
     
     // 監査ログ記録
     await writeAuditLog(db, {
@@ -154,7 +166,7 @@ auth.post('/register', async (c) => {
       action: 'REGISTER',
       actionCategory: 'auth',
       severity: 'info',
-      detailsJson: { email: email.toLowerCase() },
+      detailsJson: { email: email.toLowerCase(), role },
       ip: requestIp,
       userAgent,
       requestId,
@@ -162,7 +174,7 @@ auth.post('/register', async (c) => {
     
     // JWT発行
     const token = await signJWT(
-      { id: userId, email: email.toLowerCase(), role: 'user' },
+      { id: userId, email: email.toLowerCase(), role },
       c.env
     );
     
@@ -171,7 +183,7 @@ auth.post('/register', async (c) => {
       id: userId,
       email: email.toLowerCase(),
       name: name || null,
-      role: 'user',
+      role,
       email_verified_at: null,
       created_at: now,
     };

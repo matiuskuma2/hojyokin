@@ -11,7 +11,7 @@ import { HTTPException } from 'hono/http-exception';
 import { jsxRenderer } from 'hono/jsx-renderer';
 
 import type { Env, Variables, ApiResponse } from './types';
-import { authRoutes, companiesRoutes, subsidiesRoutes, jobsRoutes, internalRoutes, knowledgeRoutes, consumerRoutes, kpiRoutes, adminRoutes, profileRoutes, chatRoutes, draftRoutes, adminDashboardRoutes } from './routes';
+import { authRoutes, companiesRoutes, subsidiesRoutes, jobsRoutes, internalRoutes, knowledgeRoutes, consumerRoutes, kpiRoutes, adminRoutes, profileRoutes, chatRoutes, draftRoutes, adminDashboardRoutes, agencyRoutes, portalRoutes } from './routes';
 import { securityHeaders, requestId } from './middleware/security';
 import authPages from './pages/auth';
 import dashboardPages from './pages/dashboard';
@@ -19,6 +19,8 @@ import adminPages from './pages/admin';
 import subsidyPages from './pages/subsidies';
 import chatPages from './pages/chat';
 import draftPages from './pages/draft';
+import agencyPages from './pages/agency';
+import portalPages from './pages/portal';
 
 // アプリケーション初期化
 const app = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -112,6 +114,12 @@ app.route('/api/draft', draftRoutes);
 // 管理ダッシュボードAPI（KPI / コスト / 更新状況）
 app.route('/api/admin', adminDashboardRoutes);
 
+// Agency（士業）ルート
+app.route('/api/agency', agencyRoutes);
+
+// Portal（顧客ポータル - ログイン不要）ルート
+app.route('/api/portal', portalRoutes);
+
 // ============================================================
 // UI ページルート（U1）
 // ============================================================
@@ -133,6 +141,12 @@ app.route('/', chatPages);
 
 // 申請書ドラフトページ（/draft）
 app.route('/', draftPages);
+
+// Agency（士業）ページ（/agency, /agency/clients, /agency/links）
+app.route('/', agencyPages);
+
+// 顧客ポータルページ（/intake, /answer - ログイン不要）
+app.route('/', portalPages);
 
 // ============================================================
 // エラーハンドリング
