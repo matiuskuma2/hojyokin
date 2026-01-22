@@ -17,7 +17,8 @@ const AuthLayout = ({ children, title }: { children: any; title: string }) => (
     <head>
       <meta charset="UTF-8" />
       <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-      <title>{title} - 補助金マッチング</title>
+      <title>{title} - ホジョラク</title>
+      <link rel="icon" type="image/png" href="/favicon.png" />
       <script src="https://cdn.tailwindcss.com"></script>
       <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet" />
     </head>
@@ -25,9 +26,8 @@ const AuthLayout = ({ children, title }: { children: any; title: string }) => (
       <div class="w-full max-w-md">
         {/* Logo */}
         <div class="text-center mb-8">
-          <a href="/" class="inline-flex items-center gap-2 text-2xl font-bold text-gray-800">
-            <i class="fas fa-coins text-yellow-500"></i>
-            補助金マッチング
+          <a href="/" class="inline-block">
+            <img src="/static/images/logo.png" alt="ホジョラク" class="h-12" />
           </a>
         </div>
         {children}

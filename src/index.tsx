@@ -1,5 +1,5 @@
 /**
- * 補助金マッチングシステム - Hono アプリケーション
+ * ホジョラク - Hono アプリケーション
  * 
  * Phase 1-A: Cloudflare Workers + D1 + Jグランツ API
  */
@@ -12,6 +12,7 @@ import { jsxRenderer } from 'hono/jsx-renderer';
 
 import type { Env, Variables, ApiResponse } from './types';
 import { authRoutes, companiesRoutes, subsidiesRoutes, jobsRoutes, internalRoutes, knowledgeRoutes, consumerRoutes, kpiRoutes, adminRoutes, profileRoutes, chatRoutes, draftRoutes } from './routes';
+import { securityHeaders, requestId } from './middleware/security';
 import authPages from './pages/auth';
 import dashboardPages from './pages/dashboard';
 import adminPages from './pages/admin';
@@ -40,12 +41,10 @@ app.use('/api/*', cors({
 app.use('/api/*', logger());
 
 // リクエストIDミドルウェア
-app.use('/api/*', async (c, next) => {
-  const requestId = crypto.randomUUID();
-  c.set('requestId', requestId);
-  c.header('X-Request-Id', requestId);
-  await next();
-});
+app.use('/api/*', requestId);
+
+// セキュリティヘッダー
+app.use('*', securityHeaders);
 
 // ============================================================
 // API ルート
@@ -184,7 +183,8 @@ const renderer = jsxRenderer(({ children }) => {
       <head>
         <meta charset="UTF-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-        <title>補助金マッチングシステム</title>
+        <title>ホジョラク</title>
+        <link rel="icon" type="image/png" href="/favicon.png" />
         <script src="https://cdn.tailwindcss.com"></script>
         <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet" />
       </head>
@@ -202,8 +202,8 @@ app.get('/', (c) => {
     <div class="container mx-auto px-4 py-8">
       <header class="mb-8">
         <h1 class="text-3xl font-bold text-gray-800 flex items-center gap-3">
-          <i class="fas fa-coins text-yellow-500"></i>
-          補助金マッチングシステム
+          <img src="/static/images/icon.png" alt="ホジョラク" class="h-10" />
+          <span class="text-blue-700">ホジョラク</span>
         </h1>
         <p class="text-gray-600 mt-2">
           企業情報を登録するだけで、最適な補助金・助成金を自動でマッチング

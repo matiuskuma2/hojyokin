@@ -17,7 +17,8 @@ const AppLayout = ({ children, title, activeNav }: { children: any; title: strin
     <head>
       <meta charset="UTF-8" />
       <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-      <title>{title} - 補助金マッチング</title>
+      <title>{title} - ホジョラク</title>
+      <link rel="icon" type="image/png" href="/favicon.png" />
       <script src="https://cdn.tailwindcss.com"></script>
       <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet" />
       {/* PDF.js for client-side PDF text extraction */}
@@ -29,9 +30,9 @@ const AppLayout = ({ children, title, activeNav }: { children: any; title: strin
         <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div class="flex justify-between h-16">
             <div class="flex items-center">
-              <a href="/dashboard" class="flex items-center gap-2 text-xl font-bold text-gray-800">
-                <i class="fas fa-coins text-yellow-500"></i>
-                補助金マッチング
+              <a href="/dashboard" class="flex items-center">
+                <img src="/static/images/icon.png" alt="ホジョラク" class="h-8 mr-2" />
+                <span class="text-xl font-bold text-blue-700">ホジョラク</span>
               </a>
               <div class="hidden md:flex ml-10 space-x-4">
                 <a href="/dashboard" class={`px-3 py-2 rounded-md text-sm font-medium ${activeNav === 'dashboard' ? 'bg-blue-50 text-blue-700' : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'}`}>
@@ -109,7 +110,7 @@ pages.get('/dashboard', (c) => {
     <AppLayout title="ダッシュボード" activeNav="dashboard">
       <div class="mb-8">
         <h1 class="text-2xl font-bold text-gray-800">ダッシュボード</h1>
-        <p class="text-gray-600 mt-1">補助金マッチングの状況を確認できます</p>
+        <p class="text-gray-600 mt-1">ホジョラクの状況を確認できます</p>
       </div>
       
       {/* アラート：会社情報未登録 */}
@@ -119,7 +120,7 @@ pages.get('/dashboard', (c) => {
           <div>
             <h3 class="text-yellow-800 font-medium">会社情報が未登録です</h3>
             <p class="text-yellow-700 text-sm mt-1">
-              補助金マッチングを利用するには、まず会社情報を登録してください。
+              ホジョラクを利用するには、まず会社情報を登録してください。
             </p>
             <a href="/company" class="inline-block mt-2 text-yellow-800 font-medium hover:underline">
               会社情報を登録する →
@@ -446,7 +447,7 @@ pages.get('/company', (c) => {
     <AppLayout title="会社情報" activeNav="company">
       <div class="mb-6">
         <h1 class="text-2xl font-bold text-gray-800">会社情報</h1>
-        <p class="text-gray-600 mt-1">補助金マッチングに使用する会社情報を登録・編集できます</p>
+        <p class="text-gray-600 mt-1">ホジョラクに使用する会社情報を登録・編集できます</p>
       </div>
       
       {/* 完成度バー */}

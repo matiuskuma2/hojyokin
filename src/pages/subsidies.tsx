@@ -24,7 +24,8 @@ const subsidyLayout = (title: string, content: string) => `
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>${title} - 補助金マッチング</title>
+  <title>${title} - ホジョラク</title>
+  <link rel="icon" type="image/png" href="/favicon.png">
   <script src="https://cdn.tailwindcss.com"></script>
   <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet">
   <style>
@@ -42,8 +43,9 @@ const subsidyLayout = (title: string, content: string) => `
     <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
       <div class="flex items-center justify-between h-16">
         <div class="flex items-center space-x-8">
-          <a href="/dashboard" class="font-bold text-xl text-green-600">
-            <i class="fas fa-leaf mr-2"></i>補助金マッチング
+          <a href="/dashboard" class="flex items-center">
+            <img src="/static/images/icon.png" alt="ホジョラク" class="h-8 mr-2">
+            <span class="font-bold text-xl text-blue-700">ホジョラク</span>
           </a>
           <div class="hidden md:flex space-x-4">
             <a href="/dashboard" class="text-gray-600 hover:text-gray-900 px-3 py-2 text-sm font-medium">
