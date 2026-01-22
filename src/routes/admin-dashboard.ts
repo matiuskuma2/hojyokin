@@ -1153,13 +1153,13 @@ adminDashboard.get('/coverage', async (c) => {
     // ===================
     const l3_subsidies = await db.prepare(`
       SELECT 
-        COALESCE(target_area, 'unknown') as region,
+        COALESCE(target_area_search, 'unknown') as region,
         COUNT(*) as total,
-        SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) as active,
-        SUM(CASE WHEN application_end < datetime('now') THEN 1 ELSE 0 END) as expired,
-        SUM(CASE WHEN date(updated_at) >= date('now', '-7 days') THEN 1 ELSE 0 END) as updated_week
+        SUM(CASE WHEN request_reception_display_flag = 1 THEN 1 ELSE 0 END) as active,
+        SUM(CASE WHEN acceptance_end_datetime < datetime('now') THEN 1 ELSE 0 END) as expired,
+        SUM(CASE WHEN date(cached_at) >= date('now', '-7 days') THEN 1 ELSE 0 END) as updated_week
       FROM subsidy_cache
-      GROUP BY target_area
+      GROUP BY target_area_search
       ORDER BY total DESC
     `).all<{
       region: string;
@@ -1173,11 +1173,11 @@ adminDashboard.get('/coverage', async (c) => {
     const l3_summary = await db.prepare(`
       SELECT 
         COUNT(*) as total,
-        SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) as active,
-        SUM(CASE WHEN date(created_at) >= date('now', '-7 days') THEN 1 ELSE 0 END) as new_week,
-        SUM(CASE WHEN date(updated_at) >= date('now', '-7 days') THEN 1 ELSE 0 END) as updated_week,
-        MIN(updated_at) as oldest_update,
-        MAX(updated_at) as latest_update
+        SUM(CASE WHEN request_reception_display_flag = 1 THEN 1 ELSE 0 END) as active,
+        SUM(CASE WHEN date(cached_at) >= date('now', '-7 days') THEN 1 ELSE 0 END) as new_week,
+        SUM(CASE WHEN date(cached_at) >= date('now', '-7 days') THEN 1 ELSE 0 END) as updated_week,
+        MIN(cached_at) as oldest_update,
+        MAX(cached_at) as latest_update
       FROM subsidy_cache
     `).first<{
       total: number;

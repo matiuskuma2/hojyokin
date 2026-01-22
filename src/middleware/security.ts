@@ -34,7 +34,7 @@ export const securityHeaders: MiddlewareHandler<{ Bindings: Env; Variables: Vari
     "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net",
     "font-src 'self' https://cdn.jsdelivr.net",
     "img-src 'self' data: https:",
-    "connect-src 'self'",
+    "connect-src 'self' https://cdn.jsdelivr.net",
     "frame-ancestors 'none'",
   ].join('; '));
   
