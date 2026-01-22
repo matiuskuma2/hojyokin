@@ -5,7 +5,9 @@ import { defineConfig } from 'vite'
 
 export default defineConfig({
   plugins: [
-    build(),
+    build({
+      exclude: ['/static/*', '/sw.js', '/manifest.json', '/favicon.ico', '/favicon.png']
+    }),
     devServer({
       adapter,
       entry: 'src/index.tsx'
