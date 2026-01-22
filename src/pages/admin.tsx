@@ -295,6 +295,19 @@ const adminLayout = (title: string, content: string, activeTab: string = '') => 
         localStorage.removeItem('user');
         window.location.href = '/login';
       };
+      
+      // Service Worker 登録（PWA対応）
+      if ('serviceWorker' in navigator) {
+        window.addEventListener('load', function() {
+          navigator.serviceWorker.register('/sw.js')
+            .then(function(registration) {
+              console.log('[PWA] Service Worker registered:', registration.scope);
+            })
+            .catch(function(error) {
+              console.log('[PWA] Service Worker registration failed:', error);
+            });
+        });
+      }
     })();
   </script>
 </body>
