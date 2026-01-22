@@ -27,7 +27,7 @@ const AuthLayout = ({ children, title }: { children: any; title: string }) => (
         {/* Logo */}
         <div class="text-center mb-8">
           <a href="/" class="inline-block">
-            <img src="/static/images/logo.png" alt="ホジョラク" class="h-12" />
+            <img src="/static/images/logo.png" alt="ホジョラク" class="w-64 mx-auto" />
           </a>
         </div>
         {children}

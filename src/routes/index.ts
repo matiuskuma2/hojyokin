@@ -10,3 +10,4 @@ export { default as adminRoutes } from './admin';
 export { default as profileRoutes } from './profile';
 export { default as chatRoutes } from './chat';
 export { default as draftRoutes } from './draft';
+export { default as adminDashboardRoutes } from './admin-dashboard';

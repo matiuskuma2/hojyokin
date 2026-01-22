@@ -50,7 +50,11 @@ const AppLayout = ({ children, title, activeNav }: { children: any; title: strin
               </div>
             </div>
             <div class="flex items-center gap-4">
+              <span id="user-role" class="hidden px-2 py-1 text-xs font-medium rounded-full"></span>
               <span id="user-name" class="text-sm text-gray-600"></span>
+              <a id="admin-link" href="/admin" class="hidden text-indigo-600 hover:text-indigo-800 text-sm font-medium">
+                <i class="fas fa-shield-halved mr-1"></i>管理画面
+              </a>
               <button id="logout-btn" class="text-gray-500 hover:text-red-600 transition">
                 <i class="fas fa-sign-out-alt"></i> ログアウト
               </button>
@@ -74,6 +78,19 @@ const AppLayout = ({ children, title, activeNav }: { children: any; title: strin
           window.location.href = '/login';
         } else {
           document.getElementById('user-name').textContent = user.name || user.email;
+          
+          // ロール表示
+          const roleEl = document.getElementById('user-role');
+          const adminLink = document.getElementById('admin-link');
+          if (user.role === 'super_admin') {
+            roleEl.textContent = 'Super Admin';
+            roleEl.className = 'px-2 py-1 text-xs font-medium rounded-full bg-purple-100 text-purple-800';
+            adminLink.classList.remove('hidden');
+          } else if (user.role === 'admin') {
+            roleEl.textContent = 'Admin';
+            roleEl.className = 'px-2 py-1 text-xs font-medium rounded-full bg-blue-100 text-blue-800';
+            adminLink.classList.remove('hidden');
+          }
         }
         
         // ログアウト

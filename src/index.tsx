@@ -11,7 +11,7 @@ import { HTTPException } from 'hono/http-exception';
 import { jsxRenderer } from 'hono/jsx-renderer';
 
 import type { Env, Variables, ApiResponse } from './types';
-import { authRoutes, companiesRoutes, subsidiesRoutes, jobsRoutes, internalRoutes, knowledgeRoutes, consumerRoutes, kpiRoutes, adminRoutes, profileRoutes, chatRoutes, draftRoutes } from './routes';
+import { authRoutes, companiesRoutes, subsidiesRoutes, jobsRoutes, internalRoutes, knowledgeRoutes, consumerRoutes, kpiRoutes, adminRoutes, profileRoutes, chatRoutes, draftRoutes, adminDashboardRoutes } from './routes';
 import { securityHeaders, requestId } from './middleware/security';
 import authPages from './pages/auth';
 import dashboardPages from './pages/dashboard';
@@ -108,6 +108,9 @@ app.route('/api/chat', chatRoutes);
 
 // ドラフトルート（S4: 申請書ドラフト生成）
 app.route('/api/draft', draftRoutes);
+
+// 管理ダッシュボードAPI（KPI / コスト / 更新状況）
+app.route('/api/admin', adminDashboardRoutes);
 
 // ============================================================
 // UI ページルート（U1）
