@@ -1,0 +1,1426 @@
+      {
+        "name": "idx_access_links_agency",
+        "type": "index",
+        "sql": "CREATE INDEX idx_access_links_agency ON access_links(agency_id)"
+      },
+      {
+        "name": "idx_access_links_company",
+        "type": "index",
+        "sql": "CREATE INDEX idx_access_links_company ON access_links(company_id)"
+      },
+      {
+        "name": "idx_access_links_expires",
+        "type": "index",
+        "sql": "CREATE INDEX idx_access_links_expires ON access_links(expires_at)"
+      },
+      {
+        "name": "idx_access_links_short",
+        "type": "index",
+        "sql": "CREATE INDEX idx_access_links_short ON access_links(short_code)"
+      },
+      {
+        "name": "idx_access_links_token",
+        "type": "index",
+        "sql": "CREATE INDEX idx_access_links_token ON access_links(token_hash)"
+      },
+      {
+        "name": "idx_agencies_owner",
+        "type": "index",
+        "sql": "CREATE INDEX idx_agencies_owner ON agencies(owner_user_id)"
+      },
+      {
+        "name": "idx_agency_clients_agency",
+        "type": "index",
+        "sql": "CREATE INDEX idx_agency_clients_agency ON agency_clients(agency_id)"
+      },
+      {
+        "name": "idx_agency_clients_company",
+        "type": "index",
+        "sql": "CREATE INDEX idx_agency_clients_company ON agency_clients(company_id)"
+      },
+      {
+        "name": "idx_agency_clients_status",
+        "type": "index",
+        "sql": "CREATE INDEX idx_agency_clients_status ON agency_clients(status)"
+      },
+      {
+        "name": "idx_agency_members_agency",
+        "type": "index",
+        "sql": "CREATE INDEX idx_agency_members_agency ON agency_members(agency_id)"
+      },
+      {
+        "name": "idx_agency_members_user",
+        "type": "index",
+        "sql": "CREATE INDEX idx_agency_members_user ON agency_members(user_id)"
+      },
+      {
+        "name": "idx_alert_log_acknowledged",
+        "type": "index",
+        "sql": "CREATE INDEX idx_alert_log_acknowledged ON alert_log(acknowledged)"
+      },
+      {
+        "name": "idx_alert_log_created",
+        "type": "index",
+        "sql": "CREATE INDEX idx_alert_log_created ON alert_log(created_at)"
+      },
+      {
+        "name": "idx_alert_log_severity",
+        "type": "index",
+        "sql": "CREATE INDEX idx_alert_log_severity ON alert_log(severity)"
+      },
+      {
+        "name": "idx_alert_log_type",
+        "type": "index",
+        "sql": "CREATE INDEX idx_alert_log_type ON alert_log(alert_type)"
+      },
+      {
+        "name": "idx_application_drafts_company",
+        "type": "index",
+        "sql": "CREATE INDEX idx_application_drafts_company ON application_drafts(company_id)"
+      },
+      {
+        "name": "idx_application_drafts_latest",
+        "type": "index",
+        "sql": "CREATE UNIQUE INDEX idx_application_drafts_latest ON application_drafts(session_id, status, version)"
+      },
+      {
+        "name": "idx_application_drafts_session",
+        "type": "index",
+        "sql": "CREATE INDEX idx_application_drafts_session ON application_drafts(session_id)"
+      },
+      {
+        "name": "idx_application_drafts_status",
+        "type": "index",
+        "sql": "CREATE INDEX idx_application_drafts_status ON application_drafts(status)"
+      },
+      {
+        "name": "idx_audit_action",
+        "type": "index",
+        "sql": "CREATE INDEX idx_audit_action ON audit_log(action)"
+      },
+      {
+        "name": "idx_audit_actor",
+        "type": "index",
+        "sql": "CREATE INDEX idx_audit_actor ON audit_log(actor_user_id)"
+      },
+      {
+        "name": "idx_audit_category",
+        "type": "index",
+        "sql": "CREATE INDEX idx_audit_category ON audit_log(action_category)"
+      },
+      {
+        "name": "idx_audit_category_created",
+        "type": "index",
+        "sql": "CREATE INDEX idx_audit_category_created ON audit_log(action_category, created_at)"
+      },
+      {
+        "name": "idx_audit_created",
+        "type": "index",
+        "sql": "CREATE INDEX idx_audit_created ON audit_log(created_at)"
+      },
+      {
+        "name": "idx_audit_request_id",
+        "type": "index",
+        "sql": "CREATE INDEX idx_audit_request_id ON audit_log(request_id)"
+      },
+      {
+        "name": "idx_audit_severity",
+        "type": "index",
+        "sql": "CREATE INDEX idx_audit_severity ON audit_log(severity)"
+      },
+      {
+        "name": "idx_audit_severity_created",
+        "type": "index",
+        "sql": "CREATE INDEX idx_audit_severity_created ON audit_log(severity, created_at)"
+      },
+      {
+        "name": "idx_audit_target_company",
+        "type": "index",
+        "sql": "CREATE INDEX idx_audit_target_company ON audit_log(target_company_id)"
+      },
+      {
+        "name": "idx_audit_target_user",
+        "type": "index",
+        "sql": "CREATE INDEX idx_audit_target_user ON audit_log(target_user_id)"
+      },
+      {
+        "name": "idx_chat_answers_link",
+        "type": "index",
+        "sql": "CREATE INDEX idx_chat_answers_link ON chat_answers(access_link_id)"
+      },
+      {
+        "name": "idx_chat_answers_session",
+        "type": "index",
+        "sql": "CREATE INDEX idx_chat_answers_session ON chat_answers(session_id)"
+      },
+      {
+        "name": "idx_chat_answers_status",
+        "type": "index",
+        "sql": "CREATE INDEX idx_chat_answers_status ON chat_answers(status)"
+      },
+      {
+        "name": "idx_chat_facts_company",
+        "type": "index",
+        "sql": "CREATE INDEX idx_chat_facts_company ON chat_facts(company_id)"
+      },
+      {
+        "name": "idx_chat_facts_key",
+        "type": "index",
+        "sql": "CREATE INDEX idx_chat_facts_key ON chat_facts(fact_key)"
+      },
+      {
+        "name": "idx_chat_facts_unique",
+        "type": "index",
+        "sql": "CREATE UNIQUE INDEX idx_chat_facts_unique ON chat_facts(company_id, subsidy_id, fact_key)"
+      },
+      {
+        "name": "idx_chat_facts_user",
+        "type": "index",
+        "sql": "CREATE INDEX idx_chat_facts_user ON chat_facts(user_id)"
+      },
+      {
+        "name": "idx_chat_messages_created",
+        "type": "index",
+        "sql": "CREATE INDEX idx_chat_messages_created ON chat_messages(created_at)"
+      },
+      {
+        "name": "idx_chat_messages_session",
+        "type": "index",
+        "sql": "CREATE INDEX idx_chat_messages_session ON chat_messages(session_id)"
+      },
+      {
+        "name": "idx_chat_sessions_company",
+        "type": "index",
+        "sql": "CREATE INDEX idx_chat_sessions_company ON chat_sessions(company_id)"
+      },
+      {
+        "name": "idx_chat_sessions_status",
+        "type": "index",
+        "sql": "CREATE INDEX idx_chat_sessions_status ON chat_sessions(status)"
+      },
+      {
+        "name": "idx_chat_sessions_subsidy",
+        "type": "index",
+        "sql": "CREATE INDEX idx_chat_sessions_subsidy ON chat_sessions(subsidy_id)"
+      },
+      {
+        "name": "idx_chat_sessions_unique",
+        "type": "index",
+        "sql": "CREATE UNIQUE INDEX idx_chat_sessions_unique ON chat_sessions(company_id, subsidy_id, status) WHERE status = 'collecting'"
+      },
+      {
+        "name": "idx_chat_sessions_user",
+        "type": "index",
+        "sql": "CREATE INDEX idx_chat_sessions_user ON chat_sessions(user_id)"
+      },
+      {
+        "name": "idx_companies_employee_band",
+        "type": "index",
+        "sql": "CREATE INDEX idx_companies_employee_band ON companies(employee_band)"
+      },
+      {
+        "name": "idx_companies_industry",
+        "type": "index",
+        "sql": "CREATE INDEX idx_companies_industry ON companies(industry_major, industry_minor)"
+      },
+      {
+        "name": "idx_companies_prefecture",
+        "type": "index",
+        "sql": "CREATE INDEX idx_companies_prefecture ON companies(prefecture)"
+      },
+      {
+        "name": "idx_company_documents_company_id",
+        "type": "index",
+        "sql": "CREATE INDEX idx_company_documents_company_id ON company_documents(company_id)"
+      },
+      {
+        "name": "idx_company_documents_doc_type",
+        "type": "index",
+        "sql": "CREATE INDEX idx_company_documents_doc_type ON company_documents(doc_type)"
+      },
+      {
+        "name": "idx_company_documents_status",
+        "type": "index",
+        "sql": "CREATE INDEX idx_company_documents_status ON company_documents(status)"
+      },
+      {
+        "name": "idx_company_profile_corp_number",
+        "type": "index",
+        "sql": "CREATE UNIQUE INDEX idx_company_profile_corp_number \n  ON company_profile(corp_number) WHERE corp_number IS NOT NULL"
+      },
+      {
+        "name": "idx_company_profile_founding",
+        "type": "index",
+        "sql": "CREATE INDEX idx_company_profile_founding ON company_profile(founding_year)"
+      },
+      {
+        "name": "idx_company_profile_hire",
+        "type": "index",
+        "sql": "CREATE INDEX idx_company_profile_hire ON company_profile(plans_to_hire)"
+      },
+      {
+        "name": "idx_company_profile_profitable",
+        "type": "index",
+        "sql": "CREATE INDEX idx_company_profile_profitable ON company_profile(is_profitable)"
+      },
+      {
+        "name": "idx_crawl_history_crawled",
+        "type": "index",
+        "sql": "CREATE INDEX idx_crawl_history_crawled ON crawl_history(crawled_at)"
+      },
+      {
+        "name": "idx_crawl_history_subsidy",
+        "type": "index",
+        "sql": "CREATE INDEX idx_crawl_history_subsidy ON crawl_history(subsidy_id)"
+      },
+      {
+        "name": "idx_crawl_history_url",
+        "type": "index",
+        "sql": "CREATE INDEX idx_crawl_history_url ON crawl_history(url_id)"
+      },
+      {
+        "name": "idx_crawl_job_created",
+        "type": "index",
+        "sql": "CREATE INDEX idx_crawl_job_created ON crawl_job(created_at)"
+      },
+      {
+        "name": "idx_crawl_job_cron_dedup",
+        "type": "index",
+        "sql": "CREATE INDEX idx_crawl_job_cron_dedup ON crawl_job(job_type, root_url, status, created_at)"
+      },
+      {
+        "name": "idx_crawl_job_queue",
+        "type": "index",
+        "sql": "CREATE INDEX idx_crawl_job_queue ON crawl_job(status, priority, created_at)"
+      },
+      {
+        "name": "idx_crawl_job_status",
+        "type": "index",
+        "sql": "CREATE INDEX idx_crawl_job_status ON crawl_job(status)"
+      },
+      {
+        "name": "idx_crawl_job_subsidy",
+        "type": "index",
+        "sql": "CREATE INDEX idx_crawl_job_subsidy ON crawl_job(subsidy_id)"
+      },
+      {
+        "name": "idx_crawl_job_url",
+        "type": "index",
+        "sql": "CREATE INDEX idx_crawl_job_url ON crawl_job(url_id)"
+      },
+      {
+        "name": "idx_crawl_queue_dedup",
+        "type": "index",
+        "sql": "CREATE INDEX idx_crawl_queue_dedup \n  ON crawl_queue(kind, url, status, created_at)"
+      },
+      {
+        "name": "idx_crawl_queue_domain",
+        "type": "index",
+        "sql": "CREATE INDEX idx_crawl_queue_domain \n  ON crawl_queue(domain_key, status)"
+      },
+      {
+        "name": "idx_crawl_queue_pick",
+        "type": "index",
+        "sql": "CREATE INDEX idx_crawl_queue_pick \n  ON crawl_queue(status, priority, scheduled_at)"
+      },
+      {
+        "name": "idx_crawl_queue_registry",
+        "type": "index",
+        "sql": "CREATE INDEX idx_crawl_queue_registry \n  ON crawl_queue(source_registry_id, status)"
+      },
+      {
+        "name": "idx_crawl_queue_stats_day",
+        "type": "index",
+        "sql": "CREATE INDEX idx_crawl_queue_stats_day \nON crawl_queue_stats(stat_day, metric)"
+      },
+      {
+        "name": "idx_crawl_queue_subsidy",
+        "type": "index",
+        "sql": "CREATE INDEX idx_crawl_queue_subsidy \n  ON crawl_queue(subsidy_id, status)"
+      },
+      {
+        "name": "idx_crawl_stats_date",
+        "type": "index",
+        "sql": "CREATE INDEX idx_crawl_stats_date ON crawl_stats(stat_date)"
+      },
+      {
+        "name": "idx_crawl_stats_date_hour",
+        "type": "index",
+        "sql": "CREATE UNIQUE INDEX idx_crawl_stats_date_hour ON crawl_stats(stat_date, stat_hour)"
+      },
+      {
+        "name": "idx_doc_object_hash",
+        "type": "index",
+        "sql": "CREATE INDEX idx_doc_object_hash ON doc_object(content_hash_sha256)"
+      },
+      {
+        "name": "idx_doc_object_review",
+        "type": "index",
+        "sql": "CREATE INDEX idx_doc_object_review ON doc_object(needs_review)"
+      },
+      {
+        "name": "idx_doc_object_storage",
+        "type": "index",
+        "sql": "CREATE INDEX idx_doc_object_storage ON doc_object(storage_backend)"
+      },
+      {
+        "name": "idx_doc_object_subsidy",
+        "type": "index",
+        "sql": "CREATE INDEX idx_doc_object_subsidy ON doc_object(subsidy_id)"
+      },
+      {
+        "name": "idx_doc_object_url",
+        "type": "index",
+        "sql": "CREATE INDEX idx_doc_object_url ON doc_object(url_id)"
+      },
+      {
+        "name": "idx_doc_object_version",
+        "type": "index",
+        "sql": "CREATE INDEX idx_doc_object_version ON doc_object(extract_version)"
+      },
+      {
+        "name": "idx_domain_policy_enabled",
+        "type": "index",
+        "sql": "CREATE INDEX idx_domain_policy_enabled ON domain_policy(enabled)"
+      },
+      {
+        "name": "idx_domain_policy_failures",
+        "type": "index",
+        "sql": "CREATE INDEX idx_domain_policy_failures ON domain_policy(failure_count)"
+      },
+      {
+        "name": "idx_eligibility_extractions_subsidy",
+        "type": "index",
+        "sql": "CREATE INDEX idx_eligibility_extractions_subsidy ON eligibility_extractions(subsidy_id)"
+      },
+      {
+        "name": "idx_eligibility_rules_category",
+        "type": "index",
+        "sql": "CREATE INDEX idx_eligibility_rules_category ON eligibility_rules(category)"
+      },
+      {
+        "name": "idx_eligibility_rules_check_type",
+        "type": "index",
+        "sql": "CREATE INDEX idx_eligibility_rules_check_type ON eligibility_rules(check_type)"
+      },
+      {
+        "name": "idx_eligibility_rules_subsidy",
+        "type": "index",
+        "sql": "CREATE INDEX idx_eligibility_rules_subsidy ON eligibility_rules(subsidy_id)"
+      },
+      {
+        "name": "idx_evaluations_company",
+        "type": "index",
+        "sql": "CREATE INDEX idx_evaluations_company ON evaluation_runs(company_id)"
+      },
+      {
+        "name": "idx_evaluations_status",
+        "type": "index",
+        "sql": "CREATE INDEX idx_evaluations_status ON evaluation_runs(status)"
+      },
+      {
+        "name": "idx_evaluations_subsidy",
+        "type": "index",
+        "sql": "CREATE INDEX idx_evaluations_subsidy ON evaluation_runs(subsidy_id)"
+      },
+      {
+        "name": "idx_geo_region_city",
+        "type": "index",
+        "sql": "CREATE INDEX idx_geo_region_city ON geo_region(city_code)"
+      },
+      {
+        "name": "idx_geo_region_codes",
+        "type": "index",
+        "sql": "CREATE UNIQUE INDEX idx_geo_region_codes ON geo_region(prefecture_code, city_code)"
+      },
+      {
+        "name": "idx_geo_region_level",
+        "type": "index",
+        "sql": "CREATE INDEX idx_geo_region_level ON geo_region(level)"
+      },
+      {
+        "name": "idx_geo_region_parent",
+        "type": "index",
+        "sql": "CREATE INDEX idx_geo_region_parent ON geo_region(parent_geo_id)"
+      },
+      {
+        "name": "idx_geo_region_prefecture",
+        "type": "index",
+        "sql": "CREATE INDEX idx_geo_region_prefecture ON geo_region(prefecture_code)"
+      },
+      {
+        "name": "idx_intake_submissions_agency",
+        "type": "index",
+        "sql": "CREATE INDEX idx_intake_submissions_agency ON intake_submissions(agency_id)"
+      },
+      {
+        "name": "idx_intake_submissions_company",
+        "type": "index",
+        "sql": "CREATE INDEX idx_intake_submissions_company ON intake_submissions(company_id)"
+      },
+      {
+        "name": "idx_intake_submissions_link",
+        "type": "index",
+        "sql": "CREATE INDEX idx_intake_submissions_link ON intake_submissions(access_link_id)"
+      },
+      {
+        "name": "idx_intake_submissions_status",
+        "type": "index",
+        "sql": "CREATE INDEX idx_intake_submissions_status ON intake_submissions(status)"
+      },
+      {
+        "name": "idx_knowledge_summary_quality",
+        "type": "index",
+        "sql": "CREATE INDEX idx_knowledge_summary_quality ON knowledge_summary(quality_score)"
+      },
+      {
+        "name": "idx_knowledge_summary_subsidy",
+        "type": "index",
+        "sql": "CREATE INDEX idx_knowledge_summary_subsidy ON knowledge_summary(subsidy_id)"
+      },
+      {
+        "name": "idx_knowledge_summary_update",
+        "type": "index",
+        "sql": "CREATE INDEX idx_knowledge_summary_update ON knowledge_summary(needs_update)"
+      },
+      {
+        "name": "idx_login_attempts_created_at",
+        "type": "index",
+        "sql": "CREATE INDEX idx_login_attempts_created_at ON login_attempts(created_at)"
+      },
+      {
+        "name": "idx_login_attempts_email",
+        "type": "index",
+        "sql": "CREATE INDEX idx_login_attempts_email ON login_attempts(email)"
+      },
+      {
+        "name": "idx_login_attempts_ip",
+        "type": "index",
+        "sql": "CREATE INDEX idx_login_attempts_ip ON login_attempts(ip)"
+      },
+      {
+        "name": "idx_memberships_company",
+        "type": "index",
+        "sql": "CREATE INDEX idx_memberships_company ON company_memberships(company_id)"
+      },
+      {
+        "name": "idx_memberships_user",
+        "type": "index",
+        "sql": "CREATE INDEX idx_memberships_user ON company_memberships(user_id)"
+      },
+      {
+        "name": "idx_notifications_created",
+        "type": "index",
+        "sql": "CREATE INDEX idx_notifications_created ON notifications(created_at)"
+      },
+      {
+        "name": "idx_notifications_read",
+        "type": "index",
+        "sql": "CREATE INDEX idx_notifications_read ON notifications(user_id, read_at)"
+      },
+      {
+        "name": "idx_notifications_user",
+        "type": "index",
+        "sql": "CREATE INDEX idx_notifications_user ON notifications(user_id)"
+      },
+      {
+        "name": "idx_prt_expires",
+        "type": "index",
+        "sql": "CREATE INDEX idx_prt_expires ON password_reset_tokens(expires_at)"
+      },
+      {
+        "name": "idx_prt_issued_by",
+        "type": "index",
+        "sql": "CREATE INDEX idx_prt_issued_by ON password_reset_tokens(issued_by)"
+      },
+      {
+        "name": "idx_prt_token_hash",
+        "type": "index",
+        "sql": "CREATE UNIQUE INDEX idx_prt_token_hash ON password_reset_tokens(token_hash)"
+      },
+      {
+        "name": "idx_prt_used",
+        "type": "index",
+        "sql": "CREATE INDEX idx_prt_used ON password_reset_tokens(used_at)"
+      },
+      {
+        "name": "idx_prt_user_id",
+        "type": "index",
+        "sql": "CREATE INDEX idx_prt_user_id ON password_reset_tokens(user_id)"
+      },
+      {
+        "name": "idx_rate_limit_key_timestamp",
+        "type": "index",
+        "sql": "CREATE INDEX idx_rate_limit_key_timestamp ON rate_limit_log(key, timestamp)"
+      },
+      {
+        "name": "idx_rate_limit_timestamp",
+        "type": "index",
+        "sql": "CREATE INDEX idx_rate_limit_timestamp ON rate_limit_log(timestamp)"
+      },
+      {
+        "name": "idx_refresh_tokens_expires",
+        "type": "index",
+        "sql": "CREATE INDEX idx_refresh_tokens_expires ON refresh_tokens(expires_at)"
+      },
+      {
+        "name": "idx_refresh_tokens_hash",
+        "type": "index",
+        "sql": "CREATE INDEX idx_refresh_tokens_hash ON refresh_tokens(token_hash)"
+      },
+      {
+        "name": "idx_refresh_tokens_user",
+        "type": "index",
+        "sql": "CREATE INDEX idx_refresh_tokens_user ON refresh_tokens(user_id)"
+      },
+      {
+        "name": "idx_req_docs_by_subsidy_review",
+        "type": "index",
+        "sql": "CREATE INDEX idx_req_docs_by_subsidy_review ON required_documents_by_subsidy(needs_review)"
+      },
+      {
+        "name": "idx_req_docs_by_subsidy_subsidy",
+        "type": "index",
+        "sql": "CREATE INDEX idx_req_docs_by_subsidy_subsidy ON required_documents_by_subsidy(subsidy_id)"
+      },
+      {
+        "name": "idx_search_cache_expires",
+        "type": "index",
+        "sql": "CREATE INDEX idx_search_cache_expires ON search_cache(expires_at)"
+      },
+      {
+        "name": "idx_search_cache_hash",
+        "type": "index",
+        "sql": "CREATE INDEX idx_search_cache_hash ON search_cache(query_hash)"
+      },
+      {
+        "name": "idx_source_registry_authority",
+        "type": "index",
+        "sql": "CREATE INDEX idx_source_registry_authority ON source_registry(authority)"
+      },
+      {
+        "name": "idx_source_registry_enabled",
+        "type": "index",
+        "sql": "CREATE INDEX idx_source_registry_enabled ON source_registry(enabled)"
+      },
+      {
+        "name": "idx_source_registry_geo",
+        "type": "index",
+        "sql": "CREATE INDEX idx_source_registry_geo ON source_registry(geo_id)"
+      },
+      {
+        "name": "idx_source_registry_next",
+        "type": "index",
+        "sql": "CREATE INDEX idx_source_registry_next ON source_registry(next_crawl_at)"
+      },
+      {
+        "name": "idx_source_registry_scope",
+        "type": "index",
+        "sql": "CREATE INDEX idx_source_registry_scope ON source_registry(scope)"
+      },
+      {
+        "name": "idx_source_registry_stop_condition",
+        "type": "index",
+        "sql": "CREATE INDEX idx_source_registry_stop_condition ON source_registry(stop_condition)"
+      },
+      {
+        "name": "idx_source_url_domain",
+        "type": "index",
+        "sql": "CREATE INDEX idx_source_url_domain ON source_url(domain_key)"
+      },
+      {
+        "name": "idx_source_url_frequency",
+        "type": "index",
+        "sql": "CREATE INDEX idx_source_url_frequency ON source_url(update_frequency)"
+      },
+      {
+        "name": "idx_source_url_hash",
+        "type": "index",
+        "sql": "CREATE INDEX idx_source_url_hash ON source_url(url_hash)"
+      },
+      {
+        "name": "idx_source_url_next_crawl",
+        "type": "index",
+        "sql": "CREATE INDEX idx_source_url_next_crawl ON source_url(next_crawl_at)"
+      },
+      {
+        "name": "idx_source_url_priority",
+        "type": "index",
+        "sql": "CREATE INDEX idx_source_url_priority ON source_url(priority)"
+      },
+      {
+        "name": "idx_source_url_status",
+        "type": "index",
+        "sql": "CREATE INDEX idx_source_url_status ON source_url(status)"
+      },
+      {
+        "name": "idx_source_url_subsidy",
+        "type": "index",
+        "sql": "CREATE INDEX idx_source_url_subsidy ON source_url(subsidy_id)"
+      },
+      {
+        "name": "idx_source_url_type",
+        "type": "index",
+        "sql": "CREATE INDEX idx_source_url_type ON source_url(source_type)"
+      },
+      {
+        "name": "idx_status_history_changed_at",
+        "type": "index",
+        "sql": "CREATE INDEX idx_status_history_changed_at ON subsidy_status_history(changed_at)"
+      },
+      {
+        "name": "idx_status_history_subsidy",
+        "type": "index",
+        "sql": "CREATE INDEX idx_status_history_subsidy ON subsidy_status_history(subsidy_id)"
+      },
+      {
+        "name": "idx_subsidy_cache_acceptance",
+        "type": "index",
+        "sql": "CREATE INDEX idx_subsidy_cache_acceptance ON subsidy_cache(acceptance_end_datetime)"
+      },
+      {
+        "name": "idx_subsidy_cache_area",
+        "type": "index",
+        "sql": "CREATE INDEX idx_subsidy_cache_area ON subsidy_cache(target_area_search)"
+      },
+      {
+        "name": "idx_subsidy_cache_expires",
+        "type": "index",
+        "sql": "CREATE INDEX idx_subsidy_cache_expires ON subsidy_cache(expires_at)"
+      },
+      {
+        "name": "idx_subsidy_geo_map_geo",
+        "type": "index",
+        "sql": "CREATE INDEX idx_subsidy_geo_map_geo ON subsidy_geo_map(geo_id)"
+      },
+      {
+        "name": "idx_subsidy_geo_map_scope",
+        "type": "index",
+        "sql": "CREATE INDEX idx_subsidy_geo_map_scope ON subsidy_geo_map(scope_type)"
+      },
+      {
+        "name": "idx_subsidy_geo_map_subsidy",
+        "type": "index",
+        "sql": "CREATE INDEX idx_subsidy_geo_map_subsidy ON subsidy_geo_map(subsidy_id)"
+      },
+      {
+        "name": "idx_subsidy_lifecycle_next_check",
+        "type": "index",
+        "sql": "CREATE INDEX idx_subsidy_lifecycle_next_check ON subsidy_lifecycle(next_check_at)"
+      },
+      {
+        "name": "idx_subsidy_lifecycle_priority",
+        "type": "index",
+        "sql": "CREATE INDEX idx_subsidy_lifecycle_priority ON subsidy_lifecycle(priority)"
+      },
+      {
+        "name": "idx_subsidy_lifecycle_status",
+        "type": "index",
+        "sql": "CREATE INDEX idx_subsidy_lifecycle_status ON subsidy_lifecycle(status)"
+      },
+      {
+        "name": "idx_subsidy_metadata_acceptance",
+        "type": "index",
+        "sql": "CREATE INDEX idx_subsidy_metadata_acceptance ON subsidy_metadata(acceptance_end)"
+      },
+      {
+        "name": "idx_subsidy_metadata_changes",
+        "type": "index",
+        "sql": "CREATE INDEX idx_subsidy_metadata_changes ON subsidy_metadata(has_changes)"
+      },
+      {
+        "name": "idx_subsidy_metadata_updated",
+        "type": "index",
+        "sql": "CREATE INDEX idx_subsidy_metadata_updated ON subsidy_metadata(updated_at)"
+      },
+      {
+        "name": "idx_usage_company",
+        "type": "index",
+        "sql": "CREATE INDEX idx_usage_company ON api_usage(company_id)"
+      },
+      {
+        "name": "idx_usage_created",
+        "type": "index",
+        "sql": "CREATE INDEX idx_usage_created ON api_usage(created_at)"
+      },
+      {
+        "name": "idx_usage_events_company_id",
+        "type": "index",
+        "sql": "CREATE INDEX idx_usage_events_company_id ON usage_events(company_id)"
+      },
+      {
+        "name": "idx_usage_events_cost",
+        "type": "index",
+        "sql": "CREATE INDEX idx_usage_events_cost ON usage_events(provider, created_at, estimated_cost_usd)"
+      },
+      {
+        "name": "idx_usage_events_created_at",
+        "type": "index",
+        "sql": "CREATE INDEX idx_usage_events_created_at ON usage_events(created_at)"
+      },
+      {
+        "name": "idx_usage_events_daily",
+        "type": "index",
+        "sql": "CREATE INDEX idx_usage_events_daily ON usage_events(event_type, created_at)"
+      },
+      {
+        "name": "idx_usage_events_event_type",
+        "type": "index",
+        "sql": "CREATE INDEX idx_usage_events_event_type ON usage_events(event_type)"
+      },
+      {
+        "name": "idx_usage_events_feature",
+        "type": "index",
+        "sql": "CREATE INDEX idx_usage_events_feature ON usage_events(feature)"
+      },
+      {
+        "name": "idx_usage_events_openai",
+        "type": "index",
+        "sql": "CREATE INDEX idx_usage_events_openai ON usage_events(provider, model, created_at)"
+      },
+      {
+        "name": "idx_usage_events_provider",
+        "type": "index",
+        "sql": "CREATE INDEX idx_usage_events_provider ON usage_events(provider)"
+      },
+      {
+        "name": "idx_usage_events_user_id",
+        "type": "index",
+        "sql": "CREATE INDEX idx_usage_events_user_id ON usage_events(user_id)"
+      },
+      {
+        "name": "idx_usage_user",
+        "type": "index",
+        "sql": "CREATE INDEX idx_usage_user ON api_usage(user_id)"
+      },
+      {
+        "name": "idx_user_companies_company",
+        "type": "index",
+        "sql": "CREATE INDEX idx_user_companies_company ON user_companies(company_id)"
+      },
+      {
+        "name": "idx_user_companies_primary",
+        "type": "index",
+        "sql": "CREATE INDEX idx_user_companies_primary ON user_companies(is_primary)"
+      },
+      {
+        "name": "idx_user_companies_user",
+        "type": "index",
+        "sql": "CREATE INDEX idx_user_companies_user ON user_companies(user_id)"
+      },
+      {
+        "name": "idx_users_disabled",
+        "type": "index",
+        "sql": "CREATE INDEX idx_users_disabled ON users(is_disabled)"
+      },
+      {
+        "name": "idx_users_email",
+        "type": "index",
+        "sql": "CREATE INDEX idx_users_email ON users(email)"
+      },
+      {
+        "name": "idx_users_last_login",
+        "type": "index",
+        "sql": "CREATE INDEX idx_users_last_login ON users(last_login_at)"
+      },
+      {
+        "name": "idx_users_lockout",
+        "type": "index",
+        "sql": "CREATE INDEX idx_users_lockout ON users(lockout_until)"
+      },
+      {
+        "name": "idx_users_password_reset_token",
+        "type": "index",
+        "sql": "CREATE INDEX idx_users_password_reset_token ON users(password_reset_token)"
+      },
+      {
+        "name": "idx_users_role",
+        "type": "index",
+        "sql": "CREATE INDEX idx_users_role ON users(role)"
+      },
+      {
+        "name": "sqlite_autoindex_access_links_1",
+        "type": "index",
+        "sql": null
+      },
+      {
+        "name": "sqlite_autoindex_access_links_2",
+        "type": "index",
+        "sql": null
+      },
+      {
+        "name": "sqlite_autoindex_access_links_3",
+        "type": "index",
+        "sql": null
+      },
+      {
+        "name": "sqlite_autoindex_agencies_1",
+        "type": "index",
+        "sql": null
+      },
+      {
+        "name": "sqlite_autoindex_agency_clients_1",
+        "type": "index",
+        "sql": null
+      },
+      {
+        "name": "sqlite_autoindex_agency_clients_2",
+        "type": "index",
+        "sql": null
+      },
+      {
+        "name": "sqlite_autoindex_agency_members_1",
+        "type": "index",
+        "sql": null
+      },
+      {
+        "name": "sqlite_autoindex_agency_members_2",
+        "type": "index",
+        "sql": null
+      },
+      {
+        "name": "sqlite_autoindex_alert_log_1",
+        "type": "index",
+        "sql": null
+      },
+      {
+        "name": "sqlite_autoindex_api_usage_1",
+        "type": "index",
+        "sql": null
+      },
+      {
+        "name": "sqlite_autoindex_application_drafts_1",
+        "type": "index",
+        "sql": null
+      },
+      {
+        "name": "sqlite_autoindex_audit_log_1",
+        "type": "index",
+        "sql": null
+      },
+      {
+        "name": "sqlite_autoindex_budget_close_patterns_1",
+        "type": "index",
+        "sql": null
+      },
+      {
+        "name": "sqlite_autoindex_chat_answers_1",
+        "type": "index",
+        "sql": null
+      },
+      {
+        "name": "sqlite_autoindex_chat_facts_1",
+        "type": "index",
+        "sql": null
+      },
+      {
+        "name": "sqlite_autoindex_chat_messages_1",
+        "type": "index",
+        "sql": null
+      },
+      {
+        "name": "sqlite_autoindex_chat_sessions_1",
+        "type": "index",
+        "sql": null
+      },
+      {
+        "name": "sqlite_autoindex_companies_1",
+        "type": "index",
+        "sql": null
+      },
+      {
+        "name": "sqlite_autoindex_company_documents_1",
+        "type": "index",
+        "sql": null
+      },
+      {
+        "name": "sqlite_autoindex_company_memberships_1",
+        "type": "index",
+        "sql": null
+      },
+      {
+        "name": "sqlite_autoindex_company_memberships_2",
+        "type": "index",
+        "sql": null
+      },
+      {
+        "name": "sqlite_autoindex_company_profile_1",
+        "type": "index",
+        "sql": null
+      },
+      {
+        "name": "sqlite_autoindex_crawl_history_1",
+        "type": "index",
+        "sql": null
+      },
+      {
+        "name": "sqlite_autoindex_crawl_job_1",
+        "type": "index",
+        "sql": null
+      },
+      {
+        "name": "sqlite_autoindex_crawl_queue_1",
+        "type": "index",
+        "sql": null
+      },
+      {
+        "name": "sqlite_autoindex_crawl_queue_stats_1",
+        "type": "index",
+        "sql": null
+      },
+      {
+        "name": "sqlite_autoindex_crawl_queue_stats_2",
+        "type": "index",
+        "sql": null
+      },
+      {
+        "name": "sqlite_autoindex_crawl_stats_1",
+        "type": "index",
+        "sql": null
+      },
+      {
+        "name": "sqlite_autoindex_d1_migrations_1",
+        "type": "index",
+        "sql": null
+      },
+      {
+        "name": "sqlite_autoindex_doc_object_1",
+        "type": "index",
+        "sql": null
+      },
+      {
+        "name": "sqlite_autoindex_doc_object_2",
+        "type": "index",
+        "sql": null
+      },
+      {
+        "name": "sqlite_autoindex_domain_policy_1",
+        "type": "index",
+        "sql": null
+      },
+      {
+        "name": "sqlite_autoindex_eligibility_extractions_1",
+        "type": "index",
+        "sql": null
+      },
+      {
+        "name": "sqlite_autoindex_eligibility_extractions_2",
+        "type": "index",
+        "sql": null
+      },
+      {
+        "name": "sqlite_autoindex_eligibility_rules_1",
+        "type": "index",
+        "sql": null
+      },
+      {
+        "name": "sqlite_autoindex_evaluation_runs_1",
+        "type": "index",
+        "sql": null
+      },
+      {
+        "name": "sqlite_autoindex_geo_region_1",
+        "type": "index",
+        "sql": null
+      },
+      {
+        "name": "sqlite_autoindex_intake_submissions_1",
+        "type": "index",
+        "sql": null
+      },
+      {
+        "name": "sqlite_autoindex_knowledge_summary_1",
+        "type": "index",
+        "sql": null
+      },
+      {
+        "name": "sqlite_autoindex_knowledge_summary_2",
+        "type": "index",
+        "sql": null
+      },
+      {
+        "name": "sqlite_autoindex_notifications_1",
+        "type": "index",
+        "sql": null
+      },
+      {
+        "name": "sqlite_autoindex_password_reset_tokens_1",
+        "type": "index",
+        "sql": null
+      },
+      {
+        "name": "sqlite_autoindex_refresh_tokens_1",
+        "type": "index",
+        "sql": null
+      },
+      {
+        "name": "sqlite_autoindex_refresh_tokens_2",
+        "type": "index",
+        "sql": null
+      },
+      {
+        "name": "sqlite_autoindex_required_documents_by_subsidy_1",
+        "type": "index",
+        "sql": null
+      },
+      {
+        "name": "sqlite_autoindex_required_documents_by_subsidy_2",
+        "type": "index",
+        "sql": null
+      },
+      {
+        "name": "sqlite_autoindex_required_documents_master_1",
+        "type": "index",
+        "sql": null
+      },
+      {
+        "name": "sqlite_autoindex_search_cache_1",
+        "type": "index",
+        "sql": null
+      },
+      {
+        "name": "sqlite_autoindex_search_cache_2",
+        "type": "index",
+        "sql": null
+      },
+      {
+        "name": "sqlite_autoindex_source_registry_1",
+        "type": "index",
+        "sql": null
+      },
+      {
+        "name": "sqlite_autoindex_source_url_1",
+        "type": "index",
+        "sql": null
+      },
+      {
+        "name": "sqlite_autoindex_source_url_2",
+        "type": "index",
+        "sql": null
+      },
+      {
+        "name": "sqlite_autoindex_subsidy_cache_1",
+        "type": "index",
+        "sql": null
+      },
+      {
+        "name": "sqlite_autoindex_subsidy_geo_map_1",
+        "type": "index",
+        "sql": null
+      },
+      {
+        "name": "sqlite_autoindex_subsidy_geo_map_2",
+        "type": "index",
+        "sql": null
+      },
+      {
+        "name": "sqlite_autoindex_subsidy_lifecycle_1",
+        "type": "index",
+        "sql": null
+      },
+      {
+        "name": "sqlite_autoindex_subsidy_metadata_1",
+        "type": "index",
+        "sql": null
+      },
+      {
+        "name": "sqlite_autoindex_subsidy_status_history_1",
+        "type": "index",
+        "sql": null
+      },
+      {
+        "name": "sqlite_autoindex_usage_events_1",
+        "type": "index",
+        "sql": null
+      },
+      {
+        "name": "sqlite_autoindex_user_companies_1",
+        "type": "index",
+        "sql": null
+      },
+      {
+        "name": "sqlite_autoindex_users_1",
+        "type": "index",
+        "sql": null
+      },
+      {
+        "name": "sqlite_autoindex_users_2",
+        "type": "index",
+        "sql": null
+      },
+      {
+        "name": "_cf_KV",
+        "type": "table",
+        "sql": "CREATE TABLE _cf_KV (\n        key TEXT PRIMARY KEY,\n        value BLOB\n      ) WITHOUT ROWID"
+      },
+      {
+        "name": "access_links",
+        "type": "table",
+        "sql": "CREATE TABLE access_links (\n  id TEXT PRIMARY KEY,\n  agency_id TEXT NOT NULL,\n  company_id TEXT NOT NULL,\n  session_id TEXT,                    -- 壁打ちリンクの場合のみ\n  type TEXT NOT NULL,                 -- intake / chat / upload\n  token_hash TEXT NOT NULL UNIQUE,    -- 生tokenはハッシュ化して保存\n  short_code TEXT UNIQUE,             -- 短縮コード（URLに使用）\n  expires_at TEXT NOT NULL,\n  max_uses INTEGER DEFAULT 1,\n  used_count INTEGER DEFAULT 0,\n  revoked_at TEXT,\n  issued_by_user_id TEXT NOT NULL,\n  \n  -- 使用履歴\n  last_used_at TEXT,\n  last_used_ip TEXT,\n  last_used_ua TEXT,\n  \n  -- メタデータ\n  label TEXT,                         -- 管理用ラベル\n  message TEXT,                       -- 顧客への案内文\n  \n  created_at TEXT NOT NULL DEFAULT (datetime('now')),\n  FOREIGN KEY (agency_id) REFERENCES agencies(id) ON DELETE CASCADE,\n  FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE,\n  FOREIGN KEY (session_id) REFERENCES chat_sessions(id) ON DELETE SET NULL,\n  FOREIGN KEY (issued_by_user_id) REFERENCES users(id) ON DELETE CASCADE\n)"
+      },
+      {
+        "name": "agencies",
+        "type": "table",
+        "sql": "CREATE TABLE agencies (\n  id TEXT PRIMARY KEY,\n  name TEXT NOT NULL,\n  owner_user_id TEXT NOT NULL,\n  plan TEXT DEFAULT 'free',           -- free / pro / enterprise\n  max_clients INTEGER DEFAULT 10,     -- プランによる上限\n  settings_json TEXT,                 -- 事務所設定（通知設定など）\n  created_at TEXT NOT NULL DEFAULT (datetime('now')),\n  updated_at TEXT NOT NULL DEFAULT (datetime('now')),\n  FOREIGN KEY (owner_user_id) REFERENCES users(id) ON DELETE CASCADE\n)"
+      },
+      {
+        "name": "agency_clients",
+        "type": "table",
+        "sql": "CREATE TABLE agency_clients (\n  id TEXT PRIMARY KEY,\n  agency_id TEXT NOT NULL,\n  company_id TEXT NOT NULL,           -- 既存のcompaniesテーブルに紐づく\n  client_name TEXT,                   -- 表示用名称（顧客名/担当者名）\n  client_email TEXT,                  -- 連絡先メール\n  client_phone TEXT,                  -- 連絡先電話\n  status TEXT NOT NULL DEFAULT 'active',  -- active / paused / archived\n  notes TEXT,                         -- 事務所用メモ\n  tags_json TEXT,                     -- タグ（業種、地域など）\n  created_at TEXT NOT NULL DEFAULT (datetime('now')),\n  updated_at TEXT NOT NULL DEFAULT (datetime('now')),\n  FOREIGN KEY (agency_id) REFERENCES agencies(id) ON DELETE CASCADE,\n  FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE,\n  UNIQUE(agency_id, company_id)\n)"
+      },
+      {
+        "name": "agency_members",
+        "type": "table",
+        "sql": "CREATE TABLE agency_members (\n  id TEXT PRIMARY KEY,\n  agency_id TEXT NOT NULL,\n  user_id TEXT NOT NULL,\n  role_in_agency TEXT NOT NULL DEFAULT 'staff',  -- owner / staff\n  permissions_json TEXT,              -- 個別権限（将来拡張用）\n  invited_at TEXT NOT NULL DEFAULT (datetime('now')),\n  accepted_at TEXT,\n  created_at TEXT NOT NULL DEFAULT (datetime('now')),\n  FOREIGN KEY (agency_id) REFERENCES agencies(id) ON DELETE CASCADE,\n  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,\n  UNIQUE(agency_id, user_id)\n)"
+      },
+      {
+        "name": "alert_log",
+        "type": "table",
+        "sql": "CREATE TABLE alert_log (\n  id TEXT PRIMARY KEY,                          \n  alert_type TEXT NOT NULL,                     \n  severity TEXT NOT NULL DEFAULT 'warning' CHECK (severity IN ('info', 'warning', 'critical')),\n  \n  \n  domain_key TEXT,\n  subsidy_id TEXT,\n  url_id TEXT,\n  \n  \n  title TEXT NOT NULL,\n  message TEXT NOT NULL,\n  details TEXT,                                 \n  \n  \n  acknowledged INTEGER DEFAULT 0,               \n  acknowledged_by TEXT,                         \n  acknowledged_at TEXT,                         \n  resolved INTEGER DEFAULT 0,                   \n  resolved_at TEXT,                             \n  \n  created_at TEXT NOT NULL DEFAULT (datetime('now'))\n)"
+      },
+      {
+        "name": "api_usage",
+        "type": "table",
+        "sql": "CREATE TABLE api_usage (\n  id TEXT PRIMARY KEY,\n  user_id TEXT,\n  company_id TEXT,\n  endpoint TEXT NOT NULL,\n  method TEXT NOT NULL,\n  status_code INTEGER,\n  response_time_ms INTEGER,\n  created_at TEXT NOT NULL DEFAULT (datetime('now'))\n)"
+      },
+      {
+        "name": "application_drafts",
+        "type": "table",
+        "sql": "CREATE TABLE application_drafts (\n  id TEXT PRIMARY KEY,\n  session_id TEXT NOT NULL,\n  user_id TEXT NOT NULL,\n  company_id TEXT NOT NULL,\n  subsidy_id TEXT NOT NULL,\n  status TEXT NOT NULL DEFAULT 'draft',\n  version INTEGER NOT NULL DEFAULT 1,\n  sections_json TEXT NOT NULL,\n  ng_result_json TEXT,\n  trace_json TEXT,\n  created_at TEXT NOT NULL DEFAULT (datetime('now')),\n  updated_at TEXT NOT NULL DEFAULT (datetime('now')),\n  FOREIGN KEY (session_id) REFERENCES chat_sessions(id) ON DELETE CASCADE,\n  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,\n  FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE\n)"
+      },
+      {
+        "name": "audit_log",
+        "type": "table",
+        "sql": "CREATE TABLE audit_log (\n  id TEXT PRIMARY KEY,                           -- UUID\n  \n  -- 実行者・対象\n  actor_user_id TEXT,                            -- 実行者（nullはシステム）\n  target_user_id TEXT,                           -- 対象ユーザー\n  target_company_id TEXT,                        -- 対象会社\n  target_resource_type TEXT,                     -- 対象リソース種別（user, company, subsidy等）\n  target_resource_id TEXT,                       -- 対象リソースID\n  \n  -- アクション詳細\n  action TEXT NOT NULL,                          -- アクション種別（下記参照）\n  action_category TEXT NOT NULL,                 -- カテゴリ（auth, admin, data, system）\n  severity TEXT NOT NULL DEFAULT 'info',         -- info | warning | critical\n  \n  -- 詳細データ\n  details_json TEXT,                             -- 変更前後・理由などのJSON\n  \n  -- リクエスト情報\n  ip TEXT,\n  user_agent TEXT,\n  request_id TEXT,                               -- X-Request-Id\n  \n  -- タイムスタンプ\n  created_at TEXT NOT NULL DEFAULT (datetime('now'))\n)"
+      },
+      {
+        "name": "budget_close_patterns",
+        "type": "table",
+        "sql": "CREATE TABLE budget_close_patterns (\n  pattern_id TEXT PRIMARY KEY,\n  pattern_type TEXT NOT NULL            \n    CHECK (pattern_type IN ('regex','keyword','phrase')),\n  pattern_value TEXT NOT NULL,\n  signal_type TEXT NOT NULL             \n    CHECK (signal_type IN ('budget_cap_reached','quota_reached','first_come_end','early_close')),\n  confidence REAL NOT NULL DEFAULT 0.8,\n  notes TEXT NULL,\n  enabled INTEGER NOT NULL DEFAULT 1,\n  created_at TEXT NOT NULL DEFAULT (datetime('now'))\n)"
+      },
+      {
+        "name": "chat_answers",
+        "type": "table",
+        "sql": "CREATE TABLE chat_answers (\n  id TEXT PRIMARY KEY,\n  access_link_id TEXT NOT NULL,\n  session_id TEXT NOT NULL,\n  company_id TEXT NOT NULL,\n  \n  -- 回答データ\n  answers_json TEXT NOT NULL,         -- 回答内容（JSON）\n  \n  -- ステータス\n  status TEXT NOT NULL DEFAULT 'submitted',  -- submitted / merged\n  merged_at TEXT,\n  merged_by_user_id TEXT,\n  \n  -- 顧客情報\n  submitted_ip TEXT,\n  submitted_ua TEXT,\n  \n  created_at TEXT NOT NULL DEFAULT (datetime('now')),\n  FOREIGN KEY (access_link_id) REFERENCES access_links(id) ON DELETE CASCADE,\n  FOREIGN KEY (session_id) REFERENCES chat_sessions(id) ON DELETE CASCADE,\n  FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE,\n  FOREIGN KEY (merged_by_user_id) REFERENCES users(id) ON DELETE SET NULL\n)"
+      },
+      {
+        "name": "chat_facts",
+        "type": "table",
+        "sql": "CREATE TABLE chat_facts (\n  id TEXT PRIMARY KEY,\n  user_id TEXT NOT NULL,\n  company_id TEXT NOT NULL,\n  subsidy_id TEXT,\n  fact_key TEXT NOT NULL,\n  fact_value TEXT,\n  confidence REAL DEFAULT 1.0,\n  source TEXT NOT NULL DEFAULT 'chat',\n  session_id TEXT,\n  created_at TEXT NOT NULL DEFAULT (datetime('now')),\n  updated_at TEXT NOT NULL DEFAULT (datetime('now')),\n  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,\n  FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE\n)"
+      },
+      {
+        "name": "chat_messages",
+        "type": "table",
+        "sql": "CREATE TABLE chat_messages (\n  id TEXT PRIMARY KEY,\n  session_id TEXT NOT NULL,\n  role TEXT NOT NULL,\n  content TEXT NOT NULL,\n  structured_key TEXT,\n  structured_value TEXT,\n  created_at TEXT NOT NULL DEFAULT (datetime('now')),\n  FOREIGN KEY (session_id) REFERENCES chat_sessions(id) ON DELETE CASCADE\n)"
+      },
+      {
+        "name": "chat_sessions",
+        "type": "table",
+        "sql": "CREATE TABLE chat_sessions (\n  id TEXT PRIMARY KEY,\n  user_id TEXT NOT NULL,\n  company_id TEXT NOT NULL,\n  subsidy_id TEXT NOT NULL,\n  status TEXT NOT NULL DEFAULT 'collecting',\n  precheck_result TEXT,\n  missing_items TEXT,\n  created_at TEXT NOT NULL DEFAULT (datetime('now')),\n  updated_at TEXT NOT NULL DEFAULT (datetime('now')),\n  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,\n  FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE\n)"
+      },
+      {
+        "name": "companies",
+        "type": "table",
+        "sql": "CREATE TABLE companies (\n  id TEXT PRIMARY KEY,                          -- UUID\n  name TEXT NOT NULL,\n  postal_code TEXT,\n  prefecture TEXT NOT NULL,                     -- 都道府県コード (01-47)\n  city TEXT,\n  industry_major TEXT NOT NULL,                 -- 大分類コード\n  industry_minor TEXT,                          -- 中分類コード\n  employee_count INTEGER NOT NULL,              -- 従業員数\n  employee_band TEXT NOT NULL,                  -- 従業員帯 ('1-5', '6-20', '21-50', '51-100', '101-300', '301+')\n  capital INTEGER,                              -- 資本金（円）\n  established_date TEXT,                        -- 設立年月 (YYYY-MM)\n  annual_revenue INTEGER,                       -- 年商（円）\n  created_at TEXT NOT NULL DEFAULT (datetime('now')),\n  updated_at TEXT NOT NULL DEFAULT (datetime('now'))\n)"
+      },
+      {
+        "name": "company_documents",
+        "type": "table",
+        "sql": "CREATE TABLE company_documents (\n  id TEXT PRIMARY KEY,\n  company_id TEXT NOT NULL,\n  doc_type TEXT NOT NULL,\n  original_filename TEXT NOT NULL,\n  content_type TEXT,\n  size_bytes INTEGER,\n  storage_backend TEXT NOT NULL DEFAULT 'r2',\n  r2_key TEXT,\n  status TEXT NOT NULL DEFAULT 'uploaded',\n  extracted_json TEXT,\n  confidence REAL,\n  uploaded_at TEXT NOT NULL DEFAULT (datetime('now')),\n  updated_at TEXT NOT NULL DEFAULT (datetime('now')), raw_text TEXT,\n  FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE\n)"
+      },
+      {
+        "name": "company_memberships",
+        "type": "table",
+        "sql": "CREATE TABLE company_memberships (\n  id TEXT PRIMARY KEY,                          -- UUID\n  user_id TEXT NOT NULL,\n  company_id TEXT NOT NULL,\n  role TEXT NOT NULL DEFAULT 'member',          -- 'owner' | 'admin' | 'member'\n  created_at TEXT NOT NULL DEFAULT (datetime('now')),\n  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,\n  FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE,\n  UNIQUE(user_id, company_id)\n)"
+      },
+      {
+        "name": "company_profile",
+        "type": "table",
+        "sql": "CREATE TABLE company_profile (\n  company_id TEXT PRIMARY KEY,\n  \n  -- 法人基本情報\n  corp_number TEXT,                              -- 法人番号（13桁）\n  corp_type TEXT,                                -- 法人格（株式会社, 合同会社, 個人事業主, etc）\n  representative_name TEXT,                      -- 代表者名\n  representative_title TEXT,                     -- 代表者肩書（代表取締役, 代表社員, etc）\n  founding_year INTEGER,                         -- 創業年\n  founding_month INTEGER,                        -- 創業月\n  \n  -- 連絡先\n  website_url TEXT,\n  contact_email TEXT,\n  contact_phone TEXT,\n  \n  -- 事業内容\n  business_summary TEXT,                         -- 事業概要（申請書用）\n  main_products TEXT,                            -- 主要製品・サービス\n  main_customers TEXT,                           -- 主要顧客層\n  competitive_advantage TEXT,                    -- 強み・差別化要因\n  \n  -- 財務・経営\n  fiscal_year_end INTEGER,                       -- 決算月（1-12）\n  is_profitable INTEGER,                         -- 黒字か（0/1）\n  has_debt INTEGER,                              -- 借入金有無（0/1）\n  \n  -- 補助金関連\n  past_subsidies_json TEXT,                      -- 過去に受けた補助金 [{name, year, amount}]\n  desired_investments_json TEXT,                 -- やりたい投資 [{category, description, amount}]\n  current_challenges_json TEXT,                  -- 現在の課題 [{category, description}]\n  \n  -- 雇用関連（補助金の加点要件に頻出）\n  has_young_employees INTEGER,                   -- 若手従業員有無\n  has_female_executives INTEGER,                 -- 女性役員有無\n  has_senior_employees INTEGER,                  -- シニア従業員有無\n  plans_to_hire INTEGER,                         -- 採用予定有無\n  \n  -- 認定・資格\n  certifications_json TEXT,                      -- 取得認定 [{name, acquired_date}]\n  \n  -- 制約・注意事項\n  constraints_json TEXT,                         -- 補助金NG条件、反社チェック結果等\n  notes TEXT,                                    -- 管理者メモ\n  \n  -- タイムスタンプ\n  updated_at TEXT NOT NULL DEFAULT (datetime('now')),\n  created_at TEXT NOT NULL DEFAULT (datetime('now')),\n\n  FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE\n)"
+      },
+      {
+        "name": "crawl_history",
+        "type": "table",
+        "sql": "CREATE TABLE crawl_history (\n  id TEXT PRIMARY KEY,                             -- UUID\n  url_id TEXT NOT NULL,\n  subsidy_id TEXT NOT NULL,\n  \n  -- スナップショット\n  content_hash TEXT NOT NULL,                      -- コンテンツハッシュ\n  r2_key_snapshot TEXT,                            -- 変更時のスナップショットR2キー\n  \n  -- 変更内容\n  changed_fields TEXT,                             -- 変更されたフィールド (JSON array)\n  change_type TEXT,                                -- 'created' | 'updated' | 'deleted'\n  \n  crawled_at TEXT NOT NULL DEFAULT (datetime('now')),\n  \n  FOREIGN KEY (url_id) REFERENCES source_url(url_id) ON DELETE CASCADE\n)"
+      },
+      {
+        "name": "crawl_job",
+        "type": "table",
+        "sql": "CREATE TABLE crawl_job (\n  job_id TEXT PRIMARY KEY,                         -- UUID\n  url_id TEXT NOT NULL,                            -- source_urlへの参照\n  subsidy_id TEXT NOT NULL,                        -- 補助金ID\n  \n  -- ジョブ種別\n  job_type TEXT NOT NULL DEFAULT 'scrape',         -- 'scrape' | 'crawl' | 'extract' | 'pdf_convert'\n  \n  -- 状態\n  status TEXT NOT NULL DEFAULT 'pending',          -- 'pending' | 'processing' | 'completed' | 'failed' | 'skipped'\n  progress INTEGER DEFAULT 0,                      -- 0-100\n  \n  -- 実行情報\n  started_at TEXT,\n  completed_at TEXT,\n  error_message TEXT,\n  retry_count INTEGER DEFAULT 0,\n  max_retries INTEGER DEFAULT 3,\n  \n  -- ペイロード（Firecrawlオプション等）\n  payload TEXT,                                    -- JSON\n  result TEXT,                                     -- 結果JSON\n  \n  created_at TEXT NOT NULL DEFAULT (datetime('now')),\n  updated_at TEXT NOT NULL DEFAULT (datetime('now')), root_url TEXT, source_registry_id TEXT, priority INTEGER DEFAULT 3,\n  \n  FOREIGN KEY (url_id) REFERENCES source_url(url_id) ON DELETE CASCADE\n)"
+      },
+      {
+        "name": "crawl_queue",
+        "type": "table",
+        "sql": "CREATE TABLE crawl_queue (\n  queue_id TEXT PRIMARY KEY,\n  \n  -- ジョブ種別\n  kind TEXT NOT NULL CHECK (kind IN ('REGISTRY_CRAWL', 'SUBSIDY_CHECK', 'URL_CRAWL')),\n  \n  -- スコープと地域\n  scope TEXT NOT NULL CHECK (scope IN ('national', 'secretariat', 'prefecture', 'city')),\n  geo_id TEXT,\n  \n  -- 関連ID（nullable, FK なし）\n  subsidy_id TEXT,\n  source_registry_id TEXT,\n  \n  -- クロール対象\n  url TEXT NOT NULL,\n  domain_key TEXT NOT NULL,\n  \n  -- クロール設定\n  crawl_strategy TEXT NOT NULL DEFAULT 'scrape' CHECK (crawl_strategy IN ('scrape', 'crawl', 'map')),\n  max_depth INTEGER NOT NULL DEFAULT 1 CHECK (max_depth >= 0 AND max_depth <= 3),\n  \n  -- 優先度（1=最高, 5=最低）\n  priority INTEGER NOT NULL DEFAULT 3 CHECK (priority BETWEEN 1 AND 5),\n  \n  -- ステータス管理\n  status TEXT NOT NULL DEFAULT 'queued' CHECK (status IN ('queued', 'running', 'done', 'failed', 'blocked')),\n  attempts INTEGER NOT NULL DEFAULT 0,\n  max_attempts INTEGER NOT NULL DEFAULT 3,\n  last_error TEXT,\n  \n  -- 実行タイミング\n  scheduled_at TEXT NOT NULL DEFAULT (datetime('now')),\n  started_at TEXT,\n  finished_at TEXT,\n  \n  -- 処理結果（nullable）\n  result_raw_key TEXT,\n  result_hash TEXT,\n  \n  -- 監査\n  created_at TEXT NOT NULL DEFAULT (datetime('now')),\n  updated_at TEXT NOT NULL DEFAULT (datetime('now')),\n  \n  -- FK は geo_region と source_registry のみ\n  FOREIGN KEY (geo_id) REFERENCES geo_region(geo_id) ON DELETE SET NULL,\n  FOREIGN KEY (source_registry_id) REFERENCES source_registry(registry_id) ON DELETE SET NULL\n)"
+      },
+      {
+        "name": "crawl_queue_stats",
+        "type": "table",
+        "sql": "CREATE TABLE crawl_queue_stats (\n    stat_id TEXT PRIMARY KEY,\n    stat_day TEXT NOT NULL,           -- YYYY-MM-DD\n    metric TEXT NOT NULL,             -- enqueued, processed, succeeded, failed, domain_blocked\n    scope TEXT,                       -- national, secretariat, prefecture, city, ALL\n    value INTEGER NOT NULL DEFAULT 0,\n    created_at TEXT NOT NULL DEFAULT (datetime('now')),\n    updated_at TEXT NOT NULL DEFAULT (datetime('now')),\n    UNIQUE(stat_day, metric, scope)\n)"
+      },
+      {
+        "name": "crawl_stats",
+        "type": "table",
+        "sql": "CREATE TABLE crawl_stats (\n  id TEXT PRIMARY KEY,                          \n  stat_date TEXT NOT NULL,                      \n  stat_hour INTEGER,                            \n  \n  \n  total_requests INTEGER DEFAULT 0,\n  success_count INTEGER DEFAULT 0,\n  failure_count INTEGER DEFAULT 0,\n  blocked_count INTEGER DEFAULT 0,\n  \n  \n  error_502_count INTEGER DEFAULT 0,\n  error_403_count INTEGER DEFAULT 0,\n  error_timeout_count INTEGER DEFAULT 0,\n  error_other_count INTEGER DEFAULT 0,\n  \n  \n  total_pages INTEGER DEFAULT 0,\n  total_bytes INTEGER DEFAULT 0,\n  avg_response_time_ms INTEGER,\n  \n  \n  extract_count INTEGER DEFAULT 0,\n  extract_success_count INTEGER DEFAULT 0,\n  missing_required_fields_count INTEGER DEFAULT 0,\n  needs_review_count INTEGER DEFAULT 0,\n  \n  \n  estimated_firecrawl_credits REAL DEFAULT 0,\n  estimated_llm_tokens INTEGER DEFAULT 0,\n  \n  created_at TEXT NOT NULL DEFAULT (datetime('now'))\n)"
+      },
+      {
+        "name": "d1_migrations",
+        "type": "table",
+        "sql": "CREATE TABLE d1_migrations(\n\t\tid         INTEGER PRIMARY KEY AUTOINCREMENT,\n\t\tname       TEXT UNIQUE,\n\t\tapplied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL\n)"
+      },
+      {
+        "name": "doc_object",
+        "type": "table",
+        "sql": "CREATE TABLE \"doc_object\" (\n  id TEXT PRIMARY KEY,\n  url_id TEXT NOT NULL UNIQUE,                    \n  subsidy_id TEXT NOT NULL,\n  \n  r2_key_raw TEXT,\n  r2_key_structured TEXT,\n  r2_key_pdf TEXT,\n  \n  extract_version TEXT DEFAULT 'v1',\n  extracted_at TEXT,\n  \n  page_count INTEGER,\n  word_count INTEGER,\n  language TEXT DEFAULT 'ja',\n  \n  confidence REAL,\n  needs_review INTEGER DEFAULT 0,\n  missing_fields TEXT,\n  \n  created_at TEXT NOT NULL DEFAULT (datetime('now')),\n  updated_at TEXT NOT NULL DEFAULT (datetime('now')), storage_backend TEXT DEFAULT 'r2' CHECK (storage_backend IN ('d1_inline', 'r2')), raw_markdown TEXT, structured_json TEXT, r2_raw_size INTEGER, r2_structured_size INTEGER, r2_uploaded_at TEXT, content_hash_sha256 TEXT,\n  \n  FOREIGN KEY (url_id) REFERENCES source_url(url_id) ON DELETE CASCADE\n)"
+      },
+      {
+        "name": "domain_policy",
+        "type": "table",
+        "sql": "CREATE TABLE domain_policy (\n  domain_key TEXT PRIMARY KEY,                  \n  enabled INTEGER NOT NULL DEFAULT 1,           \n  \n  \n  rate_limit_rps REAL DEFAULT 1.0,             \n  max_pages_per_run INTEGER DEFAULT 10,         \n  request_interval_ms INTEGER DEFAULT 1000,     \n  \n  \n  default_strategy TEXT DEFAULT 'scrape' CHECK (default_strategy IN ('scrape', 'crawl')),\n  default_max_depth INTEGER DEFAULT 1,          \n  \n  \n  robots_txt_url TEXT,                          \n  robots_respected INTEGER DEFAULT 1,           \n  terms_of_service_url TEXT,                    \n  terms_notes TEXT,                             \n  \n  \n  consecutive_failures_threshold INTEGER DEFAULT 3,  \n  blocked_until TEXT,                           \n  \n  \n  total_requests INTEGER DEFAULT 0,             \n  success_count INTEGER DEFAULT 0,              \n  failure_count INTEGER DEFAULT 0,              \n  last_success_at TEXT,                         \n  last_failure_at TEXT,                         \n  last_error_code TEXT,                         \n  \n  \n  notes TEXT,                                   \n  created_at TEXT NOT NULL DEFAULT (datetime('now')),\n  updated_at TEXT NOT NULL DEFAULT (datetime('now'))\n, blocked_reason TEXT)"
+      },
+      {
+        "name": "eligibility_extractions",
+        "type": "table",
+        "sql": "CREATE TABLE eligibility_extractions (\n  id TEXT PRIMARY KEY,                          -- UUID\n  subsidy_id TEXT NOT NULL UNIQUE,              -- 補助金ID（1対1）\n  job_id TEXT,                                  -- 抽出ジョブID\n  rules_count INTEGER NOT NULL DEFAULT 0,       -- 抽出されたルール数\n  warnings TEXT,                                -- 警告（JSON array）\n  summary TEXT,                                 -- 要約\n  extracted_at TEXT NOT NULL DEFAULT (datetime('now')),\n  updated_at TEXT NOT NULL DEFAULT (datetime('now'))\n)"
+      },
+      {
+        "name": "eligibility_rules",
+        "type": "table",
+        "sql": "CREATE TABLE eligibility_rules (\n  id TEXT PRIMARY KEY,                          -- UUID\n  subsidy_id TEXT NOT NULL,                     -- 補助金ID\n  category TEXT NOT NULL,                       -- カテゴリ: '対象者' | '地域' | '業種' | '規模' | '財務' | '事業内容' | 'その他'\n  rule_text TEXT NOT NULL,                      -- 要件の説明文\n  check_type TEXT NOT NULL,                     -- 判定タイプ: 'AUTO' | 'MANUAL' | 'LLM'\n  parameters TEXT,                              -- パラメータ（JSON: min, max, allowed_values等）\n  source_text TEXT,                             -- 原文からの引用\n  page_number INTEGER,                          -- ページ番号\n  created_at TEXT NOT NULL DEFAULT (datetime('now')),\n  updated_at TEXT NOT NULL DEFAULT (datetime('now'))\n)"
+      },
+      {
+        "name": "evaluation_runs",
+        "type": "table",
+        "sql": "CREATE TABLE evaluation_runs (\n  id TEXT PRIMARY KEY,                          -- UUID\n  company_id TEXT NOT NULL,\n  subsidy_id TEXT NOT NULL,\n  status TEXT NOT NULL,                         -- 'PROCEED' | 'CAUTION' | 'DO_NOT_PROCEED'\n  match_score INTEGER NOT NULL,                 -- 0-100\n  match_reasons TEXT,                           -- JSON array\n  risk_flags TEXT,                              -- JSON array\n  explanation TEXT,                             -- 判定理由の説明\n  created_at TEXT NOT NULL DEFAULT (datetime('now')),\n  FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE\n)"
+      },
+      {
+        "name": "geo_region",
+        "type": "table",
+        "sql": "CREATE TABLE geo_region (\n  geo_id TEXT PRIMARY KEY,                      \n  level TEXT NOT NULL CHECK (level IN ('nation', 'prefecture', 'city', 'ward', 'town', 'village')),\n  prefecture_code TEXT,                         \n  city_code TEXT,                               \n  name_ja TEXT NOT NULL,                        \n  name_en TEXT,                                 \n  parent_geo_id TEXT,                           \n  population INTEGER,                           \n  \n  created_at TEXT NOT NULL DEFAULT (datetime('now')),\n  updated_at TEXT NOT NULL DEFAULT (datetime('now')),\n  \n  FOREIGN KEY (parent_geo_id) REFERENCES geo_region(geo_id) ON DELETE SET NULL\n)"
+      },
+      {
+        "name": "intake_submissions",
+        "type": "table",
+        "sql": "CREATE TABLE intake_submissions (\n  id TEXT PRIMARY KEY,\n  access_link_id TEXT NOT NULL,\n  agency_id TEXT NOT NULL,\n  company_id TEXT NOT NULL,\n  \n  -- 入力データ\n  payload_json TEXT NOT NULL,         -- 入力内容（JSON）\n  documents_json TEXT,                -- アップロード書類情報\n  \n  -- ステータス\n  status TEXT NOT NULL DEFAULT 'submitted',  -- submitted / approved / rejected / merged\n  \n  -- 審査\n  reviewed_at TEXT,\n  reviewed_by_user_id TEXT,\n  review_notes TEXT,\n  \n  -- 顧客情報\n  submitted_ip TEXT,\n  submitted_ua TEXT,\n  \n  created_at TEXT NOT NULL DEFAULT (datetime('now')),\n  updated_at TEXT NOT NULL DEFAULT (datetime('now')),\n  FOREIGN KEY (access_link_id) REFERENCES access_links(id) ON DELETE CASCADE,\n  FOREIGN KEY (agency_id) REFERENCES agencies(id) ON DELETE CASCADE,\n  FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE,\n  FOREIGN KEY (reviewed_by_user_id) REFERENCES users(id) ON DELETE SET NULL\n)"
+      },
+      {
+        "name": "knowledge_summary",
+        "type": "table",
+        "sql": "CREATE TABLE knowledge_summary (\n  id TEXT PRIMARY KEY,                             -- UUID\n  subsidy_id TEXT NOT NULL UNIQUE,                 -- 補助金ID（1対1）\n  \n  -- Schema v1の主要フィールド（検索・表示用に非正規化）\n  eligibility_summary TEXT,                        -- 対象者要件の要約\n  funding_summary TEXT,                            -- 補助金額・率の要約\n  deadline_summary TEXT,                           -- 期限の要約\n  documents_summary TEXT,                          -- 必要書類の要約\n  \n  -- 詳細JSON（壁打ちBot参照用）\n  eligibility_json TEXT,                           -- 詳細な対象者要件 (JSON)\n  funding_json TEXT,                               -- 詳細な補助金情報 (JSON)\n  deadlines_json TEXT,                             -- 詳細な期限情報 (JSON)\n  required_documents_json TEXT,                    -- 詳細な必要書類 (JSON)\n  how_to_write_json TEXT,                          -- 記入例・審査観点 (JSON)\n  examples_json TEXT,                              -- 活用事例 (JSON)\n  \n  -- ソース情報\n  source_count INTEGER DEFAULT 0,                  -- 統合したソース数\n  source_types TEXT,                               -- 使用したソースタイプ (JSON array)\n  last_source_urls TEXT,                           -- 主要ソースURL (JSON array)\n  \n  -- 品質管理\n  quality_score REAL,                              -- 総合品質スコア (0.0-1.0)\n  warnings TEXT,                                   -- 警告 (JSON array)\n  needs_update INTEGER DEFAULT 0,                  -- 更新が必要か\n  \n  created_at TEXT NOT NULL DEFAULT (datetime('now')),\n  updated_at TEXT NOT NULL DEFAULT (datetime('now')),\n  \n  FOREIGN KEY (subsidy_id) REFERENCES subsidy_metadata(subsidy_id) ON DELETE CASCADE\n)"
+      },
+      {
+        "name": "login_attempts",
+        "type": "table",
+        "sql": "CREATE TABLE login_attempts (id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT NOT NULL, ip TEXT, user_agent TEXT, success INTEGER NOT NULL DEFAULT 0, failure_reason TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')))"
+      },
+      {
+        "name": "notifications",
+        "type": "table",
+        "sql": "CREATE TABLE notifications (\n  id TEXT PRIMARY KEY,\n  user_id TEXT NOT NULL,\n  type TEXT NOT NULL,                 -- intake_submitted / chat_answered / deadline_reminder\n  title TEXT NOT NULL,\n  message TEXT,\n  data_json TEXT,                     -- 関連データ（link_id, company_id など）\n  read_at TEXT,\n  created_at TEXT NOT NULL DEFAULT (datetime('now')),\n  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE\n)"
+      },
+      {
+        "name": "password_reset_tokens",
+        "type": "table",
+        "sql": "CREATE TABLE password_reset_tokens (\n  id TEXT PRIMARY KEY,                           -- UUID\n  user_id TEXT NOT NULL,\n  \n  -- トークン管理（セキュリティ）\n  token_hash TEXT NOT NULL,                      -- SHA-256ハッシュ（生トークン禁止）\n  expires_at TEXT NOT NULL,                      -- ISO8601 有効期限\n  used_at TEXT,                                  -- 使用日時（nullなら未使用）\n  \n  -- 発行元情報（監査用）\n  issued_by TEXT,                                -- 発行者（null=本人、user_id=管理者）\n  request_ip TEXT,\n  request_user_agent TEXT,\n  \n  -- 使用時情報（監査用）\n  used_ip TEXT,\n  used_user_agent TEXT,\n  \n  -- タイムスタンプ\n  created_at TEXT NOT NULL DEFAULT (datetime('now')),\n\n  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE\n)"
+      },
+      {
+        "name": "rate_limit_log",
+        "type": "table",
+        "sql": "CREATE TABLE rate_limit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, key TEXT NOT NULL, timestamp INTEGER NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now')))"
+      },
+      {
+        "name": "refresh_tokens",
+        "type": "table",
+        "sql": "CREATE TABLE refresh_tokens (\n  id TEXT PRIMARY KEY,\n  user_id TEXT NOT NULL,\n  token_hash TEXT NOT NULL UNIQUE,\n  expires_at TEXT NOT NULL,\n  created_at TEXT NOT NULL DEFAULT (datetime('now')),\n  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE\n)"
+      },
+      {
+        "name": "required_documents_by_subsidy",
+        "type": "table",
+        "sql": "CREATE TABLE required_documents_by_subsidy (\n  id TEXT PRIMARY KEY,                  \n  subsidy_id TEXT NOT NULL,\n  doc_code TEXT NOT NULL,\n  required_level TEXT NOT NULL\n    CHECK (required_level IN ('mandatory','conditional','optional')),\n  notes TEXT NULL,                      \n  source_url TEXT NULL,                 \n  source_quote TEXT NULL,               \n  confidence REAL NOT NULL DEFAULT 0.5, \n  needs_review INTEGER NOT NULL DEFAULT 0, \n  updated_at TEXT NOT NULL DEFAULT (datetime('now')),\n  created_at TEXT NOT NULL DEFAULT (datetime('now')),\n  UNIQUE(subsidy_id, doc_code),\n  FOREIGN KEY (doc_code) REFERENCES required_documents_master(doc_code) ON DELETE CASCADE\n)"
+      },
+      {
+        "name": "required_documents_master",
+        "type": "table",
+        "sql": "CREATE TABLE required_documents_master (\n  doc_code TEXT PRIMARY KEY,            \n  name TEXT NOT NULL,                   \n  phase TEXT NOT NULL                   \n    CHECK (phase IN ('account','company','financial','plan','cost','compliance','other')),\n  default_required_level TEXT NOT NULL DEFAULT 'conditional'\n    CHECK (default_required_level IN ('mandatory','conditional','optional')),\n  description TEXT NULL,\n  sort_order INTEGER NOT NULL DEFAULT 100,\n  created_at TEXT NOT NULL DEFAULT (datetime('now')),\n  updated_at TEXT NOT NULL DEFAULT (datetime('now'))\n)"
+      },
+      {
+        "name": "search_cache",
+        "type": "table",
+        "sql": "CREATE TABLE search_cache (\n  id TEXT PRIMARY KEY,                          -- ハッシュキー（検索条件から生成）\n  query_hash TEXT NOT NULL UNIQUE,              -- 検索条件のハッシュ\n  result_json TEXT NOT NULL,                    -- 検索結果（JSON）\n  total_count INTEGER NOT NULL,\n  cached_at TEXT NOT NULL DEFAULT (datetime('now')),\n  expires_at TEXT NOT NULL\n)"
+      },
+      {
+        "name": "source_registry",
+        "type": "table",
+        "sql": "CREATE TABLE source_registry (\n  registry_id TEXT PRIMARY KEY,         \n  scope TEXT NOT NULL                   \n    CHECK (scope IN ('national','secretariat','prefecture','city')),\n  geo_id TEXT NULL,                     \n  program_key TEXT NULL,                \n  root_url TEXT NOT NULL,               \n  domain_key TEXT NULL,                 \n  crawl_strategy TEXT NOT NULL DEFAULT 'scrape'\n    CHECK (crawl_strategy IN ('scrape','crawl','map')),\n  max_depth INTEGER NOT NULL DEFAULT 1\n    CHECK (max_depth >= 0 AND max_depth <= 3),\n  target_types TEXT NULL,               \n  keyword_filter TEXT NULL,             \n  update_freq TEXT NOT NULL DEFAULT 'weekly'\n    CHECK (update_freq IN ('daily','weekly','monthly')),\n  enabled INTEGER NOT NULL DEFAULT 1,\n  robots_required INTEGER NOT NULL DEFAULT 1,\n  priority INTEGER NOT NULL DEFAULT 3\n    CHECK (priority >= 1 AND priority <= 5),\n  notes TEXT NULL,\n  last_crawled_at TEXT NULL,\n  next_crawl_at TEXT NULL,\n  created_at TEXT NOT NULL DEFAULT (datetime('now')),\n  updated_at TEXT NOT NULL DEFAULT (datetime('now')), data_scope TEXT DEFAULT 'guideline,faq,news', authority TEXT DEFAULT 'semi_official' CHECK (authority IN ('official', 'semi_official', 'third_party')), stop_condition TEXT DEFAULT 'unknown' CHECK (stop_condition IN ('deadline', 'budget', 'quota', 'unknown')), list_page_selector TEXT, pdf_keywords TEXT DEFAULT '公募要領,記入例,FAQ,様式', last_hash TEXT, last_crawl_status TEXT DEFAULT 'ok' CHECK (last_crawl_status IN ('ok', 'error', 'timeout', 'blocked')),\n  FOREIGN KEY (geo_id) REFERENCES geo_region(geo_id) ON DELETE SET NULL\n)"
+      },
+      {
+        "name": "source_url",
+        "type": "table",
+        "sql": "CREATE TABLE source_url (\n  url_id TEXT PRIMARY KEY,                         -- UUID\n  subsidy_id TEXT NOT NULL,                        -- 関連補助金ID\n  url TEXT NOT NULL,                               -- 正規化済みURL\n  url_hash TEXT NOT NULL,                          -- URL正規化後のSHA256ハッシュ\n  \n  -- 分類\n  source_type TEXT NOT NULL DEFAULT 'other',       -- 'jgrants_detail' | 'secretariat' | 'prefecture' | 'city' | 'ministry' | 'portal' | 'other'\n  doc_type TEXT,                                   -- 'guideline' | 'faq' | 'example' | 'form' | 'announcement' | 'other'\n  \n  -- クロール状態\n  status TEXT NOT NULL DEFAULT 'pending',          -- 'pending' | 'ok' | 'error' | 'blocked' | 'needs_review'\n  last_crawled_at TEXT,                            -- 最終クロール日時\n  last_error TEXT,                                 -- 最終エラーメッセージ\n  error_count INTEGER DEFAULT 0,                   -- 連続エラー回数\n  \n  -- コンテンツハッシュ（差分検知）\n  content_hash TEXT,                               -- 本文Markdownのハッシュ\n  etag TEXT,                                       -- HTTPレスポンスのETag\n  \n  -- 優先度\n  priority INTEGER DEFAULT 5,                      -- 1-10 (1=最優先)\n  crawl_depth INTEGER DEFAULT 0,                   -- 許可するクロール深度 (0=scrapeのみ)\n  \n  created_at TEXT NOT NULL DEFAULT (datetime('now')),\n  updated_at TEXT NOT NULL DEFAULT (datetime('now')), crawl_strategy TEXT DEFAULT 'scrape' CHECK (crawl_strategy IN ('scrape', 'crawl')), max_depth INTEGER DEFAULT 1, allowed_paths TEXT, deny_paths TEXT, robots_respected INTEGER DEFAULT 1, domain_key TEXT, update_frequency TEXT DEFAULT 'weekly' CHECK (update_frequency IN ('daily', 'weekly', 'monthly', 'manual')), next_crawl_at TEXT, crawl_count INTEGER DEFAULT 0, total_bytes INTEGER DEFAULT 0,\n  \n  FOREIGN KEY (subsidy_id) REFERENCES subsidy_metadata(subsidy_id) ON DELETE CASCADE,\n  UNIQUE(url_hash)                                 -- 同一URLの重複防止\n)"
+      },
+      {
+        "name": "sqlite_sequence",
+        "type": "table",
+        "sql": "CREATE TABLE sqlite_sequence(name,seq)"
+      },
+      {
+        "name": "subsidy_cache",
+        "type": "table",
+        "sql": "CREATE TABLE subsidy_cache (\n  id TEXT PRIMARY KEY,                          -- Jグランツの補助金ID\n  source TEXT NOT NULL DEFAULT 'jgrants',       -- データソース\n  title TEXT NOT NULL,\n  subsidy_max_limit INTEGER,                    -- 補助上限額\n  subsidy_rate TEXT,                            -- 補助率\n  target_area_search TEXT,                      -- 対象地域（検索用）\n  target_industry TEXT,                         -- 対象業種\n  target_number_of_employees TEXT,              -- 対象従業員規模\n  acceptance_start_datetime TEXT,               -- 受付開始日時\n  acceptance_end_datetime TEXT,                 -- 受付終了日時\n  request_reception_display_flag INTEGER,       -- 受付中フラグ\n  detail_json TEXT,                             -- 詳細情報（JSON）\n  cached_at TEXT NOT NULL DEFAULT (datetime('now')),\n  expires_at TEXT NOT NULL                      -- キャッシュ有効期限\n)"
+      },
+      {
+        "name": "subsidy_geo_map",
+        "type": "table",
+        "sql": "CREATE TABLE subsidy_geo_map (\n  id TEXT PRIMARY KEY,                          \n  subsidy_id TEXT NOT NULL,                     \n  geo_id TEXT NOT NULL,                         \n  scope_type TEXT NOT NULL DEFAULT 'eligible' CHECK (scope_type IN ('eligible', 'operated_by', 'applies_to')),\n  notes TEXT,                                   \n  \n  created_at TEXT NOT NULL DEFAULT (datetime('now')),\n  \n  FOREIGN KEY (subsidy_id) REFERENCES subsidy_metadata(subsidy_id) ON DELETE CASCADE,\n  FOREIGN KEY (geo_id) REFERENCES geo_region(geo_id) ON DELETE CASCADE,\n  UNIQUE(subsidy_id, geo_id, scope_type)\n)"
+      },
+      {
+        "name": "subsidy_lifecycle",
+        "type": "table",
+        "sql": "CREATE TABLE subsidy_lifecycle (\n  subsidy_id TEXT PRIMARY KEY,\n  status TEXT NOT NULL DEFAULT 'unknown'\n    CHECK (status IN (\n      'scheduled',         \n      'open',              \n      'closing_soon',      \n      'closed_by_deadline',\n      'closed_by_budget',  \n      'suspended',         \n      'unknown'            \n    )),\n  open_at TEXT NULL,       \n  close_at TEXT NULL,      \n  close_reason TEXT NULL   \n    CHECK (close_reason IS NULL OR close_reason IN ('deadline','budget','suspended','unknown')),\n  budget_close_evidence_url TEXT NULL,     \n  budget_close_evidence_quote TEXT NULL,   \n  last_checked_at TEXT NULL,               \n  next_check_at TEXT NULL,                 \n  check_frequency TEXT NOT NULL DEFAULT 'weekly'\n    CHECK (check_frequency IN ('hourly','daily','weekly','monthly')),\n  priority INTEGER NOT NULL DEFAULT 3       \n    CHECK (priority >= 1 AND priority <= 5),\n  updated_at TEXT NOT NULL DEFAULT (datetime('now')),\n  created_at TEXT NOT NULL DEFAULT (datetime('now'))\n)"
+      },
+      {
+        "name": "subsidy_metadata",
+        "type": "table",
+        "sql": "CREATE TABLE subsidy_metadata (\n  subsidy_id TEXT PRIMARY KEY,                     -- JGrantsの補助金ID\n  title TEXT NOT NULL,                             -- 補助金名\n  agency TEXT,                                     -- 実施機関\n  acceptance_start TEXT,                           -- 受付開始日 (ISO8601)\n  acceptance_end TEXT,                             -- 受付終了日 (ISO8601)\n  subsidy_max_limit INTEGER,                       -- 補助上限額\n  subsidy_rate TEXT,                               -- 補助率\n  target_area TEXT,                                -- 対象地域\n  target_industry TEXT,                            -- 対象業種\n  target_employees TEXT,                           -- 対象従業員規模\n  \n  -- 外部リンク（JGrants詳細から抽出）\n  inquiry_url TEXT,                                -- 問い合わせURL\n  detail_page_url TEXT,                            -- JGrants詳細ページURL\n  external_links TEXT,                             -- 抽出した外部リンク (JSON array)\n  \n  -- 管理用\n  jgrants_raw_json TEXT,                           -- JGrants APIレスポンス原文（監査用）\n  last_seen_at TEXT NOT NULL DEFAULT (datetime('now')),\n  updated_at TEXT NOT NULL DEFAULT (datetime('now')),\n  \n  -- 変更検知用\n  content_hash TEXT,                               -- 内容ハッシュ（差分検知）\n  has_changes INTEGER DEFAULT 0                    -- 前回から変更があったか\n)"
+      },
+      {
+        "name": "subsidy_status_history",
+        "type": "table",
+        "sql": "CREATE TABLE subsidy_status_history (\n  id TEXT PRIMARY KEY,                  \n  subsidy_id TEXT NOT NULL,\n  prev_status TEXT NULL,\n  new_status TEXT NOT NULL,\n  reason TEXT NULL,                     \n  evidence_url TEXT NULL,\n  evidence_quote TEXT NULL,\n  changed_by TEXT NULL,                 \n  changed_at TEXT NOT NULL DEFAULT (datetime('now'))\n)"
+      },
+      {
+        "name": "usage_events",
+        "type": "table",
+        "sql": "CREATE TABLE usage_events (\n  id TEXT PRIMARY KEY,\n  \n  -- 主体（誰が）\n  user_id TEXT,\n  company_id TEXT,\n  \n  -- イベント種別\n  event_type TEXT NOT NULL,\n  -- REGISTER, LOGIN, SUBSIDY_SEARCH, CHAT_SESSION_START, CHAT_MESSAGE,\n  -- DRAFT_GENERATE, DRAFT_FINALIZE, OPENAI_CALL, FIRECRAWL_SCRAPE,\n  -- CRON_RUN, CONSUMER_RUN, CRAWL_SUCCESS, CRAWL_FAILURE\n  \n  -- プロバイダー（コスト計算用）\n  provider TEXT, -- openai, firecrawl, aws, internal, jgrants\n  \n  -- OpenAI用\n  model TEXT,\n  prompt_tokens INTEGER,\n  completion_tokens INTEGER,\n  total_tokens INTEGER,\n  \n  -- Firecrawl用\n  domain TEXT,\n  url TEXT,\n  pages_count INTEGER,\n  word_count INTEGER,\n  \n  -- コスト（USD）\n  estimated_cost_usd REAL,\n  \n  -- 共通\n  feature TEXT, -- chat, draft, extraction, knowledge, search\n  success INTEGER NOT NULL DEFAULT 1,\n  error_code TEXT,\n  error_message TEXT,\n  duration_ms INTEGER,\n  \n  -- メタデータ（柔軟に拡張）\n  metadata_json TEXT,\n  \n  -- タイムスタンプ\n  created_at TEXT NOT NULL DEFAULT (datetime('now'))\n)"
+      },
+      {
+        "name": "user_companies",
+        "type": "table",
+        "sql": "CREATE TABLE user_companies (\n  user_id TEXT NOT NULL,\n  company_id TEXT NOT NULL,\n  role TEXT NOT NULL DEFAULT 'member',           -- 'owner' | 'admin' | 'member'\n  is_primary INTEGER NOT NULL DEFAULT 0,         -- メイン会社フラグ\n  joined_at TEXT NOT NULL DEFAULT (datetime('now')),\n  \n  PRIMARY KEY (user_id, company_id),\n  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,\n  FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE\n)"
+      },
+      {
+        "name": "users",
+        "type": "table",
+        "sql": "CREATE TABLE users (\n  id TEXT PRIMARY KEY,                          -- UUID\n  email TEXT NOT NULL UNIQUE,\n  password_hash TEXT NOT NULL,                  -- pbkdf2_sha256$iterations$salt$hash\n  name TEXT,\n  role TEXT NOT NULL DEFAULT 'user',            -- 'user' | 'admin' | 'super_admin'\n  email_verified_at TEXT,                       -- ISO8601\n  password_reset_token TEXT,\n  password_reset_expires TEXT,                  -- ISO8601\n  created_at TEXT NOT NULL DEFAULT (datetime('now')),\n  updated_at TEXT NOT NULL DEFAULT (datetime('now'))\n, is_disabled INTEGER NOT NULL DEFAULT 0, disabled_reason TEXT, disabled_at TEXT, disabled_by TEXT, last_login_at TEXT, last_login_ip TEXT, created_ip TEXT, failed_login_attempts INTEGER NOT NULL DEFAULT 0, lockout_until TEXT)"
+      }
+    ],
+    "success": true,
+    "meta": {
+      "served_by": "v3-prod",
+      "served_by_region": "ENAM",
+      "served_by_colo": "EWR",
+      "served_by_primary": true,
+      "timings": {
+        "sql_duration_ms": 0.8591
+      },
+      "duration": 0.8591,
+      "changes": 0,
+      "last_row_id": 0,
+      "changed_db": false,
+      "size_after": 1294336,
+      "rows_read": 562,
+      "rows_written": 0,
+      "total_attempts": 1
+    }
+  }
+]
