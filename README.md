@@ -397,6 +397,8 @@ FIRECRAWL_API_KEY=fc-xxx
 | 0019_agency_tables.sql | Agency（士業）機能: agencies, agency_members, agency_clients, access_links, intake_submissions, chat_answers, notifications |
 | 0020_agency_intake_extension.sql | Intake強化: intake_link_templates, intake_field_mappings, agency_client_history |
 | 0021_superadmin_kpi_cost.sql | Superadmin KPI: event_log, cost_usage_log, data_freshness_log, kpi_daily_snapshots, alert_rules, alert_history |
+| 0022_program_items.sql | L3網羅性: program_items（募集案件台帳）, program_item_history, coverage_snapshots |
+| 0099_reconcile_schema.sql | 冪等な統合マイグレーション（本番スキーマとの整合性確保）|
 
 ---
 
@@ -465,6 +467,7 @@ FIRECRAWL_API_KEY=fc-xxx
 | `/api/admin/alerts` | GET | アラート一覧 | super_admin のみ |
 | `/api/admin/kpi-history` | GET | KPI履歴取得 | super_admin のみ |
 | `/api/admin/generate-daily-snapshot` | POST | 日次KPIスナップショット生成 | super_admin のみ |
+| `/api/admin/coverage` | GET | L1/L2/L3網羅性チェック | super_admin のみ |
 
 ### 監視テーブル
 
@@ -476,6 +479,8 @@ FIRECRAWL_API_KEY=fc-xxx
 | kpi_daily_snapshots | 日次KPIスナップショット |
 | alert_rules | アラートルール設定 |
 | alert_history | アラート発報履歴 |
+| program_items | 募集案件台帳（L3網羅性測定） |
+| coverage_snapshots | 網羅性日次スナップショット |
 
 ---
 
@@ -641,6 +646,9 @@ Private
 
 ## 更新履歴
 
+- **2026-01-22**: Migration整合強化: 0099_reconcile_schema.sql（冪等統合マイグレーション）作成、tools/snapshot_production_schema.mjs（本番スキーマスナップショットツール）追加
+- **2026-01-22**: 網羅性監視機能: 0022_program_items.sql（募集案件台帳）追加、/api/admin/coverage エンドポイント追加（L1/L2/L3網羅性チェック）
+- **2026-01-22**: UI共通化: public/static/common.js にapiCall集約、認証エラー時の自動ログアウト機能
 - **2026-01-22**: Agency Intake強化 (0020), Superadmin KPI・監視機能 (0021) マイグレーション追加
 - **2026-01-22**: admin-dashboard.ts に agency-kpi, data-freshness, alerts, kpi-history API追加
 - **2026-01-22**: 全ページコードレビュー完了、subsidies.tsx境界値処理追加、agency.ts JSON.parse try-catch追加

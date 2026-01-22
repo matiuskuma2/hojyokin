@@ -916,6 +916,196 @@ adminDashboard.post('/generate-daily-snapshot', async (c) => {
 });
 
 // ============================================================
+// L1/L2/L3 網羅性チェック（superadmin向け）
+// ============================================================
+
+adminDashboard.get('/coverage', async (c) => {
+  const db = c.env.DB;
+  const user = getCurrentUser(c);
+  
+  // super_admin限定
+  if (user.role !== 'super_admin') {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: 'FORBIDDEN',
+        message: 'Super admin access required',
+      },
+    }, 403);
+  }
+
+  try {
+    // ===================
+    // L1: 入口網羅性（source_registry × geo_region）
+    // ===================
+    // 47都道府県 + 国 のソースが登録されているか
+    const l1_registered = await db.prepare(`
+      SELECT 
+        geo_region,
+        scope,
+        COUNT(*) as source_count,
+        SUM(CASE WHEN enabled = 1 THEN 1 ELSE 0 END) as enabled_count,
+        SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as error_count
+      FROM source_registry
+      WHERE geo_region IS NOT NULL
+      GROUP BY geo_region, scope
+      ORDER BY geo_region, scope
+    `).all<{
+      geo_region: string;
+      scope: string;
+      source_count: number;
+      enabled_count: number;
+      error_count: number;
+    }>();
+
+    // 登録されていない都道府県を検出
+    const allPrefectures = [
+      '01', '02', '03', '04', '05', '06', '07', '08', '09', '10',
+      '11', '12', '13', '14', '15', '16', '17', '18', '19', '20',
+      '21', '22', '23', '24', '25', '26', '27', '28', '29', '30',
+      '31', '32', '33', '34', '35', '36', '37', '38', '39', '40',
+      '41', '42', '43', '44', '45', '46', '47'
+    ];
+    const registeredGeoRegions = new Set((l1_registered.results || []).map(r => r.geo_region));
+    const missingPrefectures = allPrefectures.filter(p => !registeredGeoRegions.has(p));
+
+    const l1 = {
+      total_prefectures: 47,
+      registered_prefectures: allPrefectures.filter(p => registeredGeoRegions.has(p)).length,
+      missing_prefectures: missingPrefectures,
+      coverage_rate: Math.round((allPrefectures.filter(p => registeredGeoRegions.has(p)).length / 47) * 100),
+      by_region: l1_registered.results || [],
+    };
+
+    // ===================
+    // L2: 実稼働網羅性（実際にクロールが回っているか）
+    // ===================
+    const l2_activity = await db.prepare(`
+      SELECT 
+        sr.geo_region,
+        sr.scope,
+        COUNT(DISTINCT sr.id) as sources,
+        COUNT(DISTINCT cq.id) as queue_items,
+        SUM(CASE WHEN cq.status = 'done' THEN 1 ELSE 0 END) as done_count,
+        SUM(CASE WHEN cq.status = 'failed' THEN 1 ELSE 0 END) as failed_count,
+        MAX(cq.finished_at) as last_crawl
+      FROM source_registry sr
+      LEFT JOIN crawl_queue cq ON sr.id = cq.source_id
+      WHERE sr.geo_region IS NOT NULL
+      GROUP BY sr.geo_region, sr.scope
+      ORDER BY done_count ASC
+    `).all<{
+      geo_region: string;
+      scope: string;
+      sources: number;
+      queue_items: number;
+      done_count: number;
+      failed_count: number;
+      last_crawl: string | null;
+    }>();
+
+    // 7日間クロールなしの地域
+    const staleRegions = await db.prepare(`
+      SELECT 
+        geo_region,
+        MAX(last_crawled_at) as last_crawl,
+        ROUND(julianday('now') - julianday(MAX(last_crawled_at))) as days_since
+      FROM source_registry
+      WHERE geo_region IS NOT NULL AND enabled = 1
+      GROUP BY geo_region
+      HAVING MAX(last_crawled_at) < datetime('now', '-7 days') OR MAX(last_crawled_at) IS NULL
+      ORDER BY last_crawl ASC
+    `).all<{
+      geo_region: string;
+      last_crawl: string | null;
+      days_since: number | null;
+    }>();
+
+    const l2 = {
+      activity_by_region: l2_activity.results || [],
+      stale_regions: staleRegions.results || [],
+      stale_count: (staleRegions.results || []).length,
+    };
+
+    // ===================
+    // L3: 制度網羅性（補助金データの状態）
+    // ===================
+    const l3_subsidies = await db.prepare(`
+      SELECT 
+        COALESCE(target_area, 'unknown') as region,
+        COUNT(*) as total,
+        SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) as active,
+        SUM(CASE WHEN application_end < datetime('now') THEN 1 ELSE 0 END) as expired,
+        SUM(CASE WHEN date(updated_at) >= date('now', '-7 days') THEN 1 ELSE 0 END) as updated_week
+      FROM subsidies
+      GROUP BY target_area
+      ORDER BY total DESC
+    `).all<{
+      region: string;
+      total: number;
+      active: number;
+      expired: number;
+      updated_week: number;
+    }>();
+
+    // 補助金の更新状況サマリー
+    const l3_summary = await db.prepare(`
+      SELECT 
+        COUNT(*) as total,
+        SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) as active,
+        SUM(CASE WHEN date(created_at) >= date('now', '-7 days') THEN 1 ELSE 0 END) as new_week,
+        SUM(CASE WHEN date(updated_at) >= date('now', '-7 days') THEN 1 ELSE 0 END) as updated_week,
+        MIN(updated_at) as oldest_update,
+        MAX(updated_at) as latest_update
+      FROM subsidies
+    `).first<{
+      total: number;
+      active: number;
+      new_week: number;
+      updated_week: number;
+      oldest_update: string | null;
+      latest_update: string | null;
+    }>();
+
+    const l3 = {
+      summary: l3_summary,
+      by_region: l3_subsidies.results || [],
+    };
+
+    // ===================
+    // 総合スコア算出
+    // ===================
+    const overallScore = {
+      l1_score: l1.coverage_rate,
+      l2_score: Math.max(0, 100 - (l2.stale_count * 5)), // stale 1つにつき-5点
+      l3_score: l3_summary ? Math.round(((l3_summary.active || 0) / Math.max(l3_summary.total || 1, 1)) * 100) : 0,
+      total: 0,
+    };
+    overallScore.total = Math.round((overallScore.l1_score + overallScore.l2_score + overallScore.l3_score) / 3);
+
+    return c.json<ApiResponse<any>>({
+      success: true,
+      data: {
+        score: overallScore,
+        l1_entry_coverage: l1,
+        l2_crawl_coverage: l2,
+        l3_data_coverage: l3,
+        generated_at: new Date().toISOString(),
+      },
+    });
+  } catch (error) {
+    console.error('Coverage check error:', error);
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: 'COVERAGE_ERROR',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      },
+    }, 500);
+  }
+});
+
+// ============================================================
 // KPI履歴取得
 // ============================================================
 
