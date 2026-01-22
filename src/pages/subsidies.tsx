@@ -327,7 +327,29 @@ subsidyPages.get('/subsidies', (c) => {
           select.value = res.data[0].id;
           document.getElementById('company-alert').classList.add('hidden');
         } else {
+          // 会社情報未登録 - フォームを非表示にし、警告を表示
           document.getElementById('company-alert').classList.remove('hidden');
+          
+          // 検索パネルを無効化
+          const searchPanel = document.querySelector('.bg-white.rounded-lg.shadow.p-6.mb-6');
+          if (searchPanel) {
+            searchPanel.classList.add('opacity-50', 'pointer-events-none');
+          }
+          
+          // ガイダンスメッセージを更新
+          document.getElementById('subsidies-list').innerHTML = \`
+            <div class="bg-white rounded-lg shadow p-8 text-center">
+              <div class="w-16 h-16 bg-yellow-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                <i class="fas fa-building text-yellow-500 text-2xl"></i>
+              </div>
+              <h3 class="text-lg font-semibold text-gray-800 mb-2">会社情報を登録してください</h3>
+              <p class="text-gray-600 mb-4">補助金検索を利用するには、まず会社情報の登録が必要です。</p>
+              <a href="/company" class="inline-flex items-center gap-2 bg-blue-600 text-white px-6 py-3 rounded-lg hover:bg-blue-700 transition">
+                <i class="fas fa-edit"></i>
+                会社情報を登録する
+              </a>
+            </div>
+          \`;
         }
       }
       

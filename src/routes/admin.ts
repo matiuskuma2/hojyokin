@@ -17,10 +17,10 @@ import { hashPassword } from '../lib/password';
 
 const admin = new Hono<{ Bindings: Env; Variables: Variables }>();
 
-// 管理者権限チェックミドルウェア
+// 管理者権限チェックミドルウェア（admin or super_admin）
 const requireAdmin = async (c: any, next: () => Promise<void>) => {
   const user = getCurrentUser(c);
-  if (user.role !== 'admin') {
+  if (user.role !== 'admin' && user.role !== 'super_admin') {
     return c.json<ApiResponse<null>>({
       success: false,
       error: {
