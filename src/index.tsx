@@ -11,12 +11,13 @@ import { HTTPException } from 'hono/http-exception';
 import { jsxRenderer } from 'hono/jsx-renderer';
 
 import type { Env, Variables, ApiResponse } from './types';
-import { authRoutes, companiesRoutes, subsidiesRoutes, jobsRoutes, internalRoutes, knowledgeRoutes, consumerRoutes, kpiRoutes, adminRoutes, profileRoutes, chatRoutes } from './routes';
+import { authRoutes, companiesRoutes, subsidiesRoutes, jobsRoutes, internalRoutes, knowledgeRoutes, consumerRoutes, kpiRoutes, adminRoutes, profileRoutes, chatRoutes, draftRoutes } from './routes';
 import authPages from './pages/auth';
 import dashboardPages from './pages/dashboard';
 import adminPages from './pages/admin';
 import subsidyPages from './pages/subsidies';
 import chatPages from './pages/chat';
+import draftPages from './pages/draft';
 
 // アプリケーション初期化
 const app = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -106,6 +107,9 @@ app.route('/api/profile', profileRoutes);
 // チャットルート（S3: 壁打ちチャット）
 app.route('/api/chat', chatRoutes);
 
+// ドラフトルート（S4: 申請書ドラフト生成）
+app.route('/api/draft', draftRoutes);
+
 // ============================================================
 // UI ページルート（U1）
 // ============================================================
@@ -124,6 +128,9 @@ app.route('/', adminPages);
 
 // 壁打ちチャットページ（/chat）
 app.route('/', chatPages);
+
+// 申請書ドラフトページ（/draft）
+app.route('/', draftPages);
 
 // ============================================================
 // エラーハンドリング

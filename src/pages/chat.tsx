@@ -448,9 +448,7 @@ chatPages.get('/chat', (c) => {
     
     // 申請書作成へ
     function goToDraft() {
-      // S4実装後に遷移先を設定
-      alert('申請書作成機能は現在準備中です。\\n\\nこの補助金への申請準備が整いました。');
-      // window.location.href = '/draft?session_id=' + sessionId;
+      window.location.href = '/draft?session_id=' + sessionId;
     }
     
     // 初期化
