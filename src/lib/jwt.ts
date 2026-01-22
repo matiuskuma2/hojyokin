@@ -9,7 +9,7 @@ import { SignJWT, jwtVerify, JWTPayload as JoseJWTPayload } from 'jose';
 import type { JWTPayload, AuthUser, Env } from '../types';
 
 const ALGORITHM = 'HS256';
-const DEFAULT_EXPIRES_IN = '15m';  // 15分
+const DEFAULT_EXPIRES_IN = '24h';  // 24時間
 
 /**
  * シークレットキーをCryptoKeyに変換
