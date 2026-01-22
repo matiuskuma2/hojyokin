@@ -3,8 +3,8 @@
 ## プロジェクト概要
 
 - **Name**: subsidy-matching (hojyokin)
-- **Version**: 1.2.0 (Phase K2 Cron + Consumer 実装完了)
-- **Goal**: 企業情報を登録するだけで、最適な補助金・助成金を自動でマッチング
+- **Version**: 1.3.0 (S3 壁打ちチャット + S4 申請書ドラフト 完了)
+- **Goal**: 企業情報を登録するだけで、最適な補助金・助成金を自動でマッチング＆申請書ドラフト作成
 
 ### 設計思想
 
@@ -14,24 +14,212 @@
 - 金額より安全
 - 自動化より判断補助
 
+---
+
 ## URLs
 
-- **本番 (Cloudflare Pages)**: https://hojyokin.pages.dev
+### 本番環境 (Cloudflare Pages)
+
+| ページ | URL | 説明 |
+|--------|-----|------|
+| トップ | https://hojyokin.pages.dev | ランディング |
+| ログイン | https://hojyokin.pages.dev/login | 認証 |
+| 新規登録 | https://hojyokin.pages.dev/register | アカウント作成 |
+| ダッシュボード | https://hojyokin.pages.dev/dashboard | メイン画面 |
+| 会社情報 | https://hojyokin.pages.dev/company | 企業プロフィール編集 |
+| 補助金一覧 | https://hojyokin.pages.dev/subsidies | 補助金検索 |
+| 補助金詳細 | https://hojyokin.pages.dev/subsidies/:id | 個別補助金情報 |
+| 壁打ちチャット | https://hojyokin.pages.dev/chat?session_id=XXX | S3: 事前判定＋不足情報収集 |
+| 申請書ドラフト | https://hojyokin.pages.dev/draft?session_id=XXX | S4: 申請書作成 |
+| 管理画面 | https://hojyokin.pages.dev/admin | 管理者用 |
+
+### 開発環境
+
 - **GitHub**: https://github.com/matiuskuma2/hojyokin
-- **Sandbox (開発)**: PM2 + wrangler pages dev (port 3000)
+- **Sandbox**: PM2 + wrangler pages dev (port 3000)
 
 ---
 
-## アーキテクチャ
+## システムフロー（S1〜S4）
+
+```
+[会社情報登録]
+      │
+      ▼
+┌──────────────────────────────────────────────────────────────────┐
+│  S1: 補助金検索  /subsidies                                       │
+│  ┌──────────────────────────────────────────────────────────────┐ │
+│  │ 企業情報（業種・規模・地域）でフィルタリング                  │ │
+│  │ → 当てはまるもの優先表示 / 全件表示 切替                      │ │
+│  └──────────────────────────────────────────────────────────────┘ │
+└──────────────────────────────────────────────────────────────────┘
+      │
+      ▼
+┌──────────────────────────────────────────────────────────────────┐
+│  S2: 補助金詳細  /subsidies/:id                                   │
+│  ┌──────────────────────────────────────────────────────────────┐ │
+│  │ 制度概要・申請要件・締切・補助率 等                           │ │
+│  │ → [壁打ちを開始] ボタン                                       │ │
+│  └──────────────────────────────────────────────────────────────┘ │
+└──────────────────────────────────────────────────────────────────┘
+      │
+      ▼
+┌──────────────────────────────────────────────────────────────────┐
+│  S3: 壁打ちチャット  /chat?subsidy_id=XXX&company_id=YYY          │
+│  ┌──────────────────────────────────────────────────────────────┐ │
+│  │ 1. 事前判定 (precheck)                                        │ │
+│  │    - NG: 申請不可理由を表示 → 終了                            │ │
+│  │    - OK: 申請可能 → S4へ                                      │ │
+│  │    - OK_WITH_MISSING: 不足情報あり → 質問開始                 │ │
+│  │                                                               │ │
+│  │ 2. 不足情報収集（壁打ち）                                     │ │
+│  │    - システムが質問 → ユーザーが回答                          │ │
+│  │    - 回答は chat_facts に保存（次回以降聞かない）             │ │
+│  │    - 全質問完了 → S4へ                                        │ │
+│  └──────────────────────────────────────────────────────────────┘ │
+└──────────────────────────────────────────────────────────────────┘
+      │
+      ▼
+┌──────────────────────────────────────────────────────────────────┐
+│  S4: 申請書ドラフト  /draft?session_id=XXX                        │
+│  ┌──────────────────────────────────────────────────────────────┐ │
+│  │ 1. テンプレート生成                                           │ │
+│  │    - 5セクション: 背景・課題 / 事業目的 / 実施内容・方法      │ │
+│  │                   / 実施体制 / 資金計画（概要）                │ │
+│  │    - 根拠: company_profile + chat_facts + subsidy_info        │ │
+│  │                                                               │ │
+│  │ 2. NGフィルタチェック                                         │ │
+│  │    - 断定表現・不正示唆・コンプライアンス違反 を警告          │ │
+│  │                                                               │ │
+│  │ 3. セクション編集 → 保存 → 確定                               │ │
+│  └──────────────────────────────────────────────────────────────┘ │
+└──────────────────────────────────────────────────────────────────┘
+      │
+      ▼
+    [完了]
+```
+
+---
+
+## データアーキテクチャ
+
+### データの役割分担
+
+| 役割 | テーブル | 説明 |
+|------|----------|------|
+| 基本情報 | companies + company_profile | 検索前フィルタ（当てはまるか否か） |
+| 書類 | company_documents | 自動入力・裏取り用（OCR抽出予定） |
+| 前提条件 | eligibility_rules | precheck判定ルール |
+| 壁打ち回答 | chat_facts | 「次回以降聞かない」資産 |
+| 会話ログ | chat_messages | UI表示・監査用 |
+| 申請書 | application_drafts | ドラフト・バージョン管理 |
+
+### 主要テーブル一覧
+
+| テーブル | 説明 |
+|----------|------|
+| `users` | ユーザーアカウント |
+| `companies` | 会社基本情報 |
+| `company_profile` | 会社詳細プロフィール |
+| `company_documents` | アップロード書類 |
+| `subsidy_cache` | 補助金キャッシュ |
+| `eligibility_rules` | 適格性判定ルール |
+| `chat_sessions` | 壁打ちセッション |
+| `chat_messages` | チャット履歴 |
+| `chat_facts` | 収集済み事実 |
+| `application_drafts` | 申請書ドラフト |
+| `source_registry` | 47都道府県クロール台帳 |
+| `crawl_queue` | Cronキュー |
+| `subsidy_lifecycle` | 制度ライフサイクル |
+
+---
+
+## API Endpoints
+
+### 認証 API
+
+| Endpoint | Method | 説明 |
+|----------|--------|------|
+| `/api/auth/register` | POST | ユーザー登録 |
+| `/api/auth/login` | POST | ログイン |
+| `/api/auth/refresh` | POST | トークンリフレッシュ |
+| `/api/auth/forgot-password` | POST | パスワードリセット申請 |
+| `/api/auth/reset-password` | POST | パスワードリセット実行 |
+
+### 会社情報 API
+
+| Endpoint | Method | 説明 |
+|----------|--------|------|
+| `/api/companies` | GET | 会社一覧 |
+| `/api/companies` | POST | 会社作成 |
+| `/api/companies/:id` | GET | 会社詳細 |
+| `/api/companies/:id` | PUT | 会社更新 |
+| `/api/profile` | GET | プロフィール統合取得 |
+| `/api/profile` | PUT | プロフィール更新 |
+| `/api/profile/completeness` | GET | 完成度取得 |
+| `/api/profile/documents` | POST | 書類アップロード |
+| `/api/profile/documents` | GET | 書類一覧 |
+| `/api/profile/documents/:id` | DELETE | 書類削除 |
+
+### 補助金 API
+
+| Endpoint | Method | 説明 |
+|----------|--------|------|
+| `/api/subsidies` | GET | 補助金検索 |
+| `/api/subsidies/:id` | GET | 補助金詳細 |
+
+### S3: 壁打ちチャット API
+
+| Endpoint | Method | 説明 |
+|----------|--------|------|
+| `/api/chat/precheck` | POST | 事前判定 |
+| `/api/chat/sessions` | POST | セッション作成 |
+| `/api/chat/sessions` | GET | セッション一覧 |
+| `/api/chat/sessions/:id` | GET | セッション詳細 |
+| `/api/chat/sessions/:id/message` | POST | メッセージ送信 |
+
+### S4: 申請書ドラフト API
+
+| Endpoint | Method | 説明 |
+|----------|--------|------|
+| `/api/draft/generate` | POST | ドラフト生成 |
+| `/api/draft/:id` | GET | ドラフト取得 |
+| `/api/draft/:id` | PUT | ドラフト更新 |
+| `/api/draft/:id/check-ng` | POST | NGチェック再実行 |
+| `/api/draft/:id/finalize` | POST | ドラフト確定 |
+
+### ナレッジ API (K1/K2)
+
+| Endpoint | Method | 説明 |
+|----------|--------|------|
+| `/api/knowledge/crawl/:urlId` | POST | URL単体クロール |
+| `/api/knowledge/extract/:urlId` | POST | Extract抽出 |
+| `/api/knowledge/registry` | GET | source_registry一覧 |
+| `/api/knowledge/stats` | GET | ナレッジ統計 |
+
+### Consumer API
+
+| Endpoint | Method | 説明 |
+|----------|--------|------|
+| `/api/consumer/run` | POST | キュージョブ処理 |
+| `/api/consumer/status` | GET | キュー状態 |
+| `/api/consumer/requeue/:id` | POST | 再キュー |
+| `/api/consumer/cleanup` | DELETE | 古いジョブ削除 |
+
+---
+
+## アーキテクチャ図
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                    Cloudflare (Phase K2)                        │
+│                    Cloudflare (Phase K2 + S3/S4)                │
 │  ┌───────────────────────────────────────────────────────────┐  │
 │  │ Pages (hojyokin)                                          │  │
 │  │ - 認証 (JWT + PBKDF2)                                     │  │
-│  │ - 企業CRUD                                                │  │
+│  │ - 企業CRUD + Profile                                      │  │
 │  │ - 補助金検索 (JGrants API)                                │  │
+│  │ - S3: 壁打ちチャット (precheck + facts収集)               │  │
+│  │ - S4: 申請書ドラフト (テンプレ生成 + NGフィルタ)          │  │
 │  │ - ナレッジパイプライン (K1/K2)                            │  │
 │  │ - Consumer (crawl_queue処理)                              │  │
 │  └───────────────────────────────────────────────────────────┘  │
@@ -47,81 +235,7 @@
 │  │ (SQLite)    │ │ (knowledge) │ │   (Scrape)  │              │
 │  └─────────────┘ └─────────────┘ └─────────────┘              │
 └─────────────────────────────────────────────────────────────────┘
-                               │
-                               ▼ (重処理のみ)
-┌─────────────────────────────────────────────────────────────────┐
-│                      AWS (Phase 2)                              │
-│  ┌─────────────┐    ┌──────────────┐    ┌─────────────┐        │
-│  │ API Gateway │───▶│ Lambda       │───▶│ SQS         │        │
-│  │ (HTTP API)  │    │ (job-submit) │    │ (jobs)      │        │
-│  └─────────────┘    └──────────────┘    └──────┬──────┘        │
-│                              │                  │               │
-│                              ▼                  ▼               │
-│                     ┌──────────────┐    ┌──────────────┐        │
-│                     │ S3           │◀───│ Lambda       │───▶ LLM│
-│                     │ (attachments)│    │ (worker)     │        │
-│                     └──────────────┘    └──────────────┘        │
-└─────────────────────────────────────────────────────────────────┘
 ```
-
----
-
-## Phase K2: ナレッジパイプライン (実装完了) ✅
-
-### データ取得設計（API × Crawl の役割分担）
-
-| 役割 | API (jGrants) | Crawl (Firecrawl) |
-|------|---------------|-------------------|
-| 目的 | 制度の存在と概要 | 申請に勝つための実務情報 |
-| データ | title, summary, prefecture, max_amount, rate, deadlines | 公募要領PDF, Q&A, 記載例, 審査ポイント |
-| 限界 | 必要書類不完全、審査ポイント無し | - |
-
-### 主要テーブル
-
-| テーブル | 説明 |
-|----------|------|
-| `source_registry` | 47都道府県クロール台帳 |
-| `crawl_queue` | Cron専用キュー（kind: REGISTRY_CRAWL/SUBSIDY_CHECK/URL_CRAWL） |
-| `subsidy_lifecycle` | 制度のライフサイクル管理 (status/next_check_at) |
-| `domain_policy` | ドメイン単位のクロールポリシー |
-| `doc_object` | R2保存ドキュメント索引 |
-
-### Consumer API Endpoints
-
-| Endpoint | Method | 説明 |
-|----------|--------|------|
-| `/api/consumer/run` | POST | キューからジョブを取得して処理 |
-| `/api/consumer/status` | GET | キュー状態の確認 |
-| `/api/consumer/requeue/:id` | POST | 失敗ジョブの再キュー |
-| `/api/consumer/cleanup` | DELETE | 古いジョブの削除 |
-
-### ナレッジ API Endpoints (K1/K2)
-
-| Endpoint | Method | 説明 |
-|----------|--------|------|
-| `/api/knowledge/crawl/:urlId` | POST | URL単体クロール (K1) |
-| `/api/knowledge/extract/:urlId` | POST | Extract Schema v1 抽出 (K2) |
-| `/api/knowledge/registry` | GET | source_registry一覧 |
-| `/api/knowledge/stats` | GET | ナレッジ統計 |
-
-### ステータス正規化 (subsidy_lifecycle)
-
-| status | 説明 | 更新頻度 |
-|--------|------|----------|
-| `scheduled` | 公募前 | 毎日 |
-| `open` | 受付中 | priority依存 |
-| `closing_soon` | まもなく締切 | 1時間 |
-| `closed_by_deadline` | 期限終了 | 30日 |
-| `closed_by_budget` | 予算枯渇 | 30日 |
-
-### 予算枯渇シグナル (budget_close_signals)
-
-| signal | 検知パターン |
-|--------|-------------|
-| `budget_cap_reached` | 予算上限に達し次第...終了 |
-| `first_come_end` | 先着順 |
-| `quota_reached` | 予定件数に達し |
-| `early_close` | 早期終了の可能性 |
 
 ---
 
@@ -146,6 +260,48 @@
 - [x] Consumer (crawl_queue処理)
 - [x] domain_policy (自動ブロック)
 
+### S3: 壁打ちチャット ✅
+- [x] POST /api/chat/precheck（事前判定: NG/OK/OK_WITH_MISSING）
+- [x] POST /api/chat/sessions（セッション作成＋初期メッセージ）
+- [x] GET /api/chat/sessions（セッション一覧）
+- [x] GET /api/chat/sessions/:id（セッション詳細）
+- [x] POST /api/chat/sessions/:id/message（メッセージ送信＋facts保存）
+- [x] /chat UI（プレチェック表示、質問応答、クイック回答）
+- [x] chat_sessions / chat_messages / chat_facts テーブル
+- [x] /subsidies/:id → /chat 導線接続
+
+### S4: 申請書ドラフト ✅
+- [x] POST /api/draft/generate（テンプレ＋変数埋め込み生成）
+- [x] GET /api/draft/:id（ドラフト取得）
+- [x] PUT /api/draft/:id（セクション更新＋NG再評価）
+- [x] POST /api/draft/:id/check-ng（NGチェック再実行）
+- [x] POST /api/draft/:id/finalize（ドラフト確定）
+- [x] /draft UI（5セクション編集、NGチェック、自動保存、確定）
+- [x] application_drafts テーブル
+- [x] /chat 完了 → /draft 導線接続
+- [x] NGフィルタルール（断定表現・不正示唆・コンプライアンス）
+
+---
+
+## 次のステップ 📋
+
+### Phase 2 (優先)
+1. **書類アップロード → 自動入力**
+   - OCR/LLM抽出 → extracted_json
+   - company_profile への自動反映
+   
+2. **LLMブラッシュアップ**
+   - mode=llm でドラフト文章を自然化
+   
+3. **PDF出力**
+   - 確定ドラフトをPDFでダウンロード
+
+### 機能拡張
+- [ ] 検索の「当てはまるもの優先」トグル
+- [ ] NG自動差し替え提案
+- [ ] 加点要素の表示（bonus_*）
+- [ ] カスタムドメイン設定
+
 ---
 
 ## 開発環境セットアップ
@@ -158,28 +314,44 @@ npm install
 # D1マイグレーション (ローカル)
 npx wrangler d1 migrations apply subsidy-matching-production --local
 
-# 開発サーバー起動
+# ビルド
 npm run build
+
+# 開発サーバー起動
 pm2 start ecosystem.config.cjs
 
 # API テスト
 curl http://localhost:3000/api/health
-curl http://localhost:3000/api/consumer/status -H "Authorization: Bearer $JWT"
 ```
 
-### Consumer テスト
+### E2Eテスト
 
 ```bash
-# ログインしてJWT取得
-JWT=$(curl -s http://localhost:3000/api/auth/login \
+# ユーザー登録 → 会社作成 → チャットセッション → ドラフト生成
+TOKEN=$(curl -s http://localhost:3000/api/auth/register \
   -H "Content-Type: application/json" \
-  -d '{"email":"test@example.com","password":"password"}' | jq -r '.data.token')
+  -d '{"email":"test@example.com","password":"Test1234!","name":"テスト"}' \
+  | jq -r '.data.token')
 
-# Consumer実行
-curl -X POST http://localhost:3000/api/consumer/run \
-  -H "Authorization: Bearer $JWT" \
+# 会社作成
+COMPANY_ID=$(curl -s http://localhost:3000/api/companies \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"limit": 10}'
+  -d '{"name":"テスト株式会社","prefecture":"東京都","industry_major":"G","employee_count":10}' \
+  | jq -r '.data.id')
+
+# チャットセッション作成
+SESSION_ID=$(curl -s http://localhost:3000/api/chat/sessions \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"subsidy_id":"test-subsidy-001","company_id":"'$COMPANY_ID'"}' \
+  | jq -r '.data.session.id')
+
+# ドラフト生成
+curl -s http://localhost:3000/api/draft/generate \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"session_id":"'$SESSION_ID'","mode":"template"}'
 ```
 
 ---
@@ -195,31 +367,18 @@ JGRANTS_MODE=mock
 FIRECRAWL_API_KEY=fc-xxx
 ```
 
-### Cron Worker (.dev.vars)
-```
-# D1は wrangler.toml で設定
-```
-
 ---
 
-## 進捗状況
+## マイグレーションファイル
 
-### ✅ 完了
-- Phase 1-A: Cloudflare基盤
-- Phase K1: ナレッジ収集
-- Phase K2: Cron + Consumer実装
-- 47都道府県台帳投入
-- Extract Schema v1
-
-### 📋 次のステップ
-1. Cron Worker本番デプロイ
-2. Extract品質改善 (confidence > 0.8)
-3. 申請書自動生成への接続
-
-### ⏳ 未着手
-- UI実装
-- 壁打ちBot
-- 自治体サイトスクレイピング拡張
+| ファイル | 説明 |
+|----------|------|
+| 0001_initial_schema.sql | 基本スキーマ |
+| 0002_eligibility_rules.sql | 適格性ルール |
+| 0003_knowledge_pipeline.sql | ナレッジパイプライン |
+| ... | ... |
+| 0015_company_profile.sql | 会社プロフィール拡張 |
+| 0016_s3_s4_chat_draft.sql | S3/S4: チャット＋ドラフト |
 
 ---
 
@@ -229,6 +388,8 @@ Private
 
 ## 更新履歴
 
+- **2026-01-22**: S4 申請書ドラフト生成 完了
+- **2026-01-22**: S3 壁打ちチャット 完了
 - **2026-01-21**: Phase K2 Cron + Consumer実装完了
 - **2026-01-21**: 47都道府県台帳投入
 - **2026-01-21**: Extract Schema v1実装
