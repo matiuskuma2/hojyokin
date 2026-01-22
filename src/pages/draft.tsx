@@ -103,6 +103,30 @@ draftPages.get('/draft', (c) => {
         </div>
       </div>
       
+      <!-- 不足情報の補完リンク -->
+      <div id="info-links" class="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6">
+        <div class="flex items-start">
+          <i class="fas fa-info-circle text-blue-500 text-lg mr-3 mt-0.5"></i>
+          <div class="flex-1">
+            <h4 class="font-semibold text-blue-800 mb-2">情報が不足している場合</h4>
+            <p class="text-sm text-blue-700 mb-3">
+              ドラフトに「（未入力）」や「（○○を記載してください）」がある場合は、以下から情報を補完できます。
+            </p>
+            <div class="flex flex-wrap gap-2">
+              <a href="/company" class="inline-flex items-center px-3 py-1.5 bg-white border border-blue-300 rounded-md text-sm text-blue-700 hover:bg-blue-100">
+                <i class="fas fa-building mr-1.5"></i>会社情報を編集
+              </a>
+              <a id="link-chat" href="#" class="inline-flex items-center px-3 py-1.5 bg-white border border-blue-300 rounded-md text-sm text-blue-700 hover:bg-blue-100">
+                <i class="fas fa-comments mr-1.5"></i>壁打ちに戻る
+              </a>
+              <a href="/subsidies" class="inline-flex items-center px-3 py-1.5 bg-white border border-blue-300 rounded-md text-sm text-blue-700 hover:bg-blue-100">
+                <i class="fas fa-search mr-1.5"></i>補助金を確認
+              </a>
+            </div>
+          </div>
+        </div>
+      </div>
+      
       <!-- アクションバー -->
       <div class="bg-white rounded-lg shadow p-4 mb-6 flex items-center justify-between">
         <div class="flex items-center space-x-4">
@@ -237,6 +261,7 @@ draftPages.get('/draft', (c) => {
     
     // 戻るリンク設定
     document.getElementById('back-link').href = '/chat?session_id=' + sessionId;
+    document.getElementById('link-chat').href = '/chat?session_id=' + sessionId;
     
     let draftId = null;
     let hasChanges = false;
