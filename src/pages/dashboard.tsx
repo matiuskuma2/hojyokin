@@ -7,6 +7,11 @@
  * - ページ固有スクリプトは</body>直前で実行
  * - null/undefined の安全なハンドリング
  * - エラーメッセージは日本語で表示
+ * 
+ * UI/UX改善（2026-01-22）:
+ * - 検索に必要な条件を明確に表示
+ * - 必須項目と任意項目の違いを説明
+ * - プログレスステップを詳細化
  */
 
 import { Hono } from 'hono';
@@ -20,6 +25,7 @@ const pages = new Hono<{ Bindings: Env; Variables: Variables }>();
 const commonScripts = `
   // グローバル変数の初期化
   window.hasCompanyInfo = false;
+  window.searchReady = false;
   
   // API呼び出しヘルパー
   window.apiCall = async function(url, options) {
@@ -77,8 +83,11 @@ const commonScripts = `
     if (e && e.preventDefault) {
       e.preventDefault();
     }
-    if (window.hasCompanyInfo) {
+    if (window.searchReady) {
       window.location.href = '/subsidies';
+    } else if (window.hasCompanyInfo) {
+      alert('補助金検索には以下の情報が必要です：\\n\\n・会社名\\n・都道府県\\n・業種\\n・従業員数\\n\\n会社情報ページで入力してください。');
+      window.location.href = '/company';
     } else {
       alert('補助金検索には会社情報の登録が必要です。\\n先に会社情報を入力してください。');
       window.location.href = '/company';
@@ -239,7 +248,7 @@ const AppLayout = ({ children, title, activeNav }: { children: any; title: strin
 );
 
 // ============================================================
-// ダッシュボード（ステップガイド形式）
+// ダッシュボード（ステップガイド形式）- UI/UX改善版
 // ============================================================
 
 pages.get('/dashboard', (c) => {
@@ -248,6 +257,44 @@ pages.get('/dashboard', (c) => {
       <div class="mb-8">
         <h1 class="text-2xl font-bold text-gray-800">ダッシュボード</h1>
         <p class="text-gray-600 mt-1">補助金申請までのステップを確認できます</p>
+      </div>
+      
+      {/* 重要なお知らせボックス（検索条件の説明）*/}
+      <div id="info-box" class="mb-6 bg-blue-50 border border-blue-200 rounded-xl p-5 hidden">
+        <div class="flex items-start gap-4">
+          <div class="w-10 h-10 bg-blue-100 rounded-full flex items-center justify-center flex-shrink-0">
+            <i class="fas fa-info-circle text-blue-600"></i>
+          </div>
+          <div class="flex-1">
+            <h3 class="font-semibold text-blue-800 mb-2">補助金検索について</h3>
+            <p class="text-sm text-blue-700 mb-3">
+              補助金を検索するには、以下の<strong>4つの情報</strong>が最低限必要です。
+              これらの情報で、あなたの会社に合った補助金を絞り込みます。
+            </p>
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-2">
+              <div id="req-name" class="flex items-center gap-2 px-3 py-2 bg-white rounded-lg border border-blue-200">
+                <i class="fas fa-circle text-gray-300 text-xs"></i>
+                <span class="text-sm text-gray-700">会社名</span>
+              </div>
+              <div id="req-pref" class="flex items-center gap-2 px-3 py-2 bg-white rounded-lg border border-blue-200">
+                <i class="fas fa-circle text-gray-300 text-xs"></i>
+                <span class="text-sm text-gray-700">都道府県</span>
+              </div>
+              <div id="req-industry" class="flex items-center gap-2 px-3 py-2 bg-white rounded-lg border border-blue-200">
+                <i class="fas fa-circle text-gray-300 text-xs"></i>
+                <span class="text-sm text-gray-700">業種</span>
+              </div>
+              <div id="req-employees" class="flex items-center gap-2 px-3 py-2 bg-white rounded-lg border border-blue-200">
+                <i class="fas fa-circle text-gray-300 text-xs"></i>
+                <span class="text-sm text-gray-700">従業員数</span>
+              </div>
+            </div>
+            <p class="text-xs text-blue-600 mt-3">
+              <i class="fas fa-lightbulb mr-1"></i>
+              追加で資本金や設立年月を入力すると、より精度の高いマッチングが可能になります
+            </p>
+          </div>
+        </div>
       </div>
       
       {/* ステップガイド */}
@@ -260,13 +307,23 @@ pages.get('/dashboard', (c) => {
                 <span class="text-gray-500 font-bold">1</span>
               </div>
               <div class="flex-1">
-                <div class="flex items-center gap-2">
+                <div class="flex items-center gap-2 flex-wrap">
                   <h3 class="font-semibold text-gray-800">会社情報を登録する</h3>
                   <span id="step1-badge" class="hidden px-2 py-0.5 text-xs rounded-full bg-green-100 text-green-700">完了</span>
+                  <span id="step1-badge-partial" class="hidden px-2 py-0.5 text-xs rounded-full bg-yellow-100 text-yellow-700">入力中</span>
                 </div>
                 <p id="step1-desc" class="text-sm text-gray-500 mt-1">
                   補助金の検索に必要な会社情報を入力してください
                 </p>
+                
+                {/* 必須項目の状態表示 */}
+                <div id="step1-required" class="mt-3 hidden">
+                  <p class="text-xs text-gray-500 mb-2">必須項目（検索に必要）:</p>
+                  <div class="flex flex-wrap gap-2" id="required-fields">
+                    {/* JSで動的に生成 */}
+                  </div>
+                </div>
+                
                 <div id="step1-progress" class="mt-3 hidden">
                   <div class="flex items-center gap-2 mb-2">
                     <span class="text-sm text-gray-600">入力完成度:</span>
@@ -297,6 +354,10 @@ pages.get('/dashboard', (c) => {
                 </div>
                 <p class="text-sm text-gray-500 mt-1">
                   会社情報をもとに、あなたに合った補助金を探します
+                </p>
+                <p id="step2-hint" class="text-xs text-orange-600 mt-2 hidden">
+                  <i class="fas fa-exclamation-circle mr-1"></i>
+                  必須4項目を入力すると検索できるようになります
                 </p>
                 <a id="step2-action" href="#" onclick="window.navigateToSubsidies(event); return false;" class="inline-flex items-center gap-2 mt-3 px-4 py-2 bg-gray-300 text-gray-500 rounded-lg cursor-not-allowed text-sm">
                   <i class="fas fa-search"></i>
@@ -396,36 +457,96 @@ pages.get('/dashboard', (c) => {
               // グローバルフラグを設定
               window.hasCompanyInfo = hasCompany;
               
+              // 情報ボックスを表示
+              var infoBox = document.getElementById('info-box');
+              if (infoBox) infoBox.classList.remove('hidden');
+              
               if (hasCompany) {
-                // ステップ1を完了状態に
-                var step1Icon = document.getElementById('step1-icon');
-                if (step1Icon) {
-                  step1Icon.className = 'w-10 h-10 bg-green-500 rounded-full flex items-center justify-center flex-shrink-0';
-                  step1Icon.innerHTML = '<i class="fas fa-check text-white"></i>';
-                }
+                var company = companies.data[0];
                 
-                var step1Badge = document.getElementById('step1-badge');
-                if (step1Badge) {
-                  step1Badge.classList.remove('hidden');
-                }
+                // 必須項目の状態をチェック
+                var reqName = !!company.name;
+                var reqPref = !!company.prefecture;
+                var reqIndustry = !!(company.industry_major || company.industry);
+                var reqEmployees = company.employee_count > 0;
                 
-                var step1Action = document.getElementById('step1-action');
-                if (step1Action) {
-                  step1Action.innerHTML = '<i class="fas fa-edit"></i> 会社情報を編集する';
-                  step1Action.className = 'inline-flex items-center gap-2 mt-3 px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition text-sm';
-                }
+                // 検索準備完了かどうか
+                window.searchReady = reqName && reqPref && reqIndustry && reqEmployees;
                 
-                // ステップ2を有効化
-                var step2 = document.getElementById('step2');
-                if (step2) {
-                  step2.classList.remove('opacity-50');
-                }
+                // 必須項目の表示を更新
+                updateRequiredField('req-name', reqName);
+                updateRequiredField('req-pref', reqPref);
+                updateRequiredField('req-industry', reqIndustry);
+                updateRequiredField('req-employees', reqEmployees);
                 
-                var step2Action = document.getElementById('step2-action');
-                if (step2Action) {
-                  step2Action.href = '/subsidies';
-                  step2Action.onclick = null;
-                  step2Action.className = 'inline-flex items-center gap-2 mt-3 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition text-sm';
+                // ステップ1の状態更新
+                var step1Required = document.getElementById('step1-required');
+                if (step1Required) step1Required.classList.remove('hidden');
+                
+                if (window.searchReady) {
+                  // 必須項目すべて入力済み
+                  var step1Icon = document.getElementById('step1-icon');
+                  if (step1Icon) {
+                    step1Icon.className = 'w-10 h-10 bg-green-500 rounded-full flex items-center justify-center flex-shrink-0';
+                    step1Icon.innerHTML = '<i class="fas fa-check text-white"></i>';
+                  }
+                  
+                  var step1Badge = document.getElementById('step1-badge');
+                  if (step1Badge) step1Badge.classList.remove('hidden');
+                  
+                  var step1Action = document.getElementById('step1-action');
+                  if (step1Action) {
+                    step1Action.innerHTML = '<i class="fas fa-edit"></i> 会社情報を編集する';
+                    step1Action.className = 'inline-flex items-center gap-2 mt-3 px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition text-sm';
+                  }
+                  
+                  // ステップ2を有効化
+                  var step2 = document.getElementById('step2');
+                  if (step2) step2.classList.remove('opacity-50');
+                  
+                  var step2Action = document.getElementById('step2-action');
+                  if (step2Action) {
+                    step2Action.href = '/subsidies';
+                    step2Action.onclick = null;
+                    step2Action.className = 'inline-flex items-center gap-2 mt-3 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition text-sm';
+                  }
+                  
+                  // マッチングリンク表示
+                  var matchCount = document.getElementById('match-count');
+                  var matchLink = document.getElementById('match-link');
+                  if (matchCount) {
+                    matchCount.textContent = '検索してください';
+                    matchCount.className = 'text-sm text-gray-500 mt-1';
+                  }
+                  if (matchLink) {
+                    matchLink.classList.remove('hidden');
+                    matchLink.href = '/subsidies';
+                    matchLink.onclick = null;
+                  }
+                } else {
+                  // 一部入力済み
+                  var step1Icon = document.getElementById('step1-icon');
+                  if (step1Icon) {
+                    step1Icon.className = 'w-10 h-10 bg-yellow-500 rounded-full flex items-center justify-center flex-shrink-0';
+                    step1Icon.innerHTML = '<i class="fas fa-edit text-white"></i>';
+                  }
+                  
+                  var step1BadgePartial = document.getElementById('step1-badge-partial');
+                  if (step1BadgePartial) step1BadgePartial.classList.remove('hidden');
+                  
+                  var step1Desc = document.getElementById('step1-desc');
+                  if (step1Desc) {
+                    var missing = [];
+                    if (!reqName) missing.push('会社名');
+                    if (!reqPref) missing.push('都道府県');
+                    if (!reqIndustry) missing.push('業種');
+                    if (!reqEmployees) missing.push('従業員数');
+                    step1Desc.innerHTML = '<span class="text-yellow-600"><i class="fas fa-exclamation-circle mr-1"></i>あと ' + missing.length + ' 項目: ' + missing.join('、') + '</span>';
+                  }
+                  
+                  // ステップ2にヒント表示
+                  var step2Hint = document.getElementById('step2-hint');
+                  if (step2Hint) step2Hint.classList.remove('hidden');
                 }
                 
                 // 完成度チェック
@@ -444,30 +565,27 @@ pages.get('/dashboard', (c) => {
                       if (d.percentage >= 80) {
                         step1Bar.classList.remove('bg-blue-600');
                         step1Bar.classList.add('bg-green-500');
+                      } else if (d.percentage >= 40) {
+                        step1Bar.classList.remove('bg-blue-600');
+                        step1Bar.classList.add('bg-yellow-500');
                       }
                     }
                   }
                 } catch (e) {
                   console.error('Completeness error:', e);
                 }
-                
-                // 統計
-                var matchCount = document.getElementById('match-count');
-                var matchLink = document.getElementById('match-link');
-                if (matchCount) {
-                  matchCount.textContent = '検索してください';
-                  matchCount.className = 'text-sm text-gray-500 mt-1';
-                }
-                if (matchLink) {
-                  matchLink.classList.remove('hidden');
-                  matchLink.href = '/subsidies';
-                  matchLink.onclick = null;
-                }
               } else {
                 // 会社情報未登録
                 var matchCountEl = document.getElementById('match-count');
                 if (matchCountEl) {
                   matchCountEl.textContent = '-';
+                }
+                
+                // ステップ2にヒント表示
+                var step2Hint = document.getElementById('step2-hint');
+                if (step2Hint) {
+                  step2Hint.textContent = '会社情報を登録してください';
+                  step2Hint.classList.remove('hidden');
                 }
               }
               
@@ -479,6 +597,22 @@ pages.get('/dashboard', (c) => {
               
             } catch (err) {
               console.error('Dashboard load error:', err);
+            }
+          }
+          
+          function updateRequiredField(id, filled) {
+            var el = document.getElementById(id);
+            if (!el) return;
+            
+            var icon = el.querySelector('i');
+            if (icon) {
+              if (filled) {
+                icon.className = 'fas fa-check-circle text-green-500 text-xs';
+                el.className = 'flex items-center gap-2 px-3 py-2 bg-green-50 rounded-lg border border-green-300';
+              } else {
+                icon.className = 'fas fa-circle text-gray-300 text-xs';
+                el.className = 'flex items-center gap-2 px-3 py-2 bg-white rounded-lg border border-blue-200';
+              }
             }
           }
           
@@ -728,7 +862,7 @@ pages.get('/profile', (c) => {
 });
 
 // ============================================================
-// 会社情報画面
+// 会社情報画面 - UI/UX改善版
 // ============================================================
 
 pages.get('/company', (c) => {
@@ -737,6 +871,32 @@ pages.get('/company', (c) => {
       <div class="mb-8">
         <h1 class="text-2xl font-bold text-gray-800">会社情報</h1>
         <p class="text-gray-600 mt-1">補助金検索に使用する会社情報を登録・編集できます</p>
+      </div>
+      
+      {/* 検索条件の説明ボックス */}
+      <div class="bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 rounded-xl p-5 mb-6">
+        <div class="flex items-start gap-4">
+          <div class="w-10 h-10 bg-blue-500 rounded-full flex items-center justify-center flex-shrink-0">
+            <i class="fas fa-lightbulb text-white"></i>
+          </div>
+          <div>
+            <h3 class="font-semibold text-blue-800 mb-2">入力のポイント</h3>
+            <div class="text-sm text-blue-700 space-y-2">
+              <p>
+                <span class="inline-flex items-center px-2 py-0.5 bg-red-100 text-red-700 rounded text-xs mr-2">
+                  <i class="fas fa-asterisk text-red-500 mr-1"></i>必須
+                </span>
+                の4項目を入力すると、補助金検索が利用できます。
+              </p>
+              <p>
+                <span class="inline-flex items-center px-2 py-0.5 bg-blue-100 text-blue-700 rounded text-xs mr-2">
+                  <i class="fas fa-star text-blue-500 mr-1"></i>推奨
+                </span>
+                の項目も入力すると、より精度の高いマッチングが可能です。
+              </p>
+            </div>
+          </div>
+        </div>
       </div>
       
       {/* プロフィール完成度 */}
@@ -753,6 +913,7 @@ pages.get('/company', (c) => {
           </div>
           <div class="text-right">
             <span id="completeness-percent" class="text-2xl font-bold text-gray-400">--%</span>
+            <div id="search-status" class="text-xs mt-1"></div>
           </div>
         </div>
         <div class="mt-4 w-full bg-gray-200 rounded-full h-2">
@@ -781,145 +942,172 @@ pages.get('/company', (c) => {
           <div id="basic-error" class="hidden mb-4 p-3 bg-red-50 border border-red-200 text-red-700 rounded-lg text-sm"></div>
           <div id="basic-success" class="hidden mb-4 p-3 bg-green-50 border border-green-200 text-green-700 rounded-lg text-sm"></div>
           
-          <form id="basic-form" class="space-y-6">
-            <div class="grid md:grid-cols-2 gap-6">
-              <div class="md:col-span-2">
-                <label class="block text-sm font-medium text-gray-700 mb-1">
-                  会社名 <span class="text-red-500">*</span>
-                </label>
-                <input type="text" name="name" required
-                  class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                  placeholder="株式会社○○" />
-              </div>
-              
-              <div>
-                <label class="block text-sm font-medium text-gray-700 mb-1">郵便番号</label>
-                <input type="text" name="postal_code"
-                  class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                  placeholder="123-4567" />
-              </div>
-              
-              <div>
-                <label class="block text-sm font-medium text-gray-700 mb-1">
-                  都道府県 <span class="text-red-500">*</span>
-                </label>
-                <select name="prefecture" required
-                  class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent">
-                  <option value="">選択してください</option>
-                  <option value="北海道">北海道</option>
-                  <option value="青森県">青森県</option>
-                  <option value="岩手県">岩手県</option>
-                  <option value="宮城県">宮城県</option>
-                  <option value="秋田県">秋田県</option>
-                  <option value="山形県">山形県</option>
-                  <option value="福島県">福島県</option>
-                  <option value="茨城県">茨城県</option>
-                  <option value="栃木県">栃木県</option>
-                  <option value="群馬県">群馬県</option>
-                  <option value="埼玉県">埼玉県</option>
-                  <option value="千葉県">千葉県</option>
-                  <option value="東京都">東京都</option>
-                  <option value="神奈川県">神奈川県</option>
-                  <option value="新潟県">新潟県</option>
-                  <option value="富山県">富山県</option>
-                  <option value="石川県">石川県</option>
-                  <option value="福井県">福井県</option>
-                  <option value="山梨県">山梨県</option>
-                  <option value="長野県">長野県</option>
-                  <option value="岐阜県">岐阜県</option>
-                  <option value="静岡県">静岡県</option>
-                  <option value="愛知県">愛知県</option>
-                  <option value="三重県">三重県</option>
-                  <option value="滋賀県">滋賀県</option>
-                  <option value="京都府">京都府</option>
-                  <option value="大阪府">大阪府</option>
-                  <option value="兵庫県">兵庫県</option>
-                  <option value="奈良県">奈良県</option>
-                  <option value="和歌山県">和歌山県</option>
-                  <option value="鳥取県">鳥取県</option>
-                  <option value="島根県">島根県</option>
-                  <option value="岡山県">岡山県</option>
-                  <option value="広島県">広島県</option>
-                  <option value="山口県">山口県</option>
-                  <option value="徳島県">徳島県</option>
-                  <option value="香川県">香川県</option>
-                  <option value="愛媛県">愛媛県</option>
-                  <option value="高知県">高知県</option>
-                  <option value="福岡県">福岡県</option>
-                  <option value="佐賀県">佐賀県</option>
-                  <option value="長崎県">長崎県</option>
-                  <option value="熊本県">熊本県</option>
-                  <option value="大分県">大分県</option>
-                  <option value="宮崎県">宮崎県</option>
-                  <option value="鹿児島県">鹿児島県</option>
-                  <option value="沖縄県">沖縄県</option>
-                </select>
-              </div>
-              
-              <div class="md:col-span-2">
-                <label class="block text-sm font-medium text-gray-700 mb-1">市区町村・番地</label>
-                <input type="text" name="city"
-                  class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                  placeholder="○○市△△区□□町1-2-3" />
-              </div>
-              
-              <div>
-                <label class="block text-sm font-medium text-gray-700 mb-1">
-                  業種（大分類） <span class="text-red-500">*</span>
-                </label>
-                <select name="industry" required
-                  class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent">
-                  <option value="">選択してください</option>
-                  <option value="製造業">製造業</option>
-                  <option value="建設業">建設業</option>
-                  <option value="情報通信業">情報通信業</option>
-                  <option value="運輸業">運輸業</option>
-                  <option value="卸売業">卸売業</option>
-                  <option value="小売業">小売業</option>
-                  <option value="飲食業">飲食業</option>
-                  <option value="宿泊業">宿泊業</option>
-                  <option value="医療福祉">医療・福祉</option>
-                  <option value="教育">教育・学習支援</option>
-                  <option value="サービス業">サービス業</option>
-                  <option value="その他">その他</option>
-                </select>
-              </div>
-              
-              <div>
-                <label class="block text-sm font-medium text-gray-700 mb-1">
-                  従業員数 <span class="text-red-500">*</span>
-                </label>
-                <input type="number" name="employee_count" required min="1"
-                  class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                  placeholder="10" />
-              </div>
-              
-              <div>
-                <label class="block text-sm font-medium text-gray-700 mb-1">資本金（円）</label>
-                <input type="number" name="capital" min="0"
-                  class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                  placeholder="10000000" />
-              </div>
-              
-              <div>
-                <label class="block text-sm font-medium text-gray-700 mb-1">年商（円）</label>
-                <input type="number" name="annual_revenue" min="0"
-                  class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                  placeholder="100000000" />
-              </div>
-              
-              <div>
-                <label class="block text-sm font-medium text-gray-700 mb-1">設立年月</label>
-                <input type="month" name="founded_date"
-                  class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent" />
-              </div>
-            </div>
+          {/* 必須項目セクション */}
+          <div class="mb-8">
+            <h3 class="text-sm font-semibold text-gray-700 mb-4 flex items-center">
+              <span class="inline-flex items-center px-2 py-0.5 bg-red-100 text-red-700 rounded text-xs mr-2">
+                <i class="fas fa-asterisk text-red-500 mr-1"></i>必須
+              </span>
+              検索に必要な情報
+            </h3>
             
-            <button type="submit" id="basic-submit-btn"
-              class="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 px-6 rounded-lg transition">
-              <i class="fas fa-save mr-2"></i>保存する
-            </button>
-          </form>
+            <form id="basic-form" class="space-y-6">
+              <div class="grid md:grid-cols-2 gap-6">
+                <div class="md:col-span-2">
+                  <label class="block text-sm font-medium text-gray-700 mb-1">
+                    会社名 <span class="text-red-500">*</span>
+                  </label>
+                  <input type="text" name="name" required
+                    class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    placeholder="株式会社○○" />
+                </div>
+                
+                <div>
+                  <label class="block text-sm font-medium text-gray-700 mb-1">
+                    都道府県 <span class="text-red-500">*</span>
+                  </label>
+                  <select name="prefecture" required
+                    class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+                    <option value="">選択してください</option>
+                    <option value="北海道">北海道</option>
+                    <option value="青森県">青森県</option>
+                    <option value="岩手県">岩手県</option>
+                    <option value="宮城県">宮城県</option>
+                    <option value="秋田県">秋田県</option>
+                    <option value="山形県">山形県</option>
+                    <option value="福島県">福島県</option>
+                    <option value="茨城県">茨城県</option>
+                    <option value="栃木県">栃木県</option>
+                    <option value="群馬県">群馬県</option>
+                    <option value="埼玉県">埼玉県</option>
+                    <option value="千葉県">千葉県</option>
+                    <option value="東京都">東京都</option>
+                    <option value="神奈川県">神奈川県</option>
+                    <option value="新潟県">新潟県</option>
+                    <option value="富山県">富山県</option>
+                    <option value="石川県">石川県</option>
+                    <option value="福井県">福井県</option>
+                    <option value="山梨県">山梨県</option>
+                    <option value="長野県">長野県</option>
+                    <option value="岐阜県">岐阜県</option>
+                    <option value="静岡県">静岡県</option>
+                    <option value="愛知県">愛知県</option>
+                    <option value="三重県">三重県</option>
+                    <option value="滋賀県">滋賀県</option>
+                    <option value="京都府">京都府</option>
+                    <option value="大阪府">大阪府</option>
+                    <option value="兵庫県">兵庫県</option>
+                    <option value="奈良県">奈良県</option>
+                    <option value="和歌山県">和歌山県</option>
+                    <option value="鳥取県">鳥取県</option>
+                    <option value="島根県">島根県</option>
+                    <option value="岡山県">岡山県</option>
+                    <option value="広島県">広島県</option>
+                    <option value="山口県">山口県</option>
+                    <option value="徳島県">徳島県</option>
+                    <option value="香川県">香川県</option>
+                    <option value="愛媛県">愛媛県</option>
+                    <option value="高知県">高知県</option>
+                    <option value="福岡県">福岡県</option>
+                    <option value="佐賀県">佐賀県</option>
+                    <option value="長崎県">長崎県</option>
+                    <option value="熊本県">熊本県</option>
+                    <option value="大分県">大分県</option>
+                    <option value="宮崎県">宮崎県</option>
+                    <option value="鹿児島県">鹿児島県</option>
+                    <option value="沖縄県">沖縄県</option>
+                  </select>
+                  <p class="text-xs text-gray-500 mt-1">地方補助金の検索に使用します</p>
+                </div>
+                
+                <div>
+                  <label class="block text-sm font-medium text-gray-700 mb-1">
+                    業種（大分類） <span class="text-red-500">*</span>
+                  </label>
+                  <select name="industry" required
+                    class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+                    <option value="">選択してください</option>
+                    <option value="製造業">製造業</option>
+                    <option value="建設業">建設業</option>
+                    <option value="情報通信業">情報通信業</option>
+                    <option value="運輸業">運輸業</option>
+                    <option value="卸売業">卸売業</option>
+                    <option value="小売業">小売業</option>
+                    <option value="飲食業">飲食業</option>
+                    <option value="宿泊業">宿泊業</option>
+                    <option value="医療福祉">医療・福祉</option>
+                    <option value="教育">教育・学習支援</option>
+                    <option value="サービス業">サービス業</option>
+                    <option value="その他">その他</option>
+                  </select>
+                  <p class="text-xs text-gray-500 mt-1">業種別の補助金検索に使用します</p>
+                </div>
+                
+                <div>
+                  <label class="block text-sm font-medium text-gray-700 mb-1">
+                    従業員数 <span class="text-red-500">*</span>
+                  </label>
+                  <input type="number" name="employee_count" required min="1"
+                    class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    placeholder="10" />
+                  <p class="text-xs text-gray-500 mt-1">中小企業向け補助金の判定に使用します</p>
+                </div>
+              </div>
+              
+              {/* 推奨項目セクション */}
+              <div class="mt-8 pt-6 border-t border-gray-200">
+                <h3 class="text-sm font-semibold text-gray-700 mb-4 flex items-center">
+                  <span class="inline-flex items-center px-2 py-0.5 bg-blue-100 text-blue-700 rounded text-xs mr-2">
+                    <i class="fas fa-star text-blue-500 mr-1"></i>推奨
+                  </span>
+                  マッチング精度を上げる情報（任意）
+                </h3>
+                
+                <div class="grid md:grid-cols-2 gap-6">
+                  <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">郵便番号</label>
+                    <input type="text" name="postal_code"
+                      class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                      placeholder="123-4567" />
+                  </div>
+                  
+                  <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">市区町村・番地</label>
+                    <input type="text" name="city"
+                      class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                      placeholder="○○市△△区□□町1-2-3" />
+                  </div>
+                  
+                  <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">資本金（円）</label>
+                    <input type="number" name="capital" min="0"
+                      class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                      placeholder="10000000" />
+                    <p class="text-xs text-gray-500 mt-1">中小企業の定義判定に使用</p>
+                  </div>
+                  
+                  <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">年商（円）</label>
+                    <input type="number" name="annual_revenue" min="0"
+                      class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                      placeholder="100000000" />
+                  </div>
+                  
+                  <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">設立年月</label>
+                    <input type="month" name="founded_date"
+                      class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent" />
+                    <p class="text-xs text-gray-500 mt-1">創業○年以内等の条件判定に使用</p>
+                  </div>
+                </div>
+              </div>
+              
+              <button type="submit" id="basic-submit-btn"
+                class="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 px-6 rounded-lg transition">
+                <i class="fas fa-save mr-2"></i>保存する
+              </button>
+            </form>
+          </div>
         </div>
         
         {/* 詳細プロフィールタブ */}
@@ -968,6 +1156,7 @@ pages.get('/company', (c) => {
                 var barEl = document.getElementById('completeness-bar');
                 var iconEl = document.getElementById('completeness-icon');
                 var nextActionEl = document.getElementById('next-action');
+                var searchStatusEl = document.getElementById('search-status');
                 
                 if (percentEl) {
                   percentEl.textContent = d.percentage + '%';
@@ -982,10 +1171,15 @@ pages.get('/company', (c) => {
                 
                 if (barEl) {
                   barEl.style.width = d.percentage + '%';
+                  if (d.percentage >= 80) {
+                    barEl.className = 'bg-green-500 h-2 rounded-full transition-all';
+                  } else if (d.percentage >= 40) {
+                    barEl.className = 'bg-yellow-500 h-2 rounded-full transition-all';
+                  }
                 }
                 
                 if (iconEl) {
-                  if (d.percentage >= 80) {
+                  if (d.readyForSearch) {
                     iconEl.innerHTML = '<i class="fas fa-check-circle text-green-600"></i>';
                     iconEl.className = 'w-10 h-10 bg-green-100 rounded-full flex items-center justify-center';
                   } else {
@@ -994,11 +1188,21 @@ pages.get('/company', (c) => {
                   }
                 }
                 
+                if (searchStatusEl) {
+                  if (d.readyForSearch) {
+                    searchStatusEl.innerHTML = '<span class="text-green-600"><i class="fas fa-check-circle mr-1"></i>検索可能</span>';
+                    window.searchReady = true;
+                  } else {
+                    searchStatusEl.innerHTML = '<span class="text-orange-600"><i class="fas fa-exclamation-circle mr-1"></i>必須項目を入力してください</span>';
+                    window.searchReady = false;
+                  }
+                }
+                
                 if (nextActionEl) {
                   if (d.nextActions && d.nextActions.length > 0) {
                     nextActionEl.innerHTML = '<span class="text-yellow-600"><i class="fas fa-lightbulb mr-1"></i>' + d.nextActions[0] + '</span>';
-                  } else if (d.percentage >= 80) {
-                    nextActionEl.innerHTML = '<span class="text-green-600"><i class="fas fa-check mr-1"></i>補助金検索の準備完了</span>';
+                  } else if (d.readyForSearch) {
+                    nextActionEl.innerHTML = '<span class="text-green-600"><i class="fas fa-check mr-1"></i>補助金検索の準備完了！</span>';
                   }
                 }
               }
@@ -1093,7 +1297,7 @@ pages.get('/company', (c) => {
                   
                   if (res && res.success) {
                     if (successEl) {
-                      successEl.textContent = '保存しました';
+                      successEl.textContent = '保存しました！補助金検索の準備ができています。';
                       successEl.classList.remove('hidden');
                     }
                     window.hasCompanyInfo = true;
