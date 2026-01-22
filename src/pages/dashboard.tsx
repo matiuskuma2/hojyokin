@@ -463,6 +463,7 @@ pages.get('/dashboard', (c) => {
             try {
               // 会社情報チェック
               var companies = await window.apiCall('/api/companies');
+              console.log('[Dashboard] Companies API response:', companies);
               var hasCompany = companies && companies.success && companies.data && companies.data.length > 0;
               
               // グローバルフラグを設定
@@ -474,12 +475,15 @@ pages.get('/dashboard', (c) => {
               
               if (hasCompany) {
                 var company = companies.data[0];
+                console.log('[Dashboard] Company data:', company);
                 
-                // 必須項目の状態をチェック
-                var reqName = !!company.name;
-                var reqPref = !!company.prefecture;
-                var reqIndustry = !!(company.industry_major || company.industry);
-                var reqEmployees = company.employee_count > 0;
+                // 必須項目の状態をチェック（nullとundefinedを厳密にチェック）
+                var reqName = !!(company.name && company.name.trim());
+                var reqPref = !!(company.prefecture && company.prefecture.trim());
+                var reqIndustry = !!((company.industry_major && company.industry_major.trim()) || (company.industry && company.industry.trim()));
+                var reqEmployees = company.employee_count !== null && company.employee_count !== undefined && Number(company.employee_count) > 0;
+                
+                console.log('[Dashboard] Required fields check:', { reqName, reqPref, reqIndustry, reqEmployees, employee_count: company.employee_count, industry_major: company.industry_major });
                 
                 // 検索準備完了かどうか
                 window.searchReady = reqName && reqPref && reqIndustry && reqEmployees;
