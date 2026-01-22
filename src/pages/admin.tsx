@@ -22,6 +22,13 @@ const adminLayout = (title: string, content: string, activeTab: string = '') => 
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>${title} | ホジョラク管理</title>
   <link rel="icon" type="image/png" href="/favicon.png">
+  <!-- PWA対応 -->
+  <link rel="manifest" href="/manifest.json">
+  <meta name="theme-color" content="#312e81">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="ホジョラク管理">
+  <link rel="apple-touch-icon" href="/static/images/icon-192.png">
   <script src="https://cdn.tailwindcss.com"></script>
   <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet">
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
@@ -30,46 +37,64 @@ const adminLayout = (title: string, content: string, activeTab: string = '') => 
     .stat-card:hover { transform: translateY(-2px); box-shadow: 0 10px 20px rgba(0,0,0,0.1); }
     .loading { animation: pulse 1.5s ease-in-out infinite; }
     @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+    /* モバイルメニュー */
+    .mobile-menu { transform: translateX(-100%); transition: transform 0.3s ease-in-out; }
+    .mobile-menu.open { transform: translateX(0); }
+    .mobile-overlay { opacity: 0; pointer-events: none; transition: opacity 0.3s; }
+    .mobile-overlay.open { opacity: 1; pointer-events: auto; }
+    /* ボトムナビ */
+    .bottom-nav { box-shadow: 0 -2px 10px rgba(0,0,0,0.1); }
+    .bottom-nav-item { flex: 1; text-align: center; padding: 8px 4px; }
+    .bottom-nav-item.active { color: #4f46e5; }
+    .bottom-nav-item.active i { transform: scale(1.1); }
   </style>
 </head>
-<body class="bg-gray-100 min-h-screen">
-  <!-- Navigation -->
-  <nav class="bg-indigo-900 text-white shadow-lg">
+<body class="bg-gray-100 min-h-screen pb-16 md:pb-0">
+  <!-- Navigation Header -->
+  <nav class="bg-indigo-900 text-white shadow-lg sticky top-0 z-40">
     <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-      <div class="flex items-center justify-between h-16">
-        <div class="flex items-center gap-4">
+      <div class="flex items-center justify-between h-14 md:h-16">
+        <!-- Left: Menu button (mobile) + Logo -->
+        <div class="flex items-center gap-3">
+          <button id="mobile-menu-btn" class="md:hidden p-2 rounded-md hover:bg-indigo-800" onclick="toggleMobileMenu()">
+            <i class="fas fa-bars text-xl"></i>
+          </button>
           <a href="/admin" class="flex items-center gap-2">
-            <img src="/static/images/icon.png" alt="ホジョラク" class="h-8">
-            <span class="text-xl font-bold">管理画面</span>
+            <img src="/static/images/icon.png" alt="ホジョラク" class="h-7 md:h-8">
+            <span class="text-lg md:text-xl font-bold hidden sm:inline">管理画面</span>
           </a>
-          <div class="hidden md:flex gap-1 ml-8">
-            <a href="/admin" class="px-3 py-2 rounded-md text-sm font-medium ${activeTab === 'dashboard' ? 'bg-indigo-700' : 'hover:bg-indigo-800'}">
-              <i class="fas fa-chart-pie mr-1"></i>ダッシュボード
-            </a>
-            <a href="/admin/users" class="px-3 py-2 rounded-md text-sm font-medium ${activeTab === 'users' ? 'bg-indigo-700' : 'hover:bg-indigo-800'}">
-              <i class="fas fa-users mr-1"></i>ユーザー
-            </a>
-            <a href="/admin/costs" id="nav-costs" class="px-3 py-2 rounded-md text-sm font-medium ${activeTab === 'costs' ? 'bg-indigo-700' : 'hover:bg-indigo-800'} hidden">
-              <i class="fas fa-dollar-sign mr-1"></i>コスト
-            </a>
-            <a href="/admin/updates" class="px-3 py-2 rounded-md text-sm font-medium ${activeTab === 'updates' ? 'bg-indigo-700' : 'hover:bg-indigo-800'}">
-              <i class="fas fa-sync mr-1"></i>更新状況
-            </a>
-            <a href="/admin/audit" class="px-3 py-2 rounded-md text-sm font-medium ${activeTab === 'audit' ? 'bg-indigo-700' : 'hover:bg-indigo-800'}">
-              <i class="fas fa-clipboard-list mr-1"></i>監査ログ
-            </a>
-            <a href="/admin/ops" id="nav-ops" class="px-3 py-2 rounded-md text-sm font-medium ${activeTab === 'ops' ? 'bg-indigo-700' : 'hover:bg-indigo-800'} hidden">
-              <i class="fas fa-heartbeat mr-1"></i>運用チェック
-            </a>
-          </div>
         </div>
-        <div class="flex items-center gap-4">
+        
+        <!-- Center: Desktop Nav -->
+        <div class="hidden md:flex gap-1 ml-8">
+          <a href="/admin" class="px-3 py-2 rounded-md text-sm font-medium ${activeTab === 'dashboard' ? 'bg-indigo-700' : 'hover:bg-indigo-800'}">
+            <i class="fas fa-chart-pie mr-1"></i>ダッシュボード
+          </a>
+          <a href="/admin/users" class="px-3 py-2 rounded-md text-sm font-medium ${activeTab === 'users' ? 'bg-indigo-700' : 'hover:bg-indigo-800'}">
+            <i class="fas fa-users mr-1"></i>ユーザー
+          </a>
+          <a href="/admin/costs" id="nav-costs" class="px-3 py-2 rounded-md text-sm font-medium ${activeTab === 'costs' ? 'bg-indigo-700' : 'hover:bg-indigo-800'} hidden">
+            <i class="fas fa-dollar-sign mr-1"></i>コスト
+          </a>
+          <a href="/admin/updates" class="px-3 py-2 rounded-md text-sm font-medium ${activeTab === 'updates' ? 'bg-indigo-700' : 'hover:bg-indigo-800'}">
+            <i class="fas fa-sync mr-1"></i>更新状況
+          </a>
+          <a href="/admin/audit" class="px-3 py-2 rounded-md text-sm font-medium ${activeTab === 'audit' ? 'bg-indigo-700' : 'hover:bg-indigo-800'}">
+            <i class="fas fa-clipboard-list mr-1"></i>監査ログ
+          </a>
+          <a href="/admin/ops" id="nav-ops" class="px-3 py-2 rounded-md text-sm font-medium ${activeTab === 'ops' ? 'bg-indigo-700' : 'hover:bg-indigo-800'} hidden">
+            <i class="fas fa-heartbeat mr-1"></i>運用チェック
+          </a>
+        </div>
+        
+        <!-- Right: User info -->
+        <div class="flex items-center gap-2 md:gap-4">
           <span id="user-role" class="px-2 py-1 text-xs font-medium rounded-full bg-purple-600"></span>
-          <span id="user-name" class="text-sm"></span>
-          <a href="/dashboard" class="text-sm hover:text-indigo-200">
+          <span id="user-name" class="text-sm hidden sm:inline"></span>
+          <a href="/dashboard" class="hidden md:inline text-sm hover:text-indigo-200">
             <i class="fas fa-arrow-left mr-1"></i>ユーザー画面
           </a>
-          <button onclick="logout()" class="text-sm hover:text-indigo-200">
+          <button onclick="logout()" class="hidden md:inline text-sm hover:text-indigo-200">
             <i class="fas fa-sign-out-alt mr-1"></i>ログアウト
           </button>
         </div>
@@ -77,10 +102,75 @@ const adminLayout = (title: string, content: string, activeTab: string = '') => 
     </div>
   </nav>
 
+  <!-- Mobile Sidebar Menu -->
+  <div id="mobile-overlay" class="mobile-overlay fixed inset-0 bg-black bg-opacity-50 z-40 md:hidden" onclick="closeMobileMenu()"></div>
+  <div id="mobile-menu" class="mobile-menu fixed top-0 left-0 h-full w-72 bg-indigo-900 text-white z-50 md:hidden overflow-y-auto">
+    <div class="p-4 border-b border-indigo-800 flex items-center justify-between">
+      <span class="font-bold text-lg">メニュー</span>
+      <button onclick="closeMobileMenu()" class="p-2 hover:bg-indigo-800 rounded">
+        <i class="fas fa-times"></i>
+      </button>
+    </div>
+    <div class="py-2">
+      <a href="/admin" class="flex items-center gap-3 px-4 py-3 ${activeTab === 'dashboard' ? 'bg-indigo-700' : 'hover:bg-indigo-800'}">
+        <i class="fas fa-chart-pie w-5"></i>ダッシュボード
+      </a>
+      <a href="/admin/users" class="flex items-center gap-3 px-4 py-3 ${activeTab === 'users' ? 'bg-indigo-700' : 'hover:bg-indigo-800'}">
+        <i class="fas fa-users w-5"></i>ユーザー管理
+      </a>
+      <a href="/admin/costs" id="mobile-nav-costs" class="flex items-center gap-3 px-4 py-3 ${activeTab === 'costs' ? 'bg-indigo-700' : 'hover:bg-indigo-800'} hidden">
+        <i class="fas fa-dollar-sign w-5"></i>コスト管理
+      </a>
+      <a href="/admin/updates" class="flex items-center gap-3 px-4 py-3 ${activeTab === 'updates' ? 'bg-indigo-700' : 'hover:bg-indigo-800'}">
+        <i class="fas fa-sync w-5"></i>更新状況
+      </a>
+      <a href="/admin/audit" class="flex items-center gap-3 px-4 py-3 ${activeTab === 'audit' ? 'bg-indigo-700' : 'hover:bg-indigo-800'}">
+        <i class="fas fa-clipboard-list w-5"></i>監査ログ
+      </a>
+      <a href="/admin/ops" id="mobile-nav-ops" class="flex items-center gap-3 px-4 py-3 ${activeTab === 'ops' ? 'bg-indigo-700' : 'hover:bg-indigo-800'} hidden">
+        <i class="fas fa-heartbeat w-5"></i>運用チェック
+      </a>
+    </div>
+    <div class="border-t border-indigo-800 py-2">
+      <a href="/dashboard" class="flex items-center gap-3 px-4 py-3 hover:bg-indigo-800">
+        <i class="fas fa-arrow-left w-5"></i>ユーザー画面へ
+      </a>
+      <button onclick="logout()" class="flex items-center gap-3 px-4 py-3 hover:bg-indigo-800 w-full text-left">
+        <i class="fas fa-sign-out-alt w-5"></i>ログアウト
+      </button>
+    </div>
+  </div>
+
   <!-- Main Content -->
-  <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+  <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 md:py-8">
     ${content}
   </main>
+  
+  <!-- Mobile Bottom Navigation -->
+  <nav class="bottom-nav fixed bottom-0 left-0 right-0 bg-white border-t z-30 md:hidden">
+    <div class="flex">
+      <a href="/admin" class="bottom-nav-item ${activeTab === 'dashboard' ? 'active text-indigo-600' : 'text-gray-500'}">
+        <i class="fas fa-chart-pie text-lg"></i>
+        <p class="text-xs mt-1">ダッシュ</p>
+      </a>
+      <a href="/admin/users" class="bottom-nav-item ${activeTab === 'users' ? 'active text-indigo-600' : 'text-gray-500'}">
+        <i class="fas fa-users text-lg"></i>
+        <p class="text-xs mt-1">ユーザー</p>
+      </a>
+      <a href="/admin/updates" class="bottom-nav-item ${activeTab === 'updates' ? 'active text-indigo-600' : 'text-gray-500'}">
+        <i class="fas fa-sync text-lg"></i>
+        <p class="text-xs mt-1">更新</p>
+      </a>
+      <a href="/admin/ops" id="bottom-nav-ops" class="bottom-nav-item ${activeTab === 'ops' ? 'active text-indigo-600' : 'text-gray-500'} hidden">
+        <i class="fas fa-heartbeat text-lg"></i>
+        <p class="text-xs mt-1">運用</p>
+      </a>
+      <button onclick="toggleMobileMenu()" class="bottom-nav-item text-gray-500">
+        <i class="fas fa-ellipsis-h text-lg"></i>
+        <p class="text-xs mt-1">その他</p>
+      </button>
+    </div>
+  </nav>
 
   <script>
     // ============================================================
@@ -124,14 +214,35 @@ const adminLayout = (title: string, content: string, activeTab: string = '') => 
       // super_admin のみコスト・運用チェックタブを表示
       if (user.role === 'super_admin') {
         var navCosts = document.getElementById('nav-costs');
-        if (navCosts) {
-          navCosts.classList.remove('hidden');
-        }
+        if (navCosts) navCosts.classList.remove('hidden');
         var navOps = document.getElementById('nav-ops');
-        if (navOps) {
-          navOps.classList.remove('hidden');
-        }
+        if (navOps) navOps.classList.remove('hidden');
+        // モバイル用
+        var mobileNavCosts = document.getElementById('mobile-nav-costs');
+        if (mobileNavCosts) mobileNavCosts.classList.remove('hidden');
+        var mobileNavOps = document.getElementById('mobile-nav-ops');
+        if (mobileNavOps) mobileNavOps.classList.remove('hidden');
+        var bottomNavOps = document.getElementById('bottom-nav-ops');
+        if (bottomNavOps) bottomNavOps.classList.remove('hidden');
       }
+      
+      // モバイルメニュー関数
+      window.toggleMobileMenu = function() {
+        var menu = document.getElementById('mobile-menu');
+        var overlay = document.getElementById('mobile-overlay');
+        if (menu && overlay) {
+          menu.classList.toggle('open');
+          overlay.classList.toggle('open');
+        }
+      };
+      window.closeMobileMenu = function() {
+        var menu = document.getElementById('mobile-menu');
+        var overlay = document.getElementById('mobile-overlay');
+        if (menu && overlay) {
+          menu.classList.remove('open');
+          overlay.classList.remove('open');
+        }
+      };
       
       // グローバルAPI呼び出しヘルパー
       window.api = async function(path, options) {
