@@ -346,7 +346,7 @@ subsidyPages.get('/subsidies', (c) => {
       // 会社一覧取得
       async function loadCompanies() {
         const res = await api('/api/companies');
-        if (res.success && res.data.length > 0) {
+        if (res && res.success && res.data && res.data.length > 0) {
           const select = document.getElementById('company-select');
           res.data.forEach(company => {
             const option = document.createElement('option');
@@ -386,22 +386,28 @@ subsidyPages.get('/subsidies', (c) => {
       
       // 補助金検索
       async function searchSubsidies(page = 1) {
-        const companyId = document.getElementById('company-select').value;
+        var companySelect = document.getElementById('company-select');
+        var companyId = companySelect ? companySelect.value : '';
         if (!companyId) {
           alert('会社を選択してください');
           return;
         }
         
         currentPage = page;
-        const limit = parseInt(document.getElementById('limit').value);
-        const offset = (page - 1) * limit;
+        var limitEl = document.getElementById('limit');
+        var limit = limitEl ? parseInt(limitEl.value) || 20 : 20;
+        var offset = (page - 1) * limit;
         
-        const params = new URLSearchParams({
+        var keywordEl = document.getElementById('keyword');
+        var acceptanceEl = document.getElementById('acceptance');
+        var sortEl = document.getElementById('sort');
+        
+        var params = new URLSearchParams({
           company_id: companyId,
-          keyword: document.getElementById('keyword').value,
-          acceptance: document.getElementById('acceptance').value,
-          sort: document.getElementById('sort').value,
-          order: document.getElementById('sort').value === 'score' ? 'DESC' : 'ASC',
+          keyword: keywordEl ? keywordEl.value || '' : '',
+          acceptance: acceptanceEl ? acceptanceEl.value || '1' : '1',
+          sort: sortEl ? sortEl.value || 'score' : 'score',
+          order: sortEl && sortEl.value === 'score' ? 'DESC' : 'ASC',
           limit: limit.toString(),
           offset: offset.toString()
         });
@@ -481,9 +487,13 @@ subsidyPages.get('/subsidies', (c) => {
           const sc = statusConfig[e.status] || statusConfig['CAUTION'];
           
           // 締切までの日数
-          const endDate = s.acceptance_end_datetime ? new Date(s.acceptance_end_datetime) : null;
-          const daysLeft = endDate ? Math.ceil((endDate - new Date()) / (1000 * 60 * 60 * 24)) : null;
-          const urgencyClass = daysLeft !== null && daysLeft <= 14 ? 'text-red-600 font-bold' : 'text-gray-600';
+          var endDate = s.acceptance_end_datetime ? new Date(s.acceptance_end_datetime) : null;
+          // 無効な日付のチェック
+          if (endDate && isNaN(endDate.getTime())) {
+            endDate = null;
+          }
+          var daysLeft = endDate ? Math.ceil((endDate - new Date()) / (1000 * 60 * 60 * 24)) : null;
+          var urgencyClass = daysLeft !== null && daysLeft <= 14 ? 'text-red-600 font-bold' : 'text-gray-600';
           
           // Sprint 2: 条件バッジを生成
           const conditionBadges = generateConditionBadges(e);

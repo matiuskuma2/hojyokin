@@ -701,7 +701,18 @@ agencyRoutes.post('/submissions/:id/approve', async (c) => {
   }
   
   const now = new Date().toISOString();
-  const payload = JSON.parse(submission.payload_json || '{}');
+  
+  // payload_json のパース（DBからの値だが念のため try-catch）
+  let payload: Record<string, any> = {};
+  try {
+    payload = JSON.parse(submission.payload_json || '{}');
+  } catch (e) {
+    console.error('Failed to parse payload_json:', e);
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'PARSE_ERROR', message: 'Failed to parse submission data' },
+    }, 500);
+  }
   
   // 会社情報を更新
   if (Object.keys(payload).length > 0) {

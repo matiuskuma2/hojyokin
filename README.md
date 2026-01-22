@@ -528,6 +528,28 @@ document.getElementById('user-name').textContent = user.name;
 - 複数実装時はトレードオフを説明
 - 「たぶん動く」コードは出さない
 
+### コードレビューチェックリスト (2026-01-22 更新)
+
+#### フロントエンド (pages/*.tsx)
+| ファイル | 状態 | 確認項目 |
+|----------|------|----------|
+| dashboard.tsx | ✅ | apiCall統一、JSON.parse try-catch、DOM null チェック |
+| subsidies.tsx | ✅ | api()統一、境界値処理、Date無効値チェック追加 |
+| chat.tsx | ✅ | api()統一、escapeHtml実装、エラーハンドリング |
+| draft.tsx | ✅ | window.api()使用、自動保存、NGチェック |
+| agency.tsx | ✅ | apiCall統一、RBAC (role === 'agency')、JSON.parse try-catch |
+| admin.tsx | ✅ | api()統一、RBAC (admin/super_admin)、JSON.parse try-catch |
+| portal.tsx | ✅ | 認証不要、コードベース検証で保護 |
+| auth.tsx | ✅ | 認証不要、直接fetch使用 |
+
+#### バックエンド (routes/*.ts)
+| ファイル | 状態 | 確認項目 |
+|----------|------|----------|
+| chat.ts | ✅ | requireAuth、入力検証、factsMap安全処理 |
+| draft.ts | ✅ | requireAuth、NG_RULES、RegExp lastIndexリセット |
+| agency.ts | ✅ | requireAuth、getUserAgency権限チェック、allowedFields ホワイトリスト、JSON.parse try-catch追加 |
+| subsidies.ts | ✅ | requireAuth、requireCompanyAccess、JGrantsErrorハンドリング |
+
 ---
 
 ## ライセンス
@@ -536,6 +558,7 @@ Private
 
 ## 更新履歴
 
+- **2026-01-22**: 全ページコードレビュー完了、subsidies.tsx境界値処理追加、agency.ts JSON.parse try-catch追加
 - **2026-01-22**: コード品質ガイドライン整備、全ページの技術負債解消
 - **2026-01-22**: S4 申請書ドラフト生成 完了
 - **2026-01-22**: S3 壁打ちチャット 完了
