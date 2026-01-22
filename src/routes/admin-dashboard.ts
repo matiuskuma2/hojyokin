@@ -1088,6 +1088,16 @@ adminDashboard.get('/coverage', async (c) => {
     const missingPrefectures = allPrefectures.filter(p => !registeredGeoRegions.has(p));
     const coveredPrefectures = allPrefectures.filter(p => registeredGeoRegions.has(p));
 
+    // A-1 台帳揃いの正確なカウント（prefecture/secretariat/national を正しく区別）
+    const registryCounts = await db.prepare(`
+      SELECT
+        SUM(CASE WHEN scope='prefecture' THEN 1 ELSE 0 END) AS prefecture,
+        SUM(CASE WHEN registry_id LIKE 'sec-%' THEN 1 ELSE 0 END) AS secretariat,
+        SUM(CASE WHEN scope='national' AND registry_id NOT LIKE 'sec-%' THEN 1 ELSE 0 END) AS national
+      FROM source_registry
+      WHERE enabled=1;
+    `).first<{ prefecture: number; secretariat: number; national: number }>();
+
     const l1 = {
       total_prefectures: 47,
       registered_prefectures: coveredPrefectures.length,
@@ -1095,6 +1105,7 @@ adminDashboard.get('/coverage', async (c) => {
       missing_count: missingPrefectures.length,
       coverage_rate: Math.round((coveredPrefectures.length / 47) * 100),
       by_region: l1_registered.results || [],
+      registry_counts: registryCounts || { prefecture: 0, secretariat: 0, national: 0 },
     };
 
     // ===================

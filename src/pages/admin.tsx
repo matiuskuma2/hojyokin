@@ -1787,15 +1787,12 @@ adminPages.get('/admin/ops', (c) => {
             dcEl.innerHTML = '<p class="text-gray-400 p-4">重複クロールは検出されていません</p>';
           }
 
-          // A-1 台帳揃い
+          // A-1 台帳揃い（registry_counts使用）
           const registryEl = document.getElementById('registry-scope');
-          if (l1_entry_coverage?.by_region) {
-            const scopeCounts = {};
-            for (const r of l1_entry_coverage.by_region) {
-              scopeCounts[r.scope] = (scopeCounts[r.scope] || 0) + r.source_count;
-            }
+          if (l1_entry_coverage?.registry_counts) {
+            const counts = l1_entry_coverage.registry_counts;
             registryEl.innerHTML = ['national', 'prefecture', 'secretariat'].map(scope => {
-              const count = scopeCounts[scope] || 0;
+              const count = counts[scope] || 0;
               const isPrefecture = scope === 'prefecture';
               const isOk = isPrefecture ? count >= 47 : count > 0;
               return '<div class="' + (isOk ? 'bg-green-50 border border-green-200' : 'bg-red-50 border border-red-200') + ' rounded-lg p-4 text-center">' +
