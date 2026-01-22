@@ -223,6 +223,301 @@ app.post('/job/status', internalAuthMiddleware(['job:status']), async (c) => {
 });
 
 // ========================================
+// POST /internal/document-extraction-callback
+// AWS→Cloudflare: 書類抽出結果の受信
+// ========================================
+app.post('/document-extraction-callback', internalAuthMiddleware(['document:extract']), async (c) => {
+  const { env } = c;
+
+  interface ExtractionResult {
+    job_id: string;
+    document_id: string;
+    company_id: string;
+    status: 'success' | 'failed';
+    doc_type: 'corp_registry' | 'financials';
+    extracted_json?: Record<string, unknown>;
+    confidence?: number;
+    error?: string;
+    processing_time_ms?: number;
+  }
+
+  let body: ExtractionResult;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ success: false, error: { code: 'INVALID_JSON', message: 'Invalid request body' } }, 400);
+  }
+
+  if (!body.document_id || !body.status) {
+    return c.json({ success: false, error: { code: 'MISSING_FIELD', message: 'document_id and status are required' } }, 400);
+  }
+
+  const now = new Date().toISOString();
+
+  try {
+    // ドキュメントの存在確認
+    const doc = await env.DB.prepare(`
+      SELECT id, company_id, doc_type, status 
+      FROM company_documents 
+      WHERE id = ?
+    `).bind(body.document_id).first();
+
+    if (!doc) {
+      return c.json({ success: false, error: { code: 'NOT_FOUND', message: 'Document not found' } }, 404);
+    }
+
+    // company_id の整合性チェック
+    if (body.company_id && doc.company_id !== body.company_id) {
+      console.warn(`[Internal] Company ID mismatch: expected ${doc.company_id}, got ${body.company_id}`);
+    }
+
+    if (body.status === 'success' && body.extracted_json) {
+      // 成功: 抽出結果を保存
+      await env.DB.prepare(`
+        UPDATE company_documents 
+        SET status = 'extracted', 
+            extracted_json = ?, 
+            confidence = ?,
+            updated_at = ?
+        WHERE id = ?
+      `).bind(
+        JSON.stringify(body.extracted_json),
+        body.confidence || 0,
+        now,
+        body.document_id
+      ).run();
+
+      console.log(`[Internal] Extraction success: document ${body.document_id}, confidence ${body.confidence}`);
+    } else {
+      // 失敗: ステータスを failed に更新
+      await env.DB.prepare(`
+        UPDATE company_documents 
+        SET status = 'failed',
+            extracted_json = ?,
+            updated_at = ?
+        WHERE id = ?
+      `).bind(
+        JSON.stringify({ error: body.error || 'Unknown extraction error' }),
+        now,
+        body.document_id
+      ).run();
+
+      console.error(`[Internal] Extraction failed: document ${body.document_id}, error: ${body.error}`);
+    }
+
+    // 監査ログ
+    await env.DB.prepare(`
+      INSERT INTO audit_log (id, actor_user_id, target_company_id, target_resource_type, target_resource_id, action, action_category, severity, details_json, created_at)
+      VALUES (?, 'system:aws-worker', ?, 'document', ?, 'DOCUMENT_EXTRACTION_COMPLETED', 'document', 'info', ?, ?)
+    `).bind(
+      crypto.randomUUID(),
+      body.company_id || null,
+      body.document_id,
+      JSON.stringify({
+        job_id: body.job_id,
+        status: body.status,
+        confidence: body.confidence,
+        processing_time_ms: body.processing_time_ms,
+        error: body.error
+      }),
+      now
+    ).run();
+
+    return c.json({
+      success: true,
+      data: {
+        document_id: body.document_id,
+        status: body.status === 'success' ? 'extracted' : 'failed',
+        received_at: now
+      }
+    });
+  } catch (error) {
+    console.error('[Internal] Extraction callback error:', error);
+    return c.json({
+      success: false,
+      error: {
+        code: 'DB_ERROR',
+        message: error instanceof Error ? error.message : 'Database error'
+      }
+    }, 500);
+  }
+});
+
+// ========================================
+// POST /internal/document-extraction-callback
+// AWS側から書類抽出結果を受信
+// ========================================
+app.post('/document-extraction-callback', internalAuthMiddleware(['document:extract']), async (c) => {
+  const { env } = c;
+
+  interface ExtractionCallback {
+    job_id: string;
+    document_id: string;
+    company_id: string;
+    status: 'completed' | 'failed';
+    doc_type: 'corp_registry' | 'financials';
+    extracted_json?: Record<string, unknown>;
+    confidence?: number;
+    error?: string;
+  }
+
+  let body: ExtractionCallback;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ success: false, error: { code: 'INVALID_JSON', message: 'Invalid request body' } }, 400);
+  }
+
+  if (!body.job_id || !body.document_id || !body.status) {
+    return c.json({ success: false, error: { code: 'MISSING_FIELD', message: 'job_id, document_id, and status are required' } }, 400);
+  }
+
+  const now = new Date().toISOString();
+
+  try {
+    // ドキュメントの存在確認
+    const doc = await env.DB.prepare(`
+      SELECT id, company_id, status FROM company_documents WHERE id = ?
+    `).bind(body.document_id).first() as { id: string; company_id: string; status: string } | null;
+
+    if (!doc) {
+      return c.json({ success: false, error: { code: 'NOT_FOUND', message: 'Document not found' } }, 404);
+    }
+
+    // company_id の一致確認（セキュリティ）
+    if (doc.company_id !== body.company_id) {
+      return c.json({ success: false, error: { code: 'COMPANY_MISMATCH', message: 'Company ID does not match' } }, 400);
+    }
+
+    if (body.status === 'completed' && body.extracted_json) {
+      // 抽出成功
+      await env.DB.prepare(`
+        UPDATE company_documents 
+        SET status = 'extracted',
+            extracted_json = ?,
+            confidence = ?,
+            updated_at = ?
+        WHERE id = ?
+      `).bind(
+        JSON.stringify(body.extracted_json),
+        body.confidence || 0,
+        now,
+        body.document_id
+      ).run();
+
+      console.log(`[Internal] Document extraction completed: ${body.document_id} (job: ${body.job_id})`);
+
+      return c.json({
+        success: true,
+        data: {
+          document_id: body.document_id,
+          status: 'extracted',
+          received_at: now,
+        },
+      });
+    } else {
+      // 抽出失敗
+      await env.DB.prepare(`
+        UPDATE company_documents 
+        SET status = 'failed',
+            extracted_json = ?,
+            updated_at = ?
+        WHERE id = ?
+      `).bind(
+        JSON.stringify({ error: body.error || 'Unknown error', job_id: body.job_id }),
+        now,
+        body.document_id
+      ).run();
+
+      console.error(`[Internal] Document extraction failed: ${body.document_id} (job: ${body.job_id}, error: ${body.error})`);
+
+      return c.json({
+        success: true,
+        data: {
+          document_id: body.document_id,
+          status: 'failed',
+          error: body.error,
+          received_at: now,
+        },
+      });
+    }
+  } catch (error) {
+    console.error('[Internal] Document extraction callback error:', error);
+    return c.json({
+      success: false,
+      error: {
+        code: 'DB_ERROR',
+        message: error instanceof Error ? error.message : 'Database error',
+      },
+    }, 500);
+  }
+});
+
+// ========================================
+// POST /internal/document-extraction-mock
+// 開発用：手動で抽出結果を登録（AWS連携未設定時）
+// ========================================
+app.post('/document-extraction-mock', internalAuthMiddleware(['document:extract']), async (c) => {
+  const { env } = c;
+
+  interface MockExtractionRequest {
+    document_id: string;
+    extracted_json: Record<string, unknown>;
+    confidence?: number;
+  }
+
+  let body: MockExtractionRequest;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ success: false, error: { code: 'INVALID_JSON', message: 'Invalid request body' } }, 400);
+  }
+
+  if (!body.document_id || !body.extracted_json) {
+    return c.json({ success: false, error: { code: 'MISSING_FIELD', message: 'document_id and extracted_json are required' } }, 400);
+  }
+
+  const now = new Date().toISOString();
+
+  try {
+    await env.DB.prepare(`
+      UPDATE company_documents 
+      SET status = 'extracted',
+          extracted_json = ?,
+          confidence = ?,
+          updated_at = ?
+      WHERE id = ?
+    `).bind(
+      JSON.stringify(body.extracted_json),
+      body.confidence || 80,
+      now,
+      body.document_id
+    ).run();
+
+    console.log(`[Internal] Mock extraction applied: ${body.document_id}`);
+
+    return c.json({
+      success: true,
+      data: {
+        document_id: body.document_id,
+        status: 'extracted',
+        mock: true,
+        received_at: now,
+      },
+    });
+  } catch (error) {
+    console.error('[Internal] Mock extraction error:', error);
+    return c.json({
+      success: false,
+      error: {
+        code: 'DB_ERROR',
+        message: error instanceof Error ? error.message : 'Database error',
+      },
+    }, 500);
+  }
+});
+
+// ========================================
 // GET /internal/health
 // 内部APIヘルスチェック
 // ========================================

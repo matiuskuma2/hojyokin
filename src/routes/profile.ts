@@ -6,6 +6,9 @@
  * POST /api/profile/documents   - 書類アップロード
  * GET /api/profile/documents    - 書類一覧
  * DELETE /api/profile/documents/:id - 書類削除
+ * POST /api/profile/documents/:id/extract - 書類抽出開始（AWS連携）
+ * POST /api/profile/documents/:id/apply - 抽出結果を company_profile へ反映
+ * GET /api/profile/documents/:id/extracted - 抽出結果取得
  */
 
 import { Hono } from 'hono';
@@ -42,6 +45,49 @@ profile.use('*', async (c, next) => {
   
   await next();
 });
+
+// =====================================================
+// 書類抽出JSONスキーマ（Phase 1）
+// =====================================================
+
+/**
+ * 登記簿（履歴事項全部証明書）抽出スキーマ
+ */
+export interface CorpRegistryExtracted {
+  company_name?: string;           // 商号
+  address?: string;                 // 本店所在地
+  representative_name?: string;     // 代表者名
+  representative_title?: string;    // 代表者役職
+  established_date?: string;        // 設立年月日
+  capital?: number;                 // 資本金（円）
+  business_purpose?: string[];      // 目的（事業内容）
+  corp_number?: string;             // 法人番号（記載があれば）
+  source: 'corp_registry';
+  confidence: number;               // 0-100
+}
+
+/**
+ * 決算書抽出スキーマ
+ */
+export interface FinancialsExtracted {
+  fiscal_year?: string;             // 決算期（例: "2023年度"）
+  fiscal_year_end?: string;         // 決算月（例: "3月"）
+  sales?: number;                   // 売上高（円）
+  operating_profit?: number;        // 営業利益（円）
+  net_profit?: number;              // 当期純利益（円）
+  total_assets?: number;            // 総資産（円）
+  net_assets?: number;              // 純資産（円）
+  employee_count?: number;          // 従業員数
+  is_profitable?: boolean;          // 黒字かどうか
+  notes?: string;                   // 備考
+  source: 'financials';
+  confidence: number;               // 0-100
+}
+
+export type DocumentExtracted = CorpRegistryExtracted | FinancialsExtracted;
+
+// 書類ステータス
+export type DocumentStatus = 'uploaded' | 'extracting' | 'extracted' | 'applied' | 'failed';
 
 // =====================================================
 // 完成度チェック基準
@@ -521,6 +567,566 @@ profile.delete('/documents/:id', async (c) => {
     return c.json<ApiResponse<null>>({
       success: false,
       error: { code: 'INTERNAL_ERROR', message: 'Failed to delete document' }
+    }, 500);
+  }
+});
+
+// =====================================================
+// POST /api/profile/documents/:id/extract - 抽出開始
+// =====================================================
+
+profile.post('/documents/:id/extract', async (c) => {
+  const companyId = c.get('company')?.id;
+  const documentId = c.req.param('id');
+  const user = c.get('user');
+  
+  if (!companyId) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'NO_COMPANY', message: 'Company not found' }
+    }, 404);
+  }
+  
+  try {
+    // 所有権確認とドキュメント取得
+    const doc = await c.env.DB.prepare(`
+      SELECT id, doc_type, original_filename, content_type, size_bytes, r2_key, status
+      FROM company_documents 
+      WHERE id = ? AND company_id = ?
+    `).bind(documentId, companyId).first() as {
+      id: string;
+      doc_type: string;
+      original_filename: string;
+      content_type: string;
+      size_bytes: number;
+      r2_key: string;
+      status: DocumentStatus;
+    } | null;
+    
+    if (!doc) {
+      return c.json<ApiResponse<null>>({
+        success: false,
+        error: { code: 'NOT_FOUND', message: 'Document not found' }
+      }, 404);
+    }
+    
+    // 既に抽出中または抽出済みの場合
+    if (doc.status === 'extracting') {
+      return c.json<ApiResponse<null>>({
+        success: false,
+        error: { code: 'ALREADY_PROCESSING', message: 'Document is already being processed' }
+      }, 400);
+    }
+    
+    // doc_type が Phase 1 対象でない場合
+    if (!['corp_registry', 'financials'].includes(doc.doc_type)) {
+      return c.json<ApiResponse<null>>({
+        success: false,
+        error: { code: 'UNSUPPORTED_DOC_TYPE', message: `Document type '${doc.doc_type}' is not supported for extraction in Phase 1` }
+      }, 400);
+    }
+    
+    const now = new Date().toISOString();
+    const jobId = crypto.randomUUID();
+    
+    // ステータスを extracting に更新
+    await c.env.DB.prepare(`
+      UPDATE company_documents 
+      SET status = 'extracting', updated_at = ?
+      WHERE id = ?
+    `).bind(now, documentId).run();
+    
+    // 監査ログ
+    await c.env.DB.prepare(`
+      INSERT INTO audit_log (id, actor_user_id, target_company_id, target_resource_type, target_resource_id, action, action_category, severity, details_json, created_at)
+      VALUES (?, ?, ?, 'document', ?, 'DOCUMENT_EXTRACT_REQUESTED', 'document', 'info', ?, ?)
+    `).bind(
+      crypto.randomUUID(),
+      user?.id || null,
+      companyId,
+      documentId,
+      JSON.stringify({ doc_type: doc.doc_type, job_id: jobId }),
+      now
+    ).run();
+    
+    // AWS ジョブ投入（環境変数が設定されている場合のみ）
+    const awsJobUrl = c.env.AWS_JOB_SUBMIT_URL;
+    const internalSecret = c.env.INTERNAL_JWT_SECRET;
+    
+    let jobSubmitted = false;
+    let jobError: string | null = null;
+    
+    if (awsJobUrl && internalSecret) {
+      try {
+        // R2からの署名付きURLを生成するか、直接R2キーを渡す
+        const jobPayload = {
+          job_id: jobId,
+          job_type: 'document_extraction',
+          document_id: documentId,
+          company_id: companyId,
+          doc_type: doc.doc_type,
+          r2_key: doc.r2_key,
+          content_type: doc.content_type,
+          callback_url: `${c.req.url.split('/api/')[0]}/internal/document-extraction-callback`
+        };
+        
+        // 内部JWT生成（簡易版）
+        const tokenPayload = {
+          iss: 'cloudflare-worker',
+          sub: 'job-submit',
+          scope: ['document:extract'],
+          iat: Math.floor(Date.now() / 1000),
+          exp: Math.floor(Date.now() / 1000) + 300 // 5分有効
+        };
+        const tokenHeader = btoa(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
+        const tokenPayloadB64 = btoa(JSON.stringify(tokenPayload));
+        // 簡易的なHMAC署名（本番では適切な署名ライブラリを使用）
+        const encoder = new TextEncoder();
+        const key = await crypto.subtle.importKey(
+          'raw',
+          encoder.encode(internalSecret),
+          { name: 'HMAC', hash: 'SHA-256' },
+          false,
+          ['sign']
+        );
+        const signature = await crypto.subtle.sign(
+          'HMAC',
+          key,
+          encoder.encode(`${tokenHeader}.${tokenPayloadB64}`)
+        );
+        const signatureB64 = btoa(String.fromCharCode(...new Uint8Array(signature)));
+        const internalToken = `${tokenHeader}.${tokenPayloadB64}.${signatureB64}`;
+        
+        const response = await fetch(awsJobUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${internalToken}`
+          },
+          body: JSON.stringify(jobPayload)
+        });
+        
+        if (response.ok) {
+          jobSubmitted = true;
+        } else {
+          jobError = `AWS job submission failed: ${response.status}`;
+          console.error('[Extract] AWS job submission failed:', response.status, await response.text());
+        }
+      } catch (e) {
+        jobError = `AWS job submission error: ${e instanceof Error ? e.message : String(e)}`;
+        console.error('[Extract] AWS job submission error:', e);
+      }
+    } else {
+      // AWS連携が設定されていない場合はモック（開発用）
+      console.log('[Extract] AWS_JOB_SUBMIT_URL not configured, using mock mode');
+      jobSubmitted = false;
+      jobError = 'AWS integration not configured (dev mode)';
+    }
+    
+    return c.json<ApiResponse<any>>({
+      success: true,
+      data: {
+        document_id: documentId,
+        job_id: jobId,
+        status: 'extracting',
+        job_submitted: jobSubmitted,
+        job_error: jobError,
+        message: jobSubmitted 
+          ? '抽出処理を開始しました。完了までしばらくお待ちください。' 
+          : '抽出リクエストを受け付けました（AWS連携未設定のため、手動で結果を登録してください）'
+      }
+    });
+  } catch (error) {
+    console.error('Extract document error:', error);
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'INTERNAL_ERROR', message: 'Failed to start extraction' }
+    }, 500);
+  }
+});
+
+// =====================================================
+// GET /api/profile/documents/:id/extracted - 抽出結果取得
+// =====================================================
+
+profile.get('/documents/:id/extracted', async (c) => {
+  const companyId = c.get('company')?.id;
+  const documentId = c.req.param('id');
+  
+  if (!companyId) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'NO_COMPANY', message: 'Company not found' }
+    }, 404);
+  }
+  
+  try {
+    const doc = await c.env.DB.prepare(`
+      SELECT id, doc_type, original_filename, status, extracted_json, confidence, updated_at
+      FROM company_documents 
+      WHERE id = ? AND company_id = ?
+    `).bind(documentId, companyId).first() as {
+      id: string;
+      doc_type: string;
+      original_filename: string;
+      status: DocumentStatus;
+      extracted_json: string | null;
+      confidence: number | null;
+      updated_at: string;
+    } | null;
+    
+    if (!doc) {
+      return c.json<ApiResponse<null>>({
+        success: false,
+        error: { code: 'NOT_FOUND', message: 'Document not found' }
+      }, 404);
+    }
+    
+    let extracted: DocumentExtracted | null = null;
+    if (doc.extracted_json) {
+      try {
+        extracted = JSON.parse(doc.extracted_json);
+      } catch (e) {
+        console.error('Failed to parse extracted_json:', e);
+      }
+    }
+    
+    return c.json<ApiResponse<any>>({
+      success: true,
+      data: {
+        document_id: doc.id,
+        doc_type: doc.doc_type,
+        original_filename: doc.original_filename,
+        status: doc.status,
+        extracted: extracted,
+        confidence: doc.confidence,
+        updated_at: doc.updated_at,
+        // 反映可能な項目のマッピング情報
+        apply_mapping: getApplyMapping(doc.doc_type, extracted)
+      }
+    });
+  } catch (error) {
+    console.error('Get extracted error:', error);
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'INTERNAL_ERROR', message: 'Failed to get extraction result' }
+    }, 500);
+  }
+});
+
+/**
+ * 抽出データ→company_profile/companies へのマッピング情報
+ */
+function getApplyMapping(docType: string, extracted: any): Record<string, { target: string; label: string }> | null {
+  if (!extracted) return null;
+  
+  if (docType === 'corp_registry') {
+    return {
+      company_name: { target: 'companies.name', label: '会社名' },
+      address: { target: 'companies.prefecture,companies.city', label: '所在地' },
+      representative_name: { target: 'company_profile.representative_name', label: '代表者名' },
+      representative_title: { target: 'company_profile.representative_title', label: '代表者役職' },
+      established_date: { target: 'companies.established_date', label: '設立年月日' },
+      capital: { target: 'companies.capital', label: '資本金' },
+      business_purpose: { target: 'company_profile.business_summary', label: '事業概要' },
+      corp_number: { target: 'company_profile.corp_number', label: '法人番号' }
+    };
+  }
+  
+  if (docType === 'financials') {
+    return {
+      fiscal_year_end: { target: 'company_profile.fiscal_year_end', label: '決算月' },
+      sales: { target: 'companies.annual_revenue', label: '売上高' },
+      employee_count: { target: 'companies.employee_count', label: '従業員数' },
+      is_profitable: { target: 'company_profile.is_profitable', label: '収益性' }
+    };
+  }
+  
+  return null;
+}
+
+// =====================================================
+// POST /api/profile/documents/:id/apply - 抽出結果を反映
+// =====================================================
+
+profile.post('/documents/:id/apply', async (c) => {
+  const companyId = c.get('company')?.id;
+  const documentId = c.req.param('id');
+  const user = c.get('user');
+  
+  if (!companyId) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'NO_COMPANY', message: 'Company not found' }
+    }, 404);
+  }
+  
+  try {
+    const body = await c.req.json().catch(() => ({}));
+    const applyMode: 'fill_empty' | 'overwrite' = body.apply_mode || 'fill_empty';
+    const fieldsOverrides: Record<string, any> = body.fields_overrides || {};
+    
+    // ドキュメント取得
+    const doc = await c.env.DB.prepare(`
+      SELECT id, doc_type, extracted_json, confidence, status
+      FROM company_documents 
+      WHERE id = ? AND company_id = ?
+    `).bind(documentId, companyId).first() as {
+      id: string;
+      doc_type: string;
+      extracted_json: string | null;
+      confidence: number | null;
+      status: DocumentStatus;
+    } | null;
+    
+    if (!doc) {
+      return c.json<ApiResponse<null>>({
+        success: false,
+        error: { code: 'NOT_FOUND', message: 'Document not found' }
+      }, 404);
+    }
+    
+    if (!doc.extracted_json) {
+      return c.json<ApiResponse<null>>({
+        success: false,
+        error: { code: 'NO_EXTRACTION', message: 'No extraction data available' }
+      }, 400);
+    }
+    
+    let extracted: DocumentExtracted;
+    try {
+      extracted = JSON.parse(doc.extracted_json);
+    } catch (e) {
+      return c.json<ApiResponse<null>>({
+        success: false,
+        error: { code: 'INVALID_DATA', message: 'Invalid extraction data' }
+      }, 500);
+    }
+    
+    // 現在のデータ取得
+    const company = await c.env.DB.prepare(`
+      SELECT * FROM companies WHERE id = ?
+    `).bind(companyId).first() as Record<string, any>;
+    
+    const profileData = await c.env.DB.prepare(`
+      SELECT * FROM company_profile WHERE company_id = ?
+    `).bind(companyId).first() as Record<string, any> | null;
+    
+    const now = new Date().toISOString();
+    const appliedFields: string[] = [];
+    const skippedFields: string[] = [];
+    
+    // companies テーブル更新
+    const companyUpdates: string[] = [];
+    const companyValues: any[] = [];
+    
+    // company_profile テーブル更新
+    const profileUpdates: string[] = [];
+    const profileValues: any[] = [];
+    
+    // 登記簿からの反映
+    if (doc.doc_type === 'corp_registry') {
+      const ext = extracted as CorpRegistryExtracted;
+      
+      // 会社名
+      if (ext.company_name && (applyMode === 'overwrite' || !company?.name)) {
+        const value = fieldsOverrides.company_name ?? ext.company_name;
+        companyUpdates.push('name = ?');
+        companyValues.push(value);
+        appliedFields.push('company_name');
+      } else if (ext.company_name) {
+        skippedFields.push('company_name');
+      }
+      
+      // 住所→都道府県/市区町村
+      if (ext.address) {
+        // 都道府県を抽出（簡易パース）
+        const prefectureMatch = ext.address.match(/^(.+?[都道府県])/);
+        const prefecture = prefectureMatch ? prefectureMatch[1] : null;
+        const city = prefecture ? ext.address.replace(prefecture, '').trim() : ext.address;
+        
+        if (prefecture && (applyMode === 'overwrite' || !company?.prefecture)) {
+          companyUpdates.push('prefecture = ?');
+          companyValues.push(prefecture);
+          appliedFields.push('prefecture');
+        }
+        if (city && (applyMode === 'overwrite' || !company?.city)) {
+          companyUpdates.push('city = ?');
+          companyValues.push(city);
+          appliedFields.push('city');
+        }
+      }
+      
+      // 設立日
+      if (ext.established_date && (applyMode === 'overwrite' || !company?.established_date)) {
+        companyUpdates.push('established_date = ?');
+        companyValues.push(ext.established_date);
+        appliedFields.push('established_date');
+      }
+      
+      // 資本金
+      if (ext.capital && (applyMode === 'overwrite' || !company?.capital)) {
+        companyUpdates.push('capital = ?');
+        companyValues.push(ext.capital);
+        appliedFields.push('capital');
+      }
+      
+      // 代表者名
+      if (ext.representative_name && (applyMode === 'overwrite' || !profileData?.representative_name)) {
+        profileUpdates.push('representative_name = ?');
+        profileValues.push(ext.representative_name);
+        appliedFields.push('representative_name');
+      }
+      
+      // 代表者役職
+      if (ext.representative_title && (applyMode === 'overwrite' || !profileData?.representative_title)) {
+        profileUpdates.push('representative_title = ?');
+        profileValues.push(ext.representative_title);
+        appliedFields.push('representative_title');
+      }
+      
+      // 事業概要
+      if (ext.business_purpose && ext.business_purpose.length > 0 && (applyMode === 'overwrite' || !profileData?.business_summary)) {
+        profileUpdates.push('business_summary = ?');
+        profileValues.push(ext.business_purpose.join('、'));
+        appliedFields.push('business_summary');
+      }
+      
+      // 法人番号
+      if (ext.corp_number && (applyMode === 'overwrite' || !profileData?.corp_number)) {
+        profileUpdates.push('corp_number = ?');
+        profileValues.push(ext.corp_number);
+        appliedFields.push('corp_number');
+      }
+    }
+    
+    // 決算書からの反映
+    if (doc.doc_type === 'financials') {
+      const ext = extracted as FinancialsExtracted;
+      
+      // 決算月
+      if (ext.fiscal_year_end && (applyMode === 'overwrite' || !profileData?.fiscal_year_end)) {
+        profileUpdates.push('fiscal_year_end = ?');
+        profileValues.push(ext.fiscal_year_end);
+        appliedFields.push('fiscal_year_end');
+      }
+      
+      // 売上高→年商
+      if (ext.sales && (applyMode === 'overwrite' || !company?.annual_revenue)) {
+        companyUpdates.push('annual_revenue = ?');
+        companyValues.push(ext.sales);
+        appliedFields.push('annual_revenue');
+      }
+      
+      // 従業員数
+      if (ext.employee_count && (applyMode === 'overwrite' || !company?.employee_count)) {
+        companyUpdates.push('employee_count = ?');
+        companyValues.push(ext.employee_count);
+        appliedFields.push('employee_count');
+      }
+      
+      // 収益性
+      if (ext.is_profitable !== undefined && (applyMode === 'overwrite' || profileData?.is_profitable === undefined)) {
+        profileUpdates.push('is_profitable = ?');
+        profileValues.push(ext.is_profitable ? 1 : 0);
+        appliedFields.push('is_profitable');
+      }
+    }
+    
+    // DB更新実行
+    const statements: D1PreparedStatement[] = [];
+    
+    if (companyUpdates.length > 0) {
+      companyUpdates.push('updated_at = ?');
+      companyValues.push(now, companyId);
+      statements.push(
+        c.env.DB.prepare(`UPDATE companies SET ${companyUpdates.join(', ')} WHERE id = ?`).bind(...companyValues)
+      );
+    }
+    
+    if (profileUpdates.length > 0) {
+      if (profileData) {
+        profileUpdates.push('updated_at = ?');
+        profileValues.push(now, companyId);
+        statements.push(
+          c.env.DB.prepare(`UPDATE company_profile SET ${profileUpdates.join(', ')} WHERE company_id = ?`).bind(...profileValues)
+        );
+      } else {
+        // company_profile がない場合は INSERT
+        const insertFields = ['company_id', 'created_at', 'updated_at'];
+        const insertValues: any[] = [companyId, now, now];
+        
+        // 各フィールドを追加
+        if (profileUpdates.includes('representative_name = ?')) {
+          insertFields.push('representative_name');
+          insertValues.push(profileValues[profileUpdates.indexOf('representative_name = ?')]);
+        }
+        if (profileUpdates.includes('representative_title = ?')) {
+          insertFields.push('representative_title');
+          insertValues.push(profileValues[profileUpdates.indexOf('representative_title = ?')]);
+        }
+        if (profileUpdates.includes('business_summary = ?')) {
+          insertFields.push('business_summary');
+          insertValues.push(profileValues[profileUpdates.indexOf('business_summary = ?')]);
+        }
+        if (profileUpdates.includes('corp_number = ?')) {
+          insertFields.push('corp_number');
+          insertValues.push(profileValues[profileUpdates.indexOf('corp_number = ?')]);
+        }
+        if (profileUpdates.includes('fiscal_year_end = ?')) {
+          insertFields.push('fiscal_year_end');
+          insertValues.push(profileValues[profileUpdates.indexOf('fiscal_year_end = ?')]);
+        }
+        if (profileUpdates.includes('is_profitable = ?')) {
+          insertFields.push('is_profitable');
+          insertValues.push(profileValues[profileUpdates.indexOf('is_profitable = ?')]);
+        }
+        
+        statements.push(
+          c.env.DB.prepare(`INSERT INTO company_profile (${insertFields.join(', ')}) VALUES (${insertFields.map(() => '?').join(', ')})`).bind(...insertValues)
+        );
+      }
+    }
+    
+    // ドキュメントステータスを applied に更新
+    statements.push(
+      c.env.DB.prepare(`UPDATE company_documents SET status = 'applied', updated_at = ? WHERE id = ?`).bind(now, documentId)
+    );
+    
+    // 監査ログ
+    statements.push(
+      c.env.DB.prepare(`
+        INSERT INTO audit_log (id, actor_user_id, target_company_id, target_resource_type, target_resource_id, action, action_category, severity, details_json, created_at)
+        VALUES (?, ?, ?, 'document', ?, 'DOCUMENT_EXTRACTION_APPLIED', 'document', 'info', ?, ?)
+      `).bind(
+        crypto.randomUUID(),
+        user?.id || null,
+        companyId,
+        documentId,
+        JSON.stringify({ applied_fields: appliedFields, skipped_fields: skippedFields, apply_mode: applyMode }),
+        now
+      )
+    );
+    
+    await c.env.DB.batch(statements);
+    
+    return c.json<ApiResponse<any>>({
+      success: true,
+      data: {
+        document_id: documentId,
+        applied_fields: appliedFields,
+        skipped_fields: skippedFields,
+        apply_mode: applyMode,
+        message: appliedFields.length > 0 
+          ? `${appliedFields.length}件の項目を反映しました` 
+          : '反映する項目がありませんでした（既に値が入力済みか、抽出データがありません）'
+      }
+    });
+  } catch (error) {
+    console.error('Apply extraction error:', error);
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'INTERNAL_ERROR', message: 'Failed to apply extraction' }
     }, 500);
   }
 });

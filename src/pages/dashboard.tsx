@@ -732,8 +732,8 @@ pages.get('/company', (c) => {
               <div>
                 <label class="block text-sm font-medium text-gray-700 mb-1">書類の種類</label>
                 <select id="doc-type" class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition">
-                  <option value="financial">決算書・財務諸表</option>
-                  <option value="registration">登記簿謄本</option>
+                  <option value="corp_registry">登記簿謄本（履歴事項全部証明書）</option>
+                  <option value="financials">決算書・財務諸表</option>
                   <option value="tax">納税証明書</option>
                   <option value="business_plan">事業計画書</option>
                   <option value="license">許認可証</option>
@@ -746,6 +746,10 @@ pages.get('/company', (c) => {
                 </button>
               </div>
             </div>
+            <p class="mt-2 text-xs text-blue-600">
+              <i class="fas fa-info-circle mr-1"></i>
+              登記簿・決算書をアップロード後、「情報を抽出」ボタンで自動的に会社情報を抽出できます
+            </p>
           </form>
           
           {/* アップロード済み書類一覧 */}
@@ -881,6 +885,8 @@ pages.get('/company', (c) => {
               
               list.innerHTML = docs.map(doc => {
                 const typeLabels = {
+                  corp_registry: '登記簿',
+                  financials: '決算書',
                   financial: '決算書',
                   registration: '登記簿',
                   tax: '納税証明',
@@ -889,30 +895,72 @@ pages.get('/company', (c) => {
                   other: 'その他'
                 };
                 const statusLabels = {
-                  uploaded: '処理待ち',
-                  processing: '処理中',
-                  processed: '完了',
-                  error: 'エラー'
+                  uploaded: 'アップロード済',
+                  extracting: '抽出中...',
+                  extracted: '抽出完了',
+                  applied: '反映済み',
+                  failed: 'エラー'
                 };
                 const statusColors = {
                   uploaded: 'bg-yellow-100 text-yellow-800',
-                  processing: 'bg-blue-100 text-blue-800',
-                  processed: 'bg-green-100 text-green-800',
-                  error: 'bg-red-100 text-red-800'
+                  extracting: 'bg-blue-100 text-blue-800',
+                  extracted: 'bg-green-100 text-green-800',
+                  applied: 'bg-purple-100 text-purple-800',
+                  failed: 'bg-red-100 text-red-800'
                 };
                 
-                return '<div class="flex items-center justify-between p-3 bg-gray-50 rounded-lg">' +
-                  '<div class="flex items-center gap-3">' +
-                    '<i class="fas fa-file-alt text-gray-400"></i>' +
-                    '<div>' +
-                      '<p class="text-sm font-medium text-gray-700">' + doc.original_filename + '</p>' +
-                      '<p class="text-xs text-gray-500">' + (typeLabels[doc.doc_type] || doc.doc_type) + ' • ' + formatBytes(doc.size_bytes) + '</p>' +
+                // Phase 1 対象書類かどうか
+                const isExtractable = ['corp_registry', 'financials'].includes(doc.doc_type);
+                
+                // アクションボタン生成
+                let actionButtons = '';
+                if (isExtractable) {
+                  if (doc.status === 'uploaded') {
+                    actionButtons = '<button onclick="extractDocument(\\'' + doc.id + '\\')" class="text-xs px-2 py-1 bg-blue-600 text-white rounded hover:bg-blue-700">' +
+                      '<i class="fas fa-magic mr-1"></i>情報を抽出' +
+                    '</button>';
+                  } else if (doc.status === 'extracting') {
+                    actionButtons = '<span class="text-xs text-blue-600"><i class="fas fa-spinner fa-spin mr-1"></i>処理中...</span>';
+                  } else if (doc.status === 'extracted') {
+                    actionButtons = '<button onclick="showExtractedData(\\'' + doc.id + '\\')" class="text-xs px-2 py-1 bg-green-600 text-white rounded hover:bg-green-700">' +
+                      '<i class="fas fa-check mr-1"></i>結果を確認・反映' +
+                    '</button>';
+                  } else if (doc.status === 'applied') {
+                    actionButtons = '<button onclick="showExtractedData(\\'' + doc.id + '\\')" class="text-xs px-2 py-1 bg-gray-200 text-gray-700 rounded hover:bg-gray-300">' +
+                      '<i class="fas fa-eye mr-1"></i>抽出内容を見る' +
+                    '</button>';
+                  } else if (doc.status === 'failed') {
+                    actionButtons = '<button onclick="extractDocument(\\'' + doc.id + '\\')" class="text-xs px-2 py-1 bg-orange-500 text-white rounded hover:bg-orange-600">' +
+                      '<i class="fas fa-redo mr-1"></i>再抽出' +
+                    '</button>';
+                  }
+                }
+                
+                // 信頼度表示
+                let confidenceHtml = '';
+                if (doc.confidence !== null && doc.confidence !== undefined && doc.status !== 'uploaded') {
+                  const confColor = doc.confidence >= 80 ? 'text-green-600' : doc.confidence >= 50 ? 'text-yellow-600' : 'text-red-600';
+                  confidenceHtml = '<span class="text-xs ' + confColor + ' ml-2">信頼度: ' + doc.confidence + '%</span>';
+                }
+                
+                return '<div class="p-4 bg-gray-50 rounded-lg border border-gray-200">' +
+                  '<div class="flex items-center justify-between mb-2">' +
+                    '<div class="flex items-center gap-3">' +
+                      '<i class="fas fa-file-alt text-gray-400 text-lg"></i>' +
+                      '<div>' +
+                        '<p class="text-sm font-medium text-gray-700">' + doc.original_filename + '</p>' +
+                        '<p class="text-xs text-gray-500">' + (typeLabels[doc.doc_type] || doc.doc_type) + ' • ' + formatBytes(doc.size_bytes) + '</p>' +
+                      '</div>' +
+                    '</div>' +
+                    '<div class="flex items-center gap-2">' +
+                      '<span class="text-xs px-2 py-1 rounded ' + (statusColors[doc.status] || 'bg-gray-100') + '">' + (statusLabels[doc.status] || doc.status) + '</span>' +
+                      confidenceHtml +
                     '</div>' +
                   '</div>' +
-                  '<div class="flex items-center gap-3">' +
-                    '<span class="text-xs px-2 py-1 rounded ' + (statusColors[doc.status] || 'bg-gray-100') + '">' + (statusLabels[doc.status] || doc.status) + '</span>' +
-                    '<button onclick="deleteDocument(\\'' + doc.id + '\\')" class="text-red-500 hover:text-red-700">' +
-                      '<i class="fas fa-trash"></i>' +
+                  '<div class="flex items-center justify-between mt-3 pt-3 border-t border-gray-200">' +
+                    '<div class="flex gap-2">' + actionButtons + '</div>' +
+                    '<button onclick="deleteDocument(\\'' + doc.id + '\\')" class="text-red-500 hover:text-red-700 text-sm">' +
+                      '<i class="fas fa-trash mr-1"></i>削除' +
                     '</button>' +
                   '</div>' +
                 '</div>';
@@ -922,6 +970,150 @@ pages.get('/company', (c) => {
             console.error('Load documents error:', err);
           }
         }
+        
+        // 書類から情報を抽出
+        async function extractDocument(docId) {
+          const list = document.getElementById('documents-list');
+          
+          try {
+            const res = await apiCall('/api/profile/documents/' + docId + '/extract', { method: 'POST' });
+            if (res.success) {
+              document.getElementById('success-message').textContent = res.data.message || '抽出処理を開始しました';
+              document.getElementById('success-message').classList.remove('hidden');
+              loadDocuments();
+              
+              // AWS連携がない場合（開発モード）、3秒後にモック完了
+              if (!res.data.job_submitted) {
+                setTimeout(async () => {
+                  // モック: 抽出完了をシミュレート（開発用）
+                  console.log('Dev mode: simulating extraction completion');
+                  loadDocuments();
+                }, 3000);
+              }
+            } else {
+              document.getElementById('error-message').textContent = res.error?.message || '抽出の開始に失敗しました';
+              document.getElementById('error-message').classList.remove('hidden');
+            }
+          } catch (err) {
+            document.getElementById('error-message').textContent = '通信エラーが発生しました';
+            document.getElementById('error-message').classList.remove('hidden');
+          }
+        }
+        window.extractDocument = extractDocument;
+        
+        // 抽出結果を表示・反映
+        async function showExtractedData(docId) {
+          try {
+            const res = await apiCall('/api/profile/documents/' + docId + '/extracted');
+            if (res.success && res.data) {
+              const data = res.data;
+              const extracted = data.extracted || {};
+              const mapping = data.apply_mapping || {};
+              
+              // モーダル表示用のHTML生成
+              let fieldsHtml = '';
+              Object.keys(extracted).forEach(key => {
+                if (key === 'source' || key === 'confidence') return;
+                const value = extracted[key];
+                const map = mapping[key];
+                const label = map ? map.label : key;
+                const displayValue = Array.isArray(value) ? value.join('、') : String(value);
+                
+                fieldsHtml += '<div class="flex justify-between py-2 border-b border-gray-100">' +
+                  '<span class="text-sm text-gray-600">' + label + '</span>' +
+                  '<span class="text-sm font-medium text-gray-800">' + (displayValue || '-') + '</span>' +
+                '</div>';
+              });
+              
+              const canApply = data.status === 'extracted';
+              const applyBtnHtml = canApply 
+                ? '<button onclick="applyExtraction(\\'' + docId + '\\')" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 px-6 rounded-lg mt-4">' +
+                    '<i class="fas fa-check-circle mr-2"></i>この情報をプロフィールに反映する' +
+                  '</button>' +
+                  '<p class="text-xs text-gray-500 mt-2 text-center">※既に入力済みの項目は上書きされません（空欄のみ反映）</p>'
+                : '<p class="text-sm text-purple-600 mt-4 text-center"><i class="fas fa-check-circle mr-1"></i>この書類の情報は既に反映済みです</p>';
+              
+              // モーダル表示
+              const modalHtml = '<div id="extraction-modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">' +
+                '<div class="bg-white rounded-xl shadow-xl max-w-lg w-full mx-4 max-h-[90vh] overflow-y-auto">' +
+                  '<div class="p-6">' +
+                    '<div class="flex justify-between items-center mb-4">' +
+                      '<h3 class="text-lg font-bold text-gray-800"><i class="fas fa-file-alt text-blue-500 mr-2"></i>抽出された情報</h3>' +
+                      '<button onclick="closeExtractionModal()" class="text-gray-400 hover:text-gray-600">' +
+                        '<i class="fas fa-times text-xl"></i>' +
+                      '</button>' +
+                    '</div>' +
+                    '<div class="mb-4">' +
+                      '<p class="text-sm text-gray-600 mb-2">' +
+                        '<i class="fas fa-file mr-1"></i>' + data.original_filename +
+                        '<span class="ml-2 text-green-600">信頼度: ' + (data.confidence || 0) + '%</span>' +
+                      '</p>' +
+                    '</div>' +
+                    '<div class="bg-gray-50 rounded-lg p-4">' +
+                      fieldsHtml +
+                    '</div>' +
+                    applyBtnHtml +
+                  '</div>' +
+                '</div>' +
+              '</div>';
+              
+              document.body.insertAdjacentHTML('beforeend', modalHtml);
+            } else {
+              alert('抽出データの取得に失敗しました');
+            }
+          } catch (err) {
+            alert('通信エラーが発生しました');
+          }
+        }
+        window.showExtractedData = showExtractedData;
+        
+        function closeExtractionModal() {
+          const modal = document.getElementById('extraction-modal');
+          if (modal) modal.remove();
+        }
+        window.closeExtractionModal = closeExtractionModal;
+        
+        // 抽出結果をプロフィールに反映
+        async function applyExtraction(docId) {
+          try {
+            const res = await apiCall('/api/profile/documents/' + docId + '/apply', {
+              method: 'POST',
+              body: JSON.stringify({ apply_mode: 'fill_empty' })
+            });
+            
+            if (res.success) {
+              closeExtractionModal();
+              document.getElementById('success-message').textContent = res.data.message || '情報を反映しました';
+              document.getElementById('success-message').classList.remove('hidden');
+              
+              // リロード
+              loadDocuments();
+              loadCompleteness();
+              loadProfile();
+              
+              // 基本情報もリロード
+              const companyRes = await apiCall('/api/companies');
+              if (companyRes.success && companyRes.data && companyRes.data.length > 0) {
+                const company = companyRes.data[0];
+                const basicForm = document.getElementById('basic-form');
+                basicForm.name.value = company.name || '';
+                basicForm.postal_code.value = company.postal_code || '';
+                basicForm.prefecture.value = company.prefecture || '';
+                basicForm.city.value = company.city || '';
+                basicForm.industry_major.value = company.industry_major || '';
+                basicForm.employee_count.value = company.employee_count || '';
+                basicForm.capital.value = company.capital || '';
+                basicForm.annual_revenue.value = company.annual_revenue || '';
+                basicForm.established_date.value = company.established_date || '';
+              }
+            } else {
+              alert(res.error?.message || '反映に失敗しました');
+            }
+          } catch (err) {
+            alert('通信エラーが発生しました');
+          }
+        }
+        window.applyExtraction = applyExtraction;
         
         function formatBytes(bytes) {
           if (!bytes) return '0 B';
