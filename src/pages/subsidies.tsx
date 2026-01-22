@@ -383,7 +383,15 @@ subsidyPages.get('/subsidies', (c) => {
           const res = await api('/api/companies');
           console.log('Companies API response:', res);
           
-          if (res && res.success && res.data && res.data.length > 0) {
+          // APIエラーの場合
+          if (!res || !res.success) {
+            console.error('API error:', res?.error);
+            // 認証エラーの場合はログインページへリダイレクトされるはずなので、ここでは別のエラー
+            showNoCompanyAlert();
+            return;
+          }
+          
+          if (res.data && res.data.length > 0) {
             const select = document.getElementById('company-select');
             if (!select) {
               console.error('company-select element not found');
@@ -392,20 +400,28 @@ subsidyPages.get('/subsidies', (c) => {
             
             // 検索可能な会社があるかチェック（必須4項目が揃っている会社）
             let hasSearchableCompany = false;
+            let firstSearchableValue = null;
             
             res.data.forEach(company => {
-              // 必須4項目のチェック
+              console.log('Company data:', company);
+              
+              // 必須4項目のチェック（フィールド名のバリエーションに対応）
               const hasName = !!company.name;
               const hasPref = !!company.prefecture;
-              const hasIndustry = !!(company.industry_major || company.industry);
-              const hasEmployees = company.employee_count > 0;
+              const hasIndustry = !!(company.industry_major || company.industry || company.industry_minor);
+              const hasEmployees = company.employee_count !== null && company.employee_count !== undefined && company.employee_count > 0;
               const isSearchable = hasName && hasPref && hasIndustry && hasEmployees;
+              
+              console.log('Searchable check:', { hasName, hasPref, hasIndustry, hasEmployees, isSearchable });
               
               const option = document.createElement('option');
               option.value = company.id;
               
               if (isSearchable) {
                 option.textContent = company.name + ' (' + company.prefecture + ')';
+                if (!hasSearchableCompany) {
+                  firstSearchableValue = company.id;
+                }
                 hasSearchableCompany = true;
               } else {
                 // 必須項目が足りない会社
@@ -414,7 +430,7 @@ subsidyPages.get('/subsidies', (c) => {
                 if (!hasPref) missing.push('都道府県');
                 if (!hasIndustry) missing.push('業種');
                 if (!hasEmployees) missing.push('従業員数');
-                option.textContent = company.name + ' [情報不足: ' + missing.join('、') + ']';
+                option.textContent = (company.name || '(会社名未設定)') + ' [情報不足: ' + missing.join('、') + ']';
                 option.disabled = true;
                 option.style.color = '#9ca3af';
               }
@@ -422,15 +438,16 @@ subsidyPages.get('/subsidies', (c) => {
               select.appendChild(option);
             });
             
-            if (hasSearchableCompany) {
+            if (hasSearchableCompany && firstSearchableValue) {
               // 検索可能な会社を自動選択
-              for (let i = 0; i < select.options.length; i++) {
-                if (!select.options[i].disabled && select.options[i].value) {
-                  select.value = select.options[i].value;
-                  break;
-                }
-              }
+              select.value = firstSearchableValue;
               document.getElementById('company-alert').classList.add('hidden');
+              
+              // 検索パネルを有効化
+              const searchPanel = document.querySelector('.bg-white.rounded-lg.shadow.p-6.mb-6');
+              if (searchPanel) {
+                searchPanel.classList.remove('opacity-50', 'pointer-events-none');
+              }
             } else {
               // 会社はあるが、必須情報が足りない
               showIncompleteCompanyAlert(res.data[0]);
