@@ -453,6 +453,19 @@ FIRECRAWL_API_KEY=fc-xxx
 
 ---
 
+## 運用ドキュメント
+
+クロール運用・網羅性検証・コスト管理に関する詳細ドキュメントは以下を参照:
+
+| ドキュメント | 説明 |
+|-------------|------|
+| [docs/operations/target_registry_master.csv](docs/operations/target_registry_master.csv) | 47都道府県+国のターゲット台帳（source_registry投入用） |
+| [docs/operations/weekly_crawl_plan.md](docs/operations/weekly_crawl_plan.md) | 週1全量クロール計画、Phase 0/1 の実行スケジュール |
+| [docs/operations/verification_checklist.md](docs/operations/verification_checklist.md) | 取得品質チェック表、L1/L2/L3網羅性検証SQL |
+| [docs/operations/cost_estimation_template.md](docs/operations/cost_estimation_template.md) | コスト概算テンプレ、無駄コスト検知クエリ |
+
+---
+
 ## Superadmin KPI・監視機能
 
 ### KPI ダッシュボード API
@@ -467,7 +480,8 @@ FIRECRAWL_API_KEY=fc-xxx
 | `/api/admin/alerts` | GET | アラート一覧 | super_admin のみ |
 | `/api/admin/kpi-history` | GET | KPI履歴取得 | super_admin のみ |
 | `/api/admin/generate-daily-snapshot` | POST | 日次KPIスナップショット生成 | super_admin のみ |
-| `/api/admin/coverage` | GET | L1/L2/L3網羅性チェック | super_admin のみ |
+| `/api/admin/coverage` | GET | L1/L2/L3網羅性チェック + 運用監視KPI | super_admin のみ |
+| `/api/admin/debug/company-check` | GET | ユーザー会社紐づけ診断（?email=xxx） | super_admin のみ |
 
 ### 監視テーブル
 
