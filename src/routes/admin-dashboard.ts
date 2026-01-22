@@ -653,9 +653,9 @@ adminDashboard.get('/data-freshness', async (c) => {
       SELECT 
         source,
         COUNT(*) as total,
-        SUM(CASE WHEN date(updated_at) = date('now') THEN 1 ELSE 0 END) as updated_today,
-        SUM(CASE WHEN date(updated_at) >= date('now', '-7 days') THEN 1 ELSE 0 END) as updated_week,
-        MIN(updated_at) as oldest_update
+        SUM(CASE WHEN date(cached_at) = date('now') THEN 1 ELSE 0 END) as updated_today,
+        SUM(CASE WHEN date(cached_at) >= date('now', '-7 days') THEN 1 ELSE 0 END) as updated_week,
+        MIN(cached_at) as oldest_update
       FROM subsidy_cache
       GROUP BY source
     `).all<{
