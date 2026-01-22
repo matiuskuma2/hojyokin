@@ -58,6 +58,9 @@ const adminLayout = (title: string, content: string, activeTab: string = '') => 
             <a href="/admin/audit" class="px-3 py-2 rounded-md text-sm font-medium ${activeTab === 'audit' ? 'bg-indigo-700' : 'hover:bg-indigo-800'}">
               <i class="fas fa-clipboard-list mr-1"></i>監査ログ
             </a>
+            <a href="/admin/ops" id="nav-ops" class="px-3 py-2 rounded-md text-sm font-medium ${activeTab === 'ops' ? 'bg-indigo-700' : 'hover:bg-indigo-800'} hidden">
+              <i class="fas fa-heartbeat mr-1"></i>運用チェック
+            </a>
           </div>
         </div>
         <div class="flex items-center gap-4">
@@ -118,11 +121,15 @@ const adminLayout = (title: string, content: string, activeTab: string = '') => 
         userRoleEl.textContent = user.role === 'super_admin' ? 'Super Admin' : 'Admin';
       }
       
-      // super_admin のみコストタブを表示
+      // super_admin のみコスト・運用チェックタブを表示
       if (user.role === 'super_admin') {
         var navCosts = document.getElementById('nav-costs');
         if (navCosts) {
           navCosts.classList.remove('hidden');
+        }
+        var navOps = document.getElementById('nav-ops');
+        if (navOps) {
+          navOps.classList.remove('hidden');
         }
       }
       
@@ -1231,6 +1238,517 @@ adminPages.get('/admin/audit', (c) => {
   `;
 
   return c.html(adminLayout('監査ログ', content, 'audit'));
+});
+
+// ============================================================
+// /admin/ops - 運用チェック（30分検証用ダッシュボード）
+// ============================================================
+
+adminPages.get('/admin/ops', (c) => {
+  const content = `
+    <div class="mb-8">
+      <div class="flex items-center justify-between">
+        <div>
+          <h1 class="text-2xl font-bold text-gray-800">
+            <i class="fas fa-heartbeat text-red-500 mr-2"></i>運用チェック
+          </h1>
+          <p class="text-gray-600 mt-1">30分で「回ってる証拠」を確認するダッシュボード</p>
+        </div>
+        <button onclick="runAllChecks()" class="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700">
+          <i class="fas fa-sync-alt mr-1"></i>全チェック実行
+        </button>
+      </div>
+    </div>
+
+    <div id="access-denied" class="hidden bg-red-50 border border-red-200 rounded-xl p-8 text-center">
+      <i class="fas fa-lock text-red-400 text-4xl mb-4"></i>
+      <p class="text-red-700 font-medium">Super Admin 権限が必要です</p>
+      <a href="/admin" class="text-indigo-600 hover:underline mt-2 inline-block">ダッシュボードへ戻る</a>
+    </div>
+
+    <div id="ops-content" class="space-y-6">
+      <!-- 合格判定サマリー -->
+      <div class="bg-white rounded-xl shadow p-6">
+        <h2 class="text-lg font-bold text-gray-800 mb-4">
+          <i class="fas fa-clipboard-check text-green-600 mr-2"></i>30分検証チェックリスト
+        </h2>
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <div id="check-l1" class="border-2 border-gray-200 rounded-lg p-4 text-center">
+            <div class="text-2xl mb-2">⏳</div>
+            <p class="font-medium text-gray-700">L1 入口網羅</p>
+            <p class="text-xs text-gray-500">47都道府県登録</p>
+          </div>
+          <div id="check-l2" class="border-2 border-gray-200 rounded-lg p-4 text-center">
+            <div class="text-2xl mb-2">⏳</div>
+            <p class="font-medium text-gray-700">L2 実稼働</p>
+            <p class="text-xs text-gray-500">Cron/Consumer稼働</p>
+          </div>
+          <div id="check-queue" class="border-2 border-gray-200 rounded-lg p-4 text-center">
+            <div class="text-2xl mb-2">⏳</div>
+            <p class="font-medium text-gray-700">キュー健全性</p>
+            <p class="text-xs text-gray-500">滞留<100件</p>
+          </div>
+          <div id="check-kpi" class="border-2 border-gray-200 rounded-lg p-4 text-center">
+            <div class="text-2xl mb-2">⏳</div>
+            <p class="font-medium text-gray-700">KPI動作</p>
+            <p class="text-xs text-gray-500">今日のイベント</p>
+          </div>
+        </div>
+        <p class="text-xs text-gray-400 mt-4">
+          <i class="fas fa-info-circle mr-1"></i>
+          合格ライン: L1=47/47, L2=done+failed>0, キュー=queued<100, KPI=検索/壁打ち/ドラフトが動作
+        </p>
+      </div>
+
+      <!-- セクションA: サーバー側（10分） -->
+      <div class="bg-white rounded-xl shadow p-6">
+        <h2 class="text-lg font-bold text-gray-800 mb-4">
+          <i class="fas fa-server text-blue-600 mr-2"></i>A. サーバー側チェック（10分）
+        </h2>
+
+        <!-- A-1 台帳揃い -->
+        <div class="mb-6">
+          <h3 class="text-sm font-medium text-gray-700 mb-2">
+            A-1. 台帳揃い（source_registry scope別件数）
+          </h3>
+          <div id="registry-scope" class="grid grid-cols-3 gap-4">
+            <div class="bg-gray-50 rounded-lg p-4 text-center loading">
+              <p class="text-2xl font-bold text-gray-400">-</p>
+              <p class="text-xs text-gray-500">national</p>
+            </div>
+            <div class="bg-gray-50 rounded-lg p-4 text-center loading">
+              <p class="text-2xl font-bold text-gray-400">-</p>
+              <p class="text-xs text-gray-500">prefecture</p>
+            </div>
+            <div class="bg-gray-50 rounded-lg p-4 text-center loading">
+              <p class="text-2xl font-bold text-gray-400">-</p>
+              <p class="text-xs text-gray-500">secretariat</p>
+            </div>
+          </div>
+          <p class="text-xs text-gray-400 mt-2">合格ライン: prefecture=47, national/secretariat=数件以上</p>
+        </div>
+
+        <!-- A-2 Cron/Consumer -->
+        <div class="mb-6">
+          <h3 class="text-sm font-medium text-gray-700 mb-2">
+            A-2. Cron/Consumer稼働（crawl_queue status）
+          </h3>
+          <div id="queue-status-detail" class="p-4 rounded-lg bg-gray-50">
+            <div class="loading text-gray-400">読み込み中...</div>
+          </div>
+          <p class="text-xs text-gray-400 mt-2">合格ライン: done+failed増加、queued過剰増加なし（<100件）</p>
+        </div>
+
+        <!-- A-3 ドメインブロック -->
+        <div>
+          <h3 class="text-sm font-medium text-gray-700 mb-2">
+            A-3. ドメインブロック状況
+          </h3>
+          <div id="domain-block-status" class="overflow-x-auto">
+            <div class="loading text-gray-400 p-4">読み込み中...</div>
+          </div>
+          <p class="text-xs text-gray-400 mt-2">警告: blocked_until設定、failure_count>3のドメイン</p>
+        </div>
+      </div>
+
+      <!-- セクションB: UI操作（20分） -->
+      <div class="bg-white rounded-xl shadow p-6">
+        <h2 class="text-lg font-bold text-gray-800 mb-4">
+          <i class="fas fa-mouse-pointer text-purple-600 mr-2"></i>B. UI操作チェック（20分）
+        </h2>
+
+        <!-- 今日のKPI -->
+        <div class="mb-6">
+          <h3 class="text-sm font-medium text-gray-700 mb-2">
+            今日のイベントカウント（usage_events）
+          </h3>
+          <div id="today-kpi" class="grid grid-cols-3 gap-4">
+            <div class="bg-green-50 border border-green-200 rounded-lg p-4 text-center">
+              <p id="kpi-search-today" class="text-3xl font-bold text-green-700 loading">-</p>
+              <p class="text-sm text-green-600">SUBSIDY_SEARCH</p>
+              <p class="text-xs text-gray-500">B-1. 補助金検索</p>
+            </div>
+            <div class="bg-purple-50 border border-purple-200 rounded-lg p-4 text-center">
+              <p id="kpi-chat-today" class="text-3xl font-bold text-purple-700 loading">-</p>
+              <p class="text-sm text-purple-600">CHAT_SESSION_STARTED</p>
+              <p class="text-xs text-gray-500">B-2. 壁打ち開始</p>
+            </div>
+            <div class="bg-orange-50 border border-orange-200 rounded-lg p-4 text-center">
+              <p id="kpi-draft-today" class="text-3xl font-bold text-orange-700 loading">-</p>
+              <p class="text-sm text-orange-600">DRAFT_GENERATED</p>
+              <p class="text-xs text-gray-500">B-3. ドラフト生成</p>
+            </div>
+          </div>
+          <p class="text-xs text-gray-400 mt-2">合格ライン: 各1以上（実際に操作して確認）</p>
+        </div>
+
+        <!-- 今日の直近イベント20件 -->
+        <div>
+          <h3 class="text-sm font-medium text-gray-700 mb-2">
+            今日の直近イベント（リアルタイム確認）
+          </h3>
+          <div id="recent-events-list" class="overflow-x-auto max-h-96">
+            <div class="loading text-gray-400 p-4">読み込み中...</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- L1/L2/L3 網羅性 -->
+      <div class="bg-white rounded-xl shadow p-6">
+        <h2 class="text-lg font-bold text-gray-800 mb-4">
+          <i class="fas fa-map text-indigo-600 mr-2"></i>網羅性スコア（L1/L2/L3）
+        </h2>
+        
+        <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+          <div class="bg-gradient-to-br from-indigo-50 to-indigo-100 rounded-lg p-4 text-center">
+            <p class="text-sm text-indigo-600 font-medium">総合スコア</p>
+            <p id="score-total" class="text-4xl font-bold text-indigo-700 loading">-</p>
+            <p class="text-xs text-indigo-500">/ 100</p>
+          </div>
+          <div class="bg-blue-50 rounded-lg p-4 text-center">
+            <p class="text-sm text-blue-600 font-medium">L1 入口網羅</p>
+            <p id="score-l1" class="text-2xl font-bold text-blue-700 loading">-%</p>
+            <p id="score-l1-detail" class="text-xs text-blue-500">-/47 都道府県</p>
+          </div>
+          <div class="bg-green-50 rounded-lg p-4 text-center">
+            <p class="text-sm text-green-600 font-medium">L2 実稼働</p>
+            <p id="score-l2" class="text-2xl font-bold text-green-700 loading">-%</p>
+            <p id="score-l2-detail" class="text-xs text-green-500">stale: -件</p>
+          </div>
+          <div class="bg-purple-50 rounded-lg p-4 text-center">
+            <p class="text-sm text-purple-600 font-medium">L3 データ網羅</p>
+            <p id="score-l3" class="text-2xl font-bold text-purple-700 loading">-%</p>
+            <p id="score-l3-detail" class="text-xs text-purple-500">active: -件</p>
+          </div>
+        </div>
+
+        <!-- L1 都道府県欠損 -->
+        <div class="mb-6">
+          <h3 class="text-sm font-medium text-gray-700 mb-2">L1 欠損都道府県</h3>
+          <div id="l1-missing" class="p-3 bg-gray-50 rounded-lg">
+            <span class="loading text-gray-400">読み込み中...</span>
+          </div>
+        </div>
+
+        <!-- L2 stale地域 -->
+        <div class="mb-6">
+          <h3 class="text-sm font-medium text-gray-700 mb-2">L2 7日以上クロールなしの地域</h3>
+          <div id="l2-stale" class="overflow-x-auto">
+            <div class="loading text-gray-400 p-4">読み込み中...</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 失敗/無駄の可視化 -->
+      <div class="bg-white rounded-xl shadow p-6">
+        <h2 class="text-lg font-bold text-gray-800 mb-4">
+          <i class="fas fa-exclamation-triangle text-yellow-600 mr-2"></i>失敗/無駄の可視化
+        </h2>
+
+        <!-- ドメイン別エラー率Top -->
+        <div class="mb-6">
+          <h3 class="text-sm font-medium text-gray-700 mb-2">ドメイン別エラー率Top10（直近7日）</h3>
+          <div id="domain-errors-table" class="overflow-x-auto">
+            <div class="loading text-gray-400 p-4">読み込み中...</div>
+          </div>
+        </div>
+
+        <!-- 重複クロール -->
+        <div>
+          <h3 class="text-sm font-medium text-gray-700 mb-2">重複クロール検知（同一URL 5回以上）</h3>
+          <div id="duplicate-crawls-table" class="overflow-x-auto">
+            <div class="loading text-gray-400 p-4">読み込み中...</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 検証SQL/クイックリファレンス -->
+      <div class="bg-gray-800 rounded-xl shadow p-6 text-white">
+        <h2 class="text-lg font-bold mb-4">
+          <i class="fas fa-terminal text-green-400 mr-2"></i>検証用SQL（コピペ用）
+        </h2>
+        <div class="space-y-4 text-sm font-mono">
+          <div>
+            <p class="text-gray-400 mb-1">-- L1: 都道府県登録確認</p>
+            <code class="text-green-400">SELECT scope, enabled, COUNT(*) FROM source_registry GROUP BY scope, enabled;</code>
+          </div>
+          <div>
+            <p class="text-gray-400 mb-1">-- L2: キュー状況確認</p>
+            <code class="text-green-400">SELECT status, COUNT(*) FROM crawl_queue GROUP BY status;</code>
+          </div>
+          <div>
+            <p class="text-gray-400 mb-1">-- KPI: 今日のイベント確認</p>
+            <code class="text-green-400">SELECT event_type, COUNT(*) FROM usage_events WHERE date(created_at) = date('now') GROUP BY event_type;</code>
+          </div>
+          <div>
+            <p class="text-gray-400 mb-1">-- ドメインブロック確認</p>
+            <code class="text-green-400">SELECT domain_key, blocked_until, failure_count FROM domain_policy WHERE blocked_until > datetime('now') OR failure_count >= 3;</code>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      const user = JSON.parse(localStorage.getItem('user') || 'null');
+      if (user?.role !== 'super_admin') {
+        document.getElementById('access-denied').classList.remove('hidden');
+        document.getElementById('ops-content').classList.add('hidden');
+      } else {
+        runAllChecks();
+      }
+
+      // チェック結果を更新
+      function updateCheckStatus(elementId, passed, detail) {
+        const el = document.getElementById(elementId);
+        if (passed) {
+          el.classList.remove('border-gray-200');
+          el.classList.add('border-green-500', 'bg-green-50');
+          el.querySelector('div').textContent = '✅';
+        } else {
+          el.classList.remove('border-gray-200');
+          el.classList.add('border-red-500', 'bg-red-50');
+          el.querySelector('div').textContent = '❌';
+        }
+        if (detail) {
+          const detailEl = el.querySelector('p.text-xs');
+          if (detailEl) detailEl.textContent = detail;
+        }
+      }
+
+      async function runAllChecks() {
+        await Promise.all([
+          loadCoverageData(),
+          loadDashboardData()
+        ]);
+      }
+
+      async function loadCoverageData() {
+        try {
+          const data = await api('/api/admin/coverage');
+          if (!data.success) {
+            console.error('Coverage API error:', data.error);
+            return;
+          }
+
+          const { score, queue_health, domain_errors_top, duplicate_crawls, l1_entry_coverage, l2_crawl_coverage, l3_data_coverage } = data.data;
+
+          // スコア更新
+          document.getElementById('score-total').textContent = score?.total || 0;
+          document.getElementById('score-l1').textContent = (score?.l1_score || 0) + '%';
+          document.getElementById('score-l2').textContent = (score?.l2_score || 0) + '%';
+          document.getElementById('score-l3').textContent = (score?.l3_score || 0) + '%';
+          document.getElementById('score-l1-detail').textContent = l1_entry_coverage?.registered_prefectures + '/47 都道府県';
+          document.getElementById('score-l2-detail').textContent = 'stale: ' + (l2_crawl_coverage?.stale_count || 0) + '件';
+          document.getElementById('score-l3-detail').textContent = 'active: ' + (l3_data_coverage?.summary?.active || 0) + '件';
+
+          // L1チェック
+          const l1Pass = l1_entry_coverage?.registered_prefectures >= 47;
+          updateCheckStatus('check-l1', l1Pass, l1_entry_coverage?.registered_prefectures + '/47');
+
+          // L1 欠損表示
+          const missingEl = document.getElementById('l1-missing');
+          if (l1_entry_coverage?.missing_prefectures?.length > 0) {
+            missingEl.innerHTML = '<span class="text-red-600 font-medium">欠損: ' + l1_entry_coverage.missing_prefectures.join(', ') + '</span>';
+          } else {
+            missingEl.innerHTML = '<span class="text-green-600 font-medium">✅ 全47都道府県登録済み</span>';
+          }
+
+          // キュー健全性チェック
+          const queuePass = queue_health?.is_healthy;
+          updateCheckStatus('check-queue', queuePass, queue_health?.warning || 'OK');
+
+          // キュー詳細
+          const queueEl = document.getElementById('queue-status-detail');
+          if (queue_health) {
+            const statusColors = {
+              queued: 'bg-yellow-100 text-yellow-800',
+              running: 'bg-blue-100 text-blue-800',
+              done: 'bg-green-100 text-green-800',
+              failed: 'bg-red-100 text-red-800',
+            };
+            const statusHtml = Object.entries(queue_health.by_status || {}).map(([status, count]) =>
+              '<span class="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium ' + (statusColors[status] || 'bg-gray-100') + ' mr-2">' + status + ': ' + count + '</span>'
+            ).join('');
+            const healthBadge = queue_health.is_healthy
+              ? '<span class="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-green-100 text-green-800"><i class="fas fa-check-circle mr-1"></i>正常</span>'
+              : '<span class="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-red-100 text-red-800"><i class="fas fa-exclamation-triangle mr-1"></i>' + (queue_health.warning || '異常') + '</span>';
+            const last24h = queue_health.last_24h
+              ? '<p class="text-sm text-gray-600 mt-2">直近24h: done=' + (queue_health.last_24h.done || 0) + ', failed=' + (queue_health.last_24h.failed || 0) + ', queued=' + (queue_health.last_24h.queued || 0) + '</p>'
+              : '';
+            queueEl.innerHTML = '<div class="flex flex-wrap items-center gap-2">' + healthBadge + statusHtml + '</div>' + last24h;
+          }
+
+          // L2チェック（直近24hでdone+failed>0）
+          const l2Pass = (queue_health?.last_24h?.done || 0) + (queue_health?.last_24h?.failed || 0) > 0;
+          updateCheckStatus('check-l2', l2Pass, 'done+failed=' + ((queue_health?.last_24h?.done || 0) + (queue_health?.last_24h?.failed || 0)));
+
+          // L2 stale地域
+          const staleEl = document.getElementById('l2-stale');
+          if (l2_crawl_coverage?.stale_regions?.length > 0) {
+            const tableHtml = '<table class="min-w-full text-sm">' +
+              '<thead><tr class="bg-red-50"><th class="px-3 py-2 text-left">地域</th><th class="px-3 py-2 text-left">最終クロール</th><th class="px-3 py-2 text-right">経過日数</th></tr></thead>' +
+              '<tbody>' + l2_crawl_coverage.stale_regions.map(r =>
+                '<tr class="border-b"><td class="px-3 py-2">' + r.geo_region + '</td><td class="px-3 py-2">' + (r.last_crawl || 'なし') + '</td><td class="px-3 py-2 text-right text-red-600">' + (r.days_since || '∞') + '日</td></tr>'
+              ).join('') + '</tbody></table>';
+            staleEl.innerHTML = tableHtml;
+          } else {
+            staleEl.innerHTML = '<p class="text-green-600 p-4"><i class="fas fa-check-circle mr-1"></i>全地域が7日以内にクロール済み</p>';
+          }
+
+          // ドメインエラーTop
+          const deEl = document.getElementById('domain-errors-table');
+          if (domain_errors_top && domain_errors_top.length > 0) {
+            const tableHtml = '<table class="min-w-full text-sm">' +
+              '<thead><tr class="bg-gray-100"><th class="px-3 py-2 text-left">ドメイン</th><th class="px-3 py-2 text-right">合計</th><th class="px-3 py-2 text-right">失敗</th><th class="px-3 py-2 text-right">成功</th><th class="px-3 py-2 text-right">失敗率</th></tr></thead>' +
+              '<tbody>' + domain_errors_top.slice(0, 10).map(d =>
+                '<tr class="border-b ' + (d.failed_pct > 50 ? 'bg-red-50' : d.failed_pct > 20 ? 'bg-yellow-50' : '') + '">' +
+                '<td class="px-3 py-2 font-mono text-xs">' + d.domain_key + '</td>' +
+                '<td class="px-3 py-2 text-right">' + d.total + '</td>' +
+                '<td class="px-3 py-2 text-right text-red-600">' + d.failed + '</td>' +
+                '<td class="px-3 py-2 text-right text-green-600">' + d.done + '</td>' +
+                '<td class="px-3 py-2 text-right font-medium ' + (d.failed_pct > 50 ? 'text-red-700' : d.failed_pct > 20 ? 'text-yellow-700' : 'text-gray-700') + '">' + d.failed_pct + '%</td>' +
+                '</tr>'
+              ).join('') + '</tbody></table>';
+            deEl.innerHTML = tableHtml;
+          } else {
+            deEl.innerHTML = '<p class="text-gray-400 p-4">エラーの多いドメインはありません</p>';
+          }
+
+          // 重複クロール
+          const dcEl = document.getElementById('duplicate-crawls-table');
+          if (duplicate_crawls && duplicate_crawls.length > 0) {
+            const tableHtml = '<table class="min-w-full text-sm">' +
+              '<thead><tr class="bg-gray-100"><th class="px-3 py-2 text-left">URL</th><th class="px-3 py-2 text-right">回数</th></tr></thead>' +
+              '<tbody>' + duplicate_crawls.slice(0, 10).map(d =>
+                '<tr class="border-b bg-orange-50">' +
+                '<td class="px-3 py-2 font-mono text-xs truncate max-w-md" title="' + d.url + '">' + (d.url.length > 60 ? d.url.substring(0, 60) + '...' : d.url) + '</td>' +
+                '<td class="px-3 py-2 text-right font-bold text-orange-600">' + d.cnt + '回</td>' +
+                '</tr>'
+              ).join('') + '</tbody></table>';
+            dcEl.innerHTML = tableHtml;
+          } else {
+            dcEl.innerHTML = '<p class="text-gray-400 p-4">重複クロールは検出されていません</p>';
+          }
+
+          // A-1 台帳揃い
+          const registryEl = document.getElementById('registry-scope');
+          if (l1_entry_coverage?.by_region) {
+            const scopeCounts = {};
+            for (const r of l1_entry_coverage.by_region) {
+              scopeCounts[r.scope] = (scopeCounts[r.scope] || 0) + r.source_count;
+            }
+            registryEl.innerHTML = ['national', 'prefecture', 'secretariat'].map(scope => {
+              const count = scopeCounts[scope] || 0;
+              const isPrefecture = scope === 'prefecture';
+              const isOk = isPrefecture ? count >= 47 : count > 0;
+              return '<div class="' + (isOk ? 'bg-green-50 border border-green-200' : 'bg-red-50 border border-red-200') + ' rounded-lg p-4 text-center">' +
+                '<p class="text-2xl font-bold ' + (isOk ? 'text-green-700' : 'text-red-700') + '">' + count + '</p>' +
+                '<p class="text-xs ' + (isOk ? 'text-green-600' : 'text-red-600') + '">' + scope + '</p>' +
+                '</div>';
+            }).join('');
+          }
+
+          // ドメインブロック状況
+          const blockEl = document.getElementById('domain-block-status');
+          const freshnessData = await api('/api/admin/data-freshness');
+          if (freshnessData.success && freshnessData.data.domainHealth) {
+            const blocked = freshnessData.data.domainHealth.filter(d => d.blocked || d.failure_count >= 3);
+            if (blocked.length > 0) {
+              const tableHtml = '<table class="min-w-full text-sm">' +
+                '<thead><tr class="bg-red-50"><th class="px-3 py-2 text-left">ドメイン</th><th class="px-3 py-2 text-left">理由</th><th class="px-3 py-2 text-right">失敗数</th><th class="px-3 py-2 text-left">ブロック解除</th></tr></thead>' +
+                '<tbody>' + blocked.map(d =>
+                  '<tr class="border-b">' +
+                  '<td class="px-3 py-2 font-mono text-xs">' + d.domain_key + '</td>' +
+                  '<td class="px-3 py-2 text-xs text-red-600">' + (d.blocked_reason || '-') + '</td>' +
+                  '<td class="px-3 py-2 text-right">' + d.failure_count + '</td>' +
+                  '<td class="px-3 py-2 text-xs">' + (d.blocked_until || '-') + '</td>' +
+                  '</tr>'
+                ).join('') + '</tbody></table>';
+              blockEl.innerHTML = tableHtml;
+            } else {
+              blockEl.innerHTML = '<p class="text-green-600 p-4"><i class="fas fa-check-circle mr-1"></i>ブロック中のドメインはありません</p>';
+            }
+          }
+
+          // loadingクラス削除
+          document.querySelectorAll('.loading').forEach(el => el.classList.remove('loading'));
+
+        } catch (error) {
+          console.error('Coverage load error:', error);
+        }
+      }
+
+      async function loadDashboardData() {
+        try {
+          const data = await api('/api/admin/dashboard');
+          if (!data.success) {
+            console.error('Dashboard API error:', data.error);
+            return;
+          }
+
+          const { kpi, recent_events } = data.data;
+
+          // 今日のKPI
+          const searchToday = kpi.searches?.today || 0;
+          const chatToday = kpi.chats?.today || 0;
+          const draftToday = kpi.drafts?.today || 0;
+
+          document.getElementById('kpi-search-today').textContent = searchToday;
+          document.getElementById('kpi-chat-today').textContent = chatToday;
+          document.getElementById('kpi-draft-today').textContent = draftToday;
+
+          // KPIチェック（どれか1つでも動いていればOK）
+          const kpiPass = searchToday > 0 || chatToday > 0 || draftToday > 0;
+          updateCheckStatus('check-kpi', kpiPass, kpiPass ? '動作確認OK' : '今日の操作なし');
+
+          // 今日の直近イベント
+          const eventsEl = document.getElementById('recent-events-list');
+          if (recent_events && recent_events.length > 0) {
+            const eventTypeLabels = {
+              'SUBSIDY_SEARCH': { label: '補助金検索', color: 'bg-green-100 text-green-800', icon: 'fas fa-search' },
+              'CHAT_SESSION_STARTED': { label: '壁打ち開始', color: 'bg-purple-100 text-purple-800', icon: 'fas fa-comments' },
+              'DRAFT_GENERATED': { label: 'ドラフト生成', color: 'bg-orange-100 text-orange-800', icon: 'fas fa-file-alt' },
+            };
+            const eventsHtml = '<table class="min-w-full text-sm">' +
+              '<thead><tr class="bg-gray-50"><th class="px-3 py-2 text-left">時刻</th><th class="px-3 py-2 text-left">イベント</th><th class="px-3 py-2 text-left">ユーザー</th><th class="px-3 py-2 text-left">会社</th><th class="px-3 py-2 text-left">詳細</th></tr></thead>' +
+              '<tbody>' + recent_events.map(e => {
+                const config = eventTypeLabels[e.event_type] || { label: e.event_type, color: 'bg-gray-100 text-gray-800', icon: 'fas fa-circle' };
+                const time = e.created_at ? new Date(e.created_at).toLocaleTimeString('ja-JP') : '-';
+                let detail = '';
+                try {
+                  const meta = e.metadata ? JSON.parse(e.metadata) : {};
+                  if (e.event_type === 'SUBSIDY_SEARCH') {
+                    detail = '結果: ' + (meta.results_count || 0) + '件';
+                  } else if (e.event_type === 'CHAT_SESSION_STARTED') {
+                    detail = 'ステータス: ' + (meta.precheck_status || '-');
+                  } else if (e.event_type === 'DRAFT_GENERATED') {
+                    detail = 'NG: ' + (meta.ng_count || 0) + '件';
+                  }
+                } catch (err) {}
+                return '<tr class="border-b hover:bg-gray-50">' +
+                  '<td class="px-3 py-2 text-gray-500 text-xs">' + time + '</td>' +
+                  '<td class="px-3 py-2"><span class="inline-flex items-center px-2 py-1 rounded text-xs font-medium ' + config.color + '"><i class="' + config.icon + ' mr-1"></i>' + config.label + '</span></td>' +
+                  '<td class="px-3 py-2 text-xs">' + (e.user_email || '-') + '</td>' +
+                  '<td class="px-3 py-2 text-xs">' + (e.company_name || '-') + '</td>' +
+                  '<td class="px-3 py-2 text-xs text-gray-500">' + detail + '</td>' +
+                  '</tr>';
+              }).join('') + '</tbody></table>';
+            eventsEl.innerHTML = eventsHtml;
+          } else {
+            eventsEl.innerHTML = '<div class="text-center py-8 text-gray-400"><i class="fas fa-inbox text-4xl mb-2"></i><p>今日のイベントはまだありません</p><p class="text-xs mt-1">検索・壁打ち・ドラフト生成を行うとここに表示されます</p></div>';
+          }
+
+          // loadingクラス削除
+          document.querySelectorAll('.loading').forEach(el => el.classList.remove('loading'));
+
+        } catch (error) {
+          console.error('Dashboard load error:', error);
+        }
+      }
+    </script>
+  `;
+
+  return c.html(adminLayout('運用チェック', content, 'ops'));
 });
 
 export default adminPages;
