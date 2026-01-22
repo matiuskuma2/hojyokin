@@ -394,12 +394,149 @@ FIRECRAWL_API_KEY=fc-xxx
 
 ---
 
+---
+
+## コード品質ガイドライン
+
+### 目標
+- 技術負債を防ぎ、運用インシデントを起こさない、信頼できるコードを書く
+- 「速く動く」より「正しく動く」を優先
+
+### 必須チェック項目
+
+#### 1. 入力の安全性
+- null/undefined/空値の処理
+- 型検証（JSON.parse時のtry-catch必須）
+- 境界値（0、負数、最大値、空配列）
+
+```javascript
+// ✅ Good
+var userStr = localStorage.getItem('user');
+var user = null;
+try {
+  user = userStr ? JSON.parse(userStr) : null;
+} catch (e) {
+  console.error('ユーザー情報のパースエラー:', e);
+  user = null;
+}
+
+// ❌ Bad
+var user = JSON.parse(localStorage.getItem('user'));
+```
+
+#### 2. ロジックの正確性
+- 条件分岐漏れ
+- ループ終了条件
+- 計算式・比較演算子の誤り
+
+#### 3. エラーハンドリング
+- 例外時の挙動
+- エラーメッセージの原因特定性
+- リソース解放
+
+```javascript
+// ✅ Good
+try {
+  var res = await fetch(path, fetchOptions);
+  var data = await res.json();
+  return data;
+} catch (err) {
+  console.error('API呼び出しエラー:', err);
+  return { success: false, error: { code: 'NETWORK_ERROR', message: '通信エラーが発生しました' } };
+}
+```
+
+#### 4. 既存コードとの整合性
+- 命名規則・設計パターンの統一
+- 前提・制約との矛盾回避
+- 依存関係の確認
+
+#### 5. セキュリティ
+- 入力サニタイズ
+- 認証/認可チェック
+- 機密情報のログ出力・ハードコーディング禁止
+
+#### 6. 設定・インフラ
+- 環境変数・パス・権限設定
+- 環境依存値のハードコーディング回避
+
+### JavaScript コーディング規則
+
+#### API呼び出し
+- 全ページで統一された `window.api()` または `window.apiCall()` を使用
+- 認証トークンは自動付与
+- エラーハンドリングは共通関数内で実施
+
+```javascript
+// ✅ 推奨パターン
+window.api = async function(path, options) {
+  options = options || {};
+  
+  var headers = {
+    'Content-Type': 'application/json',
+    'Authorization': 'Bearer ' + token
+  };
+  
+  // オプションのヘッダーをマージ
+  if (options.headers) {
+    for (var key in options.headers) {
+      headers[key] = options.headers[key];
+    }
+  }
+  
+  var fetchOptions = {
+    method: options.method || 'GET',
+    headers: headers
+  };
+  
+  if (options.body) {
+    fetchOptions.body = options.body;
+  }
+  
+  try {
+    var res = await fetch(path, fetchOptions);
+    var data = await res.json();
+    return data;
+  } catch (err) {
+    console.error('API呼び出しエラー:', err);
+    return { success: false, error: { code: 'NETWORK_ERROR', message: '通信エラーが発生しました' } };
+  }
+};
+```
+
+#### DOM操作
+- 要素取得後は必ずnullチェック
+
+```javascript
+// ✅ Good
+var el = document.getElementById('user-name');
+if (el) {
+  el.textContent = user.name || '';
+}
+
+// ❌ Bad
+document.getElementById('user-name').textContent = user.name;
+```
+
+#### ES5互換性
+- `var` を使用（`let`/`const` は一部古いブラウザで問題）
+- アロー関数は使わず `function` を使用（ただしテンプレートリテラル内のJSでは可）
+
+### 出力ルール
+- ⚠️ 懸念点を明記
+- 確信が持てない実装には `// TODO: 要確認` を付ける
+- 複数実装時はトレードオフを説明
+- 「たぶん動く」コードは出さない
+
+---
+
 ## ライセンス
 
 Private
 
 ## 更新履歴
 
+- **2026-01-22**: コード品質ガイドライン整備、全ページの技術負債解消
 - **2026-01-22**: S4 申請書ドラフト生成 完了
 - **2026-01-22**: S3 壁打ちチャット 完了
 - **2026-01-21**: Phase K2 Cron + Consumer実装完了

@@ -234,14 +234,51 @@ draftPages.get('/draft', (c) => {
   </main>
   
   <script>
-    const token = localStorage.getItem('token');
+    // ============================================================
+    // 共通初期化スクリプト
+    // ============================================================
+    var token = localStorage.getItem('token');
     if (!token) {
       window.location.href = '/login';
     }
     
+    // グローバルAPI呼び出しヘルパー
+    window.api = async function(path, options) {
+      options = options || {};
+      
+      var headers = {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + token
+      };
+      
+      if (options.headers) {
+        for (var key in options.headers) {
+          headers[key] = options.headers[key];
+        }
+      }
+      
+      var fetchOptions = {
+        method: options.method || 'GET',
+        headers: headers
+      };
+      
+      if (options.body) {
+        fetchOptions.body = options.body;
+      }
+      
+      try {
+        var res = await fetch(path, fetchOptions);
+        var data = await res.json();
+        return data;
+      } catch (err) {
+        console.error('API呼び出しエラー:', err);
+        return { success: false, error: { code: 'NETWORK_ERROR', message: '通信エラーが発生しました' } };
+      }
+    };
+    
     // URLパラメータ取得
-    const params = new URLSearchParams(window.location.search);
-    const sessionId = params.get('session_id');
+    var params = new URLSearchParams(window.location.search);
+    var sessionId = params.get('session_id');
     
     if (!sessionId) {
       alert('セッションが指定されていません');
@@ -252,9 +289,9 @@ draftPages.get('/draft', (c) => {
     document.getElementById('back-link').href = '/chat?session_id=' + sessionId;
     document.getElementById('link-chat').href = '/chat?session_id=' + sessionId;
     
-    let draftId = null;
-    let hasChanges = false;
-    let currentNgHits = [];
+    var draftId = null;
+    var hasChanges = false;
+    var currentNgHits = [];
     
     // セクション定義（並び替え可能）
     const SECTION_DEFS = [
@@ -406,18 +443,7 @@ draftPages.get('/draft', (c) => {
 ・借入金：○○○万円（○○銀行、返済期間○年）\`
     };
     
-    // API呼び出しヘルパー
-    async function api(path, options = {}) {
-      const res = await fetch(path, {
-        ...options,
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer ' + token,
-          ...(options.headers || {})
-        }
-      });
-      return res.json();
-    }
+    // 注意: window.api() はファイル先頭で定義済み
     
     // HTMLエスケープ
     function escapeHtml(text) {
@@ -802,7 +828,7 @@ draftPages.get('/draft', (c) => {
     // ドラフト生成
     async function generateDraft() {
       try {
-        const res = await api('/api/draft/generate', {
+        const res = await window.api('/api/draft/generate', {
           method: 'POST',
           body: JSON.stringify({ session_id: sessionId, mode: 'template' })
         });
@@ -824,7 +850,7 @@ draftPages.get('/draft', (c) => {
         showNgResult(res.data.ng);
         
         // 補助金タイトル取得
-        const sessionRes = await api('/api/chat/sessions/' + sessionId);
+        const sessionRes = await window.api('/api/chat/sessions/' + sessionId);
         if (sessionRes.success && sessionRes.data.session) {
           document.getElementById('subsidy-title').textContent = 
             sessionRes.data.session.subsidy_title || '補助金申請書';
@@ -852,7 +878,7 @@ draftPages.get('/draft', (c) => {
       
       try {
         const sections = getSections();
-        const res = await api('/api/draft/' + draftId, {
+        const res = await window.api('/api/draft/' + draftId, {
           method: 'PUT',
           body: JSON.stringify({ 
             sections,
@@ -911,7 +937,7 @@ draftPages.get('/draft', (c) => {
       }
       
       try {
-        const res = await api('/api/draft/' + draftId + '/finalize', {
+        const res = await window.api('/api/draft/' + draftId + '/finalize', {
           method: 'POST'
         });
         

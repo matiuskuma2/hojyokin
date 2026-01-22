@@ -74,44 +74,75 @@ const subsidyLayout = (title: string, content: string) => `
   </main>
   
   <script>
-    const token = localStorage.getItem('token');
-    if (!token) {
-      window.location.href = '/login';
-    }
-    
-    // ユーザー情報取得
-    async function loadUser() {
-      try {
-        const res = await fetch('/api/auth/me', {
-          headers: { 'Authorization': 'Bearer ' + token }
-        });
-        const data = await res.json();
-        if (data.success) {
-          document.getElementById('user-email').textContent = data.data.email;
-        }
-      } catch (e) {
-        console.error('Failed to load user:', e);
+    // ============================================================
+    // 共通初期化スクリプト
+    // ============================================================
+    (function() {
+      'use strict';
+      
+      var token = localStorage.getItem('token');
+      if (!token) {
+        window.location.href = '/login';
+        return;
       }
-    }
-    loadUser();
-    
-    function logout() {
-      localStorage.removeItem('token');
-      window.location.href = '/login';
-    }
-    
-    // API呼び出しヘルパー
-    async function api(path, options = {}) {
-      const res = await fetch(path, {
-        ...options,
-        headers: {
+      
+      // グローバルAPI呼び出しヘルパー
+      window.api = async function(path, options) {
+        options = options || {};
+        
+        var headers = {
           'Content-Type': 'application/json',
-          'Authorization': 'Bearer ' + token,
-          ...(options.headers || {})
+          'Authorization': 'Bearer ' + token
+        };
+        
+        if (options.headers) {
+          for (var key in options.headers) {
+            headers[key] = options.headers[key];
+          }
         }
-      });
-      return res.json();
-    }
+        
+        var fetchOptions = {
+          method: options.method || 'GET',
+          headers: headers
+        };
+        
+        if (options.body) {
+          fetchOptions.body = options.body;
+        }
+        
+        try {
+          var res = await fetch(path, fetchOptions);
+          var data = await res.json();
+          return data;
+        } catch (err) {
+          console.error('API呼び出しエラー:', err);
+          return { success: false, error: { code: 'NETWORK_ERROR', message: '通信エラーが発生しました' } };
+        }
+      };
+      
+      // ユーザー情報取得
+      async function loadUser() {
+        try {
+          var data = await window.api('/api/auth/me');
+          if (data && data.success) {
+            var emailEl = document.getElementById('user-email');
+            if (emailEl) {
+              emailEl.textContent = data.data.email || '';
+            }
+          }
+        } catch (e) {
+          console.error('Failed to load user:', e);
+        }
+      }
+      loadUser();
+      
+      // ログアウト関数
+      window.logout = function() {
+        localStorage.removeItem('token');
+        localStorage.removeItem('user');
+        window.location.href = '/login';
+      };
+    })();
   </script>
 </body>
 </html>

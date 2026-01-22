@@ -78,60 +78,101 @@ const agencyLayout = (title: string, content: string, activeTab: string = '') =>
   </main>
 
   <script>
-    const token = localStorage.getItem('token');
-    const user = JSON.parse(localStorage.getItem('user') || 'null');
-    
-    if (!token || !user) {
-      window.location.href = '/login';
-    } else if (user.role !== 'agency') {
-      alert('士業アカウントが必要です');
-      window.location.href = '/dashboard';
-    } else {
-      document.getElementById('user-name').textContent = user.name || user.email;
+    // ============================================================
+    // 共通初期化スクリプト
+    // ============================================================
+    (function() {
+      'use strict';
+      
+      var token = localStorage.getItem('token');
+      var userStr = localStorage.getItem('user');
+      var user = null;
+      
+      try {
+        user = userStr ? JSON.parse(userStr) : null;
+      } catch (e) {
+        console.error('ユーザー情報のパースエラー:', e);
+        user = null;
+      }
+      
+      if (!token || !user) {
+        window.location.href = '/login';
+        return;
+      }
+      
+      if (user.role !== 'agency') {
+        alert('士業アカウントが必要です');
+        window.location.href = '/dashboard';
+        return;
+      }
+      
+      var userNameEl = document.getElementById('user-name');
+      if (userNameEl) {
+        userNameEl.textContent = user.name || user.email || '';
+      }
+      
+      // グローバルAPI呼び出しヘルパー
+      window.apiCall = async function(endpoint, options) {
+        options = options || {};
+        
+        var headers = {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ' + token
+        };
+        
+        if (options.headers) {
+          for (var key in options.headers) {
+            headers[key] = options.headers[key];
+          }
+        }
+        
+        var fetchOptions = {
+          method: options.method || 'GET',
+          headers: headers
+        };
+        
+        if (options.body) {
+          fetchOptions.body = options.body;
+        }
+        
+        try {
+          var res = await fetch(endpoint, fetchOptions);
+          var data = await res.json();
+          return data;
+        } catch (err) {
+          console.error('API呼び出しエラー:', err);
+          return { success: false, error: { code: 'NETWORK_ERROR', message: '通信エラーが発生しました' } };
+        }
+      };
       
       // Agency情報取得
-      fetch('/api/agency/me', {
-        headers: { 'Authorization': 'Bearer ' + token }
-      })
-      .then(r => r.json())
-      .then(data => {
-        if (data.success) {
-          document.getElementById('agency-name').textContent = data.data.agency.name;
+      window.apiCall('/api/agency/me').then(function(data) {
+        if (data && data.success && data.data && data.data.agency) {
+          var agencyNameEl = document.getElementById('agency-name');
+          if (agencyNameEl) {
+            agencyNameEl.textContent = data.data.agency.name || '';
+          }
         }
       });
       
       // 未処理件数取得
-      fetch('/api/agency/submissions?status=submitted', {
-        headers: { 'Authorization': 'Bearer ' + token }
-      })
-      .then(r => r.json())
-      .then(data => {
-        if (data.success && data.data.submissions.length > 0) {
-          const badge = document.getElementById('pending-badge');
-          badge.textContent = data.data.submissions.length;
-          badge.classList.remove('hidden');
+      window.apiCall('/api/agency/submissions?status=submitted').then(function(data) {
+        if (data && data.success && data.data && data.data.submissions && data.data.submissions.length > 0) {
+          var badge = document.getElementById('pending-badge');
+          if (badge) {
+            badge.textContent = data.data.submissions.length;
+            badge.classList.remove('hidden');
+          }
         }
       });
-    }
-    
-    function logout() {
-      localStorage.removeItem('token');
-      localStorage.removeItem('user');
-      window.location.href = '/login';
-    }
-    
-    // 共通API呼び出し
-    async function apiCall(endpoint, options = {}) {
-      const res = await fetch(endpoint, {
-        ...options,
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer ' + token,
-          ...options.headers,
-        },
-      });
-      return res.json();
-    }
+      
+      // ログアウト関数
+      window.logout = function() {
+        localStorage.removeItem('token');
+        localStorage.removeItem('user');
+        window.location.href = '/login';
+      };
+    })();
   </script>
 </body>
 </html>

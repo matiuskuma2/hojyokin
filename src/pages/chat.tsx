@@ -197,36 +197,60 @@ chatPages.get('/chat', (c) => {
   </main>
   
   <script>
-    const token = localStorage.getItem('token');
+    // ============================================================
+    // 共通初期化スクリプト
+    // ============================================================
+    var token = localStorage.getItem('token');
     if (!token) {
       window.location.href = '/login';
     }
     
+    // グローバルAPI呼び出しヘルパー
+    window.api = async function(path, options) {
+      options = options || {};
+      
+      var headers = {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + token
+      };
+      
+      if (options.headers) {
+        for (var key in options.headers) {
+          headers[key] = options.headers[key];
+        }
+      }
+      
+      var fetchOptions = {
+        method: options.method || 'GET',
+        headers: headers
+      };
+      
+      if (options.body) {
+        fetchOptions.body = options.body;
+      }
+      
+      try {
+        var res = await fetch(path, fetchOptions);
+        var data = await res.json();
+        return data;
+      } catch (err) {
+        console.error('API呼び出しエラー:', err);
+        return { success: false, error: { code: 'NETWORK_ERROR', message: '通信エラーが発生しました' } };
+      }
+    };
+    
     // URLパラメータ取得
-    const params = new URLSearchParams(window.location.search);
-    const subsidyId = params.get('subsidy_id');
-    const companyId = params.get('company_id');
+    var params = new URLSearchParams(window.location.search);
+    var subsidyId = params.get('subsidy_id');
+    var companyId = params.get('company_id');
     
     if (!subsidyId || !companyId) {
       alert('補助金または会社が指定されていません');
       window.location.href = '/subsidies';
     }
     
-    let sessionId = null;
-    let sessionCompleted = false;
-    
-    // API呼び出しヘルパー
-    async function api(path, options = {}) {
-      const res = await fetch(path, {
-        ...options,
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer ' + token,
-          ...(options.headers || {})
-        }
-      });
-      return res.json();
-    }
+    var sessionId = null;
+    var sessionCompleted = false;
     
     // メッセージを追加
     function addMessage(role, content, animate = true) {
