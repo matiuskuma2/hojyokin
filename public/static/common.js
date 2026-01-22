@@ -256,6 +256,35 @@
   };
   
   // ============================================================
+  // エスケープ・サニタイズ
+  // ============================================================
+  
+  /**
+   * HTMLエスケープ（XSS対策）
+   */
+  window.escapeHtml = function(str) {
+    if (str === null || str === undefined) return '';
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
+  };
+  
+  /**
+   * 安全なJSON文字列化（テンプレートリテラル内で使用）
+   */
+  window.safeJsonStringify = function(obj) {
+    if (obj === null || obj === undefined) return '{}';
+    try {
+      return JSON.stringify(obj).replace(/</g, '\\u003c').replace(/>/g, '\\u003e');
+    } catch (e) {
+      return '{}';
+    }
+  };
+  
+  // ============================================================
   // バリデーション
   // ============================================================
   

@@ -916,7 +916,7 @@ adminDashboard.post('/generate-daily-snapshot', async (c) => {
 });
 
 // ============================================================
-// L1/L2/L3 網羅性チェック（superadmin向け）
+// L1/L2/L3 網羅性チェック + 運用監視KPI（superadmin向け）
 // ============================================================
 
 adminDashboard.get('/coverage', async (c) => {
@@ -936,16 +936,104 @@ adminDashboard.get('/coverage', async (c) => {
 
   try {
     // ===================
+    // キュー滞留チェック（Consumer生存確認）
+    // ===================
+    const queueStatus = await db.prepare(`
+      SELECT 
+        status,
+        COUNT(*) as count
+      FROM crawl_queue
+      GROUP BY status
+    `).all<{ status: string; count: number }>();
+    
+    const queueByStatus: Record<string, number> = {};
+    for (const row of queueStatus.results || []) {
+      queueByStatus[row.status] = row.count;
+    }
+
+    // 最古のqueued（consumer停止検知）
+    const oldestQueued = await db.prepare(`
+      SELECT 
+        MIN(created_at) as oldest_created,
+        MIN(scheduled_at) as oldest_scheduled,
+        COUNT(*) as total_queued
+      FROM crawl_queue
+      WHERE status = 'queued'
+    `).first<{ oldest_created: string | null; oldest_scheduled: string | null; total_queued: number }>();
+
+    // 直近24hのキュー処理統計
+    const queue24h = await db.prepare(`
+      SELECT 
+        COUNT(*) as total,
+        SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) as done,
+        SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed,
+        SUM(CASE WHEN status = 'queued' THEN 1 ELSE 0 END) as queued
+      FROM crawl_queue
+      WHERE created_at >= datetime('now', '-1 day')
+    `).first<{ total: number; done: number; failed: number; queued: number }>();
+
+    const queueHealth = {
+      by_status: queueByStatus,
+      oldest_queued: oldestQueued,
+      last_24h: queue24h,
+      // queuedが増え続けてないか？（警告閾値：100件以上滞留）
+      is_healthy: (queueByStatus['queued'] || 0) < 100,
+      warning: (queueByStatus['queued'] || 0) >= 100 ? 'キュー滞留警告：' + queueByStatus['queued'] + '件が待機中' : null,
+    };
+
+    // ===================
+    // ドメイン別エラー率Top20（失敗が多いドメイン）
+    // ===================
+    const domainErrorsTop = await db.prepare(`
+      SELECT 
+        domain_key,
+        COUNT(*) as total,
+        SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed,
+        SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) as done,
+        ROUND(100.0 * SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) / COUNT(*), 2) as failed_pct,
+        MAX(finished_at) as last_activity
+      FROM crawl_queue
+      WHERE created_at >= datetime('now', '-7 day')
+      GROUP BY domain_key
+      HAVING total >= 5
+      ORDER BY failed_pct DESC, failed DESC
+      LIMIT 20
+    `).all<{
+      domain_key: string;
+      total: number;
+      failed: number;
+      done: number;
+      failed_pct: number;
+      last_activity: string | null;
+    }>();
+
+    // ===================
+    // 同じURL叩きすぎ検知（無駄クロール）
+    // ===================
+    const duplicateCrawls = await db.prepare(`
+      SELECT 
+        source_registry_id,
+        url,
+        COUNT(*) as cnt
+      FROM crawl_queue
+      WHERE created_at >= datetime('now', '-7 day')
+      GROUP BY source_registry_id, url
+      HAVING cnt >= 5
+      ORDER BY cnt DESC
+      LIMIT 20
+    `).all<{ source_registry_id: string | null; url: string; cnt: number }>();
+
+    // ===================
     // L1: 入口網羅性（source_registry × geo_region）
     // ===================
-    // 47都道府県 + 国 のソースが登録されているか
+    // 47都道府県のソースが登録されているか
+    // geo_regionテーブルがない場合があるので、source_registryから直接取得
     const l1_registered = await db.prepare(`
       SELECT 
         geo_region,
         scope,
         COUNT(*) as source_count,
-        SUM(CASE WHEN enabled = 1 THEN 1 ELSE 0 END) as enabled_count,
-        SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as error_count
+        SUM(CASE WHEN enabled = 1 THEN 1 ELSE 0 END) as enabled_count
       FROM source_registry
       WHERE geo_region IS NOT NULL
       GROUP BY geo_region, scope
@@ -955,7 +1043,6 @@ adminDashboard.get('/coverage', async (c) => {
       scope: string;
       source_count: number;
       enabled_count: number;
-      error_count: number;
     }>();
 
     // 登録されていない都道府県を検出
@@ -968,12 +1055,14 @@ adminDashboard.get('/coverage', async (c) => {
     ];
     const registeredGeoRegions = new Set((l1_registered.results || []).map(r => r.geo_region));
     const missingPrefectures = allPrefectures.filter(p => !registeredGeoRegions.has(p));
+    const coveredPrefectures = allPrefectures.filter(p => registeredGeoRegions.has(p));
 
     const l1 = {
       total_prefectures: 47,
-      registered_prefectures: allPrefectures.filter(p => registeredGeoRegions.has(p)).length,
+      registered_prefectures: coveredPrefectures.length,
       missing_prefectures: missingPrefectures,
-      coverage_rate: Math.round((allPrefectures.filter(p => registeredGeoRegions.has(p)).length / 47) * 100),
+      missing_count: missingPrefectures.length,
+      coverage_rate: Math.round((coveredPrefectures.length / 47) * 100),
       by_region: l1_registered.results || [],
     };
 
@@ -1086,10 +1175,17 @@ adminDashboard.get('/coverage', async (c) => {
     return c.json<ApiResponse<any>>({
       success: true,
       data: {
+        // 運用監視（最重要）
+        queue_health: queueHealth,
+        domain_errors_top: domainErrorsTop.results || [],
+        duplicate_crawls: duplicateCrawls.results || [],
+        
+        // 網羅性スコア
         score: overallScore,
         l1_entry_coverage: l1,
         l2_crawl_coverage: l2,
         l3_data_coverage: l3,
+        
         generated_at: new Date().toISOString(),
       },
     });

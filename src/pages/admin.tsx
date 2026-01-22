@@ -295,6 +295,74 @@ adminPages.get('/admin', (c) => {
       </div>
     </div>
 
+    <!-- 網羅性・運用監視（super_admin のみ） -->
+    <div id="coverage-section" class="hidden mb-8">
+      <div class="bg-white rounded-xl shadow p-6">
+        <div class="flex items-center justify-between mb-4">
+          <h2 class="text-lg font-bold text-gray-800">
+            <i class="fas fa-map-marked-alt text-blue-600 mr-2"></i>網羅性・運用監視
+          </h2>
+          <button onclick="loadCoverage()" class="text-sm text-indigo-600 hover:text-indigo-800">
+            <i class="fas fa-sync-alt mr-1"></i>更新
+          </button>
+        </div>
+        
+        <!-- 網羅スコア -->
+        <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+          <div class="bg-gradient-to-br from-blue-50 to-blue-100 rounded-lg p-4 text-center">
+            <p class="text-sm text-blue-600 font-medium">総合スコア</p>
+            <p id="coverage-score-total" class="text-4xl font-bold text-blue-700">-</p>
+            <p class="text-xs text-blue-500">/ 100</p>
+          </div>
+          <div class="bg-gray-50 rounded-lg p-4 text-center">
+            <p class="text-sm text-gray-500">L1 入口網羅</p>
+            <p id="coverage-score-l1" class="text-2xl font-bold text-gray-700">-</p>
+            <p class="text-xs text-gray-400">都道府県ソース</p>
+          </div>
+          <div class="bg-gray-50 rounded-lg p-4 text-center">
+            <p class="text-sm text-gray-500">L2 実稼働網羅</p>
+            <p id="coverage-score-l2" class="text-2xl font-bold text-gray-700">-</p>
+            <p class="text-xs text-gray-400">クロール実行</p>
+          </div>
+          <div class="bg-gray-50 rounded-lg p-4 text-center">
+            <p class="text-sm text-gray-500">L3 データ網羅</p>
+            <p id="coverage-score-l3" class="text-2xl font-bold text-gray-700">-</p>
+            <p class="text-xs text-gray-400">補助金データ</p>
+          </div>
+        </div>
+
+        <!-- キュー健全性 -->
+        <div class="mb-6">
+          <h3 class="text-sm font-medium text-gray-700 mb-2">
+            <i class="fas fa-heartbeat mr-1"></i>キュー健全性（Consumer生存確認）
+          </h3>
+          <div id="queue-health" class="p-4 rounded-lg bg-gray-50">
+            <div class="loading text-gray-400">読み込み中...</div>
+          </div>
+        </div>
+
+        <!-- ドメイン別エラー率Top10 -->
+        <div class="mb-6">
+          <h3 class="text-sm font-medium text-gray-700 mb-2">
+            <i class="fas fa-exclamation-circle mr-1"></i>ドメイン別エラー率Top（直近7日）
+          </h3>
+          <div id="domain-errors" class="overflow-x-auto">
+            <div class="loading text-gray-400 p-4">読み込み中...</div>
+          </div>
+        </div>
+
+        <!-- 重複クロール検知 -->
+        <div>
+          <h3 class="text-sm font-medium text-gray-700 mb-2">
+            <i class="fas fa-clone mr-1"></i>重複クロール検知（同一URL 5回以上）
+          </h3>
+          <div id="duplicate-crawls" class="overflow-x-auto">
+            <div class="loading text-gray-400 p-4">読み込み中...</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- コスト概要（super_admin のみ） -->
     <div id="cost-section" class="hidden mb-8">
       <div class="bg-white rounded-xl shadow p-6">
@@ -448,8 +516,100 @@ adminPages.get('/admin', (c) => {
         }
       }
 
+      async function loadCoverage() {
+        const user = JSON.parse(localStorage.getItem('user') || 'null');
+        if (user?.role !== 'super_admin') return;
+
+        document.getElementById('coverage-section').classList.remove('hidden');
+
+        try {
+          const data = await api('/api/admin/coverage');
+          if (!data.success) {
+            console.error('Coverage load failed:', data.error);
+            return;
+          }
+
+          const { score, queue_health, domain_errors_top, duplicate_crawls, l1_entry_coverage, l2_crawl_coverage, l3_data_coverage } = data.data;
+
+          // スコア更新
+          document.getElementById('coverage-score-total').textContent = score?.total || 0;
+          document.getElementById('coverage-score-l1').textContent = (score?.l1_score || 0) + '%';
+          document.getElementById('coverage-score-l2').textContent = (score?.l2_score || 0) + '%';
+          document.getElementById('coverage-score-l3').textContent = (score?.l3_score || 0) + '%';
+
+          // キュー健全性
+          const qhEl = document.getElementById('queue-health');
+          if (queue_health) {
+            const statusColors = {
+              queued: 'bg-yellow-100 text-yellow-800',
+              running: 'bg-blue-100 text-blue-800',
+              done: 'bg-green-100 text-green-800',
+              failed: 'bg-red-100 text-red-800',
+              blocked: 'bg-gray-100 text-gray-800',
+            };
+            const statusHtml = Object.entries(queue_health.by_status || {}).map(([status, count]) => 
+              '<span class="inline-flex items-center px-2 py-1 rounded text-xs font-medium ' + (statusColors[status] || 'bg-gray-100') + ' mr-2">' + status + ': ' + count + '</span>'
+            ).join('');
+            
+            const healthStatus = queue_health.is_healthy 
+              ? '<span class="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-green-100 text-green-800"><i class="fas fa-check-circle mr-1"></i>正常</span>'
+              : '<span class="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-red-100 text-red-800"><i class="fas fa-exclamation-triangle mr-1"></i>' + (queue_health.warning || '異常') + '</span>';
+            
+            const oldest = queue_health.oldest_queued?.oldest_created 
+              ? '<p class="text-xs text-gray-500 mt-2">最古のqueued: ' + queue_health.oldest_queued.oldest_created + ' (' + queue_health.oldest_queued.total_queued + '件待機中)</p>'
+              : '';
+            
+            const last24h = queue_health.last_24h 
+              ? '<p class="text-xs text-gray-500">直近24h: 処理済み' + (queue_health.last_24h.done || 0) + '件 / 失敗' + (queue_health.last_24h.failed || 0) + '件</p>'
+              : '';
+
+            qhEl.innerHTML = '<div class="flex items-center gap-4">' + healthStatus + '</div>' +
+              '<div class="mt-3">' + statusHtml + '</div>' + oldest + last24h;
+          }
+
+          // ドメイン別エラー率Top
+          const deEl = document.getElementById('domain-errors');
+          if (domain_errors_top && domain_errors_top.length > 0) {
+            const tableHtml = '<table class="min-w-full text-sm">' +
+              '<thead><tr class="bg-gray-100"><th class="px-3 py-2 text-left">ドメイン</th><th class="px-3 py-2 text-right">合計</th><th class="px-3 py-2 text-right">失敗</th><th class="px-3 py-2 text-right">成功</th><th class="px-3 py-2 text-right">失敗率</th></tr></thead>' +
+              '<tbody>' + domain_errors_top.slice(0, 10).map(d => 
+                '<tr class="border-b ' + (d.failed_pct > 50 ? 'bg-red-50' : d.failed_pct > 20 ? 'bg-yellow-50' : '') + '">' +
+                '<td class="px-3 py-2 font-mono text-xs">' + d.domain_key + '</td>' +
+                '<td class="px-3 py-2 text-right">' + d.total + '</td>' +
+                '<td class="px-3 py-2 text-right text-red-600">' + d.failed + '</td>' +
+                '<td class="px-3 py-2 text-right text-green-600">' + d.done + '</td>' +
+                '<td class="px-3 py-2 text-right font-medium ' + (d.failed_pct > 50 ? 'text-red-700' : d.failed_pct > 20 ? 'text-yellow-700' : 'text-gray-700') + '">' + d.failed_pct + '%</td>' +
+                '</tr>'
+              ).join('') + '</tbody></table>';
+            deEl.innerHTML = tableHtml;
+          } else {
+            deEl.innerHTML = '<p class="text-gray-400 p-4">エラーの多いドメインはありません</p>';
+          }
+
+          // 重複クロール検知
+          const dcEl = document.getElementById('duplicate-crawls');
+          if (duplicate_crawls && duplicate_crawls.length > 0) {
+            const tableHtml = '<table class="min-w-full text-sm">' +
+              '<thead><tr class="bg-gray-100"><th class="px-3 py-2 text-left">URL</th><th class="px-3 py-2 text-right">回数</th></tr></thead>' +
+              '<tbody>' + duplicate_crawls.slice(0, 10).map(d => 
+                '<tr class="border-b bg-orange-50">' +
+                '<td class="px-3 py-2 font-mono text-xs truncate max-w-md" title="' + d.url + '">' + (d.url.length > 60 ? d.url.substring(0, 60) + '...' : d.url) + '</td>' +
+                '<td class="px-3 py-2 text-right font-bold text-orange-600">' + d.cnt + '回</td>' +
+                '</tr>'
+              ).join('') + '</tbody></table>';
+            dcEl.innerHTML = tableHtml;
+          } else {
+            dcEl.innerHTML = '<p class="text-gray-400 p-4">重複クロールは検出されていません</p>';
+          }
+
+        } catch (error) {
+          console.error('Coverage load error:', error);
+        }
+      }
+
       loadDashboard();
       loadCosts();
+      loadCoverage();
     </script>
   `;
 
