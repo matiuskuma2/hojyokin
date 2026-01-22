@@ -3,6 +3,13 @@
  * 
  * /subsidies - 補助金一覧（検索・フィルタ）
  * /subsidies/:id - 補助金詳細（要件・必要書類・壁打ちボタン）
+ * 
+ * Sprint 2 改善:
+ * - 検索モード切替（当てはまる優先/全件表示）
+ * - 一覧カードの条件可視化（最低条件、未達条件、なぜ出てきたか）
+ * 
+ * Sprint 3 改善:
+ * - 加点要素の表示（詳細ページ）
  */
 
 import { Hono } from 'hono';
@@ -20,6 +27,14 @@ const subsidyLayout = (title: string, content: string) => `
   <title>${title} - 補助金マッチング</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet">
+  <style>
+    .condition-badge { transition: all 0.2s; }
+    .condition-badge:hover { transform: scale(1.05); }
+    .card-hover { transition: all 0.3s; }
+    .card-hover:hover { transform: translateY(-2px); box-shadow: 0 10px 20px rgba(0,0,0,0.1); }
+    .mode-toggle { transition: all 0.2s; }
+    .mode-toggle.active { background-color: #059669; color: white; }
+  </style>
 </head>
 <body class="bg-gray-50 min-h-screen">
   <!-- Header -->
@@ -102,6 +117,7 @@ const subsidyLayout = (title: string, content: string) => `
 
 /**
  * 補助金一覧ページ（S1）
+ * Sprint 2: 検索モード切替＋条件可視化
  */
 subsidyPages.get('/subsidies', (c) => {
   const content = `
@@ -162,6 +178,28 @@ subsidyPages.get('/subsidies', (c) => {
         </div>
       </div>
       
+      <!-- 検索モード切替（Sprint 2） -->
+      <div class="mt-4 pt-4 border-t">
+        <div class="flex items-center justify-between">
+          <div class="flex items-center space-x-2">
+            <span class="text-sm font-medium text-gray-700">表示モード:</span>
+            <div class="flex rounded-md overflow-hidden border">
+              <button onclick="setSearchMode('match')" id="mode-match" 
+                      class="mode-toggle px-4 py-2 text-sm font-medium active">
+                <i class="fas fa-check-circle mr-1"></i>当てはまるもの優先
+              </button>
+              <button onclick="setSearchMode('all')" id="mode-all"
+                      class="mode-toggle px-4 py-2 text-sm font-medium border-l">
+                <i class="fas fa-list mr-1"></i>全件表示
+              </button>
+            </div>
+          </div>
+          <div id="mode-description" class="text-xs text-gray-500">
+            <i class="fas fa-info-circle mr-1"></i>条件に合う補助金を優先表示し、合わないものは下部に表示します
+          </div>
+        </div>
+      </div>
+      
       <!-- フィルター（折りたたみ） -->
       <details class="mt-4">
         <summary class="text-sm text-gray-600 cursor-pointer hover:text-gray-800">
@@ -180,6 +218,7 @@ subsidyPages.get('/subsidies', (c) => {
           <div>
             <label class="block text-sm font-medium text-gray-700 mb-1">ソート</label>
             <select id="sort" class="w-full px-3 py-2 border rounded-md text-sm">
+              <option value="score">マッチ度順</option>
               <option value="acceptance_end_datetime">締切日順</option>
               <option value="subsidy_max_limit">補助上限順</option>
             </select>
@@ -197,21 +236,30 @@ subsidyPages.get('/subsidies', (c) => {
     </div>
     
     <!-- 検索結果サマリー -->
-    <div id="result-summary" class="hidden mb-4 flex items-center justify-between">
-      <div class="text-sm text-gray-600">
-        <span id="result-count">0</span>件の補助金が見つかりました
-        <span id="data-source" class="ml-2 px-2 py-0.5 bg-gray-100 rounded text-xs"></span>
+    <div id="result-summary" class="hidden mb-4">
+      <div class="flex items-center justify-between">
+        <div class="text-sm text-gray-600">
+          <span id="result-count">0</span>件の補助金が見つかりました
+          <span id="data-source" class="ml-2 px-2 py-0.5 bg-gray-100 rounded text-xs"></span>
+        </div>
+        <div class="flex space-x-2">
+          <span class="px-2 py-1 bg-green-100 text-green-800 rounded text-xs">
+            <i class="fas fa-check-circle mr-1"></i>推奨: <span id="count-proceed">0</span>
+          </span>
+          <span class="px-2 py-1 bg-yellow-100 text-yellow-800 rounded text-xs">
+            <i class="fas fa-exclamation-triangle mr-1"></i>注意: <span id="count-caution">0</span>
+          </span>
+          <span class="px-2 py-1 bg-red-100 text-red-800 rounded text-xs">
+            <i class="fas fa-times-circle mr-1"></i>非推奨: <span id="count-no">0</span>
+          </span>
+        </div>
       </div>
-      <div class="flex space-x-2">
-        <span class="px-2 py-1 bg-green-100 text-green-800 rounded text-xs">
-          <i class="fas fa-check-circle mr-1"></i>推奨: <span id="count-proceed">0</span>
-        </span>
-        <span class="px-2 py-1 bg-yellow-100 text-yellow-800 rounded text-xs">
-          <i class="fas fa-exclamation-triangle mr-1"></i>注意: <span id="count-caution">0</span>
-        </span>
-        <span class="px-2 py-1 bg-red-100 text-red-800 rounded text-xs">
-          <i class="fas fa-times-circle mr-1"></i>非推奨: <span id="count-no">0</span>
-        </span>
+      
+      <!-- 条件凡例（Sprint 2） -->
+      <div class="mt-2 flex items-center space-x-4 text-xs text-gray-500">
+        <span><span class="inline-block w-3 h-3 bg-green-100 border border-green-400 rounded mr-1"></span>達成条件</span>
+        <span><span class="inline-block w-3 h-3 bg-red-100 border border-red-400 rounded mr-1"></span>未達条件</span>
+        <span><span class="inline-block w-3 h-3 bg-gray-100 border border-gray-400 rounded mr-1"></span>確認が必要</span>
       </div>
     </div>
     
@@ -238,6 +286,29 @@ subsidyPages.get('/subsidies', (c) => {
     <script>
       let currentResults = [];
       let currentPage = 1;
+      let searchMode = 'match'; // 'match' または 'all'
+      
+      // 検索モード切替
+      function setSearchMode(mode) {
+        searchMode = mode;
+        
+        // ボタンの見た目を更新
+        document.getElementById('mode-match').classList.toggle('active', mode === 'match');
+        document.getElementById('mode-all').classList.toggle('active', mode === 'all');
+        
+        // 説明テキストを更新
+        const desc = document.getElementById('mode-description');
+        if (mode === 'match') {
+          desc.innerHTML = '<i class="fas fa-info-circle mr-1"></i>条件に合う補助金を優先表示し、合わないものは下部に表示します';
+        } else {
+          desc.innerHTML = '<i class="fas fa-info-circle mr-1"></i>条件に関係なく全件を表示します（学習・比較用）';
+        }
+        
+        // 結果があれば再描画
+        if (currentResults.length > 0) {
+          renderResults(currentResults, null);
+        }
+      }
       
       // 会社一覧取得
       async function loadCompanies() {
@@ -275,7 +346,7 @@ subsidyPages.get('/subsidies', (c) => {
           keyword: document.getElementById('keyword').value,
           acceptance: document.getElementById('acceptance').value,
           sort: document.getElementById('sort').value,
-          order: 'ASC',
+          order: document.getElementById('sort').value === 'score' ? 'DESC' : 'ASC',
           limit: limit.toString(),
           offset: offset.toString()
         });
@@ -302,13 +373,24 @@ subsidyPages.get('/subsidies', (c) => {
         }
       }
       
-      // 結果描画
+      // 結果描画（Sprint 2 改善）
       function renderResults(results, meta) {
         const statusFilter = document.getElementById('status-filter').value;
         let filtered = results;
         
         if (statusFilter) {
           filtered = results.filter(r => r.evaluation.status === statusFilter);
+        }
+        
+        // 検索モードによる並び替え
+        if (searchMode === 'match') {
+          // PROCEED > CAUTION > NO の順にソート、同じならスコア順
+          const statusOrder = { 'PROCEED': 0, 'CAUTION': 1, 'NO': 2 };
+          filtered.sort((a, b) => {
+            const orderDiff = statusOrder[a.evaluation.status] - statusOrder[b.evaluation.status];
+            if (orderDiff !== 0) return orderDiff;
+            return (b.evaluation.score || 0) - (a.evaluation.score || 0);
+          });
         }
         
         // サマリー更新
@@ -348,8 +430,14 @@ subsidyPages.get('/subsidies', (c) => {
           const daysLeft = endDate ? Math.ceil((endDate - new Date()) / (1000 * 60 * 60 * 24)) : null;
           const urgencyClass = daysLeft !== null && daysLeft <= 14 ? 'text-red-600 font-bold' : 'text-gray-600';
           
+          // Sprint 2: 条件バッジを生成
+          const conditionBadges = generateConditionBadges(e);
+          
+          // Sprint 2: なぜ出てきたかの説明
+          const whyMatched = generateWhyMatched(e);
+          
           return \`
-            <div class="bg-white rounded-lg shadow hover:shadow-md transition-shadow border-l-4 \${sc.border}">
+            <div class="card-hover bg-white rounded-lg shadow border-l-4 \${sc.border}">
               <div class="p-5">
                 <div class="flex items-start justify-between">
                   <div class="flex-1">
@@ -374,9 +462,14 @@ subsidyPages.get('/subsidies', (c) => {
                       </a>
                     </h3>
                     
-                    <p class="text-sm text-gray-600 mb-3 line-clamp-2">\${e.explanation || ''}</p>
+                    <!-- Sprint 2: なぜ出てきたかの説明 -->
+                    \${whyMatched ? \`
+                      <div class="mb-3 px-3 py-2 bg-gray-50 rounded-md text-sm text-gray-700">
+                        <i class="fas fa-lightbulb text-yellow-500 mr-1"></i>\${whyMatched}
+                      </div>
+                    \` : ''}
                     
-                    <div class="flex flex-wrap gap-4 text-sm">
+                    <div class="flex flex-wrap gap-4 text-sm mb-3">
                       <div class="flex items-center text-gray-600">
                         <i class="fas fa-building mr-1"></i>
                         \${s.subsidy_executing_organization || '事務局情報なし'}
@@ -391,6 +484,9 @@ subsidyPages.get('/subsidies', (c) => {
                         上限: \${s.subsidy_max_limit ? Number(s.subsidy_max_limit).toLocaleString() + '円' : '情報なし'}
                       </div>
                     </div>
+                    
+                    <!-- Sprint 2: 条件バッジ -->
+                    \${conditionBadges}
                   </div>
                   
                   <div class="ml-4 flex flex-col space-y-2">
@@ -398,21 +494,14 @@ subsidyPages.get('/subsidies', (c) => {
                        class="bg-green-600 text-white px-4 py-2 rounded-md hover:bg-green-700 text-sm text-center">
                       <i class="fas fa-arrow-right mr-1"></i>詳細を見る
                     </a>
+                    \${e.status !== 'NO' ? \`
+                      <a href="/chat?subsidy_id=\${s.id}&company_id=\${document.getElementById('company-select').value}" 
+                         class="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700 text-sm text-center">
+                        <i class="fas fa-comments mr-1"></i>壁打ち
+                      </a>
+                    \` : ''}
                   </div>
                 </div>
-                
-                \${e.match_reasons.length > 0 ? \`
-                  <div class="mt-3 pt-3 border-t">
-                    <div class="flex flex-wrap gap-2">
-                      \${e.match_reasons.slice(0, 3).map(r => \`
-                        <span class="px-2 py-1 bg-gray-100 text-gray-700 rounded text-xs">
-                          <i class="fas fa-check text-green-500 mr-1"></i>\${r}
-                        </span>
-                      \`).join('')}
-                      \${e.match_reasons.length > 3 ? \`<span class="text-xs text-gray-500">+\${e.match_reasons.length - 3}件</span>\` : ''}
-                    </div>
-                  </div>
-                \` : ''}
               </div>
             </div>
           \`;
@@ -444,6 +533,71 @@ subsidyPages.get('/subsidies', (c) => {
         }
       }
       
+      // Sprint 2: 条件バッジを生成
+      function generateConditionBadges(evaluation) {
+        const badges = [];
+        
+        // マッチ理由（達成条件）
+        if (evaluation.match_reasons && evaluation.match_reasons.length > 0) {
+          evaluation.match_reasons.slice(0, 3).forEach(reason => {
+            badges.push(\`
+              <span class="condition-badge px-2 py-1 bg-green-100 border border-green-300 text-green-800 rounded text-xs">
+                <i class="fas fa-check text-green-500 mr-1"></i>\${reason}
+              </span>
+            \`);
+          });
+        }
+        
+        // リスクフラグ（未達条件・注意事項）
+        if (evaluation.risk_flags && evaluation.risk_flags.length > 0) {
+          evaluation.risk_flags.slice(0, 2).forEach(flag => {
+            badges.push(\`
+              <span class="condition-badge px-2 py-1 bg-red-100 border border-red-300 text-red-800 rounded text-xs">
+                <i class="fas fa-times text-red-500 mr-1"></i>\${flag}
+              </span>
+            \`);
+          });
+        }
+        
+        // 残りの項目数
+        const totalItems = (evaluation.match_reasons?.length || 0) + (evaluation.risk_flags?.length || 0);
+        const shownItems = Math.min(3, evaluation.match_reasons?.length || 0) + Math.min(2, evaluation.risk_flags?.length || 0);
+        if (totalItems > shownItems) {
+          badges.push(\`<span class="text-xs text-gray-500">+\${totalItems - shownItems}件</span>\`);
+        }
+        
+        if (badges.length === 0) {
+          return '';
+        }
+        
+        return \`
+          <div class="flex flex-wrap gap-2 pt-2 border-t">
+            \${badges.join('')}
+          </div>
+        \`;
+      }
+      
+      // Sprint 2: なぜ出てきたかの説明
+      function generateWhyMatched(evaluation) {
+        if (evaluation.status === 'PROCEED') {
+          if (evaluation.match_reasons && evaluation.match_reasons.length > 0) {
+            return \`あなたの会社は「\${evaluation.match_reasons[0]}」に該当するため、この補助金が推奨されています。\`;
+          }
+          return 'あなたの会社の条件に合致しています。';
+        } else if (evaluation.status === 'CAUTION') {
+          if (evaluation.risk_flags && evaluation.risk_flags.length > 0) {
+            return \`「\${evaluation.risk_flags[0]}」の確認が必要です。条件を満たせば申請可能な可能性があります。\`;
+          }
+          return '一部の条件について確認が必要です。';
+        } else if (evaluation.status === 'NO') {
+          if (evaluation.risk_flags && evaluation.risk_flags.length > 0) {
+            return \`「\${evaluation.risk_flags[0]}」のため、現在の条件では申請が難しい可能性があります。\`;
+          }
+          return '現在の条件では申請要件を満たしていません。';
+        }
+        return '';
+      }
+      
       // フィルター変更時に再描画
       document.getElementById('status-filter').addEventListener('change', () => {
         renderResults(currentResults, null);
@@ -459,6 +613,7 @@ subsidyPages.get('/subsidies', (c) => {
 
 /**
  * 補助金詳細ページ（S2）
+ * Sprint 3: 加点要素の表示
  */
 subsidyPages.get('/subsidies/:id', (c) => {
   const subsidyId = c.req.param('id');
@@ -530,6 +685,10 @@ subsidyPages.get('/subsidies/:id', (c) => {
                     class="tab-btn px-6 py-3 border-b-2 border-transparent text-gray-500 hover:text-gray-700">
               <i class="fas fa-clipboard-check mr-1"></i>申請要件
             </button>
+            <button onclick="switchTab('bonus')" data-tab="bonus"
+                    class="tab-btn px-6 py-3 border-b-2 border-transparent text-gray-500 hover:text-gray-700">
+              <i class="fas fa-star mr-1"></i>加点要素
+            </button>
             <button onclick="switchTab('documents')" data-tab="documents"
                     class="tab-btn px-6 py-3 border-b-2 border-transparent text-gray-500 hover:text-gray-700">
               <i class="fas fa-file-alt mr-1"></i>必要書類
@@ -579,6 +738,139 @@ subsidyPages.get('/subsidies/:id', (c) => {
                       class="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700 text-sm">
                 <i class="fas fa-download mr-1"></i>要件を読み込む
               </button>
+            </div>
+          </div>
+          
+          <!-- Sprint 3: 加点要素タブ -->
+          <div id="tab-bonus" class="tab-content hidden">
+            <div class="mb-4">
+              <h3 class="text-lg font-semibold mb-2">
+                <i class="fas fa-star text-yellow-500 mr-1"></i>加点要素（参考）
+              </h3>
+              <p class="text-sm text-gray-600">
+                これらの要素を満たすと審査で有利になる可能性があります。補助金によって加点項目は異なります。
+              </p>
+            </div>
+            
+            <!-- 一般的な加点要素 -->
+            <div class="space-y-4">
+              <div class="p-4 border rounded-lg hover:shadow-md transition-shadow">
+                <div class="flex items-start justify-between">
+                  <div>
+                    <h4 class="font-medium text-gray-800 flex items-center">
+                      <i class="fas fa-chart-line text-green-500 mr-2"></i>
+                      賃上げの実施（または計画）
+                    </h4>
+                    <p class="text-sm text-gray-600 mt-1">従業員の給与を一定以上引き上げる取り組み</p>
+                  </div>
+                  <span class="px-2 py-1 bg-yellow-100 text-yellow-800 rounded text-xs">+5〜15点</span>
+                </div>
+                <div class="mt-3 pt-3 border-t">
+                  <a href="https://www.mhlw.go.jp/stf/seisakunitsuite/bunya/koyou_roudou/roudoukijun/zigyonushi/shienjigyou/03.html" 
+                     target="_blank" class="text-sm text-blue-600 hover:underline">
+                    <i class="fas fa-external-link-alt mr-1"></i>厚労省 賃上げ支援情報
+                  </a>
+                </div>
+              </div>
+              
+              <div class="p-4 border rounded-lg hover:shadow-md transition-shadow">
+                <div class="flex items-start justify-between">
+                  <div>
+                    <h4 class="font-medium text-gray-800 flex items-center">
+                      <i class="fas fa-award text-blue-500 mr-2"></i>
+                      経営革新計画の承認
+                    </h4>
+                    <p class="text-sm text-gray-600 mt-1">都道府県知事から経営革新計画の承認を受けている</p>
+                  </div>
+                  <span class="px-2 py-1 bg-yellow-100 text-yellow-800 rounded text-xs">+5〜10点</span>
+                </div>
+                <div class="mt-3 pt-3 border-t">
+                  <a href="https://www.chusho.meti.go.jp/keiei/kakushin/index.html" 
+                     target="_blank" class="text-sm text-blue-600 hover:underline">
+                    <i class="fas fa-external-link-alt mr-1"></i>中小企業庁 経営革新計画
+                  </a>
+                </div>
+              </div>
+              
+              <div class="p-4 border rounded-lg hover:shadow-md transition-shadow">
+                <div class="flex items-start justify-between">
+                  <div>
+                    <h4 class="font-medium text-gray-800 flex items-center">
+                      <i class="fas fa-users text-purple-500 mr-2"></i>
+                      事業継続力強化計画（BCP）
+                    </h4>
+                    <p class="text-sm text-gray-600 mt-1">災害等への対策計画を策定・認定を受けている</p>
+                  </div>
+                  <span class="px-2 py-1 bg-yellow-100 text-yellow-800 rounded text-xs">+5点</span>
+                </div>
+                <div class="mt-3 pt-3 border-t">
+                  <a href="https://www.chusho.meti.go.jp/keiei/antei/bousai/keizokuryoku.htm" 
+                     target="_blank" class="text-sm text-blue-600 hover:underline">
+                    <i class="fas fa-external-link-alt mr-1"></i>中小企業庁 事業継続力強化計画
+                  </a>
+                </div>
+              </div>
+              
+              <div class="p-4 border rounded-lg hover:shadow-md transition-shadow">
+                <div class="flex items-start justify-between">
+                  <div>
+                    <h4 class="font-medium text-gray-800 flex items-center">
+                      <i class="fas fa-leaf text-green-600 mr-2"></i>
+                      グリーン・デジタル投資
+                    </h4>
+                    <p class="text-sm text-gray-600 mt-1">CO2削減やDX推進に資する投資を計画している</p>
+                  </div>
+                  <span class="px-2 py-1 bg-yellow-100 text-yellow-800 rounded text-xs">+5〜10点</span>
+                </div>
+                <div class="mt-3 pt-3 border-t">
+                  <a href="https://www.env.go.jp/earth/ondanka/index.html" 
+                     target="_blank" class="text-sm text-blue-600 hover:underline">
+                    <i class="fas fa-external-link-alt mr-1"></i>環境省 脱炭素化支援
+                  </a>
+                </div>
+              </div>
+              
+              <div class="p-4 border rounded-lg hover:shadow-md transition-shadow">
+                <div class="flex items-start justify-between">
+                  <div>
+                    <h4 class="font-medium text-gray-800 flex items-center">
+                      <i class="fas fa-handshake text-orange-500 mr-2"></i>
+                      パートナーシップ構築宣言
+                    </h4>
+                    <p class="text-sm text-gray-600 mt-1">取引先との適正な取引関係を宣言している</p>
+                  </div>
+                  <span class="px-2 py-1 bg-yellow-100 text-yellow-800 rounded text-xs">+2〜5点</span>
+                </div>
+                <div class="mt-3 pt-3 border-t">
+                  <a href="https://www.biz-partnership.jp/" 
+                     target="_blank" class="text-sm text-blue-600 hover:underline">
+                    <i class="fas fa-external-link-alt mr-1"></i>パートナーシップ構築宣言ポータル
+                  </a>
+                </div>
+              </div>
+              
+              <div class="p-4 border rounded-lg hover:shadow-md transition-shadow">
+                <div class="flex items-start justify-between">
+                  <div>
+                    <h4 class="font-medium text-gray-800 flex items-center">
+                      <i class="fas fa-map-marker-alt text-red-500 mr-2"></i>
+                      地域経済への貢献
+                    </h4>
+                    <p class="text-sm text-gray-600 mt-1">地域雇用の創出、地域資源の活用など</p>
+                  </div>
+                  <span class="px-2 py-1 bg-yellow-100 text-yellow-800 rounded text-xs">+3〜10点</span>
+                </div>
+              </div>
+            </div>
+            
+            <div class="mt-6 p-4 bg-yellow-50 rounded-lg">
+              <h4 class="font-medium text-yellow-800 mb-2">
+                <i class="fas fa-info-circle mr-1"></i>加点要素について
+              </h4>
+              <p class="text-sm text-yellow-700">
+                上記は一般的な加点要素の例です。実際の加点項目・配点は補助金ごとに異なります。
+                詳細は公募要領をご確認ください。壁打ちチャットで該当する加点要素があるかも確認できます。
+              </p>
             </div>
           </div>
           
