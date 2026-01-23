@@ -1492,4 +1492,294 @@ adminDashboard.get('/debug/company-check', async (c) => {
   }
 });
 
+// ============================================================
+// データ健全性チェック（subsidy_cache）
+// ============================================================
+
+/**
+ * GET /api/admin/ops/data-health
+ * 
+ * 補助金データの健全性メトリクスを返す
+ * 凍結チェックリスト v1.0 に基づく指標
+ */
+adminDashboard.get('/ops/data-health', async (c) => {
+  const db = c.env.DB;
+  
+  try {
+    // A. 総数・有効・主要欠損（最重要）
+    const mainStats = await db.prepare(`
+      SELECT
+        COUNT(*) AS total,
+        SUM(CASE WHEN expires_at > datetime('now') THEN 1 ELSE 0 END) AS valid,
+        SUM(CASE WHEN request_reception_display_flag = 1 THEN 1 ELSE 0 END) AS accepting_flag_1,
+        SUM(CASE WHEN acceptance_end_datetime IS NOT NULL THEN 1 ELSE 0 END) AS has_deadline,
+        SUM(CASE WHEN target_area_search IS NOT NULL AND target_area_search != '' THEN 1 ELSE 0 END) AS has_area,
+        SUM(CASE WHEN subsidy_max_limit IS NOT NULL AND subsidy_max_limit > 0 THEN 1 ELSE 0 END) AS has_amount,
+        SUM(CASE WHEN target_industry IS NOT NULL AND target_industry != '' THEN 1 ELSE 0 END) AS has_industry
+      FROM subsidy_cache
+    `).first<{
+      total: number;
+      valid: number;
+      accepting_flag_1: number;
+      has_deadline: number;
+      has_area: number;
+      has_amount: number;
+      has_industry: number;
+    }>();
+    
+    // B. 期限切れ（混入監視）
+    const expiredCount = await db.prepare(`
+      SELECT COUNT(*) AS expired
+      FROM subsidy_cache
+      WHERE acceptance_end_datetime IS NOT NULL
+        AND acceptance_end_datetime < datetime('now')
+    `).first<{ expired: number }>();
+    
+    // C. 直近24時間の更新（cronが回った証拠）
+    const recentUpdate = await db.prepare(`
+      SELECT COUNT(*) AS updated_last_24h
+      FROM subsidy_cache
+      WHERE cached_at >= datetime('now', '-24 hours')
+    `).first<{ updated_last_24h: number }>();
+    
+    // D. ソース別（JGrants / manual / crawl の比率）
+    const bySource = await db.prepare(`
+      SELECT source, COUNT(*) AS cnt
+      FROM subsidy_cache
+      GROUP BY source
+      ORDER BY cnt DESC
+    `).all();
+    
+    // E. キャッシュ期限の範囲
+    const cacheRange = await db.prepare(`
+      SELECT 
+        MIN(cached_at) AS oldest_cache,
+        MAX(cached_at) AS newest_cache,
+        MIN(expires_at) AS earliest_expiry,
+        MAX(expires_at) AS latest_expiry
+      FROM subsidy_cache
+    `).first<{
+      oldest_cache: string;
+      newest_cache: string;
+      earliest_expiry: string;
+      latest_expiry: string;
+    }>();
+    
+    // 凍結基準に基づく健全性判定
+    const total = mainStats?.total || 0;
+    const valid = mainStats?.valid || 0;
+    const hasDeadline = mainStats?.has_deadline || 0;
+    const hasArea = mainStats?.has_area || 0;
+    const hasAmount = mainStats?.has_amount || 0;
+    const hasIndustry = mainStats?.has_industry || 0;
+    const updated24h = recentUpdate?.updated_last_24h || 0;
+    
+    const health = {
+      // 凍結目標値
+      targets: {
+        total_target: 500,
+        deadline_target_pct: 95,
+        area_target_pct: 95,
+        amount_target_pct: 80,
+        industry_note: '業種条件はJGrants元データの問題。空=全業種扱いで対応済み',
+      },
+      
+      // 現在値
+      current: {
+        total,
+        valid,
+        accepting: mainStats?.accepting_flag_1 || 0,
+        has_deadline: hasDeadline,
+        has_area: hasArea,
+        has_amount: hasAmount,
+        has_industry: hasIndustry,
+        expired_subsidies: expiredCount?.expired || 0,
+        updated_last_24h: updated24h,
+      },
+      
+      // 充足率（%）
+      percentages: {
+        valid_pct: total > 0 ? Math.round((valid / total) * 100) : 0,
+        deadline_pct: total > 0 ? Math.round((hasDeadline / total) * 100) : 0,
+        area_pct: total > 0 ? Math.round((hasArea / total) * 100) : 0,
+        amount_pct: total > 0 ? Math.round((hasAmount / total) * 100) : 0,
+        industry_pct: total > 0 ? Math.round((hasIndustry / total) * 100) : 0,
+        total_progress_pct: Math.round((total / 500) * 100),
+      },
+      
+      // ステータス判定
+      status: {
+        total_ok: total >= 500,
+        deadline_ok: total > 0 && (hasDeadline / total) >= 0.95,
+        area_ok: total > 0 && (hasArea / total) >= 0.95,
+        amount_ok: total > 0 && (hasAmount / total) >= 0.80,
+        cron_ok: updated24h > 0,
+        overall: total >= 500 && updated24h > 0 ? 'HEALTHY' : total >= 100 ? 'BUILDING' : 'CRITICAL',
+      },
+      
+      // ソース別
+      by_source: bySource.results || [],
+      
+      // キャッシュ範囲
+      cache_range: cacheRange,
+      
+      // 生成時刻
+      generated_at: new Date().toISOString(),
+    };
+    
+    return c.json<ApiResponse<typeof health>>({
+      success: true,
+      data: health,
+    });
+  } catch (error) {
+    console.error('Data health check error:', error);
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: 'DATA_HEALTH_ERROR',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      },
+    }, 500);
+  }
+});
+
+/**
+ * POST /api/admin/ops/trigger-sync
+ * 
+ * 手動でJGrants同期をトリガー（super_admin専用）
+ * ops画面から「今すぐ同期」ボタンで使う
+ */
+adminDashboard.post('/ops/trigger-sync', async (c) => {
+  const user = getCurrentUser(c);
+  
+  if (user.role !== 'super_admin') {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: 'FORBIDDEN',
+        message: 'Super admin access required',
+      },
+    }, 403);
+  }
+  
+  // 内部的に cron エンドポイントと同じ処理を実行
+  const db = c.env.DB;
+  
+  try {
+    const KEYWORDS = [
+      '補助金', '助成金', '事業', 'DX', 'IT導入', '省エネ', '雇用', '設備投資',
+      '製造業', 'デジタル化', '創業', '販路開拓', '人材育成', '研究開発', '生産性向上',
+      '中小企業', '小規模事業者', '新事業', '海外展開', '輸出', '観光', '農業',
+      '介護', '福祉', '環境', 'カーボンニュートラル', '脱炭素', 'ものづくり', 'サービス',
+      'ECサイト', 'テレワーク', '感染症対策', '賃上げ', '最低賃金', '事業承継', '再構築',
+    ];
+    
+    const JGRANTS_API_URL = 'https://api.jgrants-portal.go.jp/exp/v1/public/subsidies';
+    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+    
+    let totalFetched = 0;
+    let totalInserted = 0;
+    const seenIds = new Set<string>();
+    const errors: string[] = [];
+    
+    for (const keyword of KEYWORDS) {
+      try {
+        const params = new URLSearchParams({
+          keyword,
+          sort: 'acceptance_end_datetime',
+          order: 'DESC',
+          acceptance: '1',
+          limit: '200',
+        });
+        
+        const response = await fetch(`${JGRANTS_API_URL}?${params.toString()}`, {
+          method: 'GET',
+          headers: { 'Accept': 'application/json' },
+        });
+        
+        if (!response.ok) {
+          errors.push(`${keyword}: API ${response.status}`);
+          continue;
+        }
+        
+        const data = await response.json() as any;
+        const subsidies = data.result || data.subsidies || data.data || [];
+        
+        const uniqueSubsidies = subsidies.filter((s: any) => {
+          if (seenIds.has(s.id)) return false;
+          seenIds.add(s.id);
+          return true;
+        });
+        
+        if (uniqueSubsidies.length > 0) {
+          const statements = uniqueSubsidies.map((s: any) => 
+            db.prepare(`
+              INSERT OR REPLACE INTO subsidy_cache 
+              (id, source, title, subsidy_max_limit, subsidy_rate,
+               target_area_search, target_industry, target_number_of_employees,
+               acceptance_start_datetime, acceptance_end_datetime, request_reception_display_flag,
+               cached_at, expires_at)
+              VALUES (?, 'jgrants', ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?)
+            `).bind(
+              s.id,
+              s.title || s.name || '',
+              s.subsidy_max_limit || null,
+              s.subsidy_rate || null,
+              s.target_area_search || null,
+              s.target_industry || null,
+              s.target_number_of_employees || null,
+              s.acceptance_start_datetime || null,
+              s.acceptance_end_datetime || null,
+              s.request_reception_display_flag ?? 1,
+              expiresAt
+            )
+          );
+          
+          for (let i = 0; i < statements.length; i += 100) {
+            const batch = statements.slice(i, i + 100);
+            await db.batch(batch);
+          }
+        }
+        
+        totalFetched += subsidies.length;
+        totalInserted += uniqueSubsidies.length;
+        
+        await new Promise(resolve => setTimeout(resolve, 300));
+      } catch (err) {
+        errors.push(`${keyword}: ${String(err)}`);
+      }
+    }
+    
+    return c.json<ApiResponse<{
+      message: string;
+      total_fetched: number;
+      total_inserted: number;
+      unique_count: number;
+      errors: string[];
+      triggered_by: string;
+      timestamp: string;
+    }>>({
+      success: true,
+      data: {
+        message: 'Manual sync completed',
+        total_fetched: totalFetched,
+        total_inserted: totalInserted,
+        unique_count: seenIds.size,
+        errors,
+        triggered_by: user.email,
+        timestamp: new Date().toISOString(),
+      },
+    });
+  } catch (error) {
+    console.error('Manual sync error:', error);
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: 'SYNC_ERROR',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      },
+    }, 500);
+  }
+});
+
 export default adminDashboard;

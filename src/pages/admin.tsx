@@ -1530,6 +1530,98 @@ adminPages.get('/admin/ops', (c) => {
         </div>
       </div>
 
+      <!-- ★★★ データ収集凍結チェックリスト v1.0 - subsidy_cache 健全性 ★★★ -->
+      <div class="bg-white rounded-xl shadow p-6 border-2 border-emerald-500">
+        <div class="flex items-center justify-between mb-4">
+          <h2 class="text-lg font-bold text-gray-800">
+            <i class="fas fa-database text-emerald-600 mr-2"></i>データ収集 凍結チェック v1.0
+          </h2>
+          <button id="btn-trigger-sync" onclick="triggerManualSync()" class="px-3 py-1 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 text-sm">
+            <i class="fas fa-sync mr-1"></i>今すぐ同期
+          </button>
+        </div>
+
+        <!-- 凍結目標値 vs 現在値 -->
+        <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 mb-4">
+          <div id="data-health-total" class="border-2 rounded-lg p-3 text-center">
+            <p class="text-xs text-gray-500">総件数</p>
+            <p class="text-2xl font-bold text-gray-700 loading">-</p>
+            <p class="text-xs text-gray-400">目標: 500+</p>
+          </div>
+          <div id="data-health-valid" class="border-2 rounded-lg p-3 text-center">
+            <p class="text-xs text-gray-500">有効件数</p>
+            <p class="text-2xl font-bold text-gray-700 loading">-</p>
+            <p class="text-xs text-gray-400">キャッシュ有効</p>
+          </div>
+          <div id="data-health-deadline" class="border-2 rounded-lg p-3 text-center">
+            <p class="text-xs text-gray-500">締切あり</p>
+            <p class="text-2xl font-bold text-gray-700 loading">-%</p>
+            <p class="text-xs text-gray-400">目標: 95%+</p>
+          </div>
+          <div id="data-health-area" class="border-2 rounded-lg p-3 text-center">
+            <p class="text-xs text-gray-500">地域あり</p>
+            <p class="text-2xl font-bold text-gray-700 loading">-%</p>
+            <p class="text-xs text-gray-400">目標: 95%+</p>
+          </div>
+          <div id="data-health-amount" class="border-2 rounded-lg p-3 text-center">
+            <p class="text-xs text-gray-500">金額あり</p>
+            <p class="text-2xl font-bold text-gray-700 loading">-%</p>
+            <p class="text-xs text-gray-400">目標: 80%+</p>
+          </div>
+          <div id="data-health-cron" class="border-2 rounded-lg p-3 text-center">
+            <p class="text-xs text-gray-500">24h更新</p>
+            <p class="text-2xl font-bold text-gray-700 loading">-</p>
+            <p class="text-xs text-gray-400">Cron稼働</p>
+          </div>
+        </div>
+
+        <!-- 凍結ステータス判定 -->
+        <div id="data-health-status" class="p-4 rounded-lg bg-gray-50 mb-4">
+          <div class="loading text-gray-400">データ取得中...</div>
+        </div>
+
+        <!-- プログレスバー -->
+        <div class="mb-4">
+          <div class="flex items-center justify-between text-sm mb-1">
+            <span class="text-gray-600">500件到達率</span>
+            <span id="data-health-progress-text" class="font-medium text-gray-700 loading">-件 / 500件 (--%)</span>
+          </div>
+          <div class="w-full bg-gray-200 rounded-full h-3">
+            <div id="data-health-progress-bar" class="h-3 rounded-full bg-emerald-500 transition-all duration-500" style="width: 0%"></div>
+          </div>
+        </div>
+
+        <!-- ソース別・キャッシュ情報 -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <h4 class="text-sm font-medium text-gray-700 mb-2">ソース別件数</h4>
+            <div id="data-health-sources" class="flex flex-wrap gap-2">
+              <span class="loading text-gray-400 text-sm">読み込み中...</span>
+            </div>
+          </div>
+          <div>
+            <h4 class="text-sm font-medium text-gray-700 mb-2">キャッシュ期限</h4>
+            <div id="data-health-cache" class="text-sm text-gray-600">
+              <span class="loading">読み込み中...</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 凍結ルール表示 -->
+        <details class="mt-4">
+          <summary class="cursor-pointer text-sm text-gray-500 hover:text-gray-700">
+            <i class="fas fa-info-circle mr-1"></i>凍結ルール v1.0
+          </summary>
+          <div class="mt-2 p-3 bg-gray-50 rounded text-xs text-gray-600 space-y-1">
+            <p>• 同期入口: POST /api/admin/sync-jgrants（super_admin）, POST /api/cron/sync-jgrants（X-Cron-Secret）</p>
+            <p>• キーワード: 36語（v1.1）固定。追加はPRとして監査ログに残す</p>
+            <p>• upsert: INSERT OR REPLACE（idが主キー）、expires_at = now+7日</p>
+            <p>• バッチ: 100件単位、キーワード間300ms sleep</p>
+            <p>• 業種条件: 空=「全業種対象」として扱う（JGrants元データの問題）</p>
+          </div>
+        </details>
+      </div>
+
       <!-- L1/L2/L3 網羅性 -->
       <div class="bg-white rounded-xl shadow p-6">
         <h2 class="text-lg font-bold text-gray-800 mb-4">
@@ -2076,6 +2168,169 @@ adminPages.get('/admin/ops', (c) => {
           console.error('Dashboard load error:', error);
         }
       }
+
+      // ★★★ データ収集凍結チェック v1.0 - データ健全性読み込み ★★★
+      async function loadDataHealth() {
+        try {
+          const data = await api('/api/admin/ops/data-health');
+          if (!data.success) {
+            console.error('Data health API error:', data.error);
+            return;
+          }
+
+          const { current, percentages, status, by_source, cache_range, targets } = data.data;
+
+          // 総件数
+          const totalEl = document.getElementById('data-health-total');
+          if (totalEl) {
+            const totalOk = status.total_ok;
+            totalEl.className = 'border-2 rounded-lg p-3 text-center ' + (totalOk ? 'border-green-500 bg-green-50' : 'border-red-500 bg-red-50');
+            totalEl.querySelector('p.text-2xl').textContent = current.total;
+            totalEl.querySelector('p.text-2xl').className = 'text-2xl font-bold ' + (totalOk ? 'text-green-700' : 'text-red-700');
+          }
+
+          // 有効件数
+          const validEl = document.getElementById('data-health-valid');
+          if (validEl) {
+            const validOk = current.valid === current.total;
+            validEl.className = 'border-2 rounded-lg p-3 text-center ' + (validOk ? 'border-green-500 bg-green-50' : 'border-yellow-500 bg-yellow-50');
+            validEl.querySelector('p.text-2xl').textContent = current.valid;
+            validEl.querySelector('p.text-2xl').className = 'text-2xl font-bold ' + (validOk ? 'text-green-700' : 'text-yellow-700');
+          }
+
+          // 締切あり
+          const deadlineEl = document.getElementById('data-health-deadline');
+          if (deadlineEl) {
+            const deadlineOk = status.deadline_ok;
+            deadlineEl.className = 'border-2 rounded-lg p-3 text-center ' + (deadlineOk ? 'border-green-500 bg-green-50' : 'border-red-500 bg-red-50');
+            deadlineEl.querySelector('p.text-2xl').textContent = percentages.deadline_pct + '%';
+            deadlineEl.querySelector('p.text-2xl').className = 'text-2xl font-bold ' + (deadlineOk ? 'text-green-700' : 'text-red-700');
+          }
+
+          // 地域あり
+          const areaEl = document.getElementById('data-health-area');
+          if (areaEl) {
+            const areaOk = status.area_ok;
+            areaEl.className = 'border-2 rounded-lg p-3 text-center ' + (areaOk ? 'border-green-500 bg-green-50' : 'border-red-500 bg-red-50');
+            areaEl.querySelector('p.text-2xl').textContent = percentages.area_pct + '%';
+            areaEl.querySelector('p.text-2xl').className = 'text-2xl font-bold ' + (areaOk ? 'text-green-700' : 'text-red-700');
+          }
+
+          // 金額あり
+          const amountEl = document.getElementById('data-health-amount');
+          if (amountEl) {
+            const amountOk = status.amount_ok;
+            amountEl.className = 'border-2 rounded-lg p-3 text-center ' + (amountOk ? 'border-green-500 bg-green-50' : 'border-yellow-500 bg-yellow-50');
+            amountEl.querySelector('p.text-2xl').textContent = percentages.amount_pct + '%';
+            amountEl.querySelector('p.text-2xl').className = 'text-2xl font-bold ' + (amountOk ? 'text-green-700' : 'text-yellow-700');
+          }
+
+          // 24h更新（Cron稼働）
+          const cronEl = document.getElementById('data-health-cron');
+          if (cronEl) {
+            const cronOk = status.cron_ok;
+            cronEl.className = 'border-2 rounded-lg p-3 text-center ' + (cronOk ? 'border-green-500 bg-green-50' : 'border-red-500 bg-red-50');
+            cronEl.querySelector('p.text-2xl').textContent = current.updated_last_24h + '件';
+            cronEl.querySelector('p.text-2xl').className = 'text-2xl font-bold ' + (cronOk ? 'text-green-700' : 'text-red-700');
+          }
+
+          // ステータス判定
+          const statusEl = document.getElementById('data-health-status');
+          if (statusEl) {
+            const statusColors = {
+              'HEALTHY': 'bg-green-100 border-green-500 text-green-800',
+              'BUILDING': 'bg-yellow-100 border-yellow-500 text-yellow-800',
+              'CRITICAL': 'bg-red-100 border-red-500 text-red-800',
+            };
+            const statusLabels = {
+              'HEALTHY': '✅ 健全 - 目標達成',
+              'BUILDING': '🔨 構築中 - 目標に向けて進行中',
+              'CRITICAL': '⚠️ 要対応 - データ不足',
+            };
+            statusEl.className = 'p-4 rounded-lg border-2 ' + (statusColors[status.overall] || 'bg-gray-100');
+            statusEl.innerHTML = '<div class="flex items-center justify-between">' +
+              '<span class="font-bold text-lg">' + (statusLabels[status.overall] || status.overall) + '</span>' +
+              '<span class="text-sm">生成時刻: ' + new Date(data.data.generated_at).toLocaleString('ja-JP') + '</span>' +
+              '</div>' +
+              '<div class="mt-2 text-sm grid grid-cols-2 md:grid-cols-5 gap-2">' +
+              '<span>総数: ' + (status.total_ok ? '✅' : '❌') + '</span>' +
+              '<span>締切: ' + (status.deadline_ok ? '✅' : '❌') + '</span>' +
+              '<span>地域: ' + (status.area_ok ? '✅' : '❌') + '</span>' +
+              '<span>金額: ' + (status.amount_ok ? '✅' : '❌') + '</span>' +
+              '<span>Cron: ' + (status.cron_ok ? '✅' : '❌') + '</span>' +
+              '</div>';
+          }
+
+          // プログレスバー
+          const progressBar = document.getElementById('data-health-progress-bar');
+          const progressText = document.getElementById('data-health-progress-text');
+          if (progressBar && progressText) {
+            const pct = Math.min(100, percentages.total_progress_pct);
+            progressBar.style.width = pct + '%';
+            progressBar.className = 'h-3 rounded-full transition-all duration-500 ' + (pct >= 100 ? 'bg-green-500' : pct >= 50 ? 'bg-yellow-500' : 'bg-red-500');
+            progressText.textContent = current.total + '件 / 500件 (' + pct + '%)';
+            progressText.classList.remove('loading');
+          }
+
+          // ソース別
+          const sourcesEl = document.getElementById('data-health-sources');
+          if (sourcesEl && by_source) {
+            sourcesEl.innerHTML = by_source.map(s =>
+              '<span class="px-3 py-1 rounded-full text-sm font-medium bg-blue-100 text-blue-800">' + s.source + ': ' + s.cnt + '件</span>'
+            ).join('');
+          }
+
+          // キャッシュ情報
+          const cacheEl = document.getElementById('data-health-cache');
+          if (cacheEl && cache_range) {
+            cacheEl.innerHTML = '<div class="grid grid-cols-2 gap-2">' +
+              '<div>最古: ' + (cache_range.oldest_cache ? new Date(cache_range.oldest_cache).toLocaleDateString('ja-JP') : '-') + '</div>' +
+              '<div>最新: ' + (cache_range.newest_cache ? new Date(cache_range.newest_cache).toLocaleDateString('ja-JP') : '-') + '</div>' +
+              '<div>期限開始: ' + (cache_range.earliest_expiry ? new Date(cache_range.earliest_expiry).toLocaleDateString('ja-JP') : '-') + '</div>' +
+              '<div>期限終了: ' + (cache_range.latest_expiry ? new Date(cache_range.latest_expiry).toLocaleDateString('ja-JP') : '-') + '</div>' +
+              '</div>';
+          }
+
+          // loadingクラス削除
+          document.querySelectorAll('.loading').forEach(el => el.classList.remove('loading'));
+
+        } catch (error) {
+          console.error('Data health load error:', error);
+        }
+      }
+
+      // 手動同期トリガー
+      window.triggerManualSync = async function() {
+        const btn = document.getElementById('btn-trigger-sync');
+        if (!btn) return;
+
+        btn.disabled = true;
+        btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>同期中...';
+
+        try {
+          const result = await api('/api/admin/ops/trigger-sync', { method: 'POST' });
+          if (result.success) {
+            alert('同期完了！\\n取得: ' + result.data.total_fetched + '件\\n追加: ' + result.data.total_inserted + '件');
+            await loadDataHealth(); // 再読み込み
+          } else {
+            alert('同期失敗: ' + (result.error?.message || 'Unknown error'));
+          }
+        } catch (error) {
+          alert('同期エラー: ' + String(error));
+        } finally {
+          btn.disabled = false;
+          btn.innerHTML = '<i class="fas fa-sync mr-1"></i>今すぐ同期';
+        }
+      };
+
+      // 初回データ読み込み時にデータ健全性も取得
+      (function() {
+        setTimeout(function() {
+          loadDataHealth().catch(function(err) {
+            console.error('[OPS] Data health load failed:', err);
+          });
+        }, 200);
+      })();
     </script>
   `;
 
