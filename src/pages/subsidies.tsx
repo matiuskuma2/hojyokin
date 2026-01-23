@@ -36,50 +36,9 @@ const subsidyLayout = (title: string, content: string, currentPath: string = '/s
     .mode-toggle { transition: all 0.2s; }
     .mode-toggle.active { background-color: #059669; color: white; }
   </style>
-</head>
-<body class="bg-gray-50 min-h-screen">
-  <!-- Header -->
-  <nav class="bg-white shadow-sm border-b">
-    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-      <div class="flex items-center justify-between h-16">
-        <div class="flex items-center space-x-8">
-          <a href="/dashboard" class="flex items-center">
-            <img src="/static/images/icon.png" alt="ホジョラク" class="h-8 mr-2">
-            <span class="font-bold text-xl text-blue-700">ホジョラク</span>
-          </a>
-          <div class="hidden md:flex space-x-4">
-            <a href="/dashboard" class="${currentPath === '/dashboard' ? 'text-green-600 border-b-2 border-green-600' : 'text-gray-600 hover:text-gray-900'} px-3 py-2 text-sm font-medium">
-              <i class="fas fa-home mr-1"></i>ダッシュボード
-            </a>
-            <a href="/subsidies" class="${currentPath === '/subsidies' ? 'text-green-600 border-b-2 border-green-600' : 'text-gray-600 hover:text-gray-900'} px-3 py-2 text-sm font-medium">
-              <i class="fas fa-search mr-1"></i>補助金を探す
-            </a>
-            <a href="/company" class="${currentPath === '/company' ? 'text-green-600 border-b-2 border-green-600' : 'text-gray-600 hover:text-gray-900'} px-3 py-2 text-sm font-medium">
-              <i class="fas fa-building mr-1"></i>会社情報
-            </a>
-          </div>
-        </div>
-        <div class="flex items-center space-x-4">
-          <span id="user-role" class="hidden px-2 py-1 text-xs font-medium rounded-full"></span>
-          <span id="user-email" class="text-sm text-gray-500"></span>
-          <a id="admin-link" href="/admin" class="hidden text-indigo-600 hover:text-indigo-800 text-sm font-medium">
-            <i class="fas fa-shield-halved mr-1"></i>管理画面
-          </a>
-          <button onclick="logout()" class="text-sm text-gray-600 hover:text-gray-900">
-            <i class="fas fa-sign-out-alt mr-1"></i>ログアウト
-          </button>
-        </div>
-      </div>
-    </div>
-  </nav>
-  
-  <main class="max-w-7xl mx-auto py-6 px-4 sm:px-6 lg:px-8">
-    ${content}
-  </main>
-  
   <script>
     // ============================================================
-    // 共通初期化スクリプト
+    // 共通初期化スクリプト（headで先に定義）
     // ============================================================
     (function() {
       'use strict';
@@ -135,7 +94,58 @@ const subsidyLayout = (title: string, content: string, currentPath: string = '/s
         }
       };
       
-      // ユーザー情報取得＆権限表示
+      // ログアウト関数
+      window.logout = function() {
+        localStorage.removeItem('token');
+        localStorage.removeItem('user');
+        window.location.href = '/login';
+      };
+    })();
+  </script>
+</head>
+<body class="bg-gray-50 min-h-screen">
+  <!-- Header -->
+  <nav class="bg-white shadow-sm border-b">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+      <div class="flex items-center justify-between h-16">
+        <div class="flex items-center space-x-8">
+          <a href="/dashboard" class="flex items-center">
+            <img src="/static/images/icon.png" alt="ホジョラク" class="h-8 mr-2">
+            <span class="font-bold text-xl text-blue-700">ホジョラク</span>
+          </a>
+          <div class="hidden md:flex space-x-4">
+            <a href="/dashboard" class="${currentPath === '/dashboard' ? 'text-green-600 border-b-2 border-green-600' : 'text-gray-600 hover:text-gray-900'} px-3 py-2 text-sm font-medium">
+              <i class="fas fa-home mr-1"></i>ダッシュボード
+            </a>
+            <a href="/subsidies" class="${currentPath === '/subsidies' ? 'text-green-600 border-b-2 border-green-600' : 'text-gray-600 hover:text-gray-900'} px-3 py-2 text-sm font-medium">
+              <i class="fas fa-search mr-1"></i>補助金を探す
+            </a>
+            <a href="/company" class="${currentPath === '/company' ? 'text-green-600 border-b-2 border-green-600' : 'text-gray-600 hover:text-gray-900'} px-3 py-2 text-sm font-medium">
+              <i class="fas fa-building mr-1"></i>会社情報
+            </a>
+          </div>
+        </div>
+        <div class="flex items-center space-x-4">
+          <span id="user-role" class="hidden px-2 py-1 text-xs font-medium rounded-full"></span>
+          <span id="user-email" class="text-sm text-gray-500"></span>
+          <a id="admin-link" href="/admin" class="hidden text-indigo-600 hover:text-indigo-800 text-sm font-medium">
+            <i class="fas fa-shield-halved mr-1"></i>管理画面
+          </a>
+          <button onclick="logout()" class="text-sm text-gray-600 hover:text-gray-900">
+            <i class="fas fa-sign-out-alt mr-1"></i>ログアウト
+          </button>
+        </div>
+      </div>
+    </div>
+  </nav>
+  
+  <main class="max-w-7xl mx-auto py-6 px-4 sm:px-6 lg:px-8">
+    ${content}
+  </main>
+  
+  <script>
+    // ユーザー情報取得＆権限表示（DOM読み込み後に実行）
+    document.addEventListener('DOMContentLoaded', function() {
       async function loadUser() {
         try {
           var data = await window.api('/api/auth/me');
@@ -178,14 +188,7 @@ const subsidyLayout = (title: string, content: string, currentPath: string = '/s
         }
       }
       loadUser();
-      
-      // ログアウト関数
-      window.logout = function() {
-        localStorage.removeItem('token');
-        localStorage.removeItem('user');
-        window.location.href = '/login';
-      };
-    })();
+    });
   </script>
 </body>
 </html>

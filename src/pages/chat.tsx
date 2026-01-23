@@ -353,40 +353,50 @@ chatPages.get('/chat', (c) => {
         const subsidyTitle = session.subsidy_title || '補助金詳細';
         document.getElementById('subsidy-title').textContent = subsidyTitle;
         
-        // 事前判定結果の表示
-        document.getElementById('precheck-panel').classList.remove('hidden');
+        // 事前判定結果の表示（precheckが存在する場合のみ）
+        if (precheck && precheck.status) {
+          document.getElementById('precheck-panel').classList.remove('hidden');
         
-        if (precheck.status === 'NG') {
-          document.getElementById('precheck-ng').classList.remove('hidden');
-          const reasonsList = document.getElementById('blocked-reasons');
-          reasonsList.innerHTML = precheck.blocked_reasons.map(r => '<li>' + escapeHtml(r) + '</li>').join('');
-          document.getElementById('input-area').classList.add('hidden');
-          document.getElementById('session-status').innerHTML = '<i class="fas fa-ban mr-1"></i>申請不可';
-          document.getElementById('session-status').className = 'text-sm px-3 py-1 rounded-full bg-red-100 text-red-700';
-        } else if (precheck.status === 'OK') {
-          document.getElementById('precheck-ok').classList.remove('hidden');
-          document.getElementById('input-area').classList.add('hidden');
-          document.getElementById('completion-area').classList.remove('hidden');
-          document.getElementById('session-status').innerHTML = '<i class="fas fa-check mr-1"></i>申請可能';
-          document.getElementById('session-status').className = 'text-sm px-3 py-1 rounded-full bg-green-100 text-green-700';
-          sessionCompleted = true;
+          if (precheck.status === 'NG') {
+            document.getElementById('precheck-ng').classList.remove('hidden');
+            const reasonsList = document.getElementById('blocked-reasons');
+            reasonsList.innerHTML = (precheck.blocked_reasons || []).map(r => '<li>' + escapeHtml(r) + '</li>').join('');
+            document.getElementById('input-area').classList.add('hidden');
+            document.getElementById('session-status').innerHTML = '<i class="fas fa-ban mr-1"></i>申請不可';
+            document.getElementById('session-status').className = 'text-sm px-3 py-1 rounded-full bg-red-100 text-red-700';
+          } else if (precheck.status === 'OK') {
+            document.getElementById('precheck-ok').classList.remove('hidden');
+            document.getElementById('input-area').classList.add('hidden');
+            document.getElementById('completion-area').classList.remove('hidden');
+            document.getElementById('session-status').innerHTML = '<i class="fas fa-check mr-1"></i>申請可能';
+            document.getElementById('session-status').className = 'text-sm px-3 py-1 rounded-full bg-green-100 text-green-700';
+            sessionCompleted = true;
+          } else {
+            document.getElementById('precheck-missing').classList.remove('hidden');
+            document.getElementById('remaining-questions').textContent = precheck.missing_items ? precheck.missing_items.length : '?';
+            document.getElementById('quick-answers').classList.remove('hidden');
+            document.getElementById('session-status').innerHTML = '<i class="fas fa-comments mr-1"></i>確認中';
+            document.getElementById('session-status').className = 'text-sm px-3 py-1 rounded-full bg-blue-100 text-blue-700';
+          }
+          
+          // 会社・補助金情報サマリー
+          if (precheck.company_info) {
+            document.getElementById('company-name').textContent = precheck.company_info.name || '-';
+            document.getElementById('company-prefecture').textContent = precheck.company_info.prefecture || '-';
+            document.getElementById('company-employees').textContent = precheck.company_info.employee_count || '-';
+          }
+          if (precheck.subsidy_info) {
+            document.getElementById('subsidy-max').textContent = formatCurrency(precheck.subsidy_info.max_amount);
+            document.getElementById('subsidy-deadline').textContent = formatDate(precheck.subsidy_info.acceptance_end);
+          }
         } else {
+          // precheckがない場合のデフォルト処理
+          document.getElementById('precheck-panel').classList.remove('hidden');
           document.getElementById('precheck-missing').classList.remove('hidden');
-          document.getElementById('remaining-questions').textContent = precheck.missing_items.length;
+          document.getElementById('remaining-questions').textContent = '不明';
           document.getElementById('quick-answers').classList.remove('hidden');
           document.getElementById('session-status').innerHTML = '<i class="fas fa-comments mr-1"></i>確認中';
           document.getElementById('session-status').className = 'text-sm px-3 py-1 rounded-full bg-blue-100 text-blue-700';
-        }
-        
-        // 会社・補助金情報サマリー
-        if (precheck.company_info) {
-          document.getElementById('company-name').textContent = precheck.company_info.name || '-';
-          document.getElementById('company-prefecture').textContent = precheck.company_info.prefecture || '-';
-          document.getElementById('company-employees').textContent = precheck.company_info.employee_count || '-';
-        }
-        if (precheck.subsidy_info) {
-          document.getElementById('subsidy-max').textContent = formatCurrency(precheck.subsidy_info.max_amount);
-          document.getElementById('subsidy-deadline').textContent = formatDate(precheck.subsidy_info.acceptance_end);
         }
         document.getElementById('info-summary').classList.remove('hidden');
         
