@@ -172,42 +172,8 @@ subsidyPages.get('/subsidies', (c) => {
       <p class="text-gray-600 mt-1">あなたの会社に合った補助金を検索・マッチングします</p>
     </div>
     
-    <!-- 会社未選択警告（詳細版） -->
-    <div id="company-alert" class="hidden bg-gradient-to-r from-yellow-50 to-orange-50 border border-yellow-300 rounded-xl p-5 mb-6">
-      <div class="flex items-start gap-4">
-        <div class="w-12 h-12 bg-yellow-200 rounded-full flex items-center justify-center flex-shrink-0">
-          <i class="fas fa-building text-yellow-600 text-xl"></i>
-        </div>
-        <div class="flex-1">
-          <p class="text-yellow-800 font-semibold text-lg">会社情報を登録してください</p>
-          <p class="text-yellow-700 text-sm mt-1 mb-3">
-            補助金を検索するには、以下の<strong>4つの情報</strong>が必要です：
-          </p>
-          <div class="grid grid-cols-2 md:grid-cols-4 gap-2 mb-4">
-            <div class="flex items-center gap-2 px-3 py-2 bg-white rounded-lg border border-yellow-200">
-              <i class="fas fa-circle text-yellow-400 text-xs"></i>
-              <span class="text-sm text-gray-700">会社名</span>
-            </div>
-            <div class="flex items-center gap-2 px-3 py-2 bg-white rounded-lg border border-yellow-200">
-              <i class="fas fa-circle text-yellow-400 text-xs"></i>
-              <span class="text-sm text-gray-700">都道府県</span>
-            </div>
-            <div class="flex items-center gap-2 px-3 py-2 bg-white rounded-lg border border-yellow-200">
-              <i class="fas fa-circle text-yellow-400 text-xs"></i>
-              <span class="text-sm text-gray-700">業種</span>
-            </div>
-            <div class="flex items-center gap-2 px-3 py-2 bg-white rounded-lg border border-yellow-200">
-              <i class="fas fa-circle text-yellow-400 text-xs"></i>
-              <span class="text-sm text-gray-700">従業員数</span>
-            </div>
-          </div>
-          <a href="/company" class="inline-flex items-center gap-2 bg-yellow-500 text-white px-5 py-2.5 rounded-lg hover:bg-yellow-600 transition">
-            <i class="fas fa-edit"></i>
-            会社情報を登録する
-          </a>
-        </div>
-      </div>
-    </div>
+    <!-- 会社情報ステータス表示 -->
+    <div id="company-status" class="hidden mb-6"></div>
     
     <!-- 検索・フィルターパネル -->
     <div class="bg-white rounded-lg shadow p-6 mb-6">
@@ -448,7 +414,7 @@ subsidyPages.get('/subsidies', (c) => {
             if (hasSearchableCompany && firstSearchableValue) {
               // 検索可能な会社を自動選択
               select.value = firstSearchableValue;
-              document.getElementById('company-alert').classList.add('hidden');
+              showCompanyReady(res.data.find(c => c.id === firstSearchableValue));
               
               // 検索パネルを有効化
               const searchPanel = document.querySelector('.bg-white.rounded-lg.shadow.p-6.mb-6');
@@ -469,9 +435,38 @@ subsidyPages.get('/subsidies', (c) => {
         }
       }
       
+      // 会社情報準備完了の表示
+      function showCompanyReady(company) {
+        const statusEl = document.getElementById('company-status');
+        if (!statusEl) return;
+        
+        statusEl.className = 'bg-gradient-to-r from-green-50 to-emerald-50 border border-green-300 rounded-xl p-4 mb-6';
+        statusEl.innerHTML = 
+          '<div class="flex items-start gap-3">' +
+            '<div class="w-10 h-10 bg-green-200 rounded-full flex items-center justify-center flex-shrink-0">' +
+              '<i class="fas fa-check-circle text-green-600 text-lg"></i>' +
+            '</div>' +
+            '<div class="flex-1">' +
+              '<p class="text-green-800 font-semibold">✓ 会社情報登録済み</p>' +
+              '<p class="text-green-700 text-sm mt-1">' +
+                '<strong>' + (company.name || '') + '</strong> で検索できます。' +
+                '都道府県・業種・従業員数が登録されているため、最適な補助金をマッチングできます。' +
+              '</p>' +
+              '<a href="/company" class="inline-flex items-center gap-2 text-green-700 hover:text-green-800 text-sm mt-2">' +
+                '<i class="fas fa-edit text-xs"></i> さらに精度を上げるには会社情報を編集' +
+              '</a>' +
+            '</div>' +
+          '</div>';
+        statusEl.classList.remove('hidden');
+      }
+      
       // 会社情報が不完全な場合のアラート
       function showIncompleteCompanyAlert(company) {
-        document.getElementById('company-alert').classList.remove('hidden');
+        const statusEl = document.getElementById('company-status');
+        if (!statusEl) return;
+        
+        statusEl.className = 'bg-gradient-to-r from-orange-50 to-amber-50 border border-orange-300 rounded-xl p-5 mb-6';
+        statusEl.classList.remove('hidden');
         
         // 何が足りないかを表示
         const missing = [];
@@ -484,19 +479,34 @@ subsidyPages.get('/subsidies', (c) => {
           return '<span class="px-3 py-1 bg-orange-100 text-orange-700 rounded-full text-sm"><i class="fas fa-exclamation-circle mr-1"></i>' + m + '</span>';
         }).join('');
         
-        document.getElementById('subsidies-list').innerHTML = 
-          '<div class="bg-white rounded-lg shadow p-8">' +
-            '<div class="text-center">' +
-              '<div class="w-16 h-16 bg-orange-100 rounded-full flex items-center justify-center mx-auto mb-4">' +
-                '<i class="fas fa-edit text-orange-500 text-2xl"></i>' +
+        statusEl.innerHTML = 
+          '<div class="flex items-start gap-4">' +
+            '<div class="w-12 h-12 bg-orange-200 rounded-full flex items-center justify-center flex-shrink-0">' +
+              '<i class="fas fa-exclamation-triangle text-orange-600 text-xl"></i>' +
+            '</div>' +
+            '<div class="flex-1">' +
+              '<p class="text-orange-800 font-semibold text-lg">会社情報を完成させましょう</p>' +
+              '<p class="text-orange-700 text-sm mt-1 mb-3">' +
+                '補助金検索には以下の情報が<strong>必須</strong>です。現在不足しています:' +
+              '</p>' +
+              '<div class="flex gap-2 flex-wrap mb-4">' + missingBadges + '</div>' +
+              '<div class="bg-white/50 rounded-lg p-3 mb-3 text-sm text-orange-800">' +
+                '<i class="fas fa-lightbulb mr-2"></i>' +
+                '<strong>メリット:</strong> 必須情報を登録すると、' +
+                '<span class="font-semibold">47都道府県＋国の補助金から最適なものを自動マッチング</span>できます。' +
               '</div>' +
-              '<h3 class="text-lg font-semibold text-gray-800 mb-2">会社情報を完成させてください</h3>' +
-              '<p class="text-gray-600 mb-4">補助金検索には以下の情報が必要です。現在不足しています:</p>' +
-              '<div class="flex justify-center gap-2 flex-wrap mb-6">' + missingBadges + '</div>' +
-              '<a href="/company" class="inline-flex items-center gap-2 bg-blue-600 text-white px-6 py-3 rounded-lg hover:bg-blue-700 transition">' +
-                '<i class="fas fa-edit"></i> 会社情報を編集する' +
+              '<a href="/company" class="inline-flex items-center gap-2 bg-orange-500 text-white px-5 py-2.5 rounded-lg hover:bg-orange-600 transition">' +
+                '<i class="fas fa-edit"></i> 会社情報を編集する（必須項目を入力）' +
               '</a>' +
             '</div>' +
+          '</div>';
+        
+        document.getElementById('subsidies-list').innerHTML = 
+          '<div class="bg-white rounded-lg shadow p-8 text-center">' +
+            '<div class="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-4">' +
+              '<i class="fas fa-search text-gray-400 text-2xl"></i>' +
+            '</div>' +
+            '<p class="text-gray-600">必須情報を登録すると検索できます</p>' +
           '</div>';
         
         // 検索パネルを無効化
@@ -508,7 +518,54 @@ subsidyPages.get('/subsidies', (c) => {
       
       // 会社情報がない場合のアラート
       function showNoCompanyAlert() {
-        document.getElementById('company-alert').classList.remove('hidden');
+        const statusEl = document.getElementById('company-status');
+        if (!statusEl) return;
+        
+        statusEl.className = 'bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-300 rounded-xl p-5 mb-6';
+        statusEl.innerHTML = 
+          '<div class="flex items-start gap-4">' +
+            '<div class="w-12 h-12 bg-blue-200 rounded-full flex items-center justify-center flex-shrink-0">' +
+              '<i class="fas fa-building text-blue-600 text-xl"></i>' +
+            '</div>' +
+            '<div class="flex-1">' +
+              '<p class="text-blue-800 font-semibold text-lg">会社情報を登録して、補助金を探しましょう</p>' +
+              '<p class="text-blue-700 text-sm mt-1 mb-3">' +
+                '補助金検索を始めるには、まず<strong>会社の基本情報</strong>を登録してください。' +
+              '</p>' +
+              '<div class="bg-white/70 rounded-lg p-4 mb-3">' +
+                '<p class="text-sm text-blue-800 mb-2"><i class="fas fa-check-circle text-green-500 mr-2"></i><strong>登録後のメリット:</strong></p>' +
+                '<ul class="text-sm text-blue-700 space-y-1 ml-6">' +
+                  '<li>• あなたの会社に<strong>最適な補助金を自動マッチング</strong></li>' +
+                  '<li>• <strong>47都道府県＋国の補助金</strong>から一括検索</li>' +
+                  '<li>• 申請に必要な情報を<strong>AI が自動整理</strong></li>' +
+                  '<li>• 締切・要件を自動チェックして<strong>見逃しを防止</strong></li>' +
+                '</ul>' +
+              '</div>' +
+              '<div class="grid grid-cols-2 md:grid-cols-4 gap-2 mb-4">' +
+                '<div class="flex items-center gap-2 px-3 py-2 bg-white rounded-lg border border-blue-200">' +
+                  '<i class="fas fa-circle text-blue-400 text-xs"></i>' +
+                  '<span class="text-sm text-gray-700">会社名</span>' +
+                '</div>' +
+                '<div class="flex items-center gap-2 px-3 py-2 bg-white rounded-lg border border-blue-200">' +
+                  '<i class="fas fa-circle text-blue-400 text-xs"></i>' +
+                  '<span class="text-sm text-gray-700">都道府県</span>' +
+                '</div>' +
+                '<div class="flex items-center gap-2 px-3 py-2 bg-white rounded-lg border border-blue-200">' +
+                  '<i class="fas fa-circle text-blue-400 text-xs"></i>' +
+                  '<span class="text-sm text-gray-700">業種</span>' +
+                '</div>' +
+                '<div class="flex items-center gap-2 px-3 py-2 bg-white rounded-lg border border-blue-200">' +
+                  '<i class="fas fa-circle text-blue-400 text-xs"></i>' +
+                  '<span class="text-sm text-gray-700">従業員数</span>' +
+                '</div>' +
+              '</div>' +
+              '<a href="/company" class="inline-flex items-center gap-2 bg-blue-600 text-white px-6 py-3 rounded-lg hover:bg-blue-700 transition shadow-md">' +
+                '<i class="fas fa-plus-circle"></i> 会社情報を登録する（2分で完了）' +
+              '</a>' +
+            '</div>' +
+          '</div>';
+        statusEl.classList.remove('hidden');
+        statusEl.classList.remove('hidden');
         
         // 検索パネルを無効化
         const searchPanel = document.querySelector('.bg-white.rounded-lg.shadow.p-6.mb-6');
@@ -516,7 +573,14 @@ subsidyPages.get('/subsidies', (c) => {
           searchPanel.classList.add('opacity-50', 'pointer-events-none');
         }
         
-        // ガイダンスメッセージを更新
+        document.getElementById('subsidies-list').innerHTML = 
+          '<div class="bg-white rounded-lg shadow p-8 text-center">' +
+            '<div class="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-4">' +
+              '<i class="fas fa-info-circle text-gray-400 text-2xl"></i>' +
+            '</div>' +
+            '<p class="text-gray-600">まずは会社情報を登録してください</p>' +
+          '</div>';
+      }
         document.getElementById('subsidies-list').innerHTML = 
           '<div class="bg-white rounded-lg shadow p-8">' +
             '<div class="text-center">' +
@@ -817,8 +881,20 @@ subsidyPages.get('/subsidies', (c) => {
         renderResults(currentResults, null);
       });
       
-      // 初期化
-      loadCompanies();
+      // 初期化（window.apiが定義されるのを待つ）
+      if (typeof window.api === 'function') {
+        loadCompanies();
+      } else {
+        // window.apiが未定義の場合は少し待ってから実行
+        setTimeout(() => {
+          if (typeof window.api === 'function') {
+            loadCompanies();
+          } else {
+            console.error('[補助金検索] window.api is not defined after timeout');
+            showNoCompanyAlert();
+          }
+        }, 100);
+      }
     </script>
   `;
   
