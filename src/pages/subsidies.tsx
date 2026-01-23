@@ -1480,19 +1480,8 @@ subsidyPages.get('/subsidies/:id', (c) => {
         }
       }
       
-      // HTMLエスケープ関数（詳細ページ用）
-      function escapeHtmlDetail(str) {
-        if (str === null || str === undefined) return '';
-        return String(str)
-          .replace(/&/g, '&amp;')
-          .replace(/</g, '&lt;')
-          .replace(/>/g, '&gt;')
-          .replace(/"/g, '&quot;')
-          .replace(/'/g, '&#039;');
-      }
-      
       // 詳細描画
-      // ⚠️ XSS対策: API応答は必ずescapeHtmlDetail()でエスケープすること
+      // ⚠️ XSS対策: API応答は必ずescapeHtml()でエスケープすること
       function renderDetail(data) {
         // ⚠️ null/undefined チェック
         if (!data || !data.subsidy) {
@@ -1512,7 +1501,7 @@ subsidyPages.get('/subsidies/:id', (c) => {
         document.getElementById('breadcrumb-title').textContent = s.title || s.name || '補助金詳細';
         document.getElementById('subsidy-title').textContent = s.title || s.name || '補助金名未設定';
         // ⚠️ XSS対策: innerHTMLを使用する場合はエスケープ
-        document.getElementById('subsidy-org').innerHTML = '<i class="fas fa-building mr-1"></i>' + escapeHtmlDetail(s.subsidy_executing_organization || '事務局情報なし');
+        document.getElementById('subsidy-org').innerHTML = '<i class="fas fa-building mr-1"></i>' + escapeHtml(s.subsidy_executing_organization || '事務局情報なし');
         
         // ステータスバッジ
         if (e) {
@@ -1559,7 +1548,7 @@ subsidyPages.get('/subsidies/:id', (c) => {
               text = String(item || '');
             }
             // ⚠️ XSS対策: エスケープして返す
-            return escapeHtmlDetail(text);
+            return escapeHtml(text);
           }
           
           // マッチ理由をフィルタリングして有効なものだけ表示（XSS対策済み）
@@ -1573,7 +1562,7 @@ subsidyPages.get('/subsidies/:id', (c) => {
             .filter(r => r && r.trim() && r !== '[object Object]');
           
           // ⚠️ XSS対策: explanation をエスケープ
-          const safeExplanation = escapeHtmlDetail(e.explanation || '説明なし');
+          const safeExplanation = escapeHtml(e.explanation || '説明なし');
           
           // マッチング結果タブの内容
           document.getElementById('evaluation-content').innerHTML = \`
@@ -1631,7 +1620,7 @@ subsidyPages.get('/subsidies/:id', (c) => {
         const attachments = data.attachments || [];
         if (attachments.length > 0) {
           document.getElementById('attachments-list').innerHTML = attachments.map(a => {
-            const safeName = escapeHtmlDetail(a.name || '不明なファイル');
+            const safeName = escapeHtml(a.name || '不明なファイル');
             // URLは特殊文字のみエスケープ（javascript: スキームを防ぐ）
             const safeUrl = a.url && a.url.match(/^https?:\\/\\//i) 
               ? encodeURI(a.url) 

@@ -1,7 +1,7 @@
 # 品質凍結チェックリスト
 
 **作成日**: 2026-01-23  
-**最終更新**: 2026-01-23  
+**最終更新**: 2026-01-23 v2  
 **目的**: 仕様・DB・API契約がブレない状態を確保し、運用事故を防ぐ
 
 ---
@@ -14,7 +14,11 @@
 | Q1-2: コード参照統一 | ✅ 完了 | company_memberships参照を全排除 |
 | Q3: Agency導線 | ✅ 完了 | /agency/search実装済み・ナビ追加済み |
 | Q2: SendGrid | ⏸️ 後回し | 完成後にローテーション |
-| 会社情報フロー | 🔄 進行中 | Completeness API実装済み、UI統一は次フェーズ |
+| 会社情報フロー | ✅ 完了 | Completeness API・UI統一完了 |
+| E2Eチェックリスト | ✅ 完了 | セクションI-L追加 |
+| XSS対策 | ✅ 完了 | escapeHtml統一・URLエンコード適用 |
+| 評価ステータス互換 | ✅ 完了 | PROCEED/CAUTION/DO_NOT_PROCEED+NO対応 |
+| Agency顧客編集 | ✅ 完了 | client.id検証・フォールバック実装 |
 
 ---
 
@@ -560,7 +564,8 @@ SELECT role FROM user_companies WHERE user_id = ? AND company_id = ?
 - [x] 承認→companies/company_profile更新
 
 ### F-4. 補助金検索導線
-- [ ] `/agency/search` 新設（一般 `/subsidies` と分離）
+- [x] `/agency/search` 新設（一般 `/subsidies` と分離）
+- [x] 顧客編集リンク安全化（UUID検証、XSS対策）
 
 ---
 
@@ -650,3 +655,159 @@ FROM agency_clients ac
 LEFT JOIN companies c ON ac.company_id = c.id
 WHERE c.id IS NULL;
 ```
+
+---
+
+## I. 画面別E2Eチェックリスト（凍結手順 v2）
+
+**最終更新**: 2026-01-23  
+**目的**: 致命的停止を防ぎ、再現可能な手動確認手順を定義
+
+### I-0. 凍結ルール前提
+
+| 項目 | 値 | 説明 |
+|------|-----|------|
+| 必須4項目 | name, prefecture, industry_major, employee_count(>0) | 検索に必須 |
+| Completeness | OK / NEEDS_RECOMMENDED / BLOCKED | 検索可否を決定 |
+| 評価ステータス | PROCEED / CAUTION / DO_NOT_PROCEED | UIはNOも互換対応 |
+| JGrants取り込み | subsidy_cache upsert, expires_at=7日 | 失敗しても検索機能は死なない |
+
+### I-1. /subsidies（補助金検索）
+
+| チェック項目 | 期待値 | 確認方法 |
+|--------------|--------|----------|
+| 初回表示 | console error 0件 | F12 → Console |
+| 会社選択 | completeness APIが走り、StatusBannerが正しく切替 | Network tab |
+| BLOCKED時 | 検索ボタンが押せない/押しても検索されない | UIクリック |
+| 全件表示モード | 自動的に100件に設定 | limit selectの値 |
+| 表示件数セレクト | デフォルト50件、全件（最大100件）オプションあり | UI確認 |
+| XSS対策 | タイトル等がescapeHtml()経由 | ソース確認済み |
+
+### I-2. /subsidies/:id（補助金詳細）
+
+| チェック項目 | 期待値 | 確認方法 |
+|--------------|--------|----------|
+| PDFを開く | example.com に飛ばない（モックURL混入無し） | リンクhref確認 |
+| 添付なし | 「添付なし」表示で落ちない | テストデータで確認 |
+| DO_NOT_PROCEED時 | 壁打ちボタン非表示 | UIクリック |
+| XSS対策 | escapeHtml()適用済み | ソース確認済み |
+
+### I-3. /chat（壁打ちチャット）
+
+| チェック項目 | 期待値 | 確認方法 |
+|--------------|--------|----------|
+| 新規開始 | subsidy_id + company_id で開始可能 | URLパラメータ |
+| セッション復元 | session_id で復元可能 | /draft からの戻り |
+| precheck欠損 | UIが落ちない（status undefined系 0件） | テストデータ |
+
+### I-4. /draft（申請書作成）
+
+| チェック項目 | 期待値 | 確認方法 |
+|--------------|--------|----------|
+| session_id無し | 例外で落ちず、/subsidies へ誘導 | 直接アクセス |
+| session_id不正 | UUID形式検証、不正なら/subsidies へ | 不正文字列で確認 |
+| 戻るボタン | /chat が session_id で復元可能 | ボタンクリック |
+
+### I-5. /agency/search（士業向け検索）
+
+| チェック項目 | 期待値 | 確認方法 |
+|--------------|--------|----------|
+| 顧客選択 | completeness APIで OK/NEEDS/BLOCKED 切替 | UI確認 |
+| 顧客情報編集 | /agency/clients/:id へ正しく遷移 | リンククリック |
+| client.id無効 | /agency/clients へフォールバック | テスト |
+| XSS対策 | escapeHtml()適用済み | ソース確認済み |
+| UUID検証 | client.id が不正形式なら安全にフォールバック | ソース確認済み |
+
+### I-6. 全件表示の仕様凍結
+
+| 項目 | 凍結値 |
+|------|--------|
+| 「全件表示」= | 最大100件とUIに明記 |
+| 全件表示モード時 | limit = 100 相当 |
+| バックエンド最大 | 100件（将来200-500への拡張検討可） |
+| ページネーション | limit='all' でも正常動作 |
+
+### I-7. セキュリティ凍結
+
+| 項目 | 対策 |
+|------|------|
+| innerHTML | escapeHtml() を必ず経由 |
+| 外部URL | https?:// のみ許可、それ以外は # に落とす |
+| ID/クエリ | encodeURIComponent() 適用 |
+| エラー文 | そのままinnerHTMLしない |
+
+---
+
+## J. データ健全性KPI（/admin/ops で表示）
+
+| 指標 | 目標値 | 説明 |
+|------|--------|------|
+| subsidy_cache.total | >= 500 | 補助金データ総数 |
+| valid / total | >= 95% | 有効データ比率 |
+| has_deadline / total | >= 95% | 締切情報保有率 |
+| has_amount / total | >= 80% | 金額情報保有率 |
+| target_industry空 = 全業種扱い | 仕様として明文化 | スクリーニングルール |
+
+---
+
+## K. JGrants同期 再現手順
+
+### K-1. API確認
+
+```bash
+# secret無しで401
+curl -X POST https://hojyokin.pages.dev/api/cron/sync-jgrants
+
+# secret正で200
+curl -X POST https://hojyokin.pages.dev/api/cron/sync-jgrants \
+  -H "X-Cron-Secret: YOUR_CRON_SECRET"
+```
+
+### K-2. cron-job.org 設定
+
+| 項目 | 値 |
+|------|-----|
+| URL | https://hojyokin.pages.dev/api/cron/sync-jgrants |
+| Method | POST |
+| Header | X-Cron-Secret: {CRON_SECRET} |
+| Schedule | 毎日 03:00 JST |
+| 失敗時通知 | ON |
+
+### K-3. 期待動作
+
+- 連続2回叩いても増分が減っていく（キャッシュ済みデータはスキップ）
+- 24h更新（cached_at >= now-24h）
+- 失敗してもUI検索は止まらない（cached-onlyモード）
+
+---
+
+## L. コード品質チェックリスト
+
+### L-1. escape関数統一
+
+| ファイル | 関数名 | ステータス |
+|----------|--------|-----------|
+| subsidies.tsx | escapeHtml() | ✅ 統一済み |
+| agency.tsx | escapeHtml() | ✅ 追加済み |
+| chat.tsx | escapeHtml() | ✅ 存在確認 |
+| draft.tsx | - | 要確認 |
+
+### L-2. 評価ステータス互換
+
+| バックエンド | フロントエンド | 対応 |
+|--------------|--------------|------|
+| DO_NOT_PROCEED | DO_NOT_PROCEED / NO | ✅ 両方対応 |
+| CAUTION | CAUTION | ✅ |
+| PROCEED | PROCEED | ✅ |
+
+---
+
+## 修正履歴
+
+| 日付 | 修正内容 | 担当 |
+|------|----------|------|
+| 2026-01-23 | 初版作成 | - |
+| 2026-01-23 | Agency導線・Completeness API追加 | - |
+| 2026-01-23 | E2Eチェックリスト追加（セクションI-L） | - |
+| 2026-01-23 | /agency/search顧客編集リンク修正・XSS対策強化 | - |
+| 2026-01-23 | escapeHtml関数統一（escapeHtmlDetail削除） | - |

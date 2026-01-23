@@ -2722,6 +2722,35 @@ agencyPages.get('/agency/search', (c) => {
       let searchMode = 'match';
       let clients = [];
       
+      // XSS対策: HTMLエスケープ関数
+      function escapeHtml(str) {
+        if (str === null || str === undefined) return '';
+        return String(str)
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&#039;');
+      }
+      
+      // 顧客編集リンクを安全に生成
+      function getClientEditLink(client, linkText, btnClass) {
+        const defaultBtnClass = 'inline-flex items-center gap-1 text-blue-600 hover:text-blue-800 text-sm';
+        const fallbackBtnClass = btnClass ? btnClass.replace('bg-red-600', 'bg-gray-600').replace('hover:bg-red-700', 'hover:bg-gray-700') : 'inline-flex items-center gap-1 text-gray-500 text-sm';
+        
+        if (!client || !client.id) {
+          // client.id が無い場合は顧客一覧へのリンクを返す
+          return '<a href="/agency/clients" class="' + fallbackBtnClass + '"><i class="fas fa-list text-xs"></i> 顧客一覧へ</a>';
+        }
+        // UUID形式の検証
+        const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+        if (!uuidRegex.test(client.id)) {
+          console.warn('[Agency検索] Invalid client.id format:', client.id);
+          return '<a href="/agency/clients" class="' + fallbackBtnClass + '"><i class="fas fa-list text-xs"></i> 顧客一覧へ</a>';
+        }
+        return '<a href="/agency/clients/' + encodeURIComponent(client.id) + '" class="' + (btnClass || defaultBtnClass) + '"><i class="fas fa-edit"></i> ' + escapeHtml(linkText || '顧客情報を編集') + '</a>';
+      }
+      
       // 検索モード切替
       window.setSearchMode = function(mode) {
         searchMode = mode;
@@ -2827,7 +2856,7 @@ agencyPages.get('/agency/search', (c) => {
             '<div class="flex-1">' +
               '<p class="text-green-800 font-semibold">✓ 顧客情報完了 - 最適なマッチングが可能です</p>' +
               '<p class="text-green-700 text-sm mt-1">' +
-                '<strong>' + (client?.client_name || client?.company_name || '') + '</strong> で検索できます。' +
+                '<strong>' + escapeHtml(client?.client_name || client?.company_name || '') + '</strong> で検索できます。' +
                 '必須情報・推奨情報がすべて登録されているため、最も精度の高いマッチングが可能です。' +
               '</p>' +
               '<div class="flex items-center gap-2 mt-2 text-sm text-green-600">' +
@@ -2848,18 +2877,16 @@ agencyPages.get('/agency/search', (c) => {
         statusEl.className = 'bg-gradient-to-r from-green-50 to-blue-50 border border-green-300 rounded-xl p-4 mb-6';
         statusEl.classList.remove('hidden');
         
-        var missingBadges = completeness.missing_recommended.map(function(m) {
-          return '<span class="px-2 py-1 bg-blue-100 text-blue-700 rounded-full text-xs"><i class="fas fa-plus-circle mr-1"></i>' + m + '</span>';
+        var missingBadges = (completeness.missing_recommended || []).map(function(m) {
+          return '<span class="px-2 py-1 bg-blue-100 text-blue-700 rounded-full text-xs"><i class="fas fa-plus-circle mr-1"></i>' + escapeHtml(m) + '</span>';
         }).join(' ');
         
-        var benefitsHtml = completeness.benefits.slice(0, 3).map(function(b) {
-          return '<li class="text-sm text-blue-700">• ' + b + '</li>';
+        var benefitsHtml = (completeness.benefits || []).slice(0, 3).map(function(b) {
+          return '<li class="text-sm text-blue-700">• ' + escapeHtml(b) + '</li>';
         }).join('');
         
         // 編集リンク: client.id (agency_client_id) が存在する場合のみ表示
-        var editLink = client?.id 
-          ? '<a href="/agency/clients/' + client.id + '" class="inline-flex items-center gap-1 text-blue-600 hover:text-blue-800 text-sm"><i class="fas fa-edit text-xs"></i> 顧客情報を編集</a>'
-          : '<a href="/agency/clients" class="inline-flex items-center gap-1 text-gray-500 text-sm"><i class="fas fa-external-link-alt text-xs"></i> 顧客一覧へ</a>';
+        var editLink = getClientEditLink(client, '顧客情報を編集');
         
         statusEl.innerHTML = 
           '<div class="flex items-start gap-3">' +
@@ -2867,7 +2894,7 @@ agencyPages.get('/agency/search', (c) => {
               '<i class="fas fa-check-circle text-green-600 text-lg"></i>' +
             '</div>' +
             '<div class="flex-1">' +
-              '<p class="text-green-800 font-semibold">✓ 検索可能 - <strong>' + (client?.client_name || client?.company_name || '') + '</strong></p>' +
+              '<p class="text-green-800 font-semibold">✓ 検索可能 - <strong>' + escapeHtml(client?.client_name || client?.company_name || '') + '</strong></p>' +
               '<div class="flex items-center gap-2 mt-1 text-sm">' +
                 '<span class="px-2 py-1 bg-green-100 text-green-700 rounded-full"><i class="fas fa-check mr-1"></i>必須 ' + completeness.required_filled + '/' + completeness.required_count + '</span>' +
                 '<span class="px-2 py-1 bg-blue-100 text-blue-700 rounded-full"><i class="fas fa-info-circle mr-1"></i>推奨 ' + completeness.recommended_filled + '/' + completeness.recommended_count + '</span>' +
@@ -2919,7 +2946,7 @@ agencyPages.get('/agency/search', (c) => {
             '<div class="flex-1">' +
               '<p class="text-red-800 font-semibold text-lg"><i class="fas fa-lock mr-1"></i>顧客情報が不足しています</p>' +
               '<p class="text-red-700 text-sm mt-1 mb-3">' +
-                '<strong>' + (client?.client_name || client?.company_name || 'この顧客') + '</strong> の補助金検索を行うには、以下の<strong>必須4項目</strong>をすべて入力してください:' +
+                '<strong>' + escapeHtml(client?.client_name || client?.company_name || 'この顧客') + '</strong> の補助金検索を行うには、以下の<strong>必須4項目</strong>をすべて入力してください:' +
               '</p>' +
               '<div class="grid grid-cols-2 md:grid-cols-4 gap-2 mb-4 p-3 bg-white/50 rounded-lg">' + requiredChecklist + '</div>' +
               '<div class="bg-white/70 rounded-lg p-3 mb-3 text-sm text-red-800">' +
@@ -2927,9 +2954,7 @@ agencyPages.get('/agency/search', (c) => {
                 '<strong>メリット:</strong> 必須情報を登録すると、' +
                 '<span class="font-semibold">47都道府県＋国の補助金から最適なものを自動マッチング</span>できます。' +
               '</div>' +
-              (client?.id 
-                ? '<a href="/agency/clients/' + client.id + '" class="inline-flex items-center gap-2 bg-red-600 text-white px-5 py-2.5 rounded-lg hover:bg-red-700 transition shadow"><i class="fas fa-edit"></i> 顧客情報を編集する</a>'
-                : '<a href="/agency/clients" class="inline-flex items-center gap-2 bg-gray-600 text-white px-5 py-2.5 rounded-lg hover:bg-gray-700 transition shadow"><i class="fas fa-list"></i> 顧客一覧へ</a>') +
+              getClientEditLink(client, '顧客情報を編集する', 'inline-flex items-center gap-2 bg-red-600 text-white px-5 py-2.5 rounded-lg hover:bg-red-700 transition shadow') +
             '</div>' +
           '</div>';
         
