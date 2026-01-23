@@ -2502,6 +2502,11 @@ agencyPages.get('/agency/search', (c) => {
           return '<li class="text-sm text-blue-700">• ' + b + '</li>';
         }).join('');
         
+        // 編集リンク: client.id (agency_client_id) が存在する場合のみ表示
+        var editLink = client?.id 
+          ? '<a href="/agency/clients/' + client.id + '" class="inline-flex items-center gap-1 text-blue-600 hover:text-blue-800 text-sm"><i class="fas fa-edit text-xs"></i> 顧客情報を編集</a>'
+          : '<a href="/agency/clients" class="inline-flex items-center gap-1 text-gray-500 text-sm"><i class="fas fa-external-link-alt text-xs"></i> 顧客一覧へ</a>';
+        
         statusEl.innerHTML = 
           '<div class="flex items-start gap-3">' +
             '<div class="w-10 h-10 bg-green-200 rounded-full flex items-center justify-center flex-shrink-0">' +
@@ -2518,9 +2523,7 @@ agencyPages.get('/agency/search', (c) => {
                 '<div class="mt-2 p-3 bg-white/70 rounded-lg">' +
                   '<div class="flex flex-wrap gap-1 mb-2">' + missingBadges + '</div>' +
                   '<ul class="space-y-1 mb-2">' + benefitsHtml + '</ul>' +
-                  '<a href="/agency/clients/' + (client?.id || '') + '" class="inline-flex items-center gap-1 text-blue-600 hover:text-blue-800 text-sm">' +
-                    '<i class="fas fa-edit text-xs"></i> 顧客情報を編集' +
-                  '</a>' +
+                  editLink +
                 '</div>' +
               '</details>' +
             '</div>' +
@@ -2570,9 +2573,9 @@ agencyPages.get('/agency/search', (c) => {
                 '<strong>メリット:</strong> 必須情報を登録すると、' +
                 '<span class="font-semibold">47都道府県＋国の補助金から最適なものを自動マッチング</span>できます。' +
               '</div>' +
-              '<a href="/agency/clients/' + (client?.id || '') + '" class="inline-flex items-center gap-2 bg-red-600 text-white px-5 py-2.5 rounded-lg hover:bg-red-700 transition shadow">' +
-                '<i class="fas fa-edit"></i> 顧客情報を編集する' +
-              '</a>' +
+              (client?.id 
+                ? '<a href="/agency/clients/' + client.id + '" class="inline-flex items-center gap-2 bg-red-600 text-white px-5 py-2.5 rounded-lg hover:bg-red-700 transition shadow"><i class="fas fa-edit"></i> 顧客情報を編集する</a>'
+                : '<a href="/agency/clients" class="inline-flex items-center gap-2 bg-gray-600 text-white px-5 py-2.5 rounded-lg hover:bg-gray-700 transition shadow"><i class="fas fa-list"></i> 顧客一覧へ</a>') +
             '</div>' +
           '</div>';
         
