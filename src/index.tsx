@@ -11,7 +11,7 @@ import { HTTPException } from 'hono/http-exception';
 import { jsxRenderer } from 'hono/jsx-renderer';
 
 import type { Env, Variables, ApiResponse } from './types';
-import { authRoutes, companiesRoutes, subsidiesRoutes, jobsRoutes, internalRoutes, knowledgeRoutes, consumerRoutes, kpiRoutes, adminRoutes, profileRoutes, chatRoutes, draftRoutes, adminDashboardRoutes, agencyRoutes, portalRoutes } from './routes';
+import { authRoutes, companiesRoutes, subsidiesRoutes, jobsRoutes, internalRoutes, knowledgeRoutes, consumerRoutes, kpiRoutes, adminRoutes, profileRoutes, chatRoutes, draftRoutes, adminDashboardRoutes, agencyRoutes, portalRoutes, cronRoutes } from './routes';
 import { securityHeaders, requestId } from './middleware/security';
 import authPages from './pages/auth';
 import dashboardPages from './pages/dashboard';
@@ -119,6 +119,9 @@ app.route('/api/agency', agencyRoutes);
 
 // Portal（顧客ポータル - ログイン不要）ルート
 app.route('/api/portal', portalRoutes);
+
+// Cron（外部Cronサービス用 - シークレット認証）ルート
+app.route('/api/cron', cronRoutes);
 
 // ============================================================
 // UI ページルート（U1）

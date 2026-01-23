@@ -13,3 +13,4 @@ export { default as draftRoutes } from './draft';
 export { default as adminDashboardRoutes } from './admin-dashboard';
 export { agencyRoutes } from './agency';
 export { portalRoutes } from './portal';
+export { default as cronRoutes } from './cron';

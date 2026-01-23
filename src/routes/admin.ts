@@ -7,6 +7,7 @@
  * POST /api/admin/users/:id/enable - ユーザー復活
  * POST /api/admin/users/:id/reset-password - 管理者によるパスワードリセット
  * GET  /api/admin/audit - 監査ログ一覧
+ * POST /api/cron/sync-jgrants - Cron用JGrants同期（シークレット認証）
  */
 
 import { Hono } from 'hono';
