@@ -60,7 +60,11 @@ const subsidyLayout = (title: string, content: string, currentPath: string = '/s
           </div>
         </div>
         <div class="flex items-center space-x-4">
+          <span id="user-role" class="hidden px-2 py-1 text-xs font-medium rounded-full"></span>
           <span id="user-email" class="text-sm text-gray-500"></span>
+          <a id="admin-link" href="/admin" class="hidden text-indigo-600 hover:text-indigo-800 text-sm font-medium">
+            <i class="fas fa-shield-halved mr-1"></i>管理画面
+          </a>
           <button onclick="logout()" class="text-sm text-gray-600 hover:text-gray-900">
             <i class="fas fa-sign-out-alt mr-1"></i>ログアウト
           </button>
@@ -131,15 +135,43 @@ const subsidyLayout = (title: string, content: string, currentPath: string = '/s
         }
       };
       
-      // ユーザー情報取得
+      // ユーザー情報取得＆権限表示
       async function loadUser() {
         try {
           var data = await window.api('/api/auth/me');
           if (data && data.success) {
+            var user = data.data;
             var emailEl = document.getElementById('user-email');
             if (emailEl) {
-              emailEl.textContent = data.data.email || '';
+              emailEl.textContent = user.email || '';
             }
+            
+            // 権限バッジ表示
+            var roleEl = document.getElementById('user-role');
+            var adminLink = document.getElementById('admin-link');
+            
+            if (user.role === 'super_admin') {
+              if (roleEl) {
+                roleEl.textContent = 'Super Admin';
+                roleEl.className = 'px-2 py-1 text-xs font-medium rounded-full bg-purple-100 text-purple-800';
+              }
+              if (adminLink) adminLink.classList.remove('hidden');
+            } else if (user.role === 'admin') {
+              if (roleEl) {
+                roleEl.textContent = 'Admin';
+                roleEl.className = 'px-2 py-1 text-xs font-medium rounded-full bg-blue-100 text-blue-800';
+              }
+              if (adminLink) adminLink.classList.remove('hidden');
+            } else if (user.role === 'agency') {
+              if (roleEl) {
+                roleEl.textContent = 'Agency';
+                roleEl.className = 'px-2 py-1 text-xs font-medium rounded-full bg-green-100 text-green-800';
+              }
+            }
+            // userロールの場合は何も表示しない
+            
+            // ユーザー情報をグローバルに保存
+            window.currentUser = user;
           }
         } catch (e) {
           console.error('Failed to load user:', e);
@@ -276,15 +308,33 @@ subsidyPages.get('/subsidies', (c) => {
           <span id="data-source" class="ml-2 px-2 py-0.5 bg-gray-100 rounded text-xs"></span>
         </div>
         <div class="flex space-x-2">
-          <span class="px-2 py-1 bg-green-100 text-green-800 rounded text-xs">
+          <span class="px-2 py-1 bg-green-100 text-green-800 rounded text-xs cursor-help" title="条件に合致。申請の検討をおすすめします">
             <i class="fas fa-check-circle mr-1"></i>推奨: <span id="count-proceed">0</span>
           </span>
-          <span class="px-2 py-1 bg-yellow-100 text-yellow-800 rounded text-xs">
+          <span class="px-2 py-1 bg-yellow-100 text-yellow-800 rounded text-xs cursor-help" title="一部条件の確認が必要。詳細を確認してください">
             <i class="fas fa-exclamation-triangle mr-1"></i>注意: <span id="count-caution">0</span>
           </span>
-          <span class="px-2 py-1 bg-red-100 text-red-800 rounded text-xs">
+          <span class="px-2 py-1 bg-red-100 text-red-800 rounded text-xs cursor-help" title="現在の条件では申請が難しい可能性があります">
             <i class="fas fa-times-circle mr-1"></i>非推奨: <span id="count-no">0</span>
           </span>
+        </div>
+      </div>
+      
+      <!-- ステータス説明 -->
+      <div class="mt-3 p-3 bg-white rounded-lg border text-xs">
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <div class="flex items-start gap-2">
+            <span class="px-2 py-1 bg-green-100 text-green-800 rounded font-medium whitespace-nowrap"><i class="fas fa-check-circle mr-1"></i>推奨</span>
+            <span class="text-gray-600">会社の条件に合致しており、申請を検討することをおすすめします</span>
+          </div>
+          <div class="flex items-start gap-2">
+            <span class="px-2 py-1 bg-yellow-100 text-yellow-800 rounded font-medium whitespace-nowrap"><i class="fas fa-exclamation-triangle mr-1"></i>注意</span>
+            <span class="text-gray-600">一部条件の確認が必要です。詳細ページで要件を確認してください</span>
+          </div>
+          <div class="flex items-start gap-2">
+            <span class="px-2 py-1 bg-red-100 text-red-800 rounded font-medium whitespace-nowrap"><i class="fas fa-times-circle mr-1"></i>非推奨</span>
+            <span class="text-gray-600">現在の会社情報では申請要件を満たしていない可能性があります</span>
+          </div>
         </div>
       </div>
       
@@ -409,6 +459,18 @@ subsidyPages.get('/subsidies', (c) => {
               }
               
               select.appendChild(option);
+            });
+            
+            // 会社リストをグローバルに保存
+            window.companiesList = res.data;
+            
+            // 会社選択変更時のイベントリスナー
+            select.addEventListener('change', function() {
+              var selectedId = this.value;
+              var selectedCompany = window.companiesList.find(c => c.id === selectedId);
+              if (selectedCompany) {
+                showCompanyReady(selectedCompany);
+              }
             });
             
             if (hasSearchableCompany && firstSearchableValue) {
@@ -799,12 +861,23 @@ subsidyPages.get('/subsidies', (c) => {
       function generateConditionBadges(evaluation) {
         const badges = [];
         
+        // 文字列化ヘルパー（オブジェクトの場合は適切に変換）
+        function toDisplayString(item) {
+          if (typeof item === 'string') return item;
+          if (item && typeof item === 'object') {
+            // オブジェクトの場合、reason/text/message/descriptionなどのプロパティを探す
+            return item.reason || item.text || item.message || item.description || item.name || JSON.stringify(item);
+          }
+          return String(item);
+        }
+        
         // マッチ理由（達成条件）
         if (evaluation.match_reasons && evaluation.match_reasons.length > 0) {
           evaluation.match_reasons.slice(0, 3).forEach(reason => {
+            var displayText = toDisplayString(reason);
             badges.push(\`
               <span class="condition-badge px-2 py-1 bg-green-100 border border-green-300 text-green-800 rounded text-xs">
-                <i class="fas fa-check text-green-500 mr-1"></i>\${reason}
+                <i class="fas fa-check text-green-500 mr-1"></i>\${displayText}
               </span>
             \`);
           });
@@ -813,9 +886,10 @@ subsidyPages.get('/subsidies', (c) => {
         // リスクフラグ（未達条件・注意事項）
         if (evaluation.risk_flags && evaluation.risk_flags.length > 0) {
           evaluation.risk_flags.slice(0, 2).forEach(flag => {
+            var displayText = toDisplayString(flag);
             badges.push(\`
               <span class="condition-badge px-2 py-1 bg-red-100 border border-red-300 text-red-800 rounded text-xs">
-                <i class="fas fa-times text-red-500 mr-1"></i>\${flag}
+                <i class="fas fa-times text-red-500 mr-1"></i>\${displayText}
               </span>
             \`);
           });
@@ -841,19 +915,37 @@ subsidyPages.get('/subsidies', (c) => {
       
       // Sprint 2: なぜ出てきたかの説明
       function generateWhyMatched(evaluation) {
+        // 文字列化ヘルパー（オブジェクトの場合は適切に変換）
+        function toDisplayString(item) {
+          if (typeof item === 'string') return item;
+          if (item && typeof item === 'object') {
+            return item.reason || item.text || item.message || item.description || item.name || '';
+          }
+          return String(item);
+        }
+        
         if (evaluation.status === 'PROCEED') {
           if (evaluation.match_reasons && evaluation.match_reasons.length > 0) {
-            return \`あなたの会社は「\${evaluation.match_reasons[0]}」に該当するため、この補助金が推奨されています。\`;
+            var reason = toDisplayString(evaluation.match_reasons[0]);
+            if (reason) {
+              return \`あなたの会社は「\${reason}」に該当するため、この補助金が推奨されています。\`;
+            }
           }
           return 'あなたの会社の条件に合致しています。';
         } else if (evaluation.status === 'CAUTION') {
           if (evaluation.risk_flags && evaluation.risk_flags.length > 0) {
-            return \`「\${evaluation.risk_flags[0]}」の確認が必要です。条件を満たせば申請可能な可能性があります。\`;
+            var flag = toDisplayString(evaluation.risk_flags[0]);
+            if (flag) {
+              return \`「\${flag}」の確認が必要です。条件を満たせば申請可能な可能性があります。\`;
+            }
           }
           return '一部の条件について確認が必要です。';
         } else if (evaluation.status === 'NO') {
           if (evaluation.risk_flags && evaluation.risk_flags.length > 0) {
-            return \`「\${evaluation.risk_flags[0]}」のため、現在の条件では申請が難しい可能性があります。\`;
+            var flag = toDisplayString(evaluation.risk_flags[0]);
+            if (flag) {
+              return \`「\${flag}」のため、現在の条件では申請が難しい可能性があります。\`;
+            }
           }
           return '現在の条件では申請要件を満たしていません。';
         }

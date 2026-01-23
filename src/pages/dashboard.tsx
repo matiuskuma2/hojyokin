@@ -142,11 +142,11 @@ const AppLayout = ({ children, title, activeNav }: { children: any; title: strin
                 <a href="/dashboard" class={`px-3 py-2 rounded-md text-sm font-medium ${activeNav === 'dashboard' ? 'bg-blue-50 text-blue-700' : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'}`}>
                   <i class="fas fa-home mr-1"></i> ダッシュボード
                 </a>
+                <a href="/subsidies" class={`px-3 py-2 rounded-md text-sm font-medium ${activeNav === 'subsidies' ? 'bg-green-50 text-green-700' : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'}`}>
+                  <i class="fas fa-search mr-1"></i> 補助金を探す
+                </a>
                 <a href="/company" class={`px-3 py-2 rounded-md text-sm font-medium ${activeNav === 'company' ? 'bg-blue-50 text-blue-700' : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'}`}>
                   <i class="fas fa-building mr-1"></i> 会社情報
-                </a>
-                <a href="#" id="nav-subsidies" onclick="window.navigateToSubsidies(event); return false;" class={`px-3 py-2 rounded-md text-sm font-medium ${activeNav === 'subsidies' ? 'bg-green-50 text-green-700' : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'}`}>
-                  <i class="fas fa-search mr-1"></i> 補助金を探す
                 </a>
               </div>
             </div>
