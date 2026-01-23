@@ -1354,15 +1354,16 @@ adminDashboard.get('/debug/company-check', async (c) => {
     }
 
     // 2. メンバーシップ確認
+    // 正テーブル: user_companies（company_membershipsは非推奨）
     const memberships = await db.prepare(`
       SELECT 
-        cm.id as membership_id,
-        cm.company_id,
-        cm.role as membership_role,
-        cm.created_at as membership_created
-      FROM company_memberships cm
-      WHERE cm.user_id = ?
-      ORDER BY cm.created_at DESC
+        uc.user_id || '-' || uc.company_id as membership_id,
+        uc.company_id,
+        uc.role as membership_role,
+        uc.joined_at as membership_created
+      FROM user_companies uc
+      WHERE uc.user_id = ?
+      ORDER BY uc.joined_at DESC
     `).bind(targetUser.id).all<{
       membership_id: string;
       company_id: string;
@@ -1371,13 +1372,14 @@ adminDashboard.get('/debug/company-check', async (c) => {
     }>();
 
     // 3. 紐づいている会社の詳細
+    // 正テーブル: user_companies（company_membershipsは非推奨）
     const companies = await db.prepare(`
       SELECT 
         c.*,
-        cm.role as membership_role
+        uc.role as membership_role
       FROM companies c
-      INNER JOIN company_memberships cm ON c.id = cm.company_id
-      WHERE cm.user_id = ?
+      INNER JOIN user_companies uc ON c.id = uc.company_id
+      WHERE uc.user_id = ?
       ORDER BY c.created_at DESC
     `).bind(targetUser.id).all<{
       id: string;

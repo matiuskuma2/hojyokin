@@ -55,8 +55,9 @@ app.post('/ingest', requireAuth, async (c) => {
 
   // company_idがある場合、所属確認
   if (body.company_id && user) {
+    // 正テーブル: user_companies（company_membershipsは非推奨）
     const membership = await env.DB.prepare(`
-      SELECT 1 FROM company_memberships 
+      SELECT 1 FROM user_companies 
       WHERE user_id = ? AND company_id = ?
     `).bind(user.id, body.company_id).first();
 
@@ -206,8 +207,9 @@ app.post('/subsidies/:subsidy_id/ingest', requireAuth, async (c) => {
 
   // 所属確認
   if (user) {
+    // 正テーブル: user_companies（company_membershipsは非推奨）
     const membership = await env.DB.prepare(`
-      SELECT 1 FROM company_memberships 
+      SELECT 1 FROM user_companies 
       WHERE user_id = ? AND company_id = ?
     `).bind(user.id, body.company_id).first();
 

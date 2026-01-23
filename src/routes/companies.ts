@@ -215,8 +215,9 @@ companies.put('/:company_id', requireCompanyAccess(), async (c) => {
   
   try {
     // 権限チェック（owner または admin のみ更新可能）
+    // 正テーブル: user_companies（company_membershipsは非推奨）
     const membership = await db
-      .prepare('SELECT role FROM company_memberships WHERE user_id = ? AND company_id = ?')
+      .prepare('SELECT role FROM user_companies WHERE user_id = ? AND company_id = ?')
       .bind(user.id, companyId)
       .first<{ role: string }>();
     
@@ -331,8 +332,9 @@ companies.delete('/:company_id', requireCompanyAccess(), async (c) => {
   
   try {
     // 権限チェック（owner のみ削除可能）
+    // 正テーブル: user_companies（company_membershipsは非推奨）
     const membership = await db
-      .prepare('SELECT role FROM company_memberships WHERE user_id = ? AND company_id = ?')
+      .prepare('SELECT role FROM user_companies WHERE user_id = ? AND company_id = ?')
       .bind(user.id, companyId)
       .first<{ role: string }>();
     

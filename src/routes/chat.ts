@@ -64,11 +64,12 @@ chat.use('*', async (c, next) => {
   }
   
   // ユーザーがメンバーとなっている会社を取得
+  // 正テーブル: user_companies（company_membershipsは非推奨）
   const membership = await c.env.DB.prepare(`
     SELECT c.* FROM companies c
-    INNER JOIN company_memberships cm ON c.id = cm.company_id
-    WHERE cm.user_id = ?
-    ORDER BY cm.created_at ASC
+    INNER JOIN user_companies uc ON c.id = uc.company_id
+    WHERE uc.user_id = ?
+    ORDER BY uc.joined_at ASC
     LIMIT 1
   `).bind(user.id).first();
   
