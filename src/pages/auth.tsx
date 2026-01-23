@@ -447,7 +447,8 @@ pages.get('/forgot', (c) => {
 // パスワードリセット画面
 // ============================================================
 
-pages.get('/reset', (c) => {
+// /reset と /reset-password の両方に対応
+const resetPasswordPage = (c: any) => {
   const token = c.req.query('token') || '';
   
   return c.html(
@@ -458,10 +459,12 @@ pages.get('/reset', (c) => {
           新しいパスワードを入力してください
         </p>
         
-        <div id="error-message" class="hidden mb-4 p-3 bg-red-50 border border-red-200 text-red-700 rounded-lg text-sm"></div>
+        <div id="error-message" class={`mb-4 p-3 bg-red-50 border border-red-200 text-red-700 rounded-lg text-sm ${token ? 'hidden' : ''}`}>
+          {!token && 'リセットトークンが見つかりません。パスワード再発行ページから再度お試しください。'}
+        </div>
         <div id="success-message" class="hidden mb-4 p-3 bg-green-50 border border-green-200 text-green-700 rounded-lg text-sm"></div>
         
-        <form id="reset-form" class="space-y-5">
+        <form id="reset-form" class={`space-y-5 ${!token ? 'hidden' : ''}`}>
           <input type="hidden" name="token" value={token} />
           
           <div>
@@ -515,56 +518,75 @@ pages.get('/reset', (c) => {
       </div>
       
       <script dangerouslySetInnerHTML={{ __html: `
-        document.getElementById('reset-form').addEventListener('submit', async function(e) {
-          e.preventDefault();
-          const form = e.target;
-          const btn = form.querySelector('button[type="submit"]');
-          const errorDiv = document.getElementById('error-message');
-          const successDiv = document.getElementById('success-message');
-          
-          // パスワード一致チェック
-          if (form.new_password.value !== form.confirm_password.value) {
-            errorDiv.textContent = 'パスワードが一致しません';
-            errorDiv.classList.remove('hidden');
-            return;
-          }
-          
-          btn.disabled = true;
-          btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 変更中...';
-          errorDiv.classList.add('hidden');
-          successDiv.classList.add('hidden');
-          
-          try {
-            const res = await fetch('/api/auth/password-reset/confirm', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                token: form.token.value,
-                new_password: form.new_password.value
-              })
-            });
+        var resetForm = document.getElementById('reset-form');
+        if (resetForm) {
+          resetForm.addEventListener('submit', async function(e) {
+            e.preventDefault();
+            const form = e.target;
+            const btn = form.querySelector('button[type="submit"]');
+            const errorDiv = document.getElementById('error-message');
+            const successDiv = document.getElementById('success-message');
             
-            const data = await res.json();
-            
-            if (data.success) {
-              successDiv.innerHTML = 'パスワードを変更しました。<br><a href="/login" class="underline font-medium">ログインページへ</a>';
-              successDiv.classList.remove('hidden');
-              form.reset();
-            } else {
-              errorDiv.textContent = data.error.message || '変更に失敗しました';
+            // パスワード一致チェック
+            if (form.new_password.value !== form.confirm_password.value) {
+              errorDiv.textContent = 'パスワードが一致しません';
               errorDiv.classList.remove('hidden');
+              return;
             }
-          } catch (err) {
-            errorDiv.textContent = '通信エラーが発生しました';
-            errorDiv.classList.remove('hidden');
-          } finally {
-            btn.disabled = false;
-            btn.innerHTML = '<i class="fas fa-key"></i> パスワードを変更';
-          }
-        });
+            
+            // パスワード強度チェック
+            var password = form.new_password.value;
+            if (password.length < 8) {
+              errorDiv.textContent = 'パスワードは8文字以上必要です';
+              errorDiv.classList.remove('hidden');
+              return;
+            }
+            if (!/[A-Z]/.test(password) || !/[a-z]/.test(password) || !/[0-9]/.test(password)) {
+              errorDiv.textContent = 'パスワードには大文字・小文字・数字を含めてください';
+              errorDiv.classList.remove('hidden');
+              return;
+            }
+            
+            btn.disabled = true;
+            btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 変更中...';
+            errorDiv.classList.add('hidden');
+            successDiv.classList.add('hidden');
+            
+            try {
+              const res = await fetch('/api/auth/password-reset/confirm', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  token: form.token.value,
+                  new_password: form.new_password.value
+                })
+              });
+              
+              const data = await res.json();
+              
+              if (data.success) {
+                successDiv.innerHTML = '<i class="fas fa-check-circle mr-2"></i>パスワードを変更しました。<br><br><a href="/login" class="underline font-medium text-green-700 hover:text-green-800">ログインページへ進む →</a>';
+                successDiv.classList.remove('hidden');
+                form.classList.add('hidden');
+              } else {
+                errorDiv.textContent = data.error.message || '変更に失敗しました';
+                errorDiv.classList.remove('hidden');
+              }
+            } catch (err) {
+              errorDiv.textContent = '通信エラーが発生しました';
+              errorDiv.classList.remove('hidden');
+            } finally {
+              btn.disabled = false;
+              btn.innerHTML = '<i class="fas fa-key"></i> パスワードを変更';
+            }
+          });
+        }
       `}} />
     </AuthLayout>
   );
-});
+};
+
+pages.get('/reset', resetPasswordPage);
+pages.get('/reset-password', resetPasswordPage);
 
 export default pages;
