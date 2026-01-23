@@ -606,6 +606,308 @@ cron.get('/verify-data-quality', async (c) => {
 });
 
 /**
+ * 東京しごと財団 助成金・奨励金スクレイピング
+ * 
+ * POST /api/cron/scrape-tokyo-shigoto
+ * 
+ * Phase1: 東京都の補助金データ収集（推奨1番目ソース）
+ * URL: https://www.koyokankyo.shigotozaidan.or.jp/
+ */
+cron.post('/scrape-tokyo-shigoto', async (c) => {
+  const db = c.env.DB;
+  
+  // シークレット認証
+  const cronSecret = c.req.header('X-Cron-Secret');
+  const expectedSecret = (c.env as any).CRON_SECRET;
+  
+  if (expectedSecret && cronSecret !== expectedSecret) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'UNAUTHORIZED', message: 'Invalid cron secret' },
+    }, 401);
+  }
+  
+  try {
+    const BASE_URL = 'https://www.koyokankyo.shigotozaidan.or.jp';
+    const LIST_URL = `${BASE_URL}/index.html`;
+    
+    console.log(`[Tokyo-Shigoto] Starting scrape: ${LIST_URL}`);
+    
+    // 1. トップページを取得
+    const listResult = await simpleScrape(LIST_URL);
+    if (!listResult.success || !listResult.html) {
+      return c.json<ApiResponse<null>>({
+        success: false,
+        error: { code: 'SCRAPE_ERROR', message: listResult.error || 'Failed to fetch list page' },
+      }, 500);
+    }
+    
+    const html = listResult.html;
+    const results: any[] = [];
+    const errors: string[] = [];
+    const seenUrls = new Set<string>();
+    
+    // 2. 助成金・奨励金リンクを抽出
+    // パターン: /jigyo/xxx/xxx.html で 助成|奨励 を含むもの
+    const linkPattern = /href="(\/jigyo\/[^"]+\.html)"[^>]*>([^<]*(?:助成|奨励|支援)[^<]*)</gi;
+    let linkMatch;
+    
+    while ((linkMatch = linkPattern.exec(html)) !== null) {
+      const path = linkMatch[1];
+      const linkText = linkMatch[2].trim();
+      const fullUrl = `${BASE_URL}${path}`;
+      
+      if (seenUrls.has(fullUrl)) continue;
+      if (linkText.length < 3) continue; // 空リンクを除外
+      
+      seenUrls.add(fullUrl);
+    }
+    
+    // 追加パターン: keyword-link クラスのリンク
+    const keywordPattern = /<a[^>]*class="keyword-link[^"]*"[^>]*href="([^"]+)"[^>]*>([^<]+)</gi;
+    while ((linkMatch = keywordPattern.exec(html)) !== null) {
+      const path = linkMatch[1];
+      const linkText = linkMatch[2].trim();
+      
+      // 相対パスと絶対パスの両方に対応
+      const fullUrl = path.startsWith('/') ? `${BASE_URL}${path}` : path;
+      
+      if (seenUrls.has(fullUrl)) continue;
+      if (!fullUrl.includes('koyokankyo.shigotozaidan.or.jp')) continue;
+      
+      seenUrls.add(fullUrl);
+    }
+    
+    console.log(`[Tokyo-Shigoto] Found ${seenUrls.size} unique subsidy links`);
+    
+    // 3. 各詳細ページを取得（最大25件）
+    const MAX_PILOT = 25;
+    const detailUrls = Array.from(seenUrls).slice(0, MAX_PILOT);
+    
+    for (const detailUrl of detailUrls) {
+      try {
+        console.log(`[Tokyo-Shigoto] Fetching: ${detailUrl}`);
+        
+        const detailResult = await simpleScrape(detailUrl);
+        if (!detailResult.success || !detailResult.html) {
+          errors.push(`${detailUrl}: ${detailResult.error || 'No HTML'}`);
+          continue;
+        }
+        
+        const detailHtml = detailResult.html;
+        
+        // タイトル抽出
+        const titleMatch = detailHtml.match(/<h1[^>]*>([^<]+)<\/h1>/i) ||
+                          detailHtml.match(/<title>([^<]+)<\/title>/i) ||
+                          detailHtml.match(/class="page-title"[^>]*>([^<]+)</i);
+        let title = titleMatch ? titleMatch[1].trim().replace(/\s+/g, ' ') : '';
+        title = title.replace(/\|.*$/, '').trim(); // サイト名を除去
+        
+        // ステータス抽出
+        let status = 'unknown';
+        if (detailHtml.includes('申請受付中') || detailHtml.includes('募集中') || detailHtml.includes('受付中')) {
+          status = 'open';
+        } else if (detailHtml.includes('受付終了') || detailHtml.includes('募集終了') || detailHtml.includes('予算上限')) {
+          status = 'closed';
+        } else if (detailHtml.includes('募集準備中') || detailHtml.includes('近日') || detailHtml.includes('概要')) {
+          status = 'upcoming';
+        }
+        
+        // 助成額・奨励額抽出
+        const amountMatch = detailHtml.match(/(?:助成|奨励|補助)(?:金額?|上限)[：:\s]*(?:最大)?([0-9,，]+)万円/i) ||
+                           detailHtml.match(/上限[：:\s]*([0-9,，]+)万円/i) ||
+                           detailHtml.match(/([0-9,，]+)万円.*(?:助成|奨励|補助)/i);
+        const maxAmount = amountMatch ? parseInt(amountMatch[1].replace(/[,，]/g, '')) * 10000 : null;
+        
+        // 助成率抽出
+        const rateMatch = detailHtml.match(/(?:助成|補助)率[：:\s]*([0-9/／]+(?:分の[0-9]+)?)/i) ||
+                         detailHtml.match(/([0-9/／]+)\s*(?:以内|まで)/i);
+        const subsidyRate = rateMatch ? rateMatch[1].replace('／', '/') : null;
+        
+        // 対象者抽出
+        const targetMatch = detailHtml.match(/(?:対象(?:者|企業|事業者)?)[：:\s]*([^<]{10,200})/i);
+        const eligibility = targetMatch ? targetMatch[1].trim() : null;
+        
+        // 概要抽出
+        const descMatch = detailHtml.match(/(?:事業概要|概要|内容)[：:\s]*([^<]{30,500})/i);
+        const description = descMatch ? descMatch[1].trim() : null;
+        
+        // PDF抽出
+        const pdfUrls = extractPdfLinks(detailHtml, detailUrl);
+        
+        // コンテンツハッシュ計算
+        const contentHash = await calculateContentHash(detailHtml);
+        
+        // ID生成（URLパスから）
+        const pathParts = detailUrl.split('/').filter(p => p && p !== 'index.html' && !p.includes('.'));
+        const pathPart = pathParts.slice(-2).join('-') || 'item';
+        const id = `tokyo-shigoto-${pathPart}`;
+        
+        // dedupe_key 生成
+        const urlHash = contentHash.slice(0, 12);
+        const dedupeKey = `tokyo-shigoto:${urlHash}`;
+        
+        const subsidyData = {
+          id,
+          dedupeKey,
+          title: title || `東京しごと財団 ${pathPart}`,
+          source: 'tokyo-shigoto',
+          sourceUrl: LIST_URL,
+          detailUrl,
+          status,
+          maxAmount,
+          subsidyRate,
+          description,
+          eligibility,
+          issuerName: '東京しごと財団',
+          prefectureCode: '13',
+          targetAreas: ['東京都'],
+          pdfUrls,
+          contentHash,
+          extractedAt: new Date().toISOString(),
+        };
+        
+        results.push(subsidyData);
+        
+        // レート制限: 500ms待機
+        await new Promise(resolve => setTimeout(resolve, 500));
+        
+      } catch (err) {
+        errors.push(`${detailUrl}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    
+    console.log(`[Tokyo-Shigoto] Extracted ${results.length} subsidies, ${errors.length} errors`);
+    
+    // 4. DBに保存（subsidy_cache + subsidy_feed_items）
+    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+    let insertedCount = 0;
+    let feedInsertedCount = 0;
+    
+    for (const subsidy of results) {
+      try {
+        // subsidy_cache に保存（既存互換）
+        await db.prepare(`
+          INSERT OR REPLACE INTO subsidy_cache 
+          (id, source, title, subsidy_max_limit, subsidy_rate,
+           target_area_search, target_industry, target_number_of_employees,
+           acceptance_start_datetime, acceptance_end_datetime, request_reception_display_flag,
+           detail_json, cached_at, expires_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?)
+        `).bind(
+          subsidy.id,
+          subsidy.source,
+          subsidy.title,
+          subsidy.maxAmount,
+          subsidy.subsidyRate,
+          '東京都',
+          null,
+          null,
+          null,
+          null,
+          subsidy.status === 'open' ? 1 : 0,
+          JSON.stringify({
+            detailUrl: subsidy.detailUrl,
+            description: subsidy.description,
+            eligibility: subsidy.eligibility,
+            issuerName: subsidy.issuerName,
+            pdfUrls: subsidy.pdfUrls,
+            contentHash: subsidy.contentHash,
+            extractedAt: subsidy.extractedAt,
+          }),
+          expiresAt
+        ).run();
+        
+        insertedCount++;
+        
+        // subsidy_feed_items にも保存（新仕様）
+        try {
+          await db.prepare(`
+            INSERT INTO subsidy_feed_items 
+            (id, dedupe_key, source_id, source_type, title, summary, url, detail_url,
+             pdf_urls, issuer_name, prefecture_code, target_area_codes,
+             subsidy_amount_max, subsidy_rate_text, status, raw_json, content_hash,
+             is_new, first_seen_at, last_seen_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+            ON CONFLICT(dedupe_key) DO UPDATE SET
+              title = excluded.title,
+              summary = excluded.summary,
+              subsidy_amount_max = excluded.subsidy_amount_max,
+              subsidy_rate_text = excluded.subsidy_rate_text,
+              status = excluded.status,
+              content_hash = excluded.content_hash,
+              last_seen_at = datetime('now'),
+              updated_at = datetime('now')
+          `).bind(
+            subsidy.id,
+            subsidy.dedupeKey,
+            'src-tokyo-shigoto',
+            'government',
+            subsidy.title,
+            subsidy.description,
+            subsidy.detailUrl,
+            subsidy.detailUrl,
+            JSON.stringify(subsidy.pdfUrls),
+            subsidy.issuerName,
+            subsidy.prefectureCode,
+            JSON.stringify(['13']),
+            subsidy.maxAmount,
+            subsidy.subsidyRate,
+            subsidy.status,
+            JSON.stringify(subsidy),
+            subsidy.contentHash,
+            1
+          ).run();
+          
+          feedInsertedCount++;
+        } catch (feedErr) {
+          // feed_itemsへの保存エラーは警告のみ（後方互換）
+          console.warn(`[Tokyo-Shigoto] Feed insert warning: ${feedErr}`);
+        }
+        
+      } catch (dbErr) {
+        errors.push(`DB insert ${subsidy.id}: ${dbErr instanceof Error ? dbErr.message : String(dbErr)}`);
+      }
+    }
+    
+    console.log(`[Tokyo-Shigoto] Inserted ${insertedCount} to cache, ${feedInsertedCount} to feed_items`);
+    
+    return c.json<ApiResponse<{
+      message: string;
+      links_found: number;
+      details_fetched: number;
+      inserted: number;
+      feed_inserted: number;
+      results: any[];
+      errors: string[];
+      timestamp: string;
+    }>>({
+      success: true,
+      data: {
+        message: 'Tokyo-Shigoto scrape completed',
+        links_found: seenUrls.size,
+        details_fetched: results.length,
+        inserted: insertedCount,
+        feed_inserted: feedInsertedCount,
+        results,
+        errors,
+        timestamp: new Date().toISOString(),
+      },
+    });
+    
+  } catch (error) {
+    console.error('[Tokyo-Shigoto] Scrape error:', error);
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: 'INTERNAL_ERROR',
+        message: `Scrape failed: ${error instanceof Error ? error.message : String(error)}`,
+      },
+    }, 500);
+  }
+});
+
+/**
  * Cron ヘルスチェック
  * 
  * GET /api/cron/health
