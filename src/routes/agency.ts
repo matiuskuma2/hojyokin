@@ -474,6 +474,146 @@ agencyRoutes.put('/clients/:id', async (c) => {
 });
 
 /**
+ * PUT /api/agency/clients/:id/company - 顧客企業情報更新
+ * 
+ * agency_clientsではなく、紐付いたcompaniesテーブルを更新
+ */
+agencyRoutes.put('/clients/:id/company', async (c) => {
+  const db = c.env.DB;
+  const user = getCurrentUser(c);
+  const clientId = c.req.param('id');
+  
+  const agencyInfo = await getUserAgency(db, user.id);
+  if (!agencyInfo) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'NOT_AGENCY', message: 'Agency account required' },
+    }, 403);
+  }
+  
+  // 顧客の所有確認とcompany_id取得
+  const client = await db.prepare(`
+    SELECT company_id FROM agency_clients WHERE id = ? AND agency_id = ?
+  `).bind(clientId, agencyInfo.agency.id).first<{ company_id: string }>();
+  
+  if (!client) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'NOT_FOUND', message: 'Client not found' },
+    }, 404);
+  }
+  
+  const body = await c.req.json();
+  const { 
+    companyName, prefecture, city, industry_major, industry_minor,
+    employee_count, capital, established_date, annual_revenue,
+    representative_name, website_url, contact_email, contact_phone,
+    business_summary
+  } = body;
+  
+  const now = new Date().toISOString();
+  
+  // companiesテーブルを更新
+  const companyUpdateFields: string[] = [];
+  const companyUpdateValues: any[] = [];
+  
+  if (companyName !== undefined) {
+    companyUpdateFields.push('name = ?');
+    companyUpdateValues.push(companyName);
+  }
+  if (prefecture !== undefined) {
+    companyUpdateFields.push('prefecture = ?');
+    companyUpdateValues.push(prefecture);
+  }
+  if (city !== undefined) {
+    companyUpdateFields.push('city = ?');
+    companyUpdateValues.push(city);
+  }
+  if (industry_major !== undefined) {
+    companyUpdateFields.push('industry_major = ?');
+    companyUpdateValues.push(industry_major);
+  }
+  if (industry_minor !== undefined) {
+    companyUpdateFields.push('industry_minor = ?');
+    companyUpdateValues.push(industry_minor);
+  }
+  if (employee_count !== undefined) {
+    companyUpdateFields.push('employee_count = ?');
+    companyUpdateValues.push(employee_count);
+    // employee_bandも更新
+    const band = employee_count <= 5 ? '1-5' : 
+                 employee_count <= 20 ? '6-20' :
+                 employee_count <= 50 ? '21-50' :
+                 employee_count <= 100 ? '51-100' :
+                 employee_count <= 300 ? '101-300' : '301+';
+    companyUpdateFields.push('employee_band = ?');
+    companyUpdateValues.push(band);
+  }
+  if (capital !== undefined) {
+    companyUpdateFields.push('capital = ?');
+    companyUpdateValues.push(capital);
+  }
+  if (established_date !== undefined) {
+    companyUpdateFields.push('established_date = ?');
+    companyUpdateValues.push(established_date);
+  }
+  if (annual_revenue !== undefined) {
+    companyUpdateFields.push('annual_revenue = ?');
+    companyUpdateValues.push(annual_revenue);
+  }
+  
+  if (companyUpdateFields.length > 0) {
+    companyUpdateFields.push('updated_at = ?');
+    companyUpdateValues.push(now);
+    companyUpdateValues.push(client.company_id);
+    
+    await db.prepare(`
+      UPDATE companies SET ${companyUpdateFields.join(', ')} WHERE id = ?
+    `).bind(...companyUpdateValues).run();
+  }
+  
+  // company_profileテーブルを更新
+  const profileUpdateFields: string[] = [];
+  const profileUpdateValues: any[] = [];
+  
+  if (representative_name !== undefined) {
+    profileUpdateFields.push('representative_name = ?');
+    profileUpdateValues.push(representative_name);
+  }
+  if (website_url !== undefined) {
+    profileUpdateFields.push('website_url = ?');
+    profileUpdateValues.push(website_url);
+  }
+  if (contact_email !== undefined) {
+    profileUpdateFields.push('contact_email = ?');
+    profileUpdateValues.push(contact_email);
+  }
+  if (contact_phone !== undefined) {
+    profileUpdateFields.push('contact_phone = ?');
+    profileUpdateValues.push(contact_phone);
+  }
+  if (business_summary !== undefined) {
+    profileUpdateFields.push('business_summary = ?');
+    profileUpdateValues.push(business_summary);
+  }
+  
+  if (profileUpdateFields.length > 0) {
+    profileUpdateFields.push('updated_at = ?');
+    profileUpdateValues.push(now);
+    profileUpdateValues.push(client.company_id);
+    
+    await db.prepare(`
+      UPDATE company_profile SET ${profileUpdateFields.join(', ')} WHERE company_id = ?
+    `).bind(...profileUpdateValues).run();
+  }
+  
+  return c.json<ApiResponse<any>>({
+    success: true,
+    data: { message: 'Company information updated' },
+  });
+});
+
+/**
  * POST /api/agency/links - リンク発行
  */
 agencyRoutes.post('/links', async (c) => {

@@ -708,7 +708,12 @@ agencyPages.get('/agency/clients/:id', (c) => {
       <!-- Tab Contents -->
       <div id="tab-profile" class="tab-content">
         <div class="bg-white rounded-lg shadow p-6">
-          <h3 class="text-lg font-semibold mb-4">企業プロフィール</h3>
+          <div class="flex justify-between items-center mb-4">
+            <h3 class="text-lg font-semibold">企業プロフィール</h3>
+            <button onclick="showCompanyEditModal()" class="text-sm bg-emerald-600 text-white px-3 py-1 rounded hover:bg-emerald-700">
+              <i class="fas fa-edit mr-1"></i>企業情報を編集
+            </button>
+          </div>
           <div id="profile-content" class="text-gray-500">読み込み中...</div>
         </div>
       </div>
@@ -761,14 +766,14 @@ agencyPages.get('/agency/clients/:id', (c) => {
       </div>
     </div>
     
-    <!-- Edit Modal -->
+    <!-- Edit Modal (担当者情報) -->
     <div id="edit-modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center hidden z-50">
       <div class="bg-white rounded-lg shadow-xl w-full max-w-lg mx-4">
         <div class="p-6">
-          <h2 class="text-xl font-bold mb-4">顧客情報を編集</h2>
+          <h2 class="text-xl font-bold mb-4">担当者情報を編集</h2>
           <form id="edit-form" class="space-y-4">
             <div>
-              <label class="block text-sm font-medium text-gray-700 mb-1">顧客名/担当者名</label>
+              <label class="block text-sm font-medium text-gray-700 mb-1">担当者名</label>
               <input type="text" name="clientName" id="edit-client-name" class="w-full border rounded-lg px-3 py-2">
             </div>
             <div class="grid grid-cols-2 gap-4">
@@ -795,6 +800,87 @@ agencyPages.get('/agency/clients/:id', (c) => {
               </button>
               <button type="submit" class="flex-1 bg-emerald-600 text-white px-4 py-2 rounded-lg hover:bg-emerald-700">
                 保存
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+    
+    <!-- Company Edit Modal (企業情報) -->
+    <div id="company-edit-modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center hidden z-50">
+      <div class="bg-white rounded-lg shadow-xl w-full max-w-2xl mx-4 max-h-[90vh] overflow-y-auto">
+        <div class="p-6">
+          <h2 class="text-xl font-bold mb-4"><i class="fas fa-building mr-2"></i>企業情報を編集</h2>
+          <form id="company-edit-form" class="space-y-6">
+            <!-- 基本情報 -->
+            <div class="border-b pb-4">
+              <h3 class="text-sm font-semibold text-gray-600 mb-3"><i class="fas fa-info-circle mr-1"></i>基本情報（必須）</h3>
+              <div class="grid grid-cols-2 gap-4">
+                <div class="col-span-2">
+                  <label class="block text-sm font-medium text-gray-700 mb-1">会社名 <span class="text-red-500">*</span></label>
+                  <input type="text" name="companyName" id="edit-company-name" required class="w-full border rounded-lg px-3 py-2">
+                </div>
+                <div>
+                  <label class="block text-sm font-medium text-gray-700 mb-1">都道府県 <span class="text-red-500">*</span></label>
+                  <select name="prefecture" id="edit-company-prefecture" required class="w-full border rounded-lg px-3 py-2">
+                    <option value="">選択してください</option>
+                  </select>
+                </div>
+                <div>
+                  <label class="block text-sm font-medium text-gray-700 mb-1">市区町村</label>
+                  <input type="text" name="city" id="edit-company-city" class="w-full border rounded-lg px-3 py-2">
+                </div>
+                <div>
+                  <label class="block text-sm font-medium text-gray-700 mb-1">業種 <span class="text-red-500">*</span></label>
+                  <select name="industry_major" id="edit-company-industry" required class="w-full border rounded-lg px-3 py-2">
+                    <option value="">選択してください</option>
+                  </select>
+                </div>
+                <div>
+                  <label class="block text-sm font-medium text-gray-700 mb-1">従業員数 <span class="text-red-500">*</span></label>
+                  <input type="number" name="employee_count" id="edit-company-employees" required min="1" class="w-full border rounded-lg px-3 py-2" placeholder="例: 10">
+                </div>
+              </div>
+            </div>
+            
+            <!-- 追加情報 -->
+            <div class="border-b pb-4">
+              <h3 class="text-sm font-semibold text-gray-600 mb-3"><i class="fas fa-chart-line mr-1"></i>追加情報（推奨）</h3>
+              <div class="grid grid-cols-2 gap-4">
+                <div>
+                  <label class="block text-sm font-medium text-gray-700 mb-1">資本金（万円）</label>
+                  <input type="number" name="capital" id="edit-company-capital" class="w-full border rounded-lg px-3 py-2" placeholder="例: 1000">
+                </div>
+                <div>
+                  <label class="block text-sm font-medium text-gray-700 mb-1">設立年月</label>
+                  <input type="month" name="established_date" id="edit-company-established" class="w-full border rounded-lg px-3 py-2">
+                </div>
+                <div>
+                  <label class="block text-sm font-medium text-gray-700 mb-1">直近売上高（万円）</label>
+                  <input type="number" name="annual_revenue" id="edit-company-revenue" class="w-full border rounded-lg px-3 py-2" placeholder="例: 50000">
+                </div>
+                <div>
+                  <label class="block text-sm font-medium text-gray-700 mb-1">代表者名</label>
+                  <input type="text" name="representative_name" id="edit-company-rep" class="w-full border rounded-lg px-3 py-2">
+                </div>
+                <div class="col-span-2">
+                  <label class="block text-sm font-medium text-gray-700 mb-1">Webサイト</label>
+                  <input type="url" name="website_url" id="edit-company-website" class="w-full border rounded-lg px-3 py-2" placeholder="https://example.com">
+                </div>
+                <div class="col-span-2">
+                  <label class="block text-sm font-medium text-gray-700 mb-1">事業概要</label>
+                  <textarea name="business_summary" id="edit-company-summary" rows="3" class="w-full border rounded-lg px-3 py-2" placeholder="事業の内容を簡潔に記載"></textarea>
+                </div>
+              </div>
+            </div>
+            
+            <div class="flex gap-2 pt-2">
+              <button type="button" onclick="hideCompanyEditModal()" class="flex-1 border border-gray-300 text-gray-700 px-4 py-2 rounded-lg hover:bg-gray-50">
+                キャンセル
+              </button>
+              <button type="submit" class="flex-1 bg-emerald-600 text-white px-4 py-2 rounded-lg hover:bg-emerald-700">
+                <i class="fas fa-save mr-1"></i>保存
               </button>
             </div>
           </form>
@@ -859,34 +945,107 @@ agencyPages.get('/agency/clients/:id', (c) => {
       
       function renderProfile() {
         const client = clientData.client;
-        const fields = [
+        
+        // 都道府県コードを名前に変換
+        const prefMap = {
+          '01': '北海道', '02': '青森県', '03': '岩手県', '04': '宮城県', '05': '秋田県',
+          '06': '山形県', '07': '福島県', '08': '茨城県', '09': '栃木県', '10': '群馬県',
+          '11': '埼玉県', '12': '千葉県', '13': '東京都', '14': '神奈川県', '15': '新潟県',
+          '16': '富山県', '17': '石川県', '18': '福井県', '19': '山梨県', '20': '長野県',
+          '21': '岐阜県', '22': '静岡県', '23': '愛知県', '24': '三重県', '25': '滋賀県',
+          '26': '京都府', '27': '大阪府', '28': '兵庫県', '29': '奈良県', '30': '和歌山県',
+          '31': '鳥取県', '32': '島根県', '33': '岡山県', '34': '広島県', '35': '山口県',
+          '36': '徳島県', '37': '香川県', '38': '愛媛県', '39': '高知県', '40': '福岡県',
+          '41': '佐賀県', '42': '長崎県', '43': '熊本県', '44': '大分県', '45': '宮崎県',
+          '46': '鹿児島県', '47': '沖縄県'
+        };
+        const prefName = prefMap[client.prefecture] || client.prefecture;
+        
+        // 金額フォーマット
+        const formatMoney = (val) => {
+          if (!val) return null;
+          return Number(val).toLocaleString() + '万円';
+        };
+        
+        // 必須情報（companies テーブルから）
+        const requiredFields = [
+          { label: '会社名', value: client.name, required: true },
+          { label: '所在地', value: [prefName, client.city].filter(Boolean).join(' '), required: true },
+          { label: '業種', value: client.industry_major || client.industry, required: true },
+          { label: '従業員数', value: client.employee_count ? client.employee_count + '名' : null, required: true },
+        ];
+        
+        // 追加情報
+        const additionalFields = [
+          { label: '資本金', value: formatMoney(client.capital) },
+          { label: '設立年月', value: client.established_date },
+          { label: '直近売上高', value: formatMoney(client.annual_revenue) },
+          { label: '代表者名', value: client.representative_name },
+          { label: 'Webサイト', value: client.website_url, isLink: true },
+          { label: '事業概要', value: client.business_summary, fullWidth: true },
+        ];
+        
+        // 詳細情報（company_profile から）
+        const detailFields = [
           { label: '法人番号', value: client.corp_number },
           { label: '法人形態', value: client.corp_type },
-          { label: '代表者名', value: client.representative_name },
           { label: '代表者肩書', value: client.representative_title },
-          { label: '設立年', value: client.founding_year ? client.founding_year + '年' + (client.founding_month ? client.founding_month + '月' : '') : null },
-          { label: 'Webサイト', value: client.website_url },
           { label: '連絡先メール', value: client.contact_email },
           { label: '連絡先電話', value: client.contact_phone },
-          { label: '事業概要', value: client.business_summary },
           { label: '主要製品/サービス', value: client.main_products },
           { label: '主要顧客', value: client.main_customers },
           { label: '競合優位性', value: client.competitive_advantage },
-          { label: '従業員数', value: client.employee_count ? client.employee_count + '名' : null },
-          { label: '決算月', value: client.fiscal_year_end ? client.fiscal_year_end + '月' : null },
         ];
         
-        const hasData = fields.some(f => f.value);
+        // 必須情報の充足チェック
+        const missingRequired = requiredFields.filter(f => !f.value);
         
-        if (!hasData) {
-          document.getElementById('profile-content').innerHTML = '<p class="text-gray-500">企業プロフィールがまだ入力されていません。</p>';
-          return;
+        let html = '';
+        
+        // 必須情報不足の警告
+        if (missingRequired.length > 0) {
+          html += '<div class="bg-yellow-50 border border-yellow-300 rounded-lg p-4 mb-6">' +
+            '<p class="text-yellow-800 font-semibold mb-2"><i class="fas fa-exclamation-triangle mr-2"></i>必須情報が不足しています</p>' +
+            '<p class="text-yellow-700 text-sm">補助金検索の精度向上のため、以下の情報を入力してください:</p>' +
+            '<ul class="list-disc list-inside text-yellow-700 text-sm mt-2">' +
+            missingRequired.map(f => '<li>' + f.label + '</li>').join('') +
+            '</ul></div>';
         }
         
-        document.getElementById('profile-content').innerHTML = '<div class="grid grid-cols-1 md:grid-cols-2 gap-4">' +
-          fields.filter(f => f.value).map(f => 
-            '<div><span class="text-sm text-gray-500">' + f.label + '</span><p class="text-gray-900">' + f.value + '</p></div>'
-          ).join('') + '</div>';
+        // 必須情報セクション
+        html += '<div class="mb-6"><h4 class="text-sm font-semibold text-gray-600 mb-3 border-b pb-2"><i class="fas fa-asterisk mr-1 text-red-500"></i>基本情報</h4>' +
+          '<div class="grid grid-cols-1 md:grid-cols-2 gap-4">' +
+          requiredFields.map(f => 
+            '<div><span class="text-sm text-gray-500">' + f.label + (f.required ? ' <span class="text-red-500">*</span>' : '') + '</span>' +
+            '<p class="text-gray-900">' + (f.value || '<span class="text-red-400">未入力</span>') + '</p></div>'
+          ).join('') + '</div></div>';
+        
+        // 追加情報セクション
+        const filledAdditional = additionalFields.filter(f => f.value);
+        if (filledAdditional.length > 0) {
+          html += '<div class="mb-6"><h4 class="text-sm font-semibold text-gray-600 mb-3 border-b pb-2"><i class="fas fa-chart-line mr-1"></i>追加情報</h4>' +
+            '<div class="grid grid-cols-1 md:grid-cols-2 gap-4">' +
+            filledAdditional.map(f => {
+              let val = f.value;
+              if (f.isLink && val) {
+                val = '<a href="' + val + '" target="_blank" class="text-blue-600 hover:underline">' + val + '</a>';
+              }
+              return '<div class="' + (f.fullWidth ? 'col-span-2' : '') + '"><span class="text-sm text-gray-500">' + f.label + '</span>' +
+                '<p class="text-gray-900">' + val + '</p></div>';
+            }).join('') + '</div></div>';
+        }
+        
+        // 詳細情報セクション
+        const filledDetail = detailFields.filter(f => f.value);
+        if (filledDetail.length > 0) {
+          html += '<div><h4 class="text-sm font-semibold text-gray-600 mb-3 border-b pb-2"><i class="fas fa-info-circle mr-1"></i>詳細情報</h4>' +
+            '<div class="grid grid-cols-1 md:grid-cols-2 gap-4">' +
+            filledDetail.map(f => 
+              '<div><span class="text-sm text-gray-500">' + f.label + '</span><p class="text-gray-900">' + f.value + '</p></div>'
+            ).join('') + '</div></div>';
+        }
+        
+        document.getElementById('profile-content').innerHTML = html || '<p class="text-gray-500">企業情報を入力してください。</p>';
       }
       
       function renderSubmissions() {
@@ -1051,6 +1210,134 @@ agencyPages.get('/agency/clients/:id', (c) => {
         if (data.success) {
           hideEditModal();
           loadClientDetail();
+        } else {
+          alert('エラー: ' + (data.error?.message || '更新に失敗しました'));
+        }
+      });
+      
+      // ========================================
+      // 企業情報編集機能
+      // ========================================
+      
+      // 都道府県リスト
+      const prefectures = [
+        {code: '01', name: '北海道'}, {code: '02', name: '青森県'}, {code: '03', name: '岩手県'},
+        {code: '04', name: '宮城県'}, {code: '05', name: '秋田県'}, {code: '06', name: '山形県'},
+        {code: '07', name: '福島県'}, {code: '08', name: '茨城県'}, {code: '09', name: '栃木県'},
+        {code: '10', name: '群馬県'}, {code: '11', name: '埼玉県'}, {code: '12', name: '千葉県'},
+        {code: '13', name: '東京都'}, {code: '14', name: '神奈川県'}, {code: '15', name: '新潟県'},
+        {code: '16', name: '富山県'}, {code: '17', name: '石川県'}, {code: '18', name: '福井県'},
+        {code: '19', name: '山梨県'}, {code: '20', name: '長野県'}, {code: '21', name: '岐阜県'},
+        {code: '22', name: '静岡県'}, {code: '23', name: '愛知県'}, {code: '24', name: '三重県'},
+        {code: '25', name: '滋賀県'}, {code: '26', name: '京都府'}, {code: '27', name: '大阪府'},
+        {code: '28', name: '兵庫県'}, {code: '29', name: '奈良県'}, {code: '30', name: '和歌山県'},
+        {code: '31', name: '鳥取県'}, {code: '32', name: '島根県'}, {code: '33', name: '岡山県'},
+        {code: '34', name: '広島県'}, {code: '35', name: '山口県'}, {code: '36', name: '徳島県'},
+        {code: '37', name: '香川県'}, {code: '38', name: '愛媛県'}, {code: '39', name: '高知県'},
+        {code: '40', name: '福岡県'}, {code: '41', name: '佐賀県'}, {code: '42', name: '長崎県'},
+        {code: '43', name: '熊本県'}, {code: '44', name: '大分県'}, {code: '45', name: '宮崎県'},
+        {code: '46', name: '鹿児島県'}, {code: '47', name: '沖縄県'}
+      ];
+      
+      // 業種リスト
+      const industries = [
+        '農業、林業', '漁業', '鉱業、採石業、砂利採取業', '建設業', '製造業',
+        '電気・ガス・熱供給・水道業', '情報通信業', '運輸業、郵便業', '卸売業、小売業',
+        '金融業、保険業', '不動産業、物品賃貸業', '学術研究、専門・技術サービス業',
+        '宿泊業、飲食サービス業', '生活関連サービス業、娯楽業', '教育、学習支援業',
+        '医療、福祉', '複合サービス事業', 'サービス業（他に分類されないもの）', 'その他'
+      ];
+      
+      // 都道府県・業種セレクトを初期化
+      function initCompanyEditSelects() {
+        const prefSelect = document.getElementById('edit-company-prefecture');
+        const indSelect = document.getElementById('edit-company-industry');
+        
+        // 既存のオプションをクリア（最初の「選択してください」以外）
+        while (prefSelect.options.length > 1) prefSelect.remove(1);
+        while (indSelect.options.length > 1) indSelect.remove(1);
+        
+        prefectures.forEach(p => {
+          const opt = document.createElement('option');
+          opt.value = p.code;
+          opt.textContent = p.name;
+          prefSelect.appendChild(opt);
+        });
+        
+        industries.forEach(ind => {
+          const opt = document.createElement('option');
+          opt.value = ind;
+          opt.textContent = ind;
+          indSelect.appendChild(opt);
+        });
+      }
+      
+      function showCompanyEditModal() {
+        if (!clientData) return;
+        const client = clientData.client;
+        
+        // セレクト初期化
+        initCompanyEditSelects();
+        
+        // 値をセット
+        document.getElementById('edit-company-name').value = client.name || '';
+        document.getElementById('edit-company-prefecture').value = client.prefecture || '';
+        document.getElementById('edit-company-city').value = client.city || '';
+        document.getElementById('edit-company-industry').value = client.industry_major || client.industry || '';
+        document.getElementById('edit-company-employees').value = client.employee_count || '';
+        document.getElementById('edit-company-capital').value = client.capital || '';
+        document.getElementById('edit-company-established').value = client.established_date || '';
+        document.getElementById('edit-company-revenue').value = client.annual_revenue || '';
+        document.getElementById('edit-company-rep').value = client.representative_name || '';
+        document.getElementById('edit-company-website').value = client.website_url || '';
+        document.getElementById('edit-company-summary').value = client.business_summary || '';
+        
+        document.getElementById('company-edit-modal').classList.remove('hidden');
+      }
+      
+      function hideCompanyEditModal() {
+        document.getElementById('company-edit-modal').classList.add('hidden');
+      }
+      
+      document.getElementById('company-edit-form').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const form = e.target;
+        
+        // 必須チェック
+        const employeeCount = parseInt(form.employee_count.value);
+        if (!employeeCount || employeeCount < 1) {
+          alert('従業員数は1以上の数値を入力してください');
+          return;
+        }
+        
+        const submitBtn = form.querySelector('button[type="submit"]');
+        submitBtn.disabled = true;
+        submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>保存中...';
+        
+        const data = await apiCall('/api/agency/clients/' + clientId + '/company', {
+          method: 'PUT',
+          body: JSON.stringify({
+            companyName: form.companyName.value,
+            prefecture: form.prefecture.value,
+            city: form.city.value,
+            industry_major: form.industry_major.value,
+            employee_count: employeeCount,
+            capital: form.capital.value ? parseInt(form.capital.value) : null,
+            established_date: form.established_date.value || null,
+            annual_revenue: form.annual_revenue.value ? parseInt(form.annual_revenue.value) : null,
+            representative_name: form.representative_name.value || null,
+            website_url: form.website_url.value || null,
+            business_summary: form.business_summary.value || null,
+          }),
+        });
+        
+        submitBtn.disabled = false;
+        submitBtn.innerHTML = '<i class="fas fa-save mr-1"></i>保存';
+        
+        if (data.success) {
+          hideCompanyEditModal();
+          loadClientDetail();
+          alert('企業情報を更新しました');
         } else {
           alert('エラー: ' + (data.error?.message || '更新に失敗しました'));
         }
@@ -1872,7 +2159,33 @@ agencyPages.get('/agency/join', (c) => {
           <p class="text-gray-600 mt-2">招待を受諾して事務所に参加しましょう</p>
         </div>
         
+        <!-- 現在ログイン中のユーザー情報 -->
+        <div id="current-user-info" class="mb-6 p-4 bg-gray-50 rounded-lg border border-gray-200">
+          <p class="text-sm text-gray-600">
+            <i class="fas fa-user mr-2"></i>現在ログイン中:
+            <strong id="current-user-email" class="text-gray-800"></strong>
+          </p>
+        </div>
+        
         <div id="join-status" class="hidden mb-6 p-4 rounded-lg"></div>
+        
+        <!-- メールアドレス不一致時の案内 -->
+        <div id="email-mismatch-guide" class="hidden mb-6">
+          <div class="p-4 bg-yellow-50 border border-yellow-300 rounded-lg">
+            <p class="text-yellow-800 font-semibold mb-2">
+              <i class="fas fa-exclamation-triangle mr-2"></i>アカウントを切り替えてください
+            </p>
+            <p class="text-yellow-700 text-sm mb-3" id="mismatch-message"></p>
+            <div class="space-y-2">
+              <button onclick="switchAccount()" class="w-full bg-yellow-600 text-white px-4 py-2 rounded-lg hover:bg-yellow-700 font-medium text-sm">
+                <i class="fas fa-sign-out-alt mr-2"></i>ログアウトして招待メールアドレスでログイン
+              </button>
+              <p class="text-xs text-yellow-600 text-center">
+                ※ログアウト後、このページに自動で戻ります
+              </p>
+            </div>
+          </div>
+        </div>
         
         <div id="join-form-container">
           <form id="join-form" class="space-y-4">
@@ -1909,7 +2222,16 @@ agencyPages.get('/agency/join', (c) => {
     <script>
       (function() {
         var token = localStorage.getItem('token');
-        if (!token) {
+        var userStr = localStorage.getItem('user');
+        var user = null;
+        
+        try {
+          user = userStr ? JSON.parse(userStr) : null;
+        } catch (e) {
+          user = null;
+        }
+        
+        if (!token || !user) {
           // 未ログインの場合は、ログインページにリダイレクト（戻りURLを保存）
           var currentUrl = window.location.href;
           localStorage.setItem('redirect_after_login', currentUrl);
@@ -1917,15 +2239,33 @@ agencyPages.get('/agency/join', (c) => {
           return;
         }
         
+        // 現在ログイン中のユーザーメールアドレスを表示
+        var currentUserEmail = user.email || '(メールアドレス不明)';
+        document.getElementById('current-user-email').textContent = currentUserEmail;
+        
+        // アカウント切替関数
+        window.switchAccount = function() {
+          // 現在のURLを保存してログアウト
+          var currentUrl = window.location.href;
+          localStorage.setItem('redirect_after_login', currentUrl);
+          localStorage.removeItem('token');
+          localStorage.removeItem('user');
+          window.location.href = '/login';
+        };
+        
         document.getElementById('join-form').addEventListener('submit', async function(e) {
           e.preventDefault();
           var form = e.target;
           var formData = new FormData(form);
           
           var statusDiv = document.getElementById('join-status');
+          var mismatchGuide = document.getElementById('email-mismatch-guide');
+          
+          // 状態をリセット
           statusDiv.classList.remove('hidden', 'bg-red-100', 'text-red-700', 'bg-emerald-100', 'text-emerald-700');
           statusDiv.classList.add('bg-blue-100', 'text-blue-700');
           statusDiv.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>処理中...';
+          mismatchGuide.classList.add('hidden');
           
           try {
             var response = await fetch('/api/agency/members/join', {
@@ -1951,17 +2291,31 @@ agencyPages.get('/agency/join', (c) => {
                 (data.data.role === 'admin' ? '管理者' : 'スタッフ') + 'として参加しました。';
               
               // ユーザー情報を更新（roleがagencyに変わった可能性）
-              var userStr = localStorage.getItem('user');
-              if (userStr) {
-                var user = JSON.parse(userStr);
+              if (user) {
                 user.role = 'agency';
                 localStorage.setItem('user', JSON.stringify(user));
               }
             } else {
               statusDiv.classList.remove('bg-blue-100', 'text-blue-700');
-              statusDiv.classList.add('bg-red-100', 'text-red-700');
-              statusDiv.innerHTML = '<i class="fas fa-exclamation-circle mr-2"></i>' + 
-                (data.error?.message || '招待の受諾に失敗しました');
+              
+              // EMAIL_MISMATCH エラーの場合は特別な案内を表示
+              if (data.error?.code === 'EMAIL_MISMATCH') {
+                statusDiv.classList.add('hidden');
+                mismatchGuide.classList.remove('hidden');
+                
+                // 招待先メールアドレスを抽出（メッセージから）
+                var inviteEmail = data.error.message.match(/([a-zA-Z0-9._-]+@[a-zA-Z0-9._-]+\\.[a-zA-Z0-9_-]+)/);
+                inviteEmail = inviteEmail ? inviteEmail[0] : '招待先メールアドレス';
+                
+                document.getElementById('mismatch-message').innerHTML = 
+                  'この招待は <strong>' + inviteEmail + '</strong> 宛てです。<br>' +
+                  '現在は <strong>' + currentUserEmail + '</strong> でログインしています。<br>' +
+                  '招待を受諾するには、招待先のメールアドレスでログインしてください。';
+              } else {
+                statusDiv.classList.add('bg-red-100', 'text-red-700');
+                statusDiv.innerHTML = '<i class="fas fa-exclamation-circle mr-2"></i>' + 
+                  (data.error?.message || '招待の受諾に失敗しました');
+              }
             }
           } catch (err) {
             statusDiv.classList.remove('bg-blue-100', 'text-blue-700');
