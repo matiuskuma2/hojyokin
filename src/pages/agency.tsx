@@ -214,163 +214,623 @@ const agencyLayout = (title: string, content: string, activeTab: string = '') =>
 `;
 
 /**
- * GET /agency - ダッシュボード
+ * GET /agency - ダッシュボード v2（情報の泉型）
+ * 
+ * 構成:
+ * - 上段: KPI（今日のアクティビティ）
+ * - 中段上: NEWSフィード（カテゴリ別タブ）
+ * - 中段下: 顧客おすすめ（サジェスト）
+ * - 下段: 未処理タスク + クイックアクション
  */
 agencyPages.get('/agency', (c) => {
   const content = `
+    <style>
+      .news-tab { transition: all 0.2s; }
+      .news-tab.active { background-color: #059669; color: white; }
+      .news-tab:not(.active):hover { background-color: #d1fae5; }
+      .news-card { transition: all 0.2s; }
+      .news-card:hover { background-color: #f9fafb; }
+      .suggestion-card { transition: all 0.3s; }
+      .suggestion-card:hover { transform: translateY(-2px); box-shadow: 0 8px 16px rgba(0,0,0,0.1); }
+      .task-badge { animation: pulse 2s infinite; }
+      @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.7; } }
+      .tap-target { min-height: 44px; }
+      .event-badge-new { background: linear-gradient(135deg, #10b981 0%, #059669 100%); }
+      .event-badge-updated { background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%); }
+      .event-badge-closing { background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%); }
+      .event-badge-alert { background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%); }
+      .event-badge-info { background: linear-gradient(135deg, #6b7280 0%, #4b5563 100%); }
+      /* Mobile compact styles */
+      @media (max-width: 640px) {
+        .news-scroll { max-height: 300px; overflow-y: auto; }
+        .suggestion-scroll { max-height: 400px; overflow-y: auto; }
+      }
+    </style>
+    
     <div class="space-y-6">
-      <h1 class="text-2xl font-bold text-gray-900">
-        <i class="fas fa-chart-pie mr-2"></i>ダッシュボード
-      </h1>
+      <!-- Header -->
+      <div class="flex items-center justify-between">
+        <h1 class="text-2xl font-bold text-gray-900">
+          <i class="fas fa-tachometer-alt mr-2 text-emerald-600"></i>ダッシュボード
+        </h1>
+        <div class="text-sm text-gray-500">
+          <i class="fas fa-sync-alt mr-1"></i>
+          <span id="last-updated">-</span>
+        </div>
+      </div>
       
-      <!-- Stats Grid -->
-      <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
-        <div class="stat-card bg-white rounded-lg shadow p-6">
+      <!-- ===== KPI Section ===== -->
+      <div class="grid grid-cols-2 md:grid-cols-5 gap-3">
+        <div class="bg-white rounded-lg shadow p-4 border-l-4 border-emerald-500">
           <div class="flex items-center justify-between">
             <div>
-              <p class="text-sm text-gray-500">顧客企業数</p>
-              <p id="stat-total-clients" class="text-2xl font-bold text-gray-900 loading">-</p>
+              <p class="text-xs text-gray-500">顧客企業</p>
+              <p id="kpi-clients" class="text-xl font-bold text-gray-900 loading">-</p>
             </div>
-            <div class="bg-emerald-100 p-3 rounded-full">
-              <i class="fas fa-building text-emerald-600"></i>
-            </div>
+            <i class="fas fa-building text-emerald-500 text-lg"></i>
           </div>
         </div>
-        
-        <div class="stat-card bg-white rounded-lg shadow p-6">
+        <div class="bg-white rounded-lg shadow p-4 border-l-4 border-blue-500">
           <div class="flex items-center justify-between">
             <div>
-              <p class="text-sm text-gray-500">アクティブ</p>
-              <p id="stat-active-clients" class="text-2xl font-bold text-emerald-600 loading">-</p>
+              <p class="text-xs text-gray-500">今日の検索</p>
+              <p id="kpi-searches" class="text-xl font-bold text-blue-600 loading">-</p>
             </div>
-            <div class="bg-emerald-100 p-3 rounded-full">
-              <i class="fas fa-check-circle text-emerald-600"></i>
-            </div>
+            <i class="fas fa-search text-blue-500 text-lg"></i>
           </div>
         </div>
-        
-        <div class="stat-card bg-white rounded-lg shadow p-6">
+        <div class="bg-white rounded-lg shadow p-4 border-l-4 border-purple-500">
           <div class="flex items-center justify-between">
             <div>
-              <p class="text-sm text-gray-500">未処理受付</p>
-              <p id="stat-pending" class="text-2xl font-bold text-orange-600 loading">-</p>
+              <p class="text-xs text-gray-500">今日の壁打ち</p>
+              <p id="kpi-chats" class="text-xl font-bold text-purple-600 loading">-</p>
             </div>
-            <div class="bg-orange-100 p-3 rounded-full">
-              <i class="fas fa-inbox text-orange-600"></i>
-            </div>
+            <i class="fas fa-comments text-purple-500 text-lg"></i>
           </div>
         </div>
-        
-        <div class="stat-card bg-white rounded-lg shadow p-6">
+        <div class="bg-white rounded-lg shadow p-4 border-l-4 border-orange-500">
           <div class="flex items-center justify-between">
             <div>
-              <p class="text-sm text-gray-500">今日の検索</p>
-              <p id="stat-searches" class="text-2xl font-bold text-blue-600 loading">-</p>
+              <p class="text-xs text-gray-500">今日のドラフト</p>
+              <p id="kpi-drafts" class="text-xl font-bold text-orange-600 loading">-</p>
             </div>
-            <div class="bg-blue-100 p-3 rounded-full">
-              <i class="fas fa-search text-blue-600"></i>
-            </div>
+            <i class="fas fa-file-alt text-orange-500 text-lg"></i>
           </div>
         </div>
-        
-        <div class="stat-card bg-white rounded-lg shadow p-6">
+        <div class="bg-white rounded-lg shadow p-4 border-l-4 border-red-500">
           <div class="flex items-center justify-between">
             <div>
-              <p class="text-sm text-gray-500">作成ドラフト</p>
-              <p id="stat-drafts" class="text-2xl font-bold text-purple-600 loading">-</p>
+              <p class="text-xs text-gray-500">未処理タスク</p>
+              <p id="kpi-tasks" class="text-xl font-bold text-red-600 loading">-</p>
             </div>
-            <div class="bg-purple-100 p-3 rounded-full">
-              <i class="fas fa-file-alt text-purple-600"></i>
-            </div>
+            <i class="fas fa-tasks text-red-500 text-lg"></i>
           </div>
         </div>
       </div>
       
-      <!-- Quick Actions -->
-      <div class="bg-white rounded-lg shadow p-6">
-        <h2 class="text-lg font-semibold mb-4">クイックアクション</h2>
-        <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <a href="/agency/clients?action=add" class="flex items-center gap-3 p-4 border rounded-lg hover:bg-gray-50 transition">
-            <div class="bg-emerald-100 p-3 rounded-full">
-              <i class="fas fa-plus text-emerald-600"></i>
-            </div>
-            <div>
-              <p class="font-medium">顧客を追加</p>
-              <p class="text-sm text-gray-500">新しい顧客企業を登録</p>
-            </div>
-          </a>
-          
-          <a href="/agency/search" class="flex items-center gap-3 p-4 border rounded-lg hover:bg-gray-50 transition">
-            <div class="bg-blue-100 p-3 rounded-full">
-              <i class="fas fa-search text-blue-600"></i>
-            </div>
-            <div>
-              <p class="font-medium">補助金を検索</p>
-              <p class="text-sm text-gray-500">顧客に合う補助金を探す</p>
-            </div>
-          </a>
-          
-          <a href="/agency/links" class="flex items-center gap-3 p-4 border rounded-lg hover:bg-gray-50 transition">
-            <div class="bg-purple-100 p-3 rounded-full">
-              <i class="fas fa-link text-purple-600"></i>
-            </div>
-            <div>
-              <p class="font-medium">リンクを発行</p>
-              <p class="text-sm text-gray-500">顧客に入力リンクを送る</p>
-            </div>
-          </a>
+      <!-- ===== NEWS Feed Section ===== -->
+      <div class="bg-white rounded-lg shadow">
+        <div class="p-4 border-b flex items-center justify-between">
+          <h2 class="text-lg font-semibold text-gray-900">
+            <i class="fas fa-newspaper mr-2 text-blue-500"></i>NEWSフィード
+          </h2>
+          <span class="text-xs text-gray-500">顧客所在地の情報を優先表示</span>
+        </div>
+        
+        <!-- News Category Tabs -->
+        <div class="flex flex-wrap border-b px-2 pt-2 gap-1">
+          <button onclick="showNewsTab('platform')" id="news-tab-platform" class="news-tab px-3 py-2 text-sm font-medium rounded-t-lg active tap-target">
+            <i class="fas fa-bullhorn mr-1"></i><span class="hidden sm:inline">プラットフォーム</span><span class="sm:hidden">PF</span>
+            <span id="news-count-platform" class="ml-1 text-xs bg-white/20 px-1.5 rounded">0</span>
+          </button>
+          <button onclick="showNewsTab('support_info')" id="news-tab-support_info" class="news-tab px-3 py-2 text-sm font-medium rounded-t-lg tap-target">
+            <i class="fas fa-plus-circle mr-1"></i><span class="hidden sm:inline">新着支援</span><span class="sm:hidden">新着</span>
+            <span id="news-count-support_info" class="ml-1 text-xs bg-gray-200 px-1.5 rounded">0</span>
+          </button>
+          <button onclick="showNewsTab('prefecture')" id="news-tab-prefecture" class="news-tab px-3 py-2 text-sm font-medium rounded-t-lg tap-target">
+            <i class="fas fa-map-marker-alt mr-1"></i><span class="hidden sm:inline">都道府県</span><span class="sm:hidden">県</span>
+            <span id="news-count-prefecture" class="ml-1 text-xs bg-gray-200 px-1.5 rounded">0</span>
+          </button>
+          <button onclick="showNewsTab('ministry')" id="news-tab-ministry" class="news-tab px-3 py-2 text-sm font-medium rounded-t-lg tap-target">
+            <i class="fas fa-landmark mr-1"></i><span class="hidden sm:inline">省庁</span><span class="sm:hidden">省</span>
+            <span id="news-count-ministry" class="ml-1 text-xs bg-gray-200 px-1.5 rounded">0</span>
+          </button>
+          <button onclick="showNewsTab('other_public')" id="news-tab-other_public" class="news-tab px-3 py-2 text-sm font-medium rounded-t-lg tap-target">
+            <i class="fas fa-university mr-1"></i><span class="hidden sm:inline">その他機関</span><span class="sm:hidden">他</span>
+            <span id="news-count-other_public" class="ml-1 text-xs bg-gray-200 px-1.5 rounded">0</span>
+          </button>
+        </div>
+        
+        <!-- News Content -->
+        <div id="news-content" class="p-4 news-scroll">
+          <div class="text-center py-8 text-gray-500">
+            <i class="fas fa-spinner fa-spin text-2xl mb-2"></i>
+            <p>読み込み中...</p>
+          </div>
         </div>
       </div>
       
-      <!-- Upcoming Deadlines -->
-      <div class="bg-white rounded-lg shadow p-6">
-        <h2 class="text-lg font-semibold mb-4">
-          <i class="fas fa-clock mr-2 text-orange-500"></i>期限が近い補助金
-        </h2>
-        <div id="upcoming-deadlines" class="space-y-2">
-          <p class="text-gray-500 loading">読み込み中...</p>
+      <!-- ===== Suggestions Section ===== -->
+      <div class="bg-white rounded-lg shadow">
+        <div class="p-4 border-b flex items-center justify-between">
+          <h2 class="text-lg font-semibold text-gray-900">
+            <i class="fas fa-lightbulb mr-2 text-yellow-500"></i>顧客おすすめ補助金
+          </h2>
+          <a href="/agency/search" class="text-sm text-emerald-600 hover:text-emerald-700">
+            <i class="fas fa-search mr-1"></i>補助金検索へ
+          </a>
+        </div>
+        <div id="suggestions-content" class="p-4 suggestion-scroll">
+          <div class="text-center py-8 text-gray-500">
+            <i class="fas fa-spinner fa-spin text-2xl mb-2"></i>
+            <p>読み込み中...</p>
+          </div>
+        </div>
+      </div>
+      
+      <!-- ===== Tasks & Quick Actions Section ===== -->
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <!-- Pending Tasks -->
+        <div class="bg-white rounded-lg shadow">
+          <div class="p-4 border-b flex items-center justify-between">
+            <h2 class="text-lg font-semibold text-gray-900">
+              <i class="fas fa-tasks mr-2 text-red-500"></i>未処理タスク
+            </h2>
+            <span id="tasks-total" class="px-2 py-1 bg-red-100 text-red-700 rounded-full text-xs font-medium task-badge">0件</span>
+          </div>
+          <div id="tasks-content" class="p-4">
+            <div class="space-y-4">
+              <!-- 承認待ち -->
+              <div>
+                <h3 class="text-sm font-medium text-gray-700 mb-2">
+                  <i class="fas fa-inbox text-orange-500 mr-1"></i>承認待ち入力
+                </h3>
+                <div id="tasks-intakes" class="space-y-2">
+                  <p class="text-sm text-gray-500">なし</p>
+                </div>
+              </div>
+              <!-- 期限間近リンク -->
+              <div>
+                <h3 class="text-sm font-medium text-gray-700 mb-2">
+                  <i class="fas fa-clock text-yellow-500 mr-1"></i>期限間近リンク
+                </h3>
+                <div id="tasks-links" class="space-y-2">
+                  <p class="text-sm text-gray-500">なし</p>
+                </div>
+              </div>
+              <!-- 進行中ドラフト -->
+              <div>
+                <h3 class="text-sm font-medium text-gray-700 mb-2">
+                  <i class="fas fa-edit text-blue-500 mr-1"></i>進行中ドラフト
+                </h3>
+                <div id="tasks-drafts" class="space-y-2">
+                  <p class="text-sm text-gray-500">なし</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        
+        <!-- Quick Actions -->
+        <div class="bg-white rounded-lg shadow">
+          <div class="p-4 border-b">
+            <h2 class="text-lg font-semibold text-gray-900">
+              <i class="fas fa-bolt mr-2 text-yellow-500"></i>クイックアクション
+            </h2>
+          </div>
+          <div class="p-4 space-y-3">
+            <a href="/agency/clients?action=add" class="flex items-center gap-3 p-4 border rounded-lg hover:bg-emerald-50 transition tap-target">
+              <div class="w-10 h-10 bg-emerald-100 rounded-full flex items-center justify-center">
+                <i class="fas fa-plus text-emerald-600"></i>
+              </div>
+              <div>
+                <p class="font-medium text-gray-900">顧客を追加</p>
+                <p class="text-sm text-gray-500">新しい顧客企業を登録</p>
+              </div>
+            </a>
+            
+            <a href="/agency/search" class="flex items-center gap-3 p-4 border rounded-lg hover:bg-blue-50 transition tap-target">
+              <div class="w-10 h-10 bg-blue-100 rounded-full flex items-center justify-center">
+                <i class="fas fa-search text-blue-600"></i>
+              </div>
+              <div>
+                <p class="font-medium text-gray-900">補助金を検索</p>
+                <p class="text-sm text-gray-500">顧客に合う補助金を探す</p>
+              </div>
+            </a>
+            
+            <a href="/agency/links" class="flex items-center gap-3 p-4 border rounded-lg hover:bg-purple-50 transition tap-target">
+              <div class="w-10 h-10 bg-purple-100 rounded-full flex items-center justify-center">
+                <i class="fas fa-link text-purple-600"></i>
+              </div>
+              <div>
+                <p class="font-medium text-gray-900">リンクを発行</p>
+                <p class="text-sm text-gray-500">顧客に入力リンクを送る</p>
+              </div>
+            </a>
+            
+            <a href="/agency/submissions" class="flex items-center gap-3 p-4 border rounded-lg hover:bg-orange-50 transition tap-target">
+              <div class="w-10 h-10 bg-orange-100 rounded-full flex items-center justify-center">
+                <i class="fas fa-inbox text-orange-600"></i>
+              </div>
+              <div>
+                <p class="font-medium text-gray-900">受付を確認</p>
+                <p class="text-sm text-gray-500">顧客からの入力を処理</p>
+              </div>
+            </a>
+          </div>
         </div>
       </div>
     </div>
     
     <script>
+      // ============================================================
+      // Dashboard v2 - 情報の泉型
+      // ============================================================
+      
+      let dashboardData = null;
+      let currentNewsTab = 'platform';
+      const prefectureNames = {
+        '01': '北海道', '02': '青森', '03': '岩手', '04': '宮城', '05': '秋田',
+        '06': '山形', '07': '福島', '08': '茨城', '09': '栃木', '10': '群馬',
+        '11': '埼玉', '12': '千葉', '13': '東京', '14': '神奈川', '15': '新潟',
+        '16': '富山', '17': '石川', '18': '福井', '19': '山梨', '20': '長野',
+        '21': '岐阜', '22': '静岡', '23': '愛知', '24': '三重', '25': '滋賀',
+        '26': '京都', '27': '大阪', '28': '兵庫', '29': '奈良', '30': '和歌山',
+        '31': '鳥取', '32': '島根', '33': '岡山', '34': '広島', '35': '山口',
+        '36': '徳島', '37': '香川', '38': '愛媛', '39': '高知', '40': '福岡',
+        '41': '佐賀', '42': '長崎', '43': '熊本', '44': '大分', '45': '宮崎',
+        '46': '鹿児島', '47': '沖縄', '00': '全国'
+      };
+      
+      // HTMLエスケープ
+      function escapeHtml(str) {
+        if (str === null || str === undefined) return '';
+        return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+      }
+      
+      // 日付フォーマット
+      function formatDate(dateStr) {
+        if (!dateStr) return '-';
+        const d = new Date(dateStr);
+        if (isNaN(d.getTime())) return '-';
+        return d.toLocaleDateString('ja-JP', { month: 'numeric', day: 'numeric' });
+      }
+      
+      function formatDateTime(dateStr) {
+        if (!dateStr) return '-';
+        const d = new Date(dateStr);
+        if (isNaN(d.getTime())) return '-';
+        return d.toLocaleDateString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+      }
+      
+      // イベントタイプバッジ
+      function getEventBadge(eventType) {
+        const config = {
+          'new': { icon: 'fa-star', label: '新規', class: 'event-badge-new' },
+          'updated': { icon: 'fa-sync-alt', label: '更新', class: 'event-badge-updated' },
+          'closing': { icon: 'fa-clock', label: '締切間近', class: 'event-badge-closing' },
+          'alert': { icon: 'fa-exclamation-triangle', label: '重要', class: 'event-badge-alert' },
+          'info': { icon: 'fa-info-circle', label: 'お知らせ', class: 'event-badge-info' }
+        };
+        const c = config[eventType] || config['info'];
+        return '<span class="inline-flex items-center px-2 py-0.5 rounded text-xs text-white ' + c.class + '"><i class="fas ' + c.icon + ' mr-1"></i>' + c.label + '</span>';
+      }
+      
+      // ステータスバッジ（サジェスト用）
+      function getStatusBadge(status, score) {
+        const config = {
+          'PROCEED': { bg: 'bg-green-100', text: 'text-green-800', border: 'border-green-500', icon: 'fa-check-circle', label: '推奨' },
+          'CAUTION': { bg: 'bg-yellow-100', text: 'text-yellow-800', border: 'border-yellow-500', icon: 'fa-exclamation-triangle', label: '注意' },
+          'NO': { bg: 'bg-red-100', text: 'text-red-800', border: 'border-red-500', icon: 'fa-times-circle', label: '非推奨' }
+        };
+        const c = config[status] || config['CAUTION'];
+        return '<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ' + c.bg + ' ' + c.text + '"><i class="fas ' + c.icon + ' mr-1"></i>' + c.label + (score ? ' ' + score + '%' : '') + '</span>';
+      }
+      
       // ダッシュボードデータ取得
       async function loadDashboard() {
-        const data = await apiCall('/api/agency/dashboard');
-        if (data.success) {
-          const stats = data.data.stats;
-          document.getElementById('stat-total-clients').textContent = stats.totalClients;
-          document.getElementById('stat-total-clients').classList.remove('loading');
-          document.getElementById('stat-active-clients').textContent = stats.activeClients;
-          document.getElementById('stat-active-clients').classList.remove('loading');
-          document.getElementById('stat-pending').textContent = stats.pendingSubmissions;
-          document.getElementById('stat-pending').classList.remove('loading');
-          document.getElementById('stat-searches').textContent = stats.todaySearches;
-          document.getElementById('stat-searches').classList.remove('loading');
-          document.getElementById('stat-drafts').textContent = stats.totalDrafts;
-          document.getElementById('stat-drafts').classList.remove('loading');
+        try {
+          const data = await apiCall('/api/agency/dashboard-v2');
           
-          // 期限が近い補助金
-          const container = document.getElementById('upcoming-deadlines');
-          if (data.data.upcomingDeadlines.length === 0) {
-            container.innerHTML = '<p class="text-gray-500">期限が近い補助金はありません</p>';
-          } else {
-            container.innerHTML = data.data.upcomingDeadlines.map(d => \`
-              <div class="flex items-center justify-between p-3 border rounded-lg">
-                <div>
-                  <p class="font-medium">\${d.subsidy_id}</p>
-                  <p class="text-sm text-gray-500">\${d.client_name || d.company_name}</p>
-                </div>
-                <div class="text-right">
-                  <p class="text-sm text-orange-600 font-medium">\${new Date(d.deadline_at).toLocaleDateString('ja-JP')}</p>
-                </div>
-              </div>
-            \`).join('');
+          if (!data.success) {
+            console.error('Dashboard API error:', data.error);
+            showError('ダッシュボードの読み込みに失敗しました');
+            return;
           }
+          
+          dashboardData = data.data;
+          
+          // KPI更新
+          updateKPI();
+          
+          // NEWSフィード更新
+          updateNewsTabCounts();
+          showNewsTab(currentNewsTab);
+          
+          // サジェスト更新
+          updateSuggestions();
+          
+          // タスク更新
+          updateTasks();
+          
+          // 最終更新時刻
+          document.getElementById('last-updated').textContent = 
+            new Date().toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' }) + ' 更新';
+          
+        } catch (e) {
+          console.error('loadDashboard error:', e);
+          showError('ダッシュボードの読み込み中にエラーが発生しました');
         }
       }
       
-      // DOMContentLoaded で apiCall が定義されてから実行
+      function showError(message) {
+        document.getElementById('news-content').innerHTML = 
+          '<div class="text-center py-8 text-red-500"><i class="fas fa-exclamation-circle text-2xl mb-2"></i><p>' + escapeHtml(message) + '</p></div>';
+      }
+      
+      // KPI更新
+      function updateKPI() {
+        if (!dashboardData) return;
+        
+        const kpi = dashboardData.kpi || {};
+        const stats = dashboardData.stats || {};
+        const tasks = dashboardData.tasks || {};
+        
+        const totalTasks = (tasks.pending_intakes?.length || 0) + 
+                          (tasks.expiring_links?.length || 0) + 
+                          (tasks.drafts_in_progress?.length || 0);
+        
+        document.getElementById('kpi-clients').textContent = stats.totalClients || 0;
+        document.getElementById('kpi-clients').classList.remove('loading');
+        
+        document.getElementById('kpi-searches').textContent = kpi.today_search_count || 0;
+        document.getElementById('kpi-searches').classList.remove('loading');
+        
+        document.getElementById('kpi-chats').textContent = kpi.today_chat_count || 0;
+        document.getElementById('kpi-chats').classList.remove('loading');
+        
+        document.getElementById('kpi-drafts').textContent = kpi.today_draft_count || 0;
+        document.getElementById('kpi-drafts').classList.remove('loading');
+        
+        document.getElementById('kpi-tasks').textContent = totalTasks;
+        document.getElementById('kpi-tasks').classList.remove('loading');
+      }
+      
+      // NEWSタブカウント更新
+      function updateNewsTabCounts() {
+        if (!dashboardData || !dashboardData.news) return;
+        
+        const news = dashboardData.news;
+        document.getElementById('news-count-platform').textContent = (news.platform || []).length;
+        document.getElementById('news-count-support_info').textContent = (news.support_info || []).length;
+        document.getElementById('news-count-prefecture').textContent = (news.prefecture || []).length;
+        document.getElementById('news-count-ministry').textContent = (news.ministry || []).length;
+        document.getElementById('news-count-other_public').textContent = (news.other_public || []).length;
+      }
+      
+      // NEWSタブ切替
+      window.showNewsTab = function(tabName) {
+        currentNewsTab = tabName;
+        
+        // タブ状態更新
+        document.querySelectorAll('.news-tab').forEach(tab => {
+          tab.classList.remove('active');
+          const countSpan = tab.querySelector('span[id^="news-count-"]');
+          if (countSpan) {
+            countSpan.classList.remove('bg-white/20');
+            countSpan.classList.add('bg-gray-200');
+          }
+        });
+        
+        const activeTab = document.getElementById('news-tab-' + tabName);
+        if (activeTab) {
+          activeTab.classList.add('active');
+          const countSpan = activeTab.querySelector('span[id^="news-count-"]');
+          if (countSpan) {
+            countSpan.classList.remove('bg-gray-200');
+            countSpan.classList.add('bg-white/20');
+          }
+        }
+        
+        // コンテンツ更新
+        renderNewsContent(tabName);
+      };
+      
+      // NEWSコンテンツ描画
+      function renderNewsContent(tabName) {
+        const container = document.getElementById('news-content');
+        if (!dashboardData || !dashboardData.news) {
+          container.innerHTML = '<p class="text-center text-gray-500 py-4">データがありません</p>';
+          return;
+        }
+        
+        const items = dashboardData.news[tabName] || [];
+        
+        if (items.length === 0) {
+          container.innerHTML = '<div class="text-center py-8 text-gray-500"><i class="fas fa-inbox text-3xl mb-2"></i><p>新着情報はありません</p></div>';
+          return;
+        }
+        
+        const html = items.map(item => {
+          const eventBadge = item.event_type ? getEventBadge(item.event_type) : '';
+          const isClientArea = item.is_client_area ? '<span class="inline-flex items-center px-2 py-0.5 rounded text-xs bg-emerald-100 text-emerald-700"><i class="fas fa-star mr-1"></i>顧客エリア</span>' : '';
+          const prefBadge = item.region_prefecture ? '<span class="text-xs text-gray-500">' + (prefectureNames[item.region_prefecture] || item.region_prefecture) + '</span>' : '';
+          
+          return '<div class="news-card p-3 border-b last:border-b-0 tap-target">' +
+            '<div class="flex items-start justify-between gap-2">' +
+              '<div class="flex-1 min-w-0">' +
+                '<div class="flex flex-wrap items-center gap-2 mb-1">' +
+                  eventBadge + isClientArea + prefBadge +
+                '</div>' +
+                '<a href="' + (item.url || '#') + '" target="_blank" class="font-medium text-gray-900 hover:text-emerald-600 line-clamp-2 block">' +
+                  escapeHtml(item.title) +
+                '</a>' +
+                (item.summary ? '<p class="text-sm text-gray-600 mt-1 line-clamp-2">' + escapeHtml(item.summary) + '</p>' : '') +
+              '</div>' +
+              '<div class="text-xs text-gray-400 whitespace-nowrap">' +
+                formatDate(item.published_at || item.detected_at) +
+              '</div>' +
+            '</div>' +
+          '</div>';
+        }).join('');
+        
+        container.innerHTML = html;
+      }
+      
+      // サジェスト更新
+      function updateSuggestions() {
+        const container = document.getElementById('suggestions-content');
+        if (!dashboardData) return;
+        
+        const suggestions = dashboardData.suggestions || [];
+        
+        if (suggestions.length === 0) {
+          container.innerHTML = 
+            '<div class="text-center py-8">' +
+              '<div class="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-4">' +
+                '<i class="fas fa-lightbulb text-gray-400 text-2xl"></i>' +
+              '</div>' +
+              '<p class="text-gray-600 font-medium">おすすめ補助金はまだありません</p>' +
+              '<p class="text-sm text-gray-500 mt-1">顧客情報を登録すると、AIが最適な補助金を提案します</p>' +
+              '<a href="/agency/clients" class="inline-block mt-4 px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 text-sm">' +
+                '<i class="fas fa-plus mr-1"></i>顧客を登録' +
+              '</a>' +
+            '</div>';
+          return;
+        }
+        
+        // 顧客ごとにグルーピング
+        const byClient = {};
+        suggestions.forEach(s => {
+          const key = s.agency_client_id;
+          if (!byClient[key]) {
+            byClient[key] = {
+              client_name: s.client_name,
+              company_name: s.company_name,
+              prefecture: s.prefecture,
+              company_id: s.company_id,
+              items: []
+            };
+          }
+          byClient[key].items.push(s);
+        });
+        
+        const html = Object.entries(byClient).map(([clientId, client]) => {
+          const prefName = prefectureNames[client.prefecture] || client.prefecture || '-';
+          
+          const itemsHtml = client.items.slice(0, 3).map((s, idx) => {
+            const statusBadge = getStatusBadge(s.status, s.score);
+            const deadline = s.subsidy_deadline ? new Date(s.subsidy_deadline) : null;
+            const daysLeft = deadline ? Math.ceil((deadline - new Date()) / (1000 * 60 * 60 * 24)) : null;
+            const deadlineClass = daysLeft !== null && daysLeft <= 7 ? 'text-red-600 font-bold' : 'text-gray-600';
+            
+            const reasons = (s.match_reasons || []).slice(0, 2).map(r => 
+              '<span class="inline-flex items-center px-2 py-0.5 bg-green-50 text-green-700 rounded text-xs"><i class="fas fa-check text-xs mr-1"></i>' + escapeHtml(r) + '</span>'
+            ).join(' ');
+            
+            return '<a href="/subsidies/' + (s.subsidy_id || '') + '?company_id=' + (client.company_id || '') + '" ' +
+              'class="block p-3 border rounded-lg hover:border-emerald-300 hover:bg-emerald-50/30 transition tap-target">' +
+              '<div class="flex items-start justify-between gap-2">' +
+                '<div class="flex-1 min-w-0">' +
+                  '<div class="flex items-center gap-2 mb-1">' +
+                    '<span class="text-xs text-gray-400">#' + (idx + 1) + '</span>' +
+                    statusBadge +
+                  '</div>' +
+                  '<p class="font-medium text-gray-900 line-clamp-1">' + escapeHtml(s.subsidy_title || '補助金') + '</p>' +
+                  '<div class="flex flex-wrap gap-1 mt-1">' + reasons + '</div>' +
+                '</div>' +
+                '<div class="text-right text-sm">' +
+                  '<p class="' + deadlineClass + '">' + 
+                    (deadline ? formatDate(s.subsidy_deadline) : '-') +
+                    (daysLeft !== null && daysLeft <= 14 ? '<br><span class="text-xs">あと' + daysLeft + '日</span>' : '') +
+                  '</p>' +
+                  (s.subsidy_max_limit ? '<p class="text-xs text-emerald-600 mt-1">〜' + (s.subsidy_max_limit / 10000).toLocaleString() + '万円</p>' : '') +
+                '</div>' +
+              '</div>' +
+            '</a>';
+          }).join('');
+          
+          return '<div class="suggestion-card bg-gray-50 rounded-lg p-4 mb-4">' +
+            '<div class="flex items-center justify-between mb-3">' +
+              '<div class="flex items-center gap-2">' +
+                '<div class="w-8 h-8 bg-emerald-100 rounded-full flex items-center justify-center">' +
+                  '<i class="fas fa-building text-emerald-600 text-sm"></i>' +
+                '</div>' +
+                '<div>' +
+                  '<p class="font-medium text-gray-900">' + escapeHtml(client.client_name || client.company_name) + '</p>' +
+                  '<p class="text-xs text-gray-500">' + prefName + '</p>' +
+                '</div>' +
+              '</div>' +
+              '<a href="/agency/search?company_id=' + (client.company_id || '') + '" class="text-xs text-emerald-600 hover:text-emerald-700">' +
+                '<i class="fas fa-search mr-1"></i>もっと探す' +
+              '</a>' +
+            '</div>' +
+            '<div class="space-y-2">' + itemsHtml + '</div>' +
+          '</div>';
+        }).join('');
+        
+        container.innerHTML = html;
+      }
+      
+      // タスク更新
+      function updateTasks() {
+        if (!dashboardData || !dashboardData.tasks) return;
+        
+        const tasks = dashboardData.tasks;
+        const totalTasks = (tasks.pending_intakes?.length || 0) + 
+                          (tasks.expiring_links?.length || 0) + 
+                          (tasks.drafts_in_progress?.length || 0);
+        
+        document.getElementById('tasks-total').textContent = totalTasks + '件';
+        if (totalTasks === 0) {
+          document.getElementById('tasks-total').classList.remove('task-badge', 'bg-red-100', 'text-red-700');
+          document.getElementById('tasks-total').classList.add('bg-gray-100', 'text-gray-700');
+        }
+        
+        // 承認待ち入力
+        const intakesContainer = document.getElementById('tasks-intakes');
+        if (tasks.pending_intakes && tasks.pending_intakes.length > 0) {
+          intakesContainer.innerHTML = tasks.pending_intakes.map(t => 
+            '<a href="/agency/submissions" class="flex items-center justify-between p-2 border rounded hover:bg-orange-50 tap-target">' +
+              '<span class="text-sm font-medium truncate">' + escapeHtml(t.client_name || '顧客') + '</span>' +
+              '<span class="text-xs text-gray-500">' + formatDate(t.submitted_at) + '</span>' +
+            '</a>'
+          ).join('');
+        } else {
+          intakesContainer.innerHTML = '<p class="text-sm text-gray-500">なし</p>';
+        }
+        
+        // 期限間近リンク
+        const linksContainer = document.getElementById('tasks-links');
+        if (tasks.expiring_links && tasks.expiring_links.length > 0) {
+          linksContainer.innerHTML = tasks.expiring_links.map(t => {
+            const expires = new Date(t.expires_at);
+            const daysLeft = Math.ceil((expires - new Date()) / (1000 * 60 * 60 * 24));
+            return '<a href="/agency/links" class="flex items-center justify-between p-2 border rounded hover:bg-yellow-50 tap-target">' +
+              '<span class="text-sm font-medium truncate">' + escapeHtml(t.client_name || t.purpose || 'リンク') + '</span>' +
+              '<span class="text-xs ' + (daysLeft <= 3 ? 'text-red-600 font-bold' : 'text-yellow-600') + '">あと' + daysLeft + '日</span>' +
+            '</a>';
+          }).join('');
+        } else {
+          linksContainer.innerHTML = '<p class="text-sm text-gray-500">なし</p>';
+        }
+        
+        // 進行中ドラフト
+        const draftsContainer = document.getElementById('tasks-drafts');
+        if (tasks.drafts_in_progress && tasks.drafts_in_progress.length > 0) {
+          draftsContainer.innerHTML = tasks.drafts_in_progress.map(t => 
+            '<div class="flex items-center justify-between p-2 border rounded tap-target">' +
+              '<span class="text-sm font-medium truncate">' + escapeHtml(t.client_name || t.company_name || 'ドラフト') + '</span>' +
+              '<span class="text-xs text-gray-500">' + formatDate(t.updated_at) + '</span>' +
+            '</div>'
+          ).join('');
+        } else {
+          draftsContainer.innerHTML = '<p class="text-sm text-gray-500">なし</p>';
+        }
+      }
+      
+      // 初期化
       if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', loadDashboard);
       } else {

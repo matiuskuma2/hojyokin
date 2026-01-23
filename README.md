@@ -6,7 +6,29 @@
 - **Version**: 1.7.0
 - **Goal**: 企業情報を登録するだけで、最適な補助金・助成金を自動でマッチング＆申請書ドラフト作成
 
-### 🎉 最新アップデート (v1.7.0) - Phase B-1 完全完了: JGrants API直接連携
+### 🎉 最新アップデート (v1.8.0) - 士業ダッシュボード v2（情報の泉型）
+
+**士業向けダッシュボードをリニューアル:**
+
+| 項目 | 状態 | 詳細 |
+|------|------|------|
+| NEWSフィード | ✅ 5カテゴリ対応 | platform, support_info, prefecture, ministry, other_public |
+| 顧客おすすめ | ✅ AIサジェスト | 顧客ごと上位3件表示、match_reasons表示 |
+| 未処理タスク | ✅ 3種類 | 承認待ち、期限間近リンク、進行中ドラフト |
+| KPI | ✅ リアルタイム | 今日の検索・壁打ち・ドラフト数 |
+| モバイル対応 | ✅ レスポンシブ | タブ切替、44px タップターゲット |
+
+**新規テーブル:**
+- `subsidy_feed_items` - NEWSフィード用
+- `agency_suggestions_cache` - おすすめキャッシュ
+- `feed_daily_snapshots` - 日次集計
+- `agency_feed_read_status` - 既読管理
+
+**凍結ドキュメント:** `docs/AGENCY_DASHBOARD_FREEZE.md`
+
+---
+
+### 過去アップデート (v1.7.0) - Phase B-1 完全完了: JGrants API直接連携
 
 **Phase B-1: 実データによる補助金検索システム完成**
 
@@ -495,6 +517,7 @@ Private
 
 ## 🔄 更新履歴
 
+- **2026-01-23 (v1.8.0)**: 士業ダッシュボード v2（情報の泉型）- NEWSフィード5カテゴリ、顧客おすすめAIサジェスト、未処理タスク、KPI
 - **2026-01-23 (v1.7.0)**: Phase B-1 完了 - JGrants API直接連携、subsidy_cache 67件投入、apiCall修正、requireCompanyAccess修正
 - **2026-01-23 (v1.6.0)**: Phase B 開始 - 手動実データ8件投入、JGRANTS_MODE cached-only切替
 - **2026-01-23 (v1.5.4)**: 壁打ちチャットAPIでセッション作成時のモックフォールバック追加
