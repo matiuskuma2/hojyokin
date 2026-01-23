@@ -1715,6 +1715,137 @@ adminPages.get('/admin/ops', (c) => {
         </div>
       </div>
 
+      <!-- Daily Data Report（運用観測用） -->
+      <div class="bg-white rounded-xl shadow p-6 mb-6">
+        <div class="flex items-center justify-between mb-4">
+          <h2 class="text-lg font-bold text-gray-800">
+            <i class="fas fa-clipboard-list text-blue-600 mr-2"></i>Daily Data Report
+          </h2>
+          <div class="flex gap-2">
+            <button id="btn-load-daily" onclick="loadDailyReport()" class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm">
+              <i class="fas fa-refresh mr-1"></i>更新
+            </button>
+            <button id="btn-copy-report" onclick="copyDailyReport()" class="px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 text-sm">
+              <i class="fas fa-copy mr-1"></i>コピー
+            </button>
+          </div>
+        </div>
+
+        <!-- KPI Grid -->
+        <div class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3 mb-6">
+          <div id="daily-total" class="border-2 rounded-lg p-3 text-center border-gray-200">
+            <p class="text-xs text-gray-500">総件数</p>
+            <p class="text-2xl font-bold text-gray-800">-</p>
+            <p class="text-xs text-gray-400">目標: 500</p>
+          </div>
+          <div id="daily-valid-rate" class="border-2 rounded-lg p-3 text-center border-gray-200">
+            <p class="text-xs text-gray-500">有効率</p>
+            <p class="text-2xl font-bold text-gray-800">-</p>
+            <p class="text-xs text-gray-400">expires_at</p>
+          </div>
+          <div id="daily-deadline" class="border-2 rounded-lg p-3 text-center border-gray-200">
+            <p class="text-xs text-gray-500">締切あり</p>
+            <p class="text-2xl font-bold text-gray-800">-</p>
+            <p class="text-xs text-gray-400">目標: 95%</p>
+          </div>
+          <div id="daily-amount" class="border-2 rounded-lg p-3 text-center border-gray-200">
+            <p class="text-xs text-gray-500">金額あり</p>
+            <p class="text-2xl font-bold text-gray-800">-</p>
+            <p class="text-xs text-gray-400">目標: 80%</p>
+          </div>
+          <div id="daily-docs" class="border-2 rounded-lg p-3 text-center border-gray-200">
+            <p class="text-xs text-gray-500">PDF/様式</p>
+            <p class="text-2xl font-bold text-gray-800">-</p>
+            <p class="text-xs text-gray-400">documents</p>
+          </div>
+          <div id="daily-sources" class="border-2 rounded-lg p-3 text-center border-gray-200">
+            <p class="text-xs text-gray-500">ソース</p>
+            <p class="text-2xl font-bold text-gray-800">-</p>
+            <p class="text-xs text-gray-400">active</p>
+          </div>
+        </div>
+
+        <!-- 今日の増分 -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+          <div class="bg-blue-50 rounded-lg p-4">
+            <h3 class="text-sm font-medium text-blue-800 mb-3">
+              <i class="fas fa-plus-circle mr-1"></i>今日の増分
+            </h3>
+            <div class="grid grid-cols-2 gap-2 text-sm">
+              <div>
+                <span class="text-blue-600 font-medium" id="daily-new">-</span>
+                <span class="text-gray-500 ml-1">新規</span>
+              </div>
+              <div>
+                <span class="text-blue-600 font-medium" id="daily-updated">-</span>
+                <span class="text-gray-500 ml-1">更新</span>
+              </div>
+              <div>
+                <span class="text-gray-600 font-medium" id="daily-expired">-</span>
+                <span class="text-gray-500 ml-1">終了</span>
+              </div>
+              <div>
+                <span class="text-red-600 font-medium" id="daily-404">-</span>
+                <span class="text-gray-500 ml-1">404</span>
+              </div>
+            </div>
+          </div>
+          <div class="bg-red-50 rounded-lg p-4">
+            <h3 class="text-sm font-medium text-red-800 mb-3">
+              <i class="fas fa-exclamation-triangle mr-1"></i>例外（要対応）
+            </h3>
+            <div class="grid grid-cols-2 gap-2 text-sm" id="daily-exceptions">
+              <div><span class="text-red-600 font-medium" id="exc-timeout">-</span><span class="text-gray-500 ml-1">timeout</span></div>
+              <div><span class="text-red-600 font-medium" id="exc-blocked">-</span><span class="text-gray-500 ml-1">blocked</span></div>
+              <div><span class="text-red-600 font-medium" id="exc-login">-</span><span class="text-gray-500 ml-1">login</span></div>
+              <div><span class="text-red-600 font-medium" id="exc-404">-</span><span class="text-gray-500 ml-1">url_404</span></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- OCR/抽出キュー -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+          <div class="bg-gray-50 rounded-lg p-4">
+            <h3 class="text-sm font-medium text-gray-800 mb-3">
+              <i class="fas fa-file-pdf mr-1"></i>OCRキュー
+            </h3>
+            <div class="flex gap-3 text-sm" id="daily-ocr-queue">
+              <span class="px-2 py-1 bg-yellow-100 text-yellow-800 rounded">queued: <span id="ocr-queued">-</span></span>
+              <span class="px-2 py-1 bg-blue-100 text-blue-800 rounded">processing: <span id="ocr-processing">-</span></span>
+              <span class="px-2 py-1 bg-green-100 text-green-800 rounded">done: <span id="ocr-done">-</span></span>
+              <span class="px-2 py-1 bg-red-100 text-red-800 rounded">failed: <span id="ocr-failed">-</span></span>
+            </div>
+          </div>
+          <div class="bg-gray-50 rounded-lg p-4">
+            <h3 class="text-sm font-medium text-gray-800 mb-3">
+              <i class="fas fa-magic mr-1"></i>抽出結果
+            </h3>
+            <div class="flex gap-3 text-sm" id="daily-extraction">
+              <span class="px-2 py-1 bg-green-100 text-green-800 rounded">ok: <span id="extract-ok">-</span></span>
+              <span class="px-2 py-1 bg-red-100 text-red-800 rounded">failed: <span id="extract-failed">-</span></span>
+            </div>
+          </div>
+        </div>
+
+        <!-- ソース別件数（24h） -->
+        <div class="bg-gray-50 rounded-lg p-4 mb-4">
+          <h3 class="text-sm font-medium text-gray-800 mb-3">
+            <i class="fas fa-database mr-1"></i>ソース別件数（直近24h新規）
+          </h3>
+          <div id="daily-by-source" class="flex flex-wrap gap-2 text-sm">
+            <span class="text-gray-400">読み込み中...</span>
+          </div>
+        </div>
+
+        <!-- テキストレポート（コピペ用） -->
+        <div class="bg-gray-900 rounded-lg p-4">
+          <h3 class="text-sm font-medium text-gray-300 mb-3">
+            <i class="fas fa-file-alt mr-1"></i>テキストレポート（コピペ用）
+          </h3>
+          <pre id="daily-text-report" class="text-xs text-green-400 font-mono whitespace-pre-wrap overflow-x-auto max-h-64 overflow-y-auto">読み込み中...</pre>
+        </div>
+      </div>
+
       <!-- 検証SQL/クイックリファレンス -->
       <div class="bg-gray-800 rounded-xl shadow p-6 text-white">
         <h2 class="text-lg font-bold mb-4">
@@ -1736,6 +1867,10 @@ adminPages.get('/admin/ops', (c) => {
           <div>
             <p class="text-gray-400 mb-1">-- ドメインブロック確認</p>
             <code class="text-green-400">SELECT domain_key, blocked_until, failure_count FROM domain_policy WHERE blocked_until > datetime('now') OR failure_count >= 3;</code>
+          </div>
+          <div>
+            <p class="text-gray-400 mb-1">-- Daily Report用: ソース別件数</p>
+            <code class="text-green-400">SELECT source, COUNT(*) FROM subsidy_cache GROUP BY source ORDER BY COUNT(*) DESC;</code>
           </div>
         </div>
       </div>
@@ -1871,6 +2006,128 @@ adminPages.get('/admin/ops', (c) => {
         }
       }
 
+      // ★★★ Daily Data Report 読み込み ★★★
+      window.dailyReportData = null;
+      
+      async function loadDailyReport() {
+        try {
+          const data = await api('/api/admin/ops/daily-report');
+          if (!data.success) {
+            console.error('Daily report API error:', data.error);
+            return;
+          }
+          
+          window.dailyReportData = data.data;
+          const { kpi, diff, exceptions, by_source, new_by_source_24h, text_report } = data.data;
+          
+          // KPI Grid
+          const totalEl = document.getElementById('daily-total');
+          if (totalEl) {
+            const totalOk = kpi.subsidy_cache.total >= 500;
+            totalEl.className = 'border-2 rounded-lg p-3 text-center ' + (totalOk ? 'border-green-500 bg-green-50' : 'border-red-500 bg-red-50');
+            totalEl.querySelector('p.text-2xl').textContent = kpi.subsidy_cache.total;
+            totalEl.querySelector('p.text-2xl').className = 'text-2xl font-bold ' + (totalOk ? 'text-green-700' : 'text-red-700');
+          }
+          
+          const validEl = document.getElementById('daily-valid-rate');
+          if (validEl) {
+            const validOk = kpi.subsidy_cache.valid_rate_pct >= 95;
+            validEl.className = 'border-2 rounded-lg p-3 text-center ' + (validOk ? 'border-green-500 bg-green-50' : 'border-yellow-500 bg-yellow-50');
+            validEl.querySelector('p.text-2xl').textContent = kpi.subsidy_cache.valid_rate_pct + '%';
+            validEl.querySelector('p.text-2xl').className = 'text-2xl font-bold ' + (validOk ? 'text-green-700' : 'text-yellow-700');
+          }
+          
+          const deadlineEl = document.getElementById('daily-deadline');
+          if (deadlineEl) {
+            const deadlineOk = kpi.subsidy_cache.has_deadline_pct >= 95;
+            deadlineEl.className = 'border-2 rounded-lg p-3 text-center ' + (deadlineOk ? 'border-green-500 bg-green-50' : 'border-red-500 bg-red-50');
+            deadlineEl.querySelector('p.text-2xl').textContent = kpi.subsidy_cache.has_deadline_pct + '%';
+            deadlineEl.querySelector('p.text-2xl').className = 'text-2xl font-bold ' + (deadlineOk ? 'text-green-700' : 'text-red-700');
+          }
+          
+          const amountEl = document.getElementById('daily-amount');
+          if (amountEl) {
+            const amountOk = kpi.subsidy_cache.has_amount_pct >= 80;
+            amountEl.className = 'border-2 rounded-lg p-3 text-center ' + (amountOk ? 'border-green-500 bg-green-50' : 'border-yellow-500 bg-yellow-50');
+            amountEl.querySelector('p.text-2xl').textContent = kpi.subsidy_cache.has_amount_pct + '%';
+            amountEl.querySelector('p.text-2xl').className = 'text-2xl font-bold ' + (amountOk ? 'text-green-700' : 'text-yellow-700');
+          }
+          
+          const docsEl = document.getElementById('daily-docs');
+          if (docsEl) {
+            docsEl.querySelector('p.text-2xl').textContent = kpi.documents.total;
+          }
+          
+          const sourcesEl = document.getElementById('daily-sources');
+          if (sourcesEl) {
+            sourcesEl.querySelector('p.text-2xl').textContent = kpi.sources.active;
+          }
+          
+          // 今日の増分
+          document.getElementById('daily-new').textContent = diff.new_today;
+          document.getElementById('daily-updated').textContent = diff.updated_today;
+          document.getElementById('daily-expired').textContent = diff.expired_today;
+          document.getElementById('daily-404').textContent = diff.url_404;
+          
+          // 例外
+          document.getElementById('exc-timeout').textContent = exceptions.timeout;
+          document.getElementById('exc-blocked').textContent = exceptions.blocked;
+          document.getElementById('exc-login').textContent = exceptions.login_required;
+          document.getElementById('exc-404').textContent = exceptions.url_404;
+          
+          // OCRキュー
+          document.getElementById('ocr-queued').textContent = kpi.ocr_queue.queued;
+          document.getElementById('ocr-processing').textContent = kpi.ocr_queue.processing;
+          document.getElementById('ocr-done').textContent = kpi.ocr_queue.done;
+          document.getElementById('ocr-failed').textContent = kpi.ocr_queue.failed;
+          
+          // 抽出結果
+          document.getElementById('extract-ok').textContent = kpi.extraction.ok;
+          document.getElementById('extract-failed').textContent = kpi.extraction.failed;
+          
+          // ソース別件数（24h）
+          const bySourceEl = document.getElementById('daily-by-source');
+          if (new_by_source_24h && new_by_source_24h.length > 0) {
+            bySourceEl.innerHTML = new_by_source_24h.map(s => 
+              '<span class="px-2 py-1 bg-blue-100 text-blue-800 rounded text-xs">' + s.source + ': <strong>' + s.cnt + '</strong></span>'
+            ).join('') + '<span class="text-gray-400 text-xs ml-2">/ 全体: ' + by_source.map(s => s.source + ':' + s.cnt).join(', ') + '</span>';
+          } else {
+            bySourceEl.innerHTML = '<span class="text-gray-400">24h内の新規なし</span>' + 
+              '<span class="text-gray-400 text-xs ml-2">/ 全体: ' + by_source.map(s => s.source + ':' + s.cnt).join(', ') + '</span>';
+          }
+          
+          // テキストレポート
+          document.getElementById('daily-text-report').textContent = text_report;
+          
+        } catch (error) {
+          console.error('Daily report load error:', error);
+        }
+      }
+      
+      // レポートをクリップボードにコピー
+      function copyDailyReport() {
+        const textEl = document.getElementById('daily-text-report');
+        if (!textEl) return;
+        
+        const text = textEl.textContent;
+        navigator.clipboard.writeText(text).then(() => {
+          const btn = document.getElementById('btn-copy-report');
+          if (btn) {
+            const original = btn.innerHTML;
+            btn.innerHTML = '<i class="fas fa-check mr-1"></i>コピーしました';
+            btn.classList.add('bg-green-600');
+            setTimeout(() => {
+              btn.innerHTML = original;
+              btn.classList.remove('bg-green-600');
+            }, 2000);
+          }
+        }).catch(err => {
+          console.error('Copy failed:', err);
+          alert('コピーに失敗しました');
+        });
+      }
+      window.copyDailyReport = copyDailyReport;
+
       // ✅ ボタン用：実行中/完了が見える runAllChecks
       window.runAllChecks = async function() {
         console.log('[OPS] Starting all checks...');
@@ -1967,6 +2224,13 @@ adminPages.get('/admin/ops', (c) => {
         
         // 初回実行（ページロード後に実行）
         setTimeout(function() {
+          // Daily Report を先に読み込む
+          if (typeof loadDailyReport === 'function') {
+            loadDailyReport().catch(function(err) {
+              console.error('[OPS] Daily report load failed:', err);
+            });
+          }
+          
           if (typeof window.runAllChecks === 'function') {
             window.runAllChecks().catch(function(err) {
               console.error('[OPS] Initial check failed:', err);

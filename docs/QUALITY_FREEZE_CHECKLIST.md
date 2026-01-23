@@ -1094,6 +1094,113 @@ CSVテンプレート: `docs/data/subsidy_sources_template.csv`
 
 ---
 
+## U. Daily Data Report 運用ルール（凍結）
+
+### U-1. レポート種類と提出タイミング
+
+| レポート | タイミング | 目的 |
+|----------|------------|------|
+| Daily Report | 毎日 | 増減・健全性・例外の把握 |
+| Weekly Report | 毎週 | 網羅性・品質推移の確認 |
+| Change Report | 変更検知時 | 差分の追従計画 |
+
+### U-2. 例外分類定数（凍結）
+
+| コード | 説明 | 対応 |
+|--------|------|------|
+| `timeout` | リクエストタイムアウト | リトライ設定見直し |
+| `blocked` | WAF/403ブロック | User-Agent/IP対策 |
+| `login_required` | ログイン必須 | 手動対応 or API申請 |
+| `scan_pdf` | スキャンPDFでOCR失敗 | OCR強化 or 手動入力 |
+| `schema_mismatch` | 抽出スキーマ不一致 | スキーマ拡張 or 個別対応 |
+| `encrypted_pdf` | 暗号化PDF | パスワード取得 |
+| `pdf_too_large` | PDFサイズ超過 | 分割処理 |
+| `url_404` | URL変更/リンク切れ | source_registry更新 |
+
+### U-3. API エンドポイント（凍結）
+
+```
+GET /api/admin/ops/daily-report     # Daily Report 生成
+GET /api/admin/ops/source-summary   # source_registry 網羅性
+GET /api/admin/ops/data-health      # KPI健全性（既存）
+POST /api/admin/ops/trigger-sync    # 手動同期トリガー
+```
+
+### U-4. Daily Report フォーマット（凍結）
+
+```
+【Daily Data Report】YYYY-MM-DD
+
+1) KPI
+- subsidy_cache.total: ___（目標: 500→1000）
+- subsidy_cache.valid_rate: ___%
+- has_deadline: ___%（目標: 95%）
+- has_area: ___%（目標: 95%）
+- has_amount: ___%（目標: 80%）
+- broken_links: ___件
+- docs.total: ___
+- ocr_queue: queued ___ / processing ___ / done ___ / failed ___
+- extraction_results: ok ___ / failed ___
+- sources.active: ___
+
+2) 今日の増分
+- 新規補助金: ___
+- 更新（再取得）: ___
+- 終了/受付終了: ___
+- URL変更/404: ___
+
+3) 例外（要対応）
+- timeout: ___
+- blocked: ___
+- login_required: ___
+- url_404: ___
+```
+
+### U-5. 運用ルール（凍結）
+
+**やること**
+1. 毎日1回 `/admin/ops` で Daily Report を確認
+2. 例外が出たら分類に従って対応
+3. source_registry 更新は台帳ファースト（先に登録→収集）
+
+**禁止事項**
+- 台帳なしでスクレイピング対象を増やす
+- 差分検知なしで毎回フルOCR
+- 例外を未分類のまま放置
+
+---
+
+## V. source_registry 更新フロー（凍結）
+
+### V-1. 新規ソース追加手順
+
+1. **調査**: URLアクセス可能性・構造を確認
+2. **台帳登録**: source_registry に INSERT（enabled=0 で開始）
+3. **テスト取得**: 単発でfetch/parse確認
+4. **有効化**: enabled=1 に UPDATE
+5. **監視**: 24h後にDaily Reportで確認
+
+### V-2. 必須フィールド（凍結）
+
+| フィールド | 必須 | 備考 |
+|------------|------|------|
+| registry_id | ✅ | 一意識別子（pref_XX_xxx形式） |
+| scope | ✅ | national/prefecture/secretariat |
+| root_url | ✅ | トップページURL |
+| domain_key | ✅ | ドメイン（ブロック管理用） |
+| crawl_strategy | ✅ | api/scrape |
+| update_freq | ✅ | daily/weekly |
+| enabled | ✅ | 0=無効 / 1=有効 |
+
+### V-3. 変更ログ要件
+
+source_registry を更新したら必ず記録：
+- **追加理由**: なぜこのソースが必要か
+- **取得方法**: API/スクレイプ/手動
+- **変更検知**: どのフィールドで差分を判定するか
+
+---
+
 ## 修正履歴
 
 | 日付 | 修正内容 | 担当 |
@@ -1108,3 +1215,6 @@ CSVテンプレート: `docs/data/subsidy_sources_template.csv`
 | 2026-01-23 | example.com混入検出API追加 | - |
 | 2026-01-23 | データパイプライン凍結仕様追加（セクションR-T） | - |
 | 2026-01-23 | 47都道府県ソースURL雛形追加 | - |
+| 2026-01-23 | Daily Data Report 運用ルール追加（セクションU-V） | - |
+| 2026-01-23 | /api/admin/ops/daily-report API実装 | - |
+| 2026-01-23 | ops画面にDaily Report セクション追加 | - |

@@ -1807,4 +1807,406 @@ adminDashboard.post('/ops/trigger-sync', async (c) => {
   }
 });
 
+// ============================================================
+// Daily Data Report（運用観測用）
+// ============================================================
+
+/**
+ * 例外分類定数（凍結）
+ * timeout: リクエストタイムアウト
+ * blocked: ブロック/WAF/403
+ * login_required: ログイン必須
+ * scan_pdf: スキャンPDFでOCR失敗
+ * schema_mismatch: 抽出スキーマ不一致
+ * encrypted_pdf: 暗号化PDF
+ * pdf_too_large: PDFサイズ超過
+ * url_404: URL変更/リンク切れ
+ */
+const EXCEPTION_TYPES = {
+  TIMEOUT: 'timeout',
+  BLOCKED: 'blocked',
+  LOGIN_REQUIRED: 'login_required',
+  SCAN_PDF: 'scan_pdf',
+  SCHEMA_MISMATCH: 'schema_mismatch',
+  ENCRYPTED_PDF: 'encrypted_pdf',
+  PDF_TOO_LARGE: 'pdf_too_large',
+  URL_404: 'url_404',
+} as const;
+
+/**
+ * GET /api/admin/ops/daily-report
+ * 
+ * Daily Data Report 生成（コピペ用テキスト付き）
+ * 毎日の収集結果を定型レポートで提出
+ */
+adminDashboard.get('/ops/daily-report', async (c) => {
+  const db = c.env.DB;
+  const today = new Date().toISOString().split('T')[0];
+  const yesterday = new Date(Date.now() - 86400000).toISOString().split('T')[0];
+  
+  try {
+    // 1) KPI サマリー
+    const subsidyKpi = await db.prepare(`
+      SELECT
+        COUNT(*) AS total,
+        SUM(CASE WHEN expires_at > datetime('now') THEN 1 ELSE 0 END) AS valid,
+        SUM(CASE WHEN acceptance_end_datetime IS NOT NULL THEN 1 ELSE 0 END) AS has_deadline,
+        SUM(CASE WHEN target_area_search IS NOT NULL AND target_area_search != '' THEN 1 ELSE 0 END) AS has_area,
+        SUM(CASE WHEN subsidy_max_limit IS NOT NULL AND subsidy_max_limit > 0 THEN 1 ELSE 0 END) AS has_amount,
+        SUM(CASE WHEN detail_json LIKE '%example.com%' THEN 1 ELSE 0 END) AS broken_links,
+        MAX(cached_at) AS last_sync
+      FROM subsidy_cache
+    `).first<{
+      total: number;
+      valid: number;
+      has_deadline: number;
+      has_area: number;
+      has_amount: number;
+      broken_links: number;
+      last_sync: string;
+    }>();
+    
+    // ドキュメント統計（テーブルが存在する場合）
+    let docsKpi = { total: 0 };
+    try {
+      const docsResult = await db.prepare(`SELECT COUNT(*) AS total FROM subsidy_documents`).first<{ total: number }>();
+      docsKpi = docsResult || { total: 0 };
+    } catch (e) {
+      // テーブル未作成の場合は0
+    }
+    
+    // OCRキュー統計
+    let ocrKpi = { queued: 0, processing: 0, done: 0, failed: 0 };
+    try {
+      const ocrResult = await db.prepare(`
+        SELECT status, COUNT(*) AS cnt FROM ocr_queue GROUP BY status
+      `).all<{ status: string; cnt: number }>();
+      for (const row of ocrResult.results || []) {
+        if (row.status === 'pending') ocrKpi.queued = row.cnt;
+        else if (row.status === 'processing') ocrKpi.processing = row.cnt;
+        else if (row.status === 'completed') ocrKpi.done = row.cnt;
+        else if (row.status === 'failed') ocrKpi.failed = row.cnt;
+      }
+    } catch (e) {
+      // テーブル未作成
+    }
+    
+    // 抽出結果統計
+    let extractionKpi = { ok: 0, failed: 0, top_errors: [] as string[] };
+    try {
+      const extractionResult = await db.prepare(`
+        SELECT 
+          SUM(CASE WHEN extraction_status = 'completed' THEN 1 ELSE 0 END) AS ok,
+          SUM(CASE WHEN extraction_status = 'failed' THEN 1 ELSE 0 END) AS failed
+        FROM extraction_results
+      `).first<{ ok: number; failed: number }>();
+      extractionKpi.ok = extractionResult?.ok || 0;
+      extractionKpi.failed = extractionResult?.failed || 0;
+    } catch (e) {
+      // テーブル未作成
+    }
+    
+    // ソース統計
+    const sourcesKpi = await db.prepare(`
+      SELECT 
+        SUM(CASE WHEN enabled = 1 THEN 1 ELSE 0 END) AS active,
+        SUM(CASE WHEN enabled = 0 THEN 1 ELSE 0 END) AS disabled
+      FROM source_registry
+    `).first<{ active: number; disabled: number }>() || { active: 0, disabled: 0 };
+    
+    // 2) 今日の増分（差分）
+    const todayDiff = await db.prepare(`
+      SELECT
+        SUM(CASE WHEN DATE(cached_at) = ? THEN 1 ELSE 0 END) AS new_today,
+        SUM(CASE WHEN DATE(cached_at) = ? AND id IN (SELECT id FROM subsidy_cache WHERE DATE(cached_at) < ?) THEN 1 ELSE 0 END) AS updated_today
+      FROM subsidy_cache
+    `).bind(today, today, today).first<{ new_today: number; updated_today: number }>();
+    
+    // 終了した補助金
+    const expiredToday = await db.prepare(`
+      SELECT COUNT(*) AS cnt FROM subsidy_cache 
+      WHERE DATE(acceptance_end_datetime) = ?
+    `).bind(today).first<{ cnt: number }>();
+    
+    // 3) 例外（要対応）- crawl_queue から
+    let exceptions = {
+      url_404: 0,
+      timeout: 0,
+      blocked: 0,
+      login_required: 0,
+      scan_pdf: 0,
+      schema_mismatch: 0,
+      encrypted_pdf: 0,
+      pdf_too_large: 0,
+      top_failures: [] as Array<{ source_id: string; url: string; error: string }>,
+    };
+    
+    try {
+      const failedJobs = await db.prepare(`
+        SELECT 
+          source_registry_id, url, last_error
+        FROM crawl_queue 
+        WHERE status = 'failed'
+        ORDER BY updated_at DESC
+        LIMIT 10
+      `).all<{ source_registry_id: string; url: string; last_error: string }>();
+      
+      exceptions.top_failures = (failedJobs.results || []).map(r => ({
+        source_id: r.source_registry_id || 'unknown',
+        url: r.url,
+        error: r.last_error || 'unknown',
+      }));
+      
+      // エラータイプ別カウント
+      const errorCounts = await db.prepare(`
+        SELECT 
+          CASE 
+            WHEN last_error LIKE '%timeout%' THEN 'timeout'
+            WHEN last_error LIKE '%403%' OR last_error LIKE '%blocked%' THEN 'blocked'
+            WHEN last_error LIKE '%login%' OR last_error LIKE '%401%' THEN 'login_required'
+            WHEN last_error LIKE '%404%' THEN 'url_404'
+            ELSE 'other'
+          END AS error_type,
+          COUNT(*) AS cnt
+        FROM crawl_queue
+        WHERE status = 'failed'
+        GROUP BY error_type
+      `).all<{ error_type: string; cnt: number }>();
+      
+      for (const row of errorCounts.results || []) {
+        if (row.error_type === 'timeout') exceptions.timeout = row.cnt;
+        else if (row.error_type === 'blocked') exceptions.blocked = row.cnt;
+        else if (row.error_type === 'login_required') exceptions.login_required = row.cnt;
+        else if (row.error_type === 'url_404') exceptions.url_404 = row.cnt;
+      }
+    } catch (e) {
+      // テーブル未作成
+    }
+    
+    // ソース別件数
+    const bySource = await db.prepare(`
+      SELECT source, COUNT(*) AS cnt FROM subsidy_cache GROUP BY source ORDER BY cnt DESC
+    `).all<{ source: string; cnt: number }>();
+    
+    // 直近24h新規（ソース別）
+    const newBySource24h = await db.prepare(`
+      SELECT source, COUNT(*) AS cnt 
+      FROM subsidy_cache 
+      WHERE cached_at >= datetime('now', '-24 hours')
+      GROUP BY source ORDER BY cnt DESC
+    `).all<{ source: string; cnt: number }>();
+    
+    // 率の計算
+    const total = subsidyKpi?.total || 0;
+    const validRate = total > 0 ? Math.round(((subsidyKpi?.valid || 0) / total) * 100) : 0;
+    const deadlineRate = total > 0 ? Math.round(((subsidyKpi?.has_deadline || 0) / total) * 100) : 0;
+    const areaRate = total > 0 ? Math.round(((subsidyKpi?.has_area || 0) / total) * 100) : 0;
+    const amountRate = total > 0 ? Math.round(((subsidyKpi?.has_amount || 0) / total) * 100) : 0;
+    
+    // テキストレポート生成（コピペ用）
+    const textReport = `【Daily Data Report】${today}
+
+1) KPI
+- subsidy_cache.total: ${total}（目標: 500→1000）
+- subsidy_cache.valid_rate(expires_at>now): ${validRate}%
+- has_deadline: ${deadlineRate}%
+- has_area: ${areaRate}%
+- has_amount: ${amountRate}%（目標: 80%）
+- broken_links: ${subsidyKpi?.broken_links || 0}件
+- last_sync: ${subsidyKpi?.last_sync || 'N/A'}
+- docs.total(PDF等): ${docsKpi.total}
+- ocr_queue: queued ${ocrKpi.queued} / processing ${ocrKpi.processing} / done ${ocrKpi.done} / failed ${ocrKpi.failed}
+- extraction_results: ok ${extractionKpi.ok} / failed ${extractionKpi.failed}
+- sources.active: ${sourcesKpi.active} / sources.disabled: ${sourcesKpi.disabled}
+
+2) 今日の増分（差分）
+- 新規補助金: ${todayDiff?.new_today || 0}
+- 更新（再取得）: ${todayDiff?.updated_today || 0}
+- 終了/受付終了: ${expiredToday?.cnt || 0}
+- URL変更/404: ${exceptions.url_404}
+
+3) 例外（要対応）
+- 404/リンク切れ: ${exceptions.url_404}件
+- 取得失敗: ${exceptions.timeout + exceptions.blocked + exceptions.login_required}件
+  - timeout: ${exceptions.timeout}
+  - blocked: ${exceptions.blocked}
+  - login_required: ${exceptions.login_required}
+
+4) ソース別件数
+${(bySource.results || []).map(r => `- ${r.source}: ${r.cnt}件`).join('\n')}
+
+5) 直近24h新規（ソース別）
+${(newBySource24h.results || []).map(r => `- ${r.source}: ${r.cnt}件`).join('\n') || '- なし'}
+
+---
+Generated: ${new Date().toISOString()}`;
+    
+    return c.json<ApiResponse<{
+      date: string;
+      kpi: {
+        subsidy_cache: {
+          total: number;
+          valid: number;
+          valid_rate_pct: number;
+          has_deadline_pct: number;
+          has_area_pct: number;
+          has_amount_pct: number;
+          broken_links: number;
+          last_sync: string | null;
+        };
+        documents: { total: number };
+        ocr_queue: typeof ocrKpi;
+        extraction: typeof extractionKpi;
+        sources: typeof sourcesKpi;
+      };
+      diff: {
+        new_today: number;
+        updated_today: number;
+        expired_today: number;
+        url_404: number;
+      };
+      exceptions: typeof exceptions;
+      by_source: Array<{ source: string; cnt: number }>;
+      new_by_source_24h: Array<{ source: string; cnt: number }>;
+      text_report: string;
+      generated_at: string;
+    }>>({
+      success: true,
+      data: {
+        date: today,
+        kpi: {
+          subsidy_cache: {
+            total,
+            valid: subsidyKpi?.valid || 0,
+            valid_rate_pct: validRate,
+            has_deadline_pct: deadlineRate,
+            has_area_pct: areaRate,
+            has_amount_pct: amountRate,
+            broken_links: subsidyKpi?.broken_links || 0,
+            last_sync: subsidyKpi?.last_sync || null,
+          },
+          documents: docsKpi,
+          ocr_queue: ocrKpi,
+          extraction: extractionKpi,
+          sources: sourcesKpi,
+        },
+        diff: {
+          new_today: todayDiff?.new_today || 0,
+          updated_today: todayDiff?.updated_today || 0,
+          expired_today: expiredToday?.cnt || 0,
+          url_404: exceptions.url_404,
+        },
+        exceptions,
+        by_source: bySource.results || [],
+        new_by_source_24h: newBySource24h.results || [],
+        text_report: textReport,
+        generated_at: new Date().toISOString(),
+      },
+    });
+  } catch (error) {
+    console.error('Daily report error:', error);
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: 'DAILY_REPORT_ERROR',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      },
+    }, 500);
+  }
+});
+
+/**
+ * GET /api/admin/ops/source-summary
+ * 
+ * source_registry の網羅性サマリー
+ */
+adminDashboard.get('/ops/source-summary', async (c) => {
+  const db = c.env.DB;
+  
+  try {
+    // スコープ別統計
+    const byScope = await db.prepare(`
+      SELECT 
+        scope,
+        COUNT(*) AS total,
+        SUM(CASE WHEN enabled = 1 THEN 1 ELSE 0 END) AS enabled,
+        SUM(CASE WHEN enabled = 0 THEN 1 ELSE 0 END) AS disabled
+      FROM source_registry
+      GROUP BY scope
+      ORDER BY total DESC
+    `).all<{ scope: string; total: number; enabled: number; disabled: number }>();
+    
+    // 都道府県カバー率
+    const prefectures = await db.prepare(`
+      SELECT DISTINCT geo_id FROM source_registry WHERE scope = 'prefecture' AND geo_id IS NOT NULL
+    `).all<{ geo_id: string }>();
+    const coveredPrefectures = (prefectures.results || []).map(r => r.geo_id);
+    const allPrefectures = Array.from({ length: 47 }, (_, i) => String(i + 1).padStart(2, '0'));
+    const missingPrefectures = allPrefectures.filter(p => !coveredPrefectures.includes(p));
+    
+    // ソース別 subsidy_cache 件数
+    const subsidyBySource = await db.prepare(`
+      SELECT 
+        sr.registry_id,
+        sr.scope,
+        sr.geo_id,
+        sr.notes,
+        sr.enabled,
+        COUNT(sc.id) AS subsidy_count
+      FROM source_registry sr
+      LEFT JOIN subsidy_cache sc ON sc.source = sr.registry_id
+      GROUP BY sr.registry_id
+      ORDER BY subsidy_count DESC
+    `).all<{
+      registry_id: string;
+      scope: string;
+      geo_id: string;
+      notes: string;
+      enabled: number;
+      subsidy_count: number;
+    }>();
+    
+    return c.json<ApiResponse<{
+      by_scope: Array<{ scope: string; total: number; enabled: number; disabled: number }>;
+      prefecture_coverage: {
+        covered: number;
+        total: number;
+        coverage_pct: number;
+        missing: string[];
+      };
+      sources_with_subsidies: Array<{
+        registry_id: string;
+        scope: string;
+        geo_id: string;
+        notes: string;
+        enabled: number;
+        subsidy_count: number;
+      }>;
+      generated_at: string;
+    }>>({
+      success: true,
+      data: {
+        by_scope: byScope.results || [],
+        prefecture_coverage: {
+          covered: coveredPrefectures.length,
+          total: 47,
+          coverage_pct: Math.round((coveredPrefectures.length / 47) * 100),
+          missing: missingPrefectures,
+        },
+        sources_with_subsidies: subsidyBySource.results || [],
+        generated_at: new Date().toISOString(),
+      },
+    });
+  } catch (error) {
+    console.error('Source summary error:', error);
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: 'SOURCE_SUMMARY_ERROR',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      },
+    }, 500);
+  }
+});
+
 export default adminDashboard;
