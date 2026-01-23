@@ -43,10 +43,10 @@ companies.get('/', async (c) => {
       .prepare(`
         SELECT 
           c.*,
-          cm.role as membership_role
+          'owner' as membership_role
         FROM companies c
-        INNER JOIN company_memberships cm ON c.id = cm.company_id
-        WHERE cm.user_id = ?
+        INNER JOIN user_companies uc ON c.id = uc.company_id
+        WHERE uc.user_id = ?
         ORDER BY c.created_at DESC
       `)
       .bind(user.id)
@@ -137,8 +137,8 @@ companies.post('/', async (c) => {
         now
       ),
       db.prepare(`
-        INSERT INTO company_memberships (id, user_id, company_id, role, created_at)
-        VALUES (?, ?, ?, 'owner', ?)
+        INSERT INTO user_companies (id, user_id, company_id, created_at)
+        VALUES (?, ?, ?, ?)
       `).bind(membershipId, user.id, companyId, now),
     ];
     
