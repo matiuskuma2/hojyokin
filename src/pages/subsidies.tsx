@@ -785,8 +785,8 @@ subsidyPages.get('/subsidies', (c) => {
         
         // 検索モードによる並び替え
         if (searchMode === 'match') {
-          // PROCEED > CAUTION > NO の順にソート、同じならスコア順
-          const statusOrder = { 'PROCEED': 0, 'CAUTION': 1, 'NO': 2 };
+          // PROCEED > CAUTION > DO_NOT_PROCEED/NO の順にソート、同じならスコア順
+          const statusOrder = { 'PROCEED': 0, 'CAUTION': 1, 'DO_NOT_PROCEED': 2, 'NO': 2 };
           filtered.sort((a, b) => {
             const orderDiff = statusOrder[a.evaluation.status] - statusOrder[b.evaluation.status];
             if (orderDiff !== 0) return orderDiff;
@@ -801,7 +801,7 @@ subsidyPages.get('/subsidies', (c) => {
         
         const countProceed = results.filter(r => r.evaluation.status === 'PROCEED').length;
         const countCaution = results.filter(r => r.evaluation.status === 'CAUTION').length;
-        const countNo = results.filter(r => r.evaluation.status === 'NO').length;
+        const countNo = results.filter(r => r.evaluation.status === 'NO' || r.evaluation.status === 'DO_NOT_PROCEED').length;
         document.getElementById('count-proceed').textContent = countProceed;
         document.getElementById('count-caution').textContent = countCaution;
         document.getElementById('count-no').textContent = countNo;
@@ -822,7 +822,8 @@ subsidyPages.get('/subsidies', (c) => {
           const statusConfig = {
             'PROCEED': { bg: 'bg-green-100', text: 'text-green-800', border: 'border-green-500', icon: 'fa-check-circle', label: '推奨' },
             'CAUTION': { bg: 'bg-yellow-100', text: 'text-yellow-800', border: 'border-yellow-500', icon: 'fa-exclamation-triangle', label: '注意' },
-            'NO': { bg: 'bg-red-100', text: 'text-red-800', border: 'border-red-500', icon: 'fa-times-circle', label: '非推奨' }
+            'NO': { bg: 'bg-red-100', text: 'text-red-800', border: 'border-red-500', icon: 'fa-times-circle', label: '非推奨' },
+            'DO_NOT_PROCEED': { bg: 'bg-red-100', text: 'text-red-800', border: 'border-red-500', icon: 'fa-times-circle', label: '非推奨' }
           };
           const sc = statusConfig[e.status] || statusConfig['CAUTION'];
           
@@ -899,7 +900,7 @@ subsidyPages.get('/subsidies', (c) => {
                        class="bg-green-600 text-white px-4 py-2 rounded-md hover:bg-green-700 text-sm text-center">
                       <i class="fas fa-arrow-right mr-1"></i>詳細を見る
                     </a>
-                    \${e.status !== 'NO' ? \`
+                    \${e.status !== 'NO' && e.status !== 'DO_NOT_PROCEED' ? \`
                       <a href="/chat?subsidy_id=\${s.id}&company_id=\${document.getElementById('company-select').value}" 
                          class="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700 text-sm text-center">
                         <i class="fas fa-comments mr-1"></i>壁打ち
@@ -1021,7 +1022,7 @@ subsidyPages.get('/subsidies', (c) => {
             }
           }
           return '一部の条件について確認が必要です。';
-        } else if (evaluation.status === 'NO') {
+        } else if (evaluation.status === 'NO' || evaluation.status === 'DO_NOT_PROCEED') {
           if (evaluation.risk_flags && evaluation.risk_flags.length > 0) {
             var flag = toDisplayString(evaluation.risk_flags[0]);
             if (flag) {
@@ -1440,7 +1441,7 @@ subsidyPages.get('/subsidies/:id', (c) => {
           \`;
           
           // CTAセクション表示（推奨/注意の場合）
-          if (e.status !== 'NO' && companyId) {
+          if (e.status !== 'NO' && e.status !== 'DO_NOT_PROCEED' && companyId) {
             document.getElementById('cta-section').classList.remove('hidden');
           }
           
@@ -1514,7 +1515,7 @@ subsidyPages.get('/subsidies/:id', (c) => {
           <a href="/subsidies" class="px-4 py-2 border rounded-md text-gray-700 hover:bg-gray-50 text-sm text-center">
             <i class="fas fa-arrow-left mr-1"></i>一覧に戻る
           </a>
-          \${companyId && e && e.status !== 'NO' ? \`
+          \${companyId && e && e.status !== 'NO' && e.status !== 'DO_NOT_PROCEED' ? \`
             <button onclick="startChat()" class="px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 text-sm">
               <i class="fas fa-comments mr-1"></i>壁打ちを開始
             </button>
