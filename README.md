@@ -3,29 +3,42 @@
 ## 📋 プロジェクト概要
 
 - **Name**: subsidy-matching (hojyokin)
-- **Version**: 1.6.0
+- **Version**: 1.7.0
 - **Goal**: 企業情報を登録するだけで、最適な補助金・助成金を自動でマッチング＆申請書ドラフト作成
 
-### 🎉 最新アップデート (v1.6.0) - Phase B完了: 実データによる補助金検索
+### 🎉 最新アップデート (v1.7.0) - Phase B-1 完全完了: JGrants API直接連携
 
-**Phase B: 実データ収集パイプライン稼働開始**
+**Phase B-1: 実データによる補助金検索システム完成**
 
-| 項目 | 状態 |
-|------|------|
-| subsidy_cache | ✅ 8件（実データ） |
-| JGRANTS_MODE | `cached-only`（モック依存解除） |
-| 検索API | ✅ 実データから検索・評価 |
-| 壁打ちAPI | ✅ 実データでprecheck動作 |
+| 項目 | 状態 | 詳細 |
+|------|------|------|
+| subsidy_cache | ✅ 67件（JGrants 59件 + 手動 8件） | JGrants APIから直接取得 |
+| JGRANTS_MODE | `cached-only` | モック依存完全解除 |
+| 検索API | ✅ 実データから検索・評価 | source: cache |
+| 壁打ちAPI | ✅ 実データでprecheck動作 | REAL-* ID対応 |
+| JGrants同期API | ✅ `/api/admin/sync-jgrants` | super_admin専用 |
+| キャッシュ統計API | ✅ `/api/admin/subsidy-cache/stats` | 管理者用 |
 
-**登録済み補助金（REAL-001〜008）:**
-1. IT導入補助金2025（通常枠A・B類型）
-2. 令和6年度補正 ものづくり補助金
-3. 小規模事業者持続化補助金（一般型）第17回
-4. 事業再構築補助金（第13回公募）
-5. 業務改善助成金
-6. 省エネルギー投資促進支援事業費補助金
-7. 東京都中小企業デジタル化支援助成事業
-8. 大阪府DX推進支援補助金
+**JGrants同期の使い方（super_admin権限必要）:**
+```bash
+# ログイン
+TOKEN=$(curl -s "https://hojyokin.pages.dev/api/auth/login" \
+  -H "Content-Type: application/json" \
+  -d '{"email":"your-admin@example.com","password":"your-password"}' | jq -r '.data.token')
+
+# JGrantsからデータ同期（キーワード・件数指定可能）
+curl -s "https://hojyokin.pages.dev/api/admin/sync-jgrants" \
+  -X POST \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $TOKEN" \
+  -d '{"keyword":"事業","limit":100,"acceptance":1}'
+```
+
+**修正内容:**
+1. **apiCall is not defined エラー修正** - agency/clientsページでDOMContentLoaded待機
+2. **requireCompanyAccess修正** - user_companies テーブルへの正しいクエリ
+3. **JGrants API直接連携** - 公開APIからリアルタイムデータ取得
+4. **subsidy_cache自動upsert** - 24時間キャッシュ
 
 ### 過去アップデート
 
@@ -465,9 +478,9 @@ webapp/
 
 | 項目 | 件数 | 備考 |
 |------|------|------|
-| 補助金検索結果 | 7件 | MOCK データ（モード: mock）|
-| subsidy_cache | 0件 | データ未格納（DB） |
-| eligibility_rules | 0件 | ルール未格納（DB） |
+| 補助金検索結果 | **67件** | JGrants実データ（モード: cached-only）|
+| subsidy_cache | **67件** | ✅ JGrants 59件 + 手動 8件 |
+| eligibility_rules | 0件 | ルール未格納（次フェーズ） |
 | crawl_queue (done) | 48件 | クロール完了 |
 | crawl_queue (failed) | 14件 | 失敗（リトライ対象） |
 | source_registry | 47 + 13 | 都道府県 + national |
@@ -482,6 +495,8 @@ Private
 
 ## 🔄 更新履歴
 
+- **2026-01-23 (v1.7.0)**: Phase B-1 完了 - JGrants API直接連携、subsidy_cache 67件投入、apiCall修正、requireCompanyAccess修正
+- **2026-01-23 (v1.6.0)**: Phase B 開始 - 手動実データ8件投入、JGRANTS_MODE cached-only切替
 - **2026-01-23 (v1.5.4)**: 壁打ちチャットAPIでセッション作成時のモックフォールバック追加
 - **2026-01-23 (v1.5.3)**: 壁打ちチャットAPIでモックデータフォールバック取得を追加
 - **2026-01-23 (v1.5.2)**: 管理画面の `api is not defined` 修正、window.api を head で定義

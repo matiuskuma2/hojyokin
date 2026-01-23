@@ -33,6 +33,94 @@ const agencyLayout = (title: string, content: string, activeTab: string = '') =>
     .loading { animation: pulse 1.5s ease-in-out infinite; }
     @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
   </style>
+  <script>
+    // ============================================================
+    // 【重要】window.apiCall を head で最初に定義
+    // content 内のスクリプトより先に実行される
+    // ============================================================
+    (function() {
+      'use strict';
+      
+      var token = localStorage.getItem('token');
+      var userStr = localStorage.getItem('user');
+      var user = null;
+      
+      try {
+        user = userStr ? JSON.parse(userStr) : null;
+      } catch (e) {
+        console.error('ユーザー情報のパースエラー:', e);
+        user = null;
+      }
+      
+      // 認証チェック（遅延実行）
+      if (!token || !user) {
+        window.location.href = '/login';
+        return;
+      }
+      
+      if (user.role !== 'agency') {
+        alert('士業アカウントが必要です');
+        window.location.href = '/dashboard';
+        return;
+      }
+      
+      // グローバルAPI呼び出しヘルパー（head で定義）
+      window.apiCall = async function(endpoint, options) {
+        options = options || {};
+        
+        var headers = {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ' + token
+        };
+        
+        if (options.headers) {
+          for (var key in options.headers) {
+            headers[key] = options.headers[key];
+          }
+        }
+        
+        var fetchOptions = {
+          method: options.method || 'GET',
+          headers: headers
+        };
+        
+        if (options.body) {
+          fetchOptions.body = options.body;
+        }
+        
+        try {
+          var res = await fetch(endpoint, fetchOptions);
+          var data = await res.json();
+          
+          // 認証エラー時は自動ログアウト
+          if (res.status === 401 || (data && data.error && data.error.code === 'UNAUTHORIZED')) {
+            console.warn('認証エラー: 自動ログアウトします');
+            localStorage.removeItem('token');
+            localStorage.removeItem('user');
+            alert('セッションの有効期限が切れました。再度ログインしてください。');
+            window.location.href = '/login';
+            return data;
+          }
+          
+          return data;
+        } catch (err) {
+          console.error('API呼び出しエラー:', err);
+          return { success: false, error: { code: 'NETWORK_ERROR', message: '通信エラーが発生しました' } };
+        }
+      };
+      
+      // ログアウト関数
+      window.logout = function() {
+        localStorage.removeItem('token');
+        localStorage.removeItem('user');
+        window.location.href = '/login';
+      };
+      
+      // ユーザー情報をグローバルに保存
+      window.currentUser = user;
+      window.currentToken = token;
+    })();
+  </script>
 </head>
 <body class="bg-gray-100 min-h-screen">
   <!-- Navigation -->
@@ -79,111 +167,41 @@ const agencyLayout = (title: string, content: string, activeTab: string = '') =>
 
   <script>
     // ============================================================
-    // 共通初期化スクリプト
+    // DOM読み込み後の初期化（apiCallはheadで定義済み）
     // ============================================================
-    (function() {
-      'use strict';
-      
-      var token = localStorage.getItem('token');
-      var userStr = localStorage.getItem('user');
-      var user = null;
-      
-      try {
-        user = userStr ? JSON.parse(userStr) : null;
-      } catch (e) {
-        console.error('ユーザー情報のパースエラー:', e);
-        user = null;
-      }
-      
-      if (!token || !user) {
-        window.location.href = '/login';
-        return;
-      }
-      
-      if (user.role !== 'agency') {
-        alert('士業アカウントが必要です');
-        window.location.href = '/dashboard';
-        return;
-      }
-      
-      var userNameEl = document.getElementById('user-name');
-      if (userNameEl) {
-        userNameEl.textContent = user.name || user.email || '';
-      }
-      
-      // グローバルAPI呼び出しヘルパー
-      window.apiCall = async function(endpoint, options) {
-        options = options || {};
-        
-        var headers = {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer ' + token
-        };
-        
-        if (options.headers) {
-          for (var key in options.headers) {
-            headers[key] = options.headers[key];
-          }
+    document.addEventListener('DOMContentLoaded', function() {
+      // ユーザー名表示
+      var user = window.currentUser;
+      if (user) {
+        var userNameEl = document.getElementById('user-name');
+        if (userNameEl) {
+          userNameEl.textContent = user.name || user.email || '';
         }
-        
-        var fetchOptions = {
-          method: options.method || 'GET',
-          headers: headers
-        };
-        
-        if (options.body) {
-          fetchOptions.body = options.body;
-        }
-        
-        try {
-          var res = await fetch(endpoint, fetchOptions);
-          var data = await res.json();
-          
-          // 認証エラー時は自動ログアウト
-          if (res.status === 401 || (data && data.error && data.error.code === 'UNAUTHORIZED')) {
-            console.warn('認証エラー: 自動ログアウトします');
-            localStorage.removeItem('token');
-            localStorage.removeItem('user');
-            alert('セッションの有効期限が切れました。再度ログインしてください。');
-            window.location.href = '/login';
-            return data;
-          }
-          
-          return data;
-        } catch (err) {
-          console.error('API呼び出しエラー:', err);
-          return { success: false, error: { code: 'NETWORK_ERROR', message: '通信エラーが発生しました' } };
-        }
-      };
+      }
       
       // Agency情報取得
-      window.apiCall('/api/agency/me').then(function(data) {
-        if (data && data.success && data.data && data.data.agency) {
-          var agencyNameEl = document.getElementById('agency-name');
-          if (agencyNameEl) {
-            agencyNameEl.textContent = data.data.agency.name || '';
+      if (window.apiCall) {
+        window.apiCall('/api/agency/me').then(function(data) {
+          if (data && data.success && data.data && data.data.agency) {
+            var agencyNameEl = document.getElementById('agency-name');
+            if (agencyNameEl) {
+              agencyNameEl.textContent = data.data.agency.name || '';
+            }
           }
-        }
-      });
-      
-      // 未処理件数取得
-      window.apiCall('/api/agency/submissions?status=submitted').then(function(data) {
-        if (data && data.success && data.data && data.data.submissions && data.data.submissions.length > 0) {
-          var badge = document.getElementById('pending-badge');
-          if (badge) {
-            badge.textContent = data.data.submissions.length;
-            badge.classList.remove('hidden');
+        });
+        
+        // 未処理件数取得
+        window.apiCall('/api/agency/submissions?status=submitted').then(function(data) {
+          if (data && data.success && data.data && data.data.submissions && data.data.submissions.length > 0) {
+            var badge = document.getElementById('pending-badge');
+            if (badge) {
+              badge.textContent = data.data.submissions.length;
+              badge.classList.remove('hidden');
+            }
           }
-        }
-      });
-      
-      // ログアウト関数
-      window.logout = function() {
-        localStorage.removeItem('token');
-        localStorage.removeItem('user');
-        window.location.href = '/login';
-      };
-    })();
+        });
+      }
+    });
   </script>
 </body>
 </html>
@@ -346,7 +364,16 @@ agencyPages.get('/agency', (c) => {
         }
       }
       
-      loadDashboard();
+      // DOMContentLoaded で apiCall が定義されてから実行
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', loadDashboard);
+      } else {
+        if (typeof window.apiCall === 'function') {
+          loadDashboard();
+        } else {
+          setTimeout(loadDashboard, 100);
+        }
+      }
     </script>
   `;
   
@@ -575,7 +602,18 @@ agencyPages.get('/agency/clients', (c) => {
         showAddClientModal();
       }
       
-      loadClients();
+      // DOMContentLoaded で apiCall が定義されてから実行
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', loadClients);
+      } else {
+        // 既にDOMが読み込まれている場合は即座に実行
+        if (typeof window.apiCall === 'function') {
+          loadClients();
+        } else {
+          // apiCallがまだ定義されていない場合は少し待つ
+          setTimeout(loadClients, 100);
+        }
+      }
     </script>
   `;
   
@@ -700,7 +738,16 @@ agencyPages.get('/agency/links', (c) => {
         }
       }
       
-      loadLinks();
+      // DOMContentLoaded で apiCall が定義されてから実行
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', loadLinks);
+      } else {
+        if (typeof window.apiCall === 'function') {
+          loadLinks();
+        } else {
+          setTimeout(loadLinks, 100);
+        }
+      }
     </script>
   `;
   
@@ -880,7 +927,16 @@ agencyPages.get('/agency/submissions', (c) => {
         }
       }
       
-      loadSubmissions();
+      // DOMContentLoaded で apiCall が定義されてから実行
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', loadSubmissions);
+      } else {
+        if (typeof window.apiCall === 'function') {
+          loadSubmissions();
+        } else {
+          setTimeout(loadSubmissions, 100);
+        }
+      }
     </script>
   `;
   

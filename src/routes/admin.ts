@@ -787,4 +787,230 @@ admin.get('/audit/stats', async (c) => {
   }
 });
 
+/**
+ * JGrants データ同期（super_admin専用）
+ * 
+ * POST /api/admin/sync-jgrants
+ * 
+ * JGrants公開APIから補助金データを取得し、subsidy_cache に upsert
+ */
+admin.post('/sync-jgrants', async (c) => {
+  const db = c.env.DB;
+  const currentUser = getCurrentUser(c);
+  const ip = c.req.header('cf-connecting-ip') || c.req.header('x-forwarded-for') || null;
+  const userAgent = c.req.header('user-agent') || null;
+  const requestId = c.req.header('x-request-id') || null;
+  
+  // super_admin のみ実行可能
+  if (currentUser.role !== 'super_admin') {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: 'FORBIDDEN',
+        message: 'Super admin access required',
+      },
+    }, 403);
+  }
+  
+  try {
+    const body = await c.req.json().catch(() => ({}));
+    const keyword = body.keyword || '事業'; // デフォルトは「事業」
+    const limit = Math.min(body.limit || 100, 500); // 最大500件
+    const acceptance = body.acceptance ?? 1; // デフォルトは受付中のみ
+    
+    // JGrants API 呼び出し
+    const JGRANTS_API_URL = 'https://api.jgrants-portal.go.jp/exp/v1/public/subsidies';
+    const params = new URLSearchParams({
+      keyword,
+      sort: 'acceptance_end_datetime',
+      order: 'DESC',
+      acceptance: acceptance.toString(),
+      limit: limit.toString(),
+    });
+    
+    console.log(`JGrants API call: ${JGRANTS_API_URL}?${params.toString()}`);
+    
+    const response = await fetch(`${JGRANTS_API_URL}?${params.toString()}`, {
+      method: 'GET',
+      headers: {
+        'Accept': 'application/json',
+      },
+    });
+    
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('JGrants API error:', response.status, errorText);
+      return c.json<ApiResponse<null>>({
+        success: false,
+        error: {
+          code: 'JGRANTS_API_ERROR',
+          message: `JGrants API returned ${response.status}`,
+        },
+      }, 502);
+    }
+    
+    const data = await response.json() as any;
+    const subsidies = data.result || data.subsidies || data.data || [];
+    
+    if (subsidies.length === 0) {
+      return c.json<ApiResponse<{ message: string; count: number }>>({
+        success: true,
+        data: {
+          message: 'No subsidies found from JGrants API',
+          count: 0,
+        },
+      });
+    }
+    
+    // キャッシュ有効期限（24時間後）
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+    
+    // バッチでsubsidy_cacheにupsert
+    const statements = subsidies.map((s: any) => 
+      db.prepare(`
+        INSERT OR REPLACE INTO subsidy_cache 
+        (id, source, title, subsidy_max_limit, subsidy_rate,
+         target_area_search, target_industry, target_number_of_employees,
+         acceptance_start_datetime, acceptance_end_datetime, request_reception_display_flag,
+         cached_at, expires_at)
+        VALUES (?, 'jgrants', ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?)
+      `).bind(
+        s.id,
+        s.title || s.name || '',
+        s.subsidy_max_limit || null,
+        s.subsidy_rate || null,
+        s.target_area_search || null,
+        s.target_industry || null,
+        s.target_number_of_employees || null,
+        s.acceptance_start_datetime || null,
+        s.acceptance_end_datetime || null,
+        s.request_reception_display_flag ?? 1,
+        expiresAt
+      )
+    );
+    
+    // D1バッチ実行（100件ごとに分割）
+    let totalInserted = 0;
+    for (let i = 0; i < statements.length; i += 100) {
+      const batch = statements.slice(i, i + 100);
+      await db.batch(batch);
+      totalInserted += batch.length;
+    }
+    
+    // 監査ログ
+    await writeAuditLog(db, {
+      actorUserId: currentUser.id,
+      action: 'JGRANTS_SYNC',
+      actionCategory: 'system',
+      severity: 'info',
+      detailsJson: { 
+        keyword, 
+        limit, 
+        acceptance,
+        fetched_count: subsidies.length,
+        inserted_count: totalInserted,
+      },
+      ip,
+      userAgent,
+      requestId,
+    });
+    
+    return c.json<ApiResponse<{ 
+      message: string; 
+      fetched: number; 
+      inserted: number;
+      sample: { id: string; title: string }[];
+    }>>({
+      success: true,
+      data: {
+        message: `JGrants data synced successfully`,
+        fetched: subsidies.length,
+        inserted: totalInserted,
+        sample: subsidies.slice(0, 5).map((s: any) => ({
+          id: s.id,
+          title: s.title || s.name || 'No title',
+        })),
+      },
+    });
+  } catch (error) {
+    console.error('JGrants sync error:', error);
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: 'INTERNAL_ERROR',
+        message: `Failed to sync JGrants data: ${error}`,
+      },
+    }, 500);
+  }
+});
+
+/**
+ * subsidy_cache 統計取得
+ * 
+ * GET /api/admin/subsidy-cache/stats
+ */
+admin.get('/subsidy-cache/stats', async (c) => {
+  const db = c.env.DB;
+  
+  try {
+    // 総数と有効データ数
+    const stats = await db.prepare(`
+      SELECT 
+        COUNT(*) as total,
+        SUM(CASE WHEN expires_at > datetime('now') THEN 1 ELSE 0 END) as valid,
+        SUM(CASE WHEN source = 'jgrants' THEN 1 ELSE 0 END) as jgrants_count,
+        SUM(CASE WHEN source = 'crawl' THEN 1 ELSE 0 END) as crawl_count,
+        SUM(CASE WHEN request_reception_display_flag = 1 THEN 1 ELSE 0 END) as accepting,
+        MIN(cached_at) as oldest_cache,
+        MAX(cached_at) as newest_cache
+      FROM subsidy_cache
+    `).first();
+    
+    // ソース別統計
+    const bySource = await db.prepare(`
+      SELECT 
+        source, 
+        COUNT(*) as count
+      FROM subsidy_cache
+      WHERE expires_at > datetime('now')
+      GROUP BY source
+    `).all();
+    
+    // 地域別統計（上位10）
+    const byArea = await db.prepare(`
+      SELECT 
+        target_area_search, 
+        COUNT(*) as count
+      FROM subsidy_cache
+      WHERE expires_at > datetime('now')
+        AND target_area_search IS NOT NULL
+      GROUP BY target_area_search
+      ORDER BY count DESC
+      LIMIT 10
+    `).all();
+    
+    return c.json<ApiResponse<{
+      stats: typeof stats;
+      by_source: unknown[];
+      by_area: unknown[];
+    }>>({
+      success: true,
+      data: {
+        stats,
+        by_source: bySource.results || [],
+        by_area: byArea.results || [],
+      },
+    });
+  } catch (error) {
+    console.error('Get cache stats error:', error);
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: 'INTERNAL_ERROR',
+        message: 'Failed to get cache stats',
+      },
+    }, 500);
+  }
+});
+
 export default admin;

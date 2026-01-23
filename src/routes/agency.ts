@@ -251,7 +251,7 @@ agencyRoutes.get('/clients', async (c) => {
       ac.*,
       c.name as company_name,
       c.prefecture,
-      c.industry,
+      c.industry_major as industry,
       c.employee_count,
       cp.completeness_score,
       (SELECT COUNT(*) FROM application_drafts ad WHERE ad.company_id = ac.company_id) as draft_count,
@@ -328,10 +328,21 @@ agencyRoutes.post('/clients', async (c) => {
   
   // 会社を作成
   const companyId = generateId();
+  // ⚠️ companiesテーブルには user_id カラムはない
+  // 必須カラム: name, prefecture, industry_major, employee_count, employee_band
   await db.prepare(`
-    INSERT INTO companies (id, user_id, name, prefecture, industry, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).bind(companyId, user.id, companyName, prefecture || null, industry || null, now, now).run();
+    INSERT INTO companies (id, name, prefecture, industry_major, employee_count, employee_band, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).bind(
+    companyId, 
+    companyName, 
+    prefecture || '13', // デフォルト: 東京都
+    industry || '情報通信業', 
+    0, // デフォルト従業員数
+    '1-5', // デフォルト従業員帯
+    now, 
+    now
+  ).run();
   
   // company_profileも作成
   await db.prepare(`

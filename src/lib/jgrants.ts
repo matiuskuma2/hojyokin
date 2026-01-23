@@ -52,22 +52,36 @@ export class JGrantsClient {
 
   /**
    * 補助金検索
+   * 
+   * 公式API必須パラメータ:
+   * - keyword (2〜255文字) ※空の場合はダミー値を使用
+   * - sort ('created_date' | 'acceptance_start_datetime' | 'acceptance_end_datetime')
+   * - order ('ASC' | 'DESC')
+   * - acceptance (0: 全て | 1: 受付中のみ)
    */
   async search(params: JGrantsSearchParams = {}): Promise<JGrantsSearchResponse> {
     const searchParams = new URLSearchParams();
     
-    if (params.keyword) {
-      searchParams.set('keyword', params.keyword);
-    }
-    if (params.acceptance !== undefined) {
-      searchParams.set('acceptance', params.acceptance.toString());
-    }
-    if (params.sort) {
-      searchParams.set('sort', params.sort);
-    }
-    if (params.order) {
-      searchParams.set('order', params.order);
-    }
+    // ⚠️ 必須パラメータ: keyword (2文字以上)
+    // 空の場合は「補助金」をデフォルトとして使用
+    searchParams.set('keyword', params.keyword && params.keyword.length >= 2 ? params.keyword : '補助金');
+    
+    // ⚠️ 必須パラメータ: sort
+    // 公式ドキュメント: 'created_date' | 'acceptance_start_datetime' | 'acceptance_end_datetime'
+    const sortMapping: Record<string, string> = {
+      'acceptance_end_datetime': 'acceptance_end_datetime',
+      'acceptance_start_datetime': 'acceptance_start_datetime',
+      'created_at': 'created_date', // 内部名から公式API名へ変換
+    };
+    searchParams.set('sort', sortMapping[params.sort || 'acceptance_end_datetime'] || 'acceptance_end_datetime');
+    
+    // ⚠️ 必須パラメータ: order
+    searchParams.set('order', params.order || 'DESC');
+    
+    // ⚠️ 必須パラメータ: acceptance
+    searchParams.set('acceptance', (params.acceptance ?? 1).toString());
+    
+    // オプションパラメータ
     if (params.limit) {
       searchParams.set('limit', params.limit.toString());
     }
@@ -124,9 +138,13 @@ export class JGrantsClient {
 
   /**
    * 補助金詳細取得
+   * 
+   * 公式API: GET /exp/v1/public/subsidies/id/{id}
+   * ※ 公式ドキュメント通り /subsidies/id/{id} 形式を使用
    */
   async getDetail(id: string): Promise<JGrantsDetailResponse> {
-    const url = `${this.baseUrl}${DETAIL_ENDPOINT}/${id}`;
+    // 公式ドキュメント: /subsidies/id/{id} 形式
+    const url = `${this.baseUrl}${DETAIL_ENDPOINT}/id/${id}`;
     
     try {
       const controller = new AbortController();

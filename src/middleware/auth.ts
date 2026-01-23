@@ -163,9 +163,10 @@ export function requireCompanyAccess(): MiddlewareHandler<{ Bindings: Env; Varia
     }
     
     // D1でメンバーシップを確認
+    // 注: テーブル名は user_companies (company_memberships ではない)
     const db = c.env.DB;
     const membership = await db
-      .prepare('SELECT id, role FROM company_memberships WHERE user_id = ? AND company_id = ?')
+      .prepare('SELECT user_id, company_id, role FROM user_companies WHERE user_id = ? AND company_id = ?')
       .bind(user.id, companyId)
       .first();
     
