@@ -302,8 +302,9 @@ subsidyPages.get('/subsidies', (c) => {
             <label class="block text-sm font-medium text-gray-700 mb-1">表示件数</label>
             <select id="limit" class="w-full px-3 py-2 border rounded-md text-sm">
               <option value="20">20件</option>
-              <option value="50">50件</option>
+              <option value="50" selected>50件</option>
               <option value="100">100件</option>
+              <option value="all">全件（最大100件）</option>
             </select>
           </div>
         </div>
@@ -382,6 +383,7 @@ subsidyPages.get('/subsidies', (c) => {
       let searchMode = 'match'; // 'match' または 'all'
       
       // 検索モード切替
+      // ⚠️ 重要: 「全件表示」モードはソート順を変更するだけでなく、表示件数も100件に自動設定
       window.setSearchMode = function(mode) {
         searchMode = mode;
         
@@ -391,15 +393,21 @@ subsidyPages.get('/subsidies', (c) => {
         
         // 説明テキストを更新
         const desc = document.getElementById('mode-description');
+        const limitEl = document.getElementById('limit');
+        
         if (mode === 'match') {
           desc.innerHTML = '<i class="fas fa-info-circle mr-1"></i>条件に合う補助金を優先表示し、合わないものは下部に表示します';
         } else {
-          desc.innerHTML = '<i class="fas fa-info-circle mr-1"></i>条件に関係なく全件を表示します（学習・比較用）';
+          desc.innerHTML = '<i class="fas fa-info-circle mr-1"></i>条件に関係なく全件を表示します（最大100件）';
+          // 「全件表示」モード時は表示件数を自動的に最大（100件）に設定
+          if (limitEl && limitEl.value !== 'all' && parseInt(limitEl.value) < 100) {
+            limitEl.value = 'all';
+          }
         }
         
-        // 結果があれば再描画
+        // 結果があれば再検索（件数が変わった可能性があるため）
         if (currentResults.length > 0) {
-          renderResults(currentResults, null);
+          searchSubsidies(1);
         }
       }
       
@@ -732,6 +740,7 @@ subsidyPages.get('/subsidies', (c) => {
       }
       
       // 補助金検索
+      // ⚠️ limit: バックエンドの最大値は100。'all'を選択した場合は100を使用
       window.searchSubsidies = async function(page = 1) {
         var companySelect = document.getElementById('company-select');
         var companyId = companySelect ? companySelect.value : '';
@@ -742,7 +751,11 @@ subsidyPages.get('/subsidies', (c) => {
         
         currentPage = page;
         var limitEl = document.getElementById('limit');
-        var limit = limitEl ? parseInt(limitEl.value) || 20 : 20;
+        var limitValue = limitEl ? limitEl.value : '50';
+        // 'all' または無効な値の場合は100（バックエンド最大値）を使用
+        var limit = (limitValue === 'all' || isNaN(parseInt(limitValue))) ? 100 : Math.min(parseInt(limitValue), 100);
+        // limit が 0 以下の場合は 50 をデフォルトとして使用
+        if (limit <= 0) limit = 50;
         var offset = (page - 1) * limit;
         
         var keywordEl = document.getElementById('keyword');
@@ -781,13 +794,33 @@ subsidyPages.get('/subsidies', (c) => {
         }
       }
       
+      // HTMLエスケープ関数（XSS対策）
+      function escapeHtml(str) {
+        if (str === null || str === undefined) return '';
+        return String(str)
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&#039;');
+      }
+      
       // 結果描画（Sprint 2 改善）
+      // ⚠️ セキュリティ: ユーザー入力・API応答はescapeHtml()でエスケープすること
       function renderResults(results, meta) {
+        // null/undefined チェック
+        if (!Array.isArray(results)) {
+          console.error('[補助金検索] renderResults: results is not an array', results);
+          document.getElementById('subsidies-list').innerHTML = 
+            '<div class="bg-red-50 rounded-lg p-4 text-red-600">データ形式が不正です。再度検索してください。</div>';
+          return;
+        }
+        
         const statusFilter = document.getElementById('status-filter').value;
         let filtered = results;
         
         if (statusFilter) {
-          filtered = results.filter(r => r.evaluation.status === statusFilter);
+          filtered = results.filter(r => r && r.evaluation && r.evaluation.status === statusFilter);
         }
         
         // 検索モードによる並び替え
@@ -823,6 +856,12 @@ subsidyPages.get('/subsidies', (c) => {
         }
         
         const html = filtered.map(item => {
+          // ⚠️ null/undefined安全: item/subsidy/evaluationがnullの場合は空を返す
+          if (!item || !item.subsidy || !item.evaluation) {
+            console.warn('[補助金検索] Invalid item in results:', item);
+            return '';
+          }
+          
           const s = item.subsidy;
           const e = item.evaluation;
           
@@ -833,6 +872,9 @@ subsidyPages.get('/subsidies', (c) => {
             'DO_NOT_PROCEED': { bg: 'bg-red-100', text: 'text-red-800', border: 'border-red-500', icon: 'fa-times-circle', label: '非推奨' }
           };
           const sc = statusConfig[e.status] || statusConfig['CAUTION'];
+          
+          // ⚠️ risk_flagsがnull/undefinedの場合は空配列として扱う
+          const riskFlagsCount = Array.isArray(e.risk_flags) ? e.risk_flags.length : 0;
           
           // 締切までの日数
           var endDate = s.acceptance_end_datetime ? new Date(s.acceptance_end_datetime) : null;
@@ -849,6 +891,11 @@ subsidyPages.get('/subsidies', (c) => {
           // Sprint 2: なぜ出てきたかの説明
           const whyMatched = generateWhyMatched(e);
           
+          // ⚠️ XSS対策: ユーザー入力・API応答をエスケープ
+          const safeTitle = escapeHtml(s.title || s.name || '補助金名未設定');
+          const safeOrg = escapeHtml(s.subsidy_executing_organization || '事務局情報なし');
+          const safeWhyMatched = escapeHtml(whyMatched);
+          
           return \`
             <div class="card-hover bg-white rounded-lg shadow border-l-4 \${sc.border}">
               <div class="p-5">
@@ -859,33 +906,33 @@ subsidyPages.get('/subsidies', (c) => {
                         <i class="fas \${sc.icon} mr-1"></i>\${sc.label}
                       </span>
                       <span class="px-2 py-1 bg-blue-100 text-blue-800 rounded text-xs">
-                        スコア: \${e.score}%
+                        スコア: \${e.score || 0}%
                       </span>
-                      \${e.risk_flags.length > 0 ? \`
+                      \${riskFlagsCount > 0 ? \`
                         <span class="px-2 py-1 bg-orange-100 text-orange-800 rounded text-xs">
-                          <i class="fas fa-flag mr-1"></i>リスク: \${e.risk_flags.length}件
+                          <i class="fas fa-flag mr-1"></i>リスク: \${riskFlagsCount}件
                         </span>
                       \` : ''}
                     </div>
                     
                     <h3 class="text-lg font-semibold text-gray-800 mb-2">
-                      <a href="/subsidies/\${s.id}?company_id=\${document.getElementById('company-select').value}" 
+                      <a href="/subsidies/\${encodeURIComponent(s.id)}?company_id=\${encodeURIComponent(document.getElementById('company-select').value)}" 
                          class="hover:text-green-600 hover:underline">
-                        \${s.title || s.name || '補助金名未設定'}
+                        \${safeTitle}
                       </a>
                     </h3>
                     
                     <!-- Sprint 2: なぜ出てきたかの説明 -->
-                    \${whyMatched ? \`
+                    \${safeWhyMatched ? \`
                       <div class="mb-3 px-3 py-2 bg-gray-50 rounded-md text-sm text-gray-700">
-                        <i class="fas fa-lightbulb text-yellow-500 mr-1"></i>\${whyMatched}
+                        <i class="fas fa-lightbulb text-yellow-500 mr-1"></i>\${safeWhyMatched}
                       </div>
                     \` : ''}
                     
                     <div class="flex flex-wrap gap-4 text-sm mb-3">
                       <div class="flex items-center text-gray-600">
                         <i class="fas fa-building mr-1"></i>
-                        \${s.subsidy_executing_organization || '事務局情報なし'}
+                        \${safeOrg}
                       </div>
                       <div class="flex items-center \${urgencyClass}">
                         <i class="fas fa-calendar-alt mr-1"></i>
@@ -903,12 +950,12 @@ subsidyPages.get('/subsidies', (c) => {
                   </div>
                   
                   <div class="ml-4 flex flex-col space-y-2">
-                    <a href="/subsidies/\${s.id}?company_id=\${document.getElementById('company-select').value}" 
+                    <a href="/subsidies/\${encodeURIComponent(s.id)}?company_id=\${encodeURIComponent(document.getElementById('company-select').value)}" 
                        class="bg-green-600 text-white px-4 py-2 rounded-md hover:bg-green-700 text-sm text-center">
                       <i class="fas fa-arrow-right mr-1"></i>詳細を見る
                     </a>
                     \${e.status !== 'NO' && e.status !== 'DO_NOT_PROCEED' ? \`
-                      <a href="/chat?subsidy_id=\${s.id}&company_id=\${document.getElementById('company-select').value}" 
+                      <a href="/chat?subsidy_id=\${encodeURIComponent(s.id)}&company_id=\${encodeURIComponent(document.getElementById('company-select').value)}" 
                          class="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700 text-sm text-center">
                         <i class="fas fa-comments mr-1"></i>壁打ち
                       </a>
@@ -923,8 +970,12 @@ subsidyPages.get('/subsidies', (c) => {
         document.getElementById('subsidies-list').innerHTML = html;
         
         // ページネーション
-        if (meta && meta.total > parseInt(document.getElementById('limit').value)) {
-          const totalPages = Math.ceil(meta.total / parseInt(document.getElementById('limit').value));
+        // ⚠️ limit値の取得: 'all'の場合は100として計算
+        const limitSelectValue = document.getElementById('limit').value;
+        const displayLimit = (limitSelectValue === 'all' || isNaN(parseInt(limitSelectValue))) ? 100 : parseInt(limitSelectValue);
+        
+        if (meta && meta.total > displayLimit) {
+          const totalPages = Math.ceil(meta.total / displayLimit);
           let pagHtml = '';
           
           if (currentPage > 1) {
@@ -1429,18 +1480,39 @@ subsidyPages.get('/subsidies/:id', (c) => {
         }
       }
       
+      // HTMLエスケープ関数（詳細ページ用）
+      function escapeHtmlDetail(str) {
+        if (str === null || str === undefined) return '';
+        return String(str)
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&#039;');
+      }
+      
       // 詳細描画
+      // ⚠️ XSS対策: API応答は必ずescapeHtmlDetail()でエスケープすること
       function renderDetail(data) {
+        // ⚠️ null/undefined チェック
+        if (!data || !data.subsidy) {
+          console.error('[補助金詳細] Invalid data:', data);
+          document.getElementById('loading-detail').innerHTML = 
+            '<div class="text-red-600"><i class="fas fa-exclamation-circle mr-2"></i>データ形式が不正です。</div>';
+          return;
+        }
+        
         const s = data.subsidy;
         const e = data.evaluation;
         
         document.getElementById('loading-detail').classList.add('hidden');
         document.getElementById('subsidy-detail').classList.remove('hidden');
         
-        // タイトル
+        // タイトル（textContentを使用するためエスケープ不要）
         document.getElementById('breadcrumb-title').textContent = s.title || s.name || '補助金詳細';
         document.getElementById('subsidy-title').textContent = s.title || s.name || '補助金名未設定';
-        document.getElementById('subsidy-org').innerHTML = '<i class="fas fa-building mr-1"></i>' + (s.subsidy_executing_organization || '事務局情報なし');
+        // ⚠️ XSS対策: innerHTMLを使用する場合はエスケープ
+        document.getElementById('subsidy-org').innerHTML = '<i class="fas fa-building mr-1"></i>' + escapeHtmlDetail(s.subsidy_executing_organization || '事務局情報なし');
         
         // ステータスバッジ
         if (e) {
@@ -1451,16 +1523,19 @@ subsidyPages.get('/subsidies/:id', (c) => {
           };
           const sc = statusConfig[e.status] || statusConfig['CAUTION'];
           
+          // ⚠️ risk_flags の null/undefined チェック
+          const riskFlagsCount = Array.isArray(e.risk_flags) ? e.risk_flags.length : 0;
+          
           document.getElementById('status-badges').innerHTML = \`
             <span class="px-3 py-1 \${sc.bg} \${sc.text} rounded-full text-sm font-medium">
               <i class="fas \${sc.icon} mr-1"></i>\${sc.label}
             </span>
             <span class="px-3 py-1 bg-blue-100 text-blue-800 rounded-full text-sm font-medium">
-              スコア: \${e.score}%
+              スコア: \${e.score || 0}%
             </span>
-            \${e.risk_flags.length > 0 ? \`
+            \${riskFlagsCount > 0 ? \`
               <span class="px-3 py-1 bg-orange-100 text-orange-800 rounded-full text-sm">
-                <i class="fas fa-flag mr-1"></i>リスク: \${e.risk_flags.length}件
+                <i class="fas fa-flag mr-1"></i>リスク: \${riskFlagsCount}件
               </span>
             \` : ''}
           \`;
@@ -1470,36 +1545,44 @@ subsidyPages.get('/subsidies/:id', (c) => {
             document.getElementById('cta-section').classList.remove('hidden');
           }
           
-          // オブジェクトを文字列に変換するヘルパー関数
+          // オブジェクトを文字列に変換するヘルパー関数（XSS対策付き）
           function toDisplayText(item) {
-            if (typeof item === 'string') return item;
-            if (item && typeof item === 'object') {
+            let text = '';
+            if (typeof item === 'string') {
+              text = item;
+            } else if (item && typeof item === 'object') {
               // オブジェクトの場合、適切なプロパティを探す
-              return item.reason || item.text || item.message || item.description || item.name || item.label || 
+              text = item.reason || item.text || item.message || item.description || item.name || item.label || 
                      (item.field ? \`\${item.field}: \${item.value || item.condition || ''}\` : '') ||
                      (typeof item.toString === 'function' && item.toString() !== '[object Object]' ? item.toString() : '');
+            } else {
+              text = String(item || '');
             }
-            return String(item || '');
+            // ⚠️ XSS対策: エスケープして返す
+            return escapeHtmlDetail(text);
           }
           
-          // マッチ理由をフィルタリングして有効なものだけ表示
+          // マッチ理由をフィルタリングして有効なものだけ表示（XSS対策済み）
           const validMatchReasons = (e.match_reasons || [])
             .map(r => toDisplayText(r))
             .filter(r => r && r.trim() && r !== '[object Object]');
           
-          // リスクフラグをフィルタリングして有効なものだけ表示
+          // リスクフラグをフィルタリングして有効なものだけ表示（XSS対策済み）
           const validRiskFlags = (e.risk_flags || [])
             .map(r => toDisplayText(r))
             .filter(r => r && r.trim() && r !== '[object Object]');
+          
+          // ⚠️ XSS対策: explanation をエスケープ
+          const safeExplanation = escapeHtmlDetail(e.explanation || '説明なし');
           
           // マッチング結果タブの内容
           document.getElementById('evaluation-content').innerHTML = \`
             <div class="space-y-4">
               <div class="p-4 \${sc.bg} rounded-lg">
                 <div class="font-semibold \${sc.text} mb-2">
-                  <i class="fas \${sc.icon} mr-1"></i>判定: \${sc.label} (スコア: \${e.score}%)
+                  <i class="fas \${sc.icon} mr-1"></i>判定: \${sc.label} (スコア: \${e.score || 0}%)
                 </div>
-                <p class="text-gray-700">\${e.explanation || '説明なし'}</p>
+                <p class="text-gray-700">\${safeExplanation}</p>
               </div>
               
               \${validMatchReasons.length > 0 ? \`
@@ -1544,19 +1627,28 @@ subsidyPages.get('/subsidies/:id', (c) => {
         document.getElementById('target-content').textContent = s.target || '対象事業情報なし';
         
         // 添付ファイル
+        // ⚠️ XSS対策: ファイル名とURLをエスケープ
         const attachments = data.attachments || [];
         if (attachments.length > 0) {
-          document.getElementById('attachments-list').innerHTML = attachments.map(a => \`
-            <div class="flex items-center justify-between p-3 bg-gray-50 rounded-md">
-              <div class="flex items-center">
-                <i class="fas fa-file-pdf text-red-500 mr-2"></i>
-                <span class="text-sm">\${a.name}</span>
+          document.getElementById('attachments-list').innerHTML = attachments.map(a => {
+            const safeName = escapeHtmlDetail(a.name || '不明なファイル');
+            // URLは特殊文字のみエスケープ（javascript: スキームを防ぐ）
+            const safeUrl = a.url && a.url.match(/^https?:\\/\\//i) 
+              ? encodeURI(a.url) 
+              : '#';
+            
+            return \`
+              <div class="flex items-center justify-between p-3 bg-gray-50 rounded-md">
+                <div class="flex items-center">
+                  <i class="fas fa-file-pdf text-red-500 mr-2"></i>
+                  <span class="text-sm">\${safeName}</span>
+                </div>
+                <a href="\${safeUrl}" target="_blank" rel="noopener noreferrer" class="text-blue-600 hover:underline text-sm">
+                  <i class="fas fa-external-link-alt mr-1"></i>開く
+                </a>
               </div>
-              <a href="\${a.url}" target="_blank" class="text-blue-600 hover:underline text-sm">
-                <i class="fas fa-external-link-alt mr-1"></i>開く
-              </a>
-            </div>
-          \`).join('');
+            \`;
+          }).join('');
         } else {
           document.getElementById('attachments-list').innerHTML = '<p class="text-gray-500 text-sm">添付ファイルなし</p>';
         }
@@ -1697,12 +1789,13 @@ subsidyPages.get('/subsidies/:id', (c) => {
       }
       
       // 壁打ち開始
+      // ⚠️ URLパラメータをエンコード
       function startChat() {
         if (!companyId) {
           alert('会社を選択してください');
           return;
         }
-        window.location.href = '/chat?subsidy_id=' + subsidyId + '&company_id=' + companyId;
+        window.location.href = '/chat?subsidy_id=' + encodeURIComponent(subsidyId) + '&company_id=' + encodeURIComponent(companyId);
       }
       
       // 初期化

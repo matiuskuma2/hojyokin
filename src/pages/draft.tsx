@@ -291,14 +291,26 @@ draftPages.get('/draft', (c) => {
     var params = new URLSearchParams(window.location.search);
     var sessionId = params.get('session_id');
     
-    if (!sessionId) {
-      alert('セッションが指定されていません');
-      window.location.href = '/dashboard';
+    // ⚠️ セッションIDの検証（null/undefined/空文字チェック）
+    if (!sessionId || sessionId.trim() === '' || sessionId === 'null' || sessionId === 'undefined') {
+      alert('セッションが指定されていません。補助金一覧から再度お試しください。');
+      window.location.href = '/subsidies';
+      throw new Error('Invalid session_id'); // スクリプト実行を停止
     }
     
-    // 戻るリンク設定
-    document.getElementById('back-link').href = '/chat?session_id=' + sessionId;
-    document.getElementById('link-chat').href = '/chat?session_id=' + sessionId;
+    // ⚠️ UUID形式の簡易検証（36文字、ハイフン含む）
+    var uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (!uuidRegex.test(sessionId)) {
+      console.warn('[ドラフト] 無効なsession_id形式:', sessionId);
+      alert('無効なセッションIDです。補助金一覧から再度お試しください。');
+      window.location.href = '/subsidies';
+      throw new Error('Invalid session_id format');
+    }
+    
+    // 戻るリンク設定（session_idをURLエンコード）
+    var encodedSessionId = encodeURIComponent(sessionId);
+    document.getElementById('back-link').href = '/chat?session_id=' + encodedSessionId;
+    document.getElementById('link-chat').href = '/chat?session_id=' + encodedSessionId;
     
     var draftId = null;
     var hasChanges = false;

@@ -254,13 +254,18 @@ chatPages.get('/chat', (c) => {
     var params = new URLSearchParams(window.location.search);
     var subsidyId = params.get('subsidy_id');
     var companyId = params.get('company_id');
+    var existingSessionId = params.get('session_id'); // ドラフト画面からの戻りをサポート
     
-    if (!subsidyId || !companyId) {
+    // ⚠️ session_id がある場合はセッション復元モード、それ以外は新規作成モード
+    var isResumeMode = !!existingSessionId;
+    
+    // session_id がない場合のみ subsidy_id と company_id を必須とする
+    if (!isResumeMode && (!subsidyId || !companyId)) {
       alert('補助金または会社が指定されていません');
       window.location.href = '/subsidies';
     }
     
-    var sessionId = null;
+    var sessionId = existingSessionId || null;
     var sessionCompleted = false;
     
     // メッセージを追加
@@ -334,13 +339,37 @@ chatPages.get('/chat', (c) => {
     }
     
     // セッション初期化
+    // ⚠️ session_id がある場合は既存セッションを復元、ない場合は新規作成
     async function initSession() {
       try {
-        // セッション作成（事前判定を含む）
-        const res = await api('/api/chat/sessions', {
-          method: 'POST',
-          body: JSON.stringify({ company_id: companyId, subsidy_id: subsidyId })
-        });
+        let res;
+        
+        if (isResumeMode && existingSessionId) {
+          // 既存セッションを取得（ドラフト画面からの戻り）
+          console.log('[壁打ち] セッション復元モード: ', existingSessionId);
+          res = await api('/api/chat/sessions/' + existingSessionId);
+          
+          if (!res.success) {
+            console.error('[壁打ち] セッション復元失敗:', res.error);
+            // セッションが見つからない場合は補助金一覧に戻る
+            alert('セッションが見つかりませんでした。補助金一覧から再度お試しください。');
+            window.location.href = '/subsidies';
+            return;
+          }
+          
+          // セッション復元成功時、subsidy_id と company_id を設定
+          if (res.data.session) {
+            subsidyId = res.data.session.subsidy_id;
+            companyId = res.data.session.company_id;
+          }
+        } else {
+          // 新規セッション作成（事前判定を含む）
+          console.log('[壁打ち] 新規セッション作成モード');
+          res = await api('/api/chat/sessions', {
+            method: 'POST',
+            body: JSON.stringify({ company_id: companyId, subsidy_id: subsidyId })
+          });
+        }
         
         if (!res.success) {
           throw new Error(res.error?.message || 'セッション作成に失敗しました');
@@ -420,7 +449,12 @@ chatPages.get('/chat', (c) => {
       } catch (error) {
         console.error('Init session error:', error);
         alert('エラー: ' + error.message);
-        window.location.href = '/subsidies/' + subsidyId + '?company_id=' + companyId;
+        // ⚠️ subsidyId/companyId がない場合は補助金一覧へ、ある場合は詳細ページへ
+        if (subsidyId && companyId) {
+          window.location.href = '/subsidies/' + encodeURIComponent(subsidyId) + '?company_id=' + encodeURIComponent(companyId);
+        } else {
+          window.location.href = '/subsidies';
+        }
       }
     }
     
