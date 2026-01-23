@@ -21,7 +21,8 @@
     "INTERNAL_JWT_AUDIENCE": "subsidy-app-internal",
     
     // Jグランツ API
-    "JGRANTS_MODE": "mock",
+    // cached-only: subsidy_cacheを優先、なければモックにフォールバック
+    "JGRANTS_MODE": "cached-only",
     
     // 環境識別
     "ENVIRONMENT": "development"
