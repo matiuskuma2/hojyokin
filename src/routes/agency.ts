@@ -253,12 +253,10 @@ agencyRoutes.get('/clients', async (c) => {
       c.prefecture,
       c.industry_major as industry,
       c.employee_count,
-      cp.completeness_score,
       (SELECT COUNT(*) FROM application_drafts ad WHERE ad.company_id = ac.company_id) as draft_count,
       (SELECT MAX(created_at) FROM chat_sessions cs WHERE cs.company_id = ac.company_id) as last_chat_at
     FROM agency_clients ac
     JOIN companies c ON ac.company_id = c.id
-    LEFT JOIN company_profile cp ON c.id = cp.company_id
     WHERE ac.agency_id = ?
   `;
   const params: any[] = [agencyId];
