@@ -18,7 +18,7 @@ import type { Env, Variables } from '../types';
 const subsidyPages = new Hono<{ Bindings: Env; Variables: Variables }>();
 
 // 共通レイアウト
-const subsidyLayout = (title: string, content: string) => `
+const subsidyLayout = (title: string, content: string, currentPath: string = '/subsidies') => `
 <!DOCTYPE html>
 <html lang="ja">
 <head>
@@ -48,13 +48,13 @@ const subsidyLayout = (title: string, content: string) => `
             <span class="font-bold text-xl text-blue-700">ホジョラク</span>
           </a>
           <div class="hidden md:flex space-x-4">
-            <a href="/dashboard" class="text-gray-600 hover:text-gray-900 px-3 py-2 text-sm font-medium">
+            <a href="/dashboard" class="${currentPath === '/dashboard' ? 'text-green-600 border-b-2 border-green-600' : 'text-gray-600 hover:text-gray-900'} px-3 py-2 text-sm font-medium">
               <i class="fas fa-home mr-1"></i>ダッシュボード
             </a>
-            <a href="/subsidies" class="text-green-600 border-b-2 border-green-600 px-3 py-2 text-sm font-medium">
+            <a href="/subsidies" class="${currentPath === '/subsidies' ? 'text-green-600 border-b-2 border-green-600' : 'text-gray-600 hover:text-gray-900'} px-3 py-2 text-sm font-medium">
               <i class="fas fa-search mr-1"></i>補助金を探す
             </a>
-            <a href="/company" class="text-gray-600 hover:text-gray-900 px-3 py-2 text-sm font-medium">
+            <a href="/company" class="${currentPath === '/company' ? 'text-green-600 border-b-2 border-green-600' : 'text-gray-600 hover:text-gray-900'} px-3 py-2 text-sm font-medium">
               <i class="fas fa-building mr-1"></i>会社情報
             </a>
           </div>
@@ -322,7 +322,7 @@ subsidyPages.get('/subsidies', (c) => {
       let searchMode = 'match'; // 'match' または 'all'
       
       // 検索モード切替
-      function setSearchMode(mode) {
+      window.setSearchMode = function(mode) {
         searchMode = mode;
         
         // ボタンの見た目を更新
@@ -598,7 +598,7 @@ subsidyPages.get('/subsidies', (c) => {
       }
       
       // 補助金検索
-      async function searchSubsidies(page = 1) {
+      window.searchSubsidies = async function(page = 1) {
         var companySelect = document.getElementById('company-select');
         var companyId = companySelect ? companySelect.value : '';
         if (!companyId) {
@@ -898,7 +898,7 @@ subsidyPages.get('/subsidies', (c) => {
     </script>
   `;
   
-  return c.html(subsidyLayout('補助金を探す', content));
+  return c.html(subsidyLayout('補助金を探す', content, '/subsidies'));
 });
 
 /**
@@ -1464,7 +1464,7 @@ subsidyPages.get('/subsidies/:id', (c) => {
     </script>
   `;
   
-  return c.html(subsidyLayout('補助金詳細', content));
+  return c.html(subsidyLayout('補助金詳細', content, '/subsidies'));
 });
 
 export default subsidyPages;
