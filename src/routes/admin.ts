@@ -862,8 +862,8 @@ admin.post('/sync-jgrants', async (c) => {
       });
     }
     
-    // キャッシュ有効期限（24時間後）
-    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+    // キャッシュ有効期限（7日後）- 同期失敗時も既存キャッシュで検索が動くよう長めに設定
+    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
     
     // バッチでsubsidy_cacheにupsert
     const statements = subsidies.map((s: any) => 
@@ -939,6 +939,185 @@ admin.post('/sync-jgrants', async (c) => {
       error: {
         code: 'INTERNAL_ERROR',
         message: `Failed to sync JGrants data: ${error}`,
+      },
+    }, 500);
+  }
+});
+
+/**
+ * JGrants バルク同期（複数キーワード一括）
+ * 
+ * POST /api/admin/sync-jgrants/bulk
+ * 
+ * 凍結されたキーワードセットで一括同期（Cron用）
+ * super_admin のみ実行可能
+ */
+admin.post('/sync-jgrants/bulk', async (c) => {
+  const db = c.env.DB;
+  const currentUser = getCurrentUser(c);
+  const ip = c.req.header('cf-connecting-ip') || c.req.header('x-forwarded-for') || null;
+  const userAgent = c.req.header('user-agent') || null;
+  const requestId = c.req.header('x-request-id') || null;
+  
+  // super_admin のみ実行可能
+  if (currentUser.role !== 'super_admin') {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: 'FORBIDDEN',
+        message: 'Super admin access required',
+      },
+    }, 403);
+  }
+  
+  try {
+    // 凍結キーワードセット（データ収集パイプライン v1）
+    const KEYWORDS = [
+      '補助金',
+      '助成金', 
+      '事業',
+      'DX',
+      'IT導入',
+      '省エネ',
+      '雇用',
+      '設備投資',
+      '製造業',
+      'デジタル化',
+      '創業',
+      '販路開拓',
+      '人材育成',
+      '研究開発',
+      '生産性向上',
+    ];
+    
+    const JGRANTS_API_URL = 'https://api.jgrants-portal.go.jp/exp/v1/public/subsidies';
+    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+    
+    const results: { keyword: string; fetched: number; inserted: number; error?: string }[] = [];
+    let totalFetched = 0;
+    let totalInserted = 0;
+    const seenIds = new Set<string>(); // 重複排除用
+    
+    for (const keyword of KEYWORDS) {
+      try {
+        const params = new URLSearchParams({
+          keyword,
+          sort: 'acceptance_end_datetime',
+          order: 'DESC',
+          acceptance: '1', // 受付中のみ
+          limit: '200', // 各キーワードで最大200件
+        });
+        
+        console.log(`JGrants bulk sync: ${keyword}`);
+        
+        const response = await fetch(`${JGRANTS_API_URL}?${params.toString()}`, {
+          method: 'GET',
+          headers: { 'Accept': 'application/json' },
+        });
+        
+        if (!response.ok) {
+          results.push({ keyword, fetched: 0, inserted: 0, error: `API ${response.status}` });
+          continue;
+        }
+        
+        const data = await response.json() as any;
+        const subsidies = data.result || data.subsidies || data.data || [];
+        
+        // 重複排除してupsert
+        const uniqueSubsidies = subsidies.filter((s: any) => {
+          if (seenIds.has(s.id)) return false;
+          seenIds.add(s.id);
+          return true;
+        });
+        
+        if (uniqueSubsidies.length > 0) {
+          const statements = uniqueSubsidies.map((s: any) => 
+            db.prepare(`
+              INSERT OR REPLACE INTO subsidy_cache 
+              (id, source, title, subsidy_max_limit, subsidy_rate,
+               target_area_search, target_industry, target_number_of_employees,
+               acceptance_start_datetime, acceptance_end_datetime, request_reception_display_flag,
+               cached_at, expires_at)
+              VALUES (?, 'jgrants', ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?)
+            `).bind(
+              s.id,
+              s.title || s.name || '',
+              s.subsidy_max_limit || null,
+              s.subsidy_rate || null,
+              s.target_area_search || null,
+              s.target_industry || null,
+              s.target_number_of_employees || null,
+              s.acceptance_start_datetime || null,
+              s.acceptance_end_datetime || null,
+              s.request_reception_display_flag ?? 1,
+              expiresAt
+            )
+          );
+          
+          // D1バッチ実行（100件ごと）
+          for (let i = 0; i < statements.length; i += 100) {
+            const batch = statements.slice(i, i + 100);
+            await db.batch(batch);
+          }
+        }
+        
+        results.push({ 
+          keyword, 
+          fetched: subsidies.length, 
+          inserted: uniqueSubsidies.length 
+        });
+        totalFetched += subsidies.length;
+        totalInserted += uniqueSubsidies.length;
+        
+        // レート制限対策: 500ms待機
+        await new Promise(resolve => setTimeout(resolve, 500));
+        
+      } catch (err) {
+        results.push({ keyword, fetched: 0, inserted: 0, error: String(err) });
+      }
+    }
+    
+    // 監査ログ
+    await writeAuditLog(db, {
+      actorUserId: currentUser.id,
+      action: 'JGRANTS_BULK_SYNC',
+      actionCategory: 'system',
+      severity: 'info',
+      detailsJson: { 
+        keywords: KEYWORDS,
+        total_fetched: totalFetched,
+        total_inserted: totalInserted,
+        unique_count: seenIds.size,
+        results,
+      },
+      ip,
+      userAgent,
+      requestId,
+    });
+    
+    return c.json<ApiResponse<{
+      message: string;
+      total_fetched: number;
+      total_inserted: number;
+      unique_count: number;
+      results: typeof results;
+    }>>({
+      success: true,
+      data: {
+        message: `JGrants bulk sync completed`,
+        total_fetched: totalFetched,
+        total_inserted: totalInserted,
+        unique_count: seenIds.size,
+        results,
+      },
+    });
+  } catch (error) {
+    console.error('JGrants bulk sync error:', error);
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: 'INTERNAL_ERROR',
+        message: `Failed to bulk sync JGrants data: ${error}`,
       },
     }, 500);
   }
