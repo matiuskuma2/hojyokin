@@ -147,6 +147,9 @@ const agencyLayout = (title: string, content: string, activeTab: string = '') =>
               <i class="fas fa-inbox mr-1"></i>受付
               <span id="pending-badge" class="hidden ml-1 bg-red-500 text-white text-xs px-1.5 py-0.5 rounded-full">0</span>
             </a>
+            <a href="/agency/members" class="px-3 py-2 rounded-md text-sm font-medium ${activeTab === 'members' ? 'bg-emerald-700' : 'hover:bg-emerald-700'}">
+              <i class="fas fa-users mr-1"></i>スタッフ
+            </a>
           </div>
         </div>
         <div class="flex items-center gap-4">
@@ -941,6 +944,444 @@ agencyPages.get('/agency/submissions', (c) => {
   `;
   
   return c.html(agencyLayout('入力受付', content, 'submissions'));
+});
+
+/**
+ * GET /agency/members - スタッフ管理
+ */
+agencyPages.get('/agency/members', (c) => {
+  const content = `
+    <div class="space-y-6">
+      <div class="flex justify-between items-center">
+        <h1 class="text-2xl font-bold text-gray-900">
+          <i class="fas fa-users mr-2"></i>スタッフ管理
+        </h1>
+        <button onclick="showInviteModal()" class="bg-emerald-600 text-white px-4 py-2 rounded-lg hover:bg-emerald-700 transition">
+          <i class="fas fa-user-plus mr-2"></i>スタッフを招待
+        </button>
+      </div>
+      
+      <!-- メンバー一覧 -->
+      <div class="bg-white rounded-lg shadow">
+        <div class="px-6 py-4 border-b border-gray-200">
+          <h2 class="text-lg font-semibold text-gray-900">メンバー</h2>
+        </div>
+        <div id="members-list" class="divide-y divide-gray-200">
+          <div class="p-6 text-center text-gray-500">読み込み中...</div>
+        </div>
+      </div>
+      
+      <!-- 保留中の招待 -->
+      <div id="pending-invites-section" class="bg-white rounded-lg shadow hidden">
+        <div class="px-6 py-4 border-b border-gray-200">
+          <h2 class="text-lg font-semibold text-gray-900">保留中の招待</h2>
+        </div>
+        <div id="pending-invites-list" class="divide-y divide-gray-200">
+        </div>
+      </div>
+      
+      <!-- 招待モーダル -->
+      <div id="invite-modal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+        <div class="bg-white rounded-lg shadow-xl max-w-md w-full mx-4">
+          <div class="px-6 py-4 border-b border-gray-200">
+            <h3 class="text-lg font-semibold text-gray-900">スタッフを招待</h3>
+          </div>
+          <form id="invite-form" class="p-6 space-y-4">
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">メールアドレス <span class="text-red-500">*</span></label>
+              <input type="email" name="email" required 
+                class="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+                placeholder="staff@example.com">
+            </div>
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">役割</label>
+              <select name="role" class="w-full border rounded-lg px-3 py-2">
+                <option value="staff">スタッフ（顧客情報の閲覧・編集）</option>
+                <option value="admin">管理者（スタッフ招待も可能）</option>
+              </select>
+            </div>
+            <div class="bg-gray-50 p-3 rounded-lg text-sm text-gray-600">
+              <i class="fas fa-info-circle mr-1"></i>
+              招待リンクが生成されます。メールアドレス宛にリンクを共有してください。
+            </div>
+            <div class="flex gap-2 pt-4">
+              <button type="button" onclick="hideInviteModal()" class="flex-1 border border-gray-300 text-gray-700 px-4 py-2 rounded-lg hover:bg-gray-50">
+                キャンセル
+              </button>
+              <button type="submit" class="flex-1 bg-emerald-600 text-white px-4 py-2 rounded-lg hover:bg-emerald-700">
+                招待リンクを発行
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+      
+      <!-- 招待URL表示モーダル -->
+      <div id="invite-url-modal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+        <div class="bg-white rounded-lg shadow-xl max-w-lg w-full mx-4">
+          <div class="px-6 py-4 border-b border-gray-200">
+            <h3 class="text-lg font-semibold text-gray-900">
+              <i class="fas fa-check-circle text-emerald-600 mr-2"></i>招待リンクが発行されました
+            </h3>
+          </div>
+          <div class="p-6 space-y-4">
+            <p class="text-sm text-gray-600">以下のリンクをスタッフに共有してください：</p>
+            <div class="bg-gray-50 p-3 rounded-lg">
+              <input type="text" id="invite-url-input" readonly 
+                class="w-full bg-transparent text-sm text-gray-800 outline-none"
+                value="">
+            </div>
+            <div class="flex gap-2">
+              <button onclick="copyInviteUrl()" class="flex-1 bg-emerald-600 text-white px-4 py-2 rounded-lg hover:bg-emerald-700">
+                <i class="fas fa-copy mr-2"></i>コピー
+              </button>
+              <button onclick="hideInviteUrlModal()" class="flex-1 border border-gray-300 text-gray-700 px-4 py-2 rounded-lg hover:bg-gray-50">
+                閉じる
+              </button>
+            </div>
+            <p class="text-xs text-gray-500">
+              <i class="fas fa-clock mr-1"></i>このリンクは7日間有効です
+            </p>
+          </div>
+        </div>
+      </div>
+    </div>
+    
+    <script>
+      var currentUserRole = 'staff';
+      var members = [];
+      var pendingInvites = [];
+      
+      async function loadMembers() {
+        var data = await window.apiCall('/api/agency/members');
+        if (data.success) {
+          members = data.data.members || [];
+          pendingInvites = data.data.pending_invites || [];
+          currentUserRole = data.data.current_user_role || 'staff';
+          renderMembers();
+          renderPendingInvites();
+        } else {
+          document.getElementById('members-list').innerHTML = 
+            '<div class="p-6 text-center text-red-500">読み込みに失敗しました</div>';
+        }
+      }
+      
+      function renderMembers() {
+        var container = document.getElementById('members-list');
+        
+        if (members.length === 0) {
+          container.innerHTML = '<div class="p-6 text-center text-gray-500">メンバーがいません</div>';
+          return;
+        }
+        
+        var html = members.map(function(member) {
+          var roleLabel = member.role === 'owner' ? 'オーナー' : 
+                         member.role === 'admin' ? '管理者' : 'スタッフ';
+          var roleColor = member.role === 'owner' ? 'bg-purple-100 text-purple-700' : 
+                         member.role === 'admin' ? 'bg-blue-100 text-blue-700' : 
+                         'bg-gray-100 text-gray-700';
+          
+          var actions = '';
+          if (!member.is_owner && currentUserRole === 'owner') {
+            actions = '<div class="flex gap-2">' +
+              '<button onclick="changeRole(\\'' + member.membership_id + '\\', \\'' + member.role + '\\')" class="text-sm text-blue-600 hover:text-blue-800">' +
+                '<i class="fas fa-exchange-alt mr-1"></i>役割変更' +
+              '</button>' +
+              '<button onclick="removeMember(\\'' + member.membership_id + '\\', \\'' + (member.name || member.email) + '\\')" class="text-sm text-red-600 hover:text-red-800">' +
+                '<i class="fas fa-user-minus mr-1"></i>削除' +
+              '</button>' +
+            '</div>';
+          }
+          
+          return '<div class="px-6 py-4 flex items-center justify-between">' +
+            '<div class="flex items-center gap-4">' +
+              '<div class="w-10 h-10 bg-emerald-100 rounded-full flex items-center justify-center">' +
+                '<i class="fas fa-user text-emerald-600"></i>' +
+              '</div>' +
+              '<div>' +
+                '<div class="font-medium text-gray-900">' + (member.name || '名前未設定') + '</div>' +
+                '<div class="text-sm text-gray-500">' + member.email + '</div>' +
+              '</div>' +
+              '<span class="px-2 py-1 text-xs rounded-full ' + roleColor + '">' + roleLabel + '</span>' +
+            '</div>' +
+            actions +
+          '</div>';
+        }).join('');
+        
+        container.innerHTML = html;
+      }
+      
+      function renderPendingInvites() {
+        var section = document.getElementById('pending-invites-section');
+        var container = document.getElementById('pending-invites-list');
+        
+        if (pendingInvites.length === 0) {
+          section.classList.add('hidden');
+          return;
+        }
+        
+        section.classList.remove('hidden');
+        
+        var html = pendingInvites.map(function(invite) {
+          var roleLabel = invite.role_in_agency === 'admin' ? '管理者' : 'スタッフ';
+          var expiresAt = new Date(invite.expires_at).toLocaleDateString('ja-JP');
+          
+          return '<div class="px-6 py-4 flex items-center justify-between">' +
+            '<div class="flex items-center gap-4">' +
+              '<div class="w-10 h-10 bg-yellow-100 rounded-full flex items-center justify-center">' +
+                '<i class="fas fa-envelope text-yellow-600"></i>' +
+              '</div>' +
+              '<div>' +
+                '<div class="font-medium text-gray-900">' + invite.email + '</div>' +
+                '<div class="text-sm text-gray-500">' + roleLabel + ' • 有効期限: ' + expiresAt + '</div>' +
+              '</div>' +
+            '</div>' +
+            '<div class="flex gap-2">' +
+              '<button onclick="copyInviteCode(\\'' + invite.invite_code + '\\')" class="text-sm text-emerald-600 hover:text-emerald-800">' +
+                '<i class="fas fa-copy mr-1"></i>コードをコピー' +
+              '</button>' +
+              '<button onclick="revokeInvite(\\'' + invite.id + '\\')" class="text-sm text-red-600 hover:text-red-800">' +
+                '<i class="fas fa-times mr-1"></i>取り消し' +
+              '</button>' +
+            '</div>' +
+          '</div>';
+        }).join('');
+        
+        container.innerHTML = html;
+      }
+      
+      function showInviteModal() {
+        document.getElementById('invite-modal').classList.remove('hidden');
+      }
+      
+      function hideInviteModal() {
+        document.getElementById('invite-modal').classList.add('hidden');
+        document.getElementById('invite-form').reset();
+      }
+      
+      function hideInviteUrlModal() {
+        document.getElementById('invite-url-modal').classList.add('hidden');
+      }
+      
+      function copyInviteUrl() {
+        var input = document.getElementById('invite-url-input');
+        input.select();
+        document.execCommand('copy');
+        alert('招待リンクをコピーしました');
+      }
+      
+      function copyInviteCode(code) {
+        var url = window.location.origin + '/agency/join?code=' + code;
+        navigator.clipboard.writeText(url).then(function() {
+          alert('招待リンクをコピーしました');
+        });
+      }
+      
+      document.getElementById('invite-form').addEventListener('submit', async function(e) {
+        e.preventDefault();
+        var form = e.target;
+        var formData = new FormData(form);
+        
+        var data = await window.apiCall('/api/agency/members/invite', {
+          method: 'POST',
+          body: JSON.stringify({
+            email: formData.get('email'),
+            role: formData.get('role'),
+          }),
+        });
+        
+        if (data.success) {
+          hideInviteModal();
+          document.getElementById('invite-url-input').value = data.data.invite_url;
+          document.getElementById('invite-url-modal').classList.remove('hidden');
+          loadMembers();
+        } else {
+          alert('エラー: ' + (data.error?.message || '招待の発行に失敗しました'));
+        }
+      });
+      
+      async function revokeInvite(inviteId) {
+        if (!confirm('この招待を取り消しますか？')) return;
+        
+        var data = await window.apiCall('/api/agency/members/invite/' + inviteId, {
+          method: 'DELETE',
+        });
+        
+        if (data.success) {
+          loadMembers();
+        } else {
+          alert('エラー: ' + (data.error?.message || '取り消しに失敗しました'));
+        }
+      }
+      
+      async function removeMember(membershipId, name) {
+        if (!confirm(name + ' さんを事務所から削除しますか？')) return;
+        
+        var data = await window.apiCall('/api/agency/members/' + membershipId, {
+          method: 'DELETE',
+        });
+        
+        if (data.success) {
+          loadMembers();
+        } else {
+          alert('エラー: ' + (data.error?.message || '削除に失敗しました'));
+        }
+      }
+      
+      async function changeRole(membershipId, currentRole) {
+        var newRole = currentRole === 'admin' ? 'staff' : 'admin';
+        var newRoleLabel = newRole === 'admin' ? '管理者' : 'スタッフ';
+        
+        if (!confirm('役割を「' + newRoleLabel + '」に変更しますか？')) return;
+        
+        var data = await window.apiCall('/api/agency/members/' + membershipId + '/role', {
+          method: 'PUT',
+          body: JSON.stringify({ role: newRole }),
+        });
+        
+        if (data.success) {
+          loadMembers();
+        } else {
+          alert('エラー: ' + (data.error?.message || '変更に失敗しました'));
+        }
+      }
+      
+      // DOMContentLoaded で apiCall が定義されてから実行
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', loadMembers);
+      } else {
+        if (typeof window.apiCall === 'function') {
+          loadMembers();
+        } else {
+          setTimeout(loadMembers, 100);
+        }
+      }
+    </script>
+  `;
+  
+  return c.html(agencyLayout('スタッフ管理', content, 'members'));
+});
+
+/**
+ * GET /agency/join - 招待受諾ページ
+ */
+agencyPages.get('/agency/join', (c) => {
+  const code = c.req.query('code') || '';
+  const token = c.req.query('token') || '';
+  
+  const content = `
+    <div class="max-w-md mx-auto">
+      <div class="bg-white rounded-lg shadow-lg p-8">
+        <div class="text-center mb-6">
+          <div class="w-16 h-16 bg-emerald-100 rounded-full flex items-center justify-center mx-auto mb-4">
+            <i class="fas fa-user-plus text-emerald-600 text-2xl"></i>
+          </div>
+          <h1 class="text-2xl font-bold text-gray-900">事務所への招待</h1>
+          <p class="text-gray-600 mt-2">招待を受諾して事務所に参加しましょう</p>
+        </div>
+        
+        <div id="join-status" class="hidden mb-6 p-4 rounded-lg"></div>
+        
+        <div id="join-form-container">
+          <form id="join-form" class="space-y-4">
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">招待コード</label>
+              <input type="text" name="code" value="${code}" required 
+                class="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+                placeholder="招待コードを入力">
+            </div>
+            <input type="hidden" name="token" value="${token}">
+            <button type="submit" class="w-full bg-emerald-600 text-white px-4 py-3 rounded-lg hover:bg-emerald-700 font-medium">
+              <i class="fas fa-check mr-2"></i>招待を受諾する
+            </button>
+          </form>
+          
+          <p class="text-sm text-gray-500 mt-4 text-center">
+            まだアカウントをお持ちでない場合は、<a href="/register" class="text-emerald-600 hover:underline">新規登録</a>してからこのページに戻ってください。
+          </p>
+        </div>
+        
+        <div id="join-success" class="hidden text-center">
+          <div class="w-16 h-16 bg-emerald-100 rounded-full flex items-center justify-center mx-auto mb-4">
+            <i class="fas fa-check text-emerald-600 text-2xl"></i>
+          </div>
+          <h2 class="text-xl font-bold text-gray-900 mb-2">参加完了！</h2>
+          <p id="success-message" class="text-gray-600 mb-6"></p>
+          <a href="/agency" class="inline-block bg-emerald-600 text-white px-6 py-3 rounded-lg hover:bg-emerald-700 font-medium">
+            <i class="fas fa-arrow-right mr-2"></i>事務所ダッシュボードへ
+          </a>
+        </div>
+      </div>
+    </div>
+    
+    <script>
+      (function() {
+        var token = localStorage.getItem('token');
+        if (!token) {
+          // 未ログインの場合は、ログインページにリダイレクト（戻りURLを保存）
+          var currentUrl = window.location.href;
+          localStorage.setItem('redirect_after_login', currentUrl);
+          window.location.href = '/login';
+          return;
+        }
+        
+        document.getElementById('join-form').addEventListener('submit', async function(e) {
+          e.preventDefault();
+          var form = e.target;
+          var formData = new FormData(form);
+          
+          var statusDiv = document.getElementById('join-status');
+          statusDiv.classList.remove('hidden', 'bg-red-100', 'text-red-700', 'bg-emerald-100', 'text-emerald-700');
+          statusDiv.classList.add('bg-blue-100', 'text-blue-700');
+          statusDiv.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>処理中...';
+          
+          try {
+            var response = await fetch('/api/agency/members/join', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': 'Bearer ' + token,
+              },
+              body: JSON.stringify({
+                code: formData.get('code'),
+                token: formData.get('token'),
+              }),
+            });
+            
+            var data = await response.json();
+            
+            if (data.success) {
+              statusDiv.classList.add('hidden');
+              document.getElementById('join-form-container').classList.add('hidden');
+              document.getElementById('join-success').classList.remove('hidden');
+              document.getElementById('success-message').textContent = 
+                '「' + (data.data.agency?.name || '事務所') + '」に' + 
+                (data.data.role === 'admin' ? '管理者' : 'スタッフ') + 'として参加しました。';
+              
+              // ユーザー情報を更新（roleがagencyに変わった可能性）
+              var userStr = localStorage.getItem('user');
+              if (userStr) {
+                var user = JSON.parse(userStr);
+                user.role = 'agency';
+                localStorage.setItem('user', JSON.stringify(user));
+              }
+            } else {
+              statusDiv.classList.remove('bg-blue-100', 'text-blue-700');
+              statusDiv.classList.add('bg-red-100', 'text-red-700');
+              statusDiv.innerHTML = '<i class="fas fa-exclamation-circle mr-2"></i>' + 
+                (data.error?.message || '招待の受諾に失敗しました');
+            }
+          } catch (err) {
+            statusDiv.classList.remove('bg-blue-100', 'text-blue-700');
+            statusDiv.classList.add('bg-red-100', 'text-red-700');
+            statusDiv.innerHTML = '<i class="fas fa-exclamation-circle mr-2"></i>通信エラーが発生しました';
+          }
+        });
+      })();
+    </script>
+  `;
+  
+  return c.html(agencyLayout('招待を受諾', content, ''));
 });
 
 export default agencyPages;

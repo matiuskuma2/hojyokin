@@ -799,4 +799,471 @@ agencyRoutes.post('/submissions/:id/reject', async (c) => {
   });
 });
 
+// =====================================================
+// スタッフ管理 API
+// =====================================================
+
+/**
+ * GET /api/agency/members - スタッフ一覧
+ */
+agencyRoutes.get('/members', async (c) => {
+  const db = c.env.DB;
+  const user = getCurrentUser(c);
+  
+  const agencyInfo = await getUserAgency(db, user.id);
+  if (!agencyInfo) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'NOT_AGENCY', message: 'Agency account required' },
+    }, 403);
+  }
+  
+  const agencyId = agencyInfo.agency.id;
+  
+  // オーナー情報を取得
+  const owner = await db.prepare(`
+    SELECT u.id, u.email, u.name, 'owner' as role_in_agency, a.created_at as joined_at
+    FROM agencies a
+    JOIN users u ON a.owner_user_id = u.id
+    WHERE a.id = ?
+  `).bind(agencyId).first();
+  
+  // メンバー一覧取得
+  const members = await db.prepare(`
+    SELECT 
+      am.id as membership_id,
+      am.role_in_agency,
+      am.accepted_at as joined_at,
+      u.id as user_id,
+      u.email,
+      u.name
+    FROM agency_members am
+    JOIN users u ON am.user_id = u.id
+    WHERE am.agency_id = ? AND am.accepted_at IS NOT NULL
+    ORDER BY am.accepted_at DESC
+  `).bind(agencyId).all();
+  
+  // 保留中の招待一覧
+  const pendingInvites = await db.prepare(`
+    SELECT 
+      id,
+      email,
+      role_in_agency,
+      invite_code,
+      expires_at,
+      created_at
+    FROM agency_member_invites
+    WHERE agency_id = ? 
+      AND accepted_at IS NULL 
+      AND revoked_at IS NULL
+      AND expires_at > datetime('now')
+    ORDER BY created_at DESC
+  `).bind(agencyId).all();
+  
+  // オーナーを含めた全メンバーリスト
+  const allMembers = [];
+  if (owner) {
+    allMembers.push({
+      user_id: owner.id,
+      email: owner.email,
+      name: owner.name,
+      role: 'owner',
+      joined_at: owner.joined_at,
+      is_owner: true,
+    });
+  }
+  
+  for (const m of (members.results || []) as any[]) {
+    allMembers.push({
+      membership_id: m.membership_id,
+      user_id: m.user_id,
+      email: m.email,
+      name: m.name,
+      role: m.role_in_agency,
+      joined_at: m.joined_at,
+      is_owner: false,
+    });
+  }
+  
+  return c.json<ApiResponse<any>>({
+    success: true,
+    data: {
+      members: allMembers,
+      pending_invites: pendingInvites.results || [],
+      current_user_role: agencyInfo.role,
+    },
+  });
+});
+
+/**
+ * POST /api/agency/members/invite - スタッフ招待
+ */
+agencyRoutes.post('/members/invite', async (c) => {
+  const db = c.env.DB;
+  const user = getCurrentUser(c);
+  
+  const agencyInfo = await getUserAgency(db, user.id);
+  if (!agencyInfo) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'NOT_AGENCY', message: 'Agency account required' },
+    }, 403);
+  }
+  
+  // オーナーまたは管理者のみ招待可能
+  if (agencyInfo.role !== 'owner' && agencyInfo.role !== 'admin') {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'FORBIDDEN', message: 'Only owner or admin can invite members' },
+    }, 403);
+  }
+  
+  const body = await c.req.json();
+  const { email, role = 'staff' } = body;
+  
+  if (!email) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'VALIDATION_ERROR', message: 'email is required' },
+    }, 400);
+  }
+  
+  // 有効な役割のみ
+  if (!['admin', 'staff'].includes(role)) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'VALIDATION_ERROR', message: 'Invalid role. Must be admin or staff' },
+    }, 400);
+  }
+  
+  const agencyId = agencyInfo.agency.id;
+  
+  // 既にメンバーか確認
+  const existingMember = await db.prepare(`
+    SELECT am.id FROM agency_members am
+    JOIN users u ON am.user_id = u.id
+    WHERE am.agency_id = ? AND u.email = ? AND am.accepted_at IS NOT NULL
+  `).bind(agencyId, email).first();
+  
+  if (existingMember) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'ALREADY_MEMBER', message: 'This email is already a member' },
+    }, 400);
+  }
+  
+  // 既に保留中の招待があるか確認
+  const existingInvite = await db.prepare(`
+    SELECT id FROM agency_member_invites
+    WHERE agency_id = ? AND email = ? 
+      AND accepted_at IS NULL 
+      AND revoked_at IS NULL
+      AND expires_at > datetime('now')
+  `).bind(agencyId, email).first();
+  
+  if (existingInvite) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'ALREADY_INVITED', message: 'A pending invite already exists for this email' },
+    }, 400);
+  }
+  
+  // 招待トークン生成
+  const inviteToken = generateToken();
+  const inviteTokenHash = await hashToken(inviteToken);
+  const inviteCode = generateShortCode();
+  const inviteId = generateId();
+  const now = new Date().toISOString();
+  const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(); // 7日後
+  
+  await db.prepare(`
+    INSERT INTO agency_member_invites (
+      id, agency_id, email, role_in_agency, invite_token_hash, invite_code,
+      invited_by_user_id, expires_at, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).bind(
+    inviteId, agencyId, email, role, inviteTokenHash, inviteCode,
+    user.id, expiresAt, now
+  ).run();
+  
+  // 招待URLを生成（実際の本番URLを使用）
+  const baseUrl = c.req.header('origin') || 'https://hojyokin.pages.dev';
+  const inviteUrl = `${baseUrl}/agency/join?code=${inviteCode}&token=${inviteToken}`;
+  
+  return c.json<ApiResponse<any>>({
+    success: true,
+    data: {
+      invite_id: inviteId,
+      email,
+      role,
+      invite_code: inviteCode,
+      invite_url: inviteUrl,
+      expires_at: expiresAt,
+      message: 'Invite created. Share the invite URL with the user.',
+    },
+  }, 201);
+});
+
+/**
+ * DELETE /api/agency/members/invite/:id - 招待取り消し
+ */
+agencyRoutes.delete('/members/invite/:id', async (c) => {
+  const db = c.env.DB;
+  const user = getCurrentUser(c);
+  const inviteId = c.req.param('id');
+  
+  const agencyInfo = await getUserAgency(db, user.id);
+  if (!agencyInfo) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'NOT_AGENCY', message: 'Agency account required' },
+    }, 403);
+  }
+  
+  // オーナーまたは管理者のみ取り消し可能
+  if (agencyInfo.role !== 'owner' && agencyInfo.role !== 'admin') {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'FORBIDDEN', message: 'Only owner or admin can revoke invites' },
+    }, 403);
+  }
+  
+  const agencyId = agencyInfo.agency.id;
+  const now = new Date().toISOString();
+  
+  const result = await db.prepare(`
+    UPDATE agency_member_invites 
+    SET revoked_at = ?, revoked_by_user_id = ?
+    WHERE id = ? AND agency_id = ? AND accepted_at IS NULL AND revoked_at IS NULL
+  `).bind(now, user.id, inviteId, agencyId).run();
+  
+  if (result.meta.changes === 0) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'NOT_FOUND', message: 'Invite not found or already processed' },
+    }, 404);
+  }
+  
+  return c.json<ApiResponse<any>>({
+    success: true,
+    data: { message: 'Invite revoked' },
+  });
+});
+
+/**
+ * POST /api/agency/members/join - 招待受諾
+ * 
+ * Body: { code: string, token: string }
+ */
+agencyRoutes.post('/members/join', async (c) => {
+  const db = c.env.DB;
+  const user = getCurrentUser(c);
+  
+  const body = await c.req.json();
+  const { code, token } = body;
+  
+  if (!code || !token) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'VALIDATION_ERROR', message: 'code and token are required' },
+    }, 400);
+  }
+  
+  // 招待を検索
+  const tokenHash = await hashToken(token);
+  const invite = await db.prepare(`
+    SELECT * FROM agency_member_invites
+    WHERE invite_code = ? AND invite_token_hash = ?
+      AND accepted_at IS NULL 
+      AND revoked_at IS NULL
+      AND expires_at > datetime('now')
+  `).bind(code, tokenHash).first<any>();
+  
+  if (!invite) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'INVALID_INVITE', message: 'Invalid or expired invite' },
+    }, 400);
+  }
+  
+  // メールアドレスが一致するか確認（セキュリティ強化）
+  if (invite.email.toLowerCase() !== user.email?.toLowerCase()) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'EMAIL_MISMATCH', message: 'This invite was sent to a different email address. Please login with the correct account.' },
+    }, 403);
+  }
+  
+  // 既にメンバーでないか確認
+  const existingMember = await db.prepare(`
+    SELECT id FROM agency_members
+    WHERE agency_id = ? AND user_id = ?
+  `).bind(invite.agency_id, user.id).first();
+  
+  if (existingMember) {
+    // 既に存在する場合は accepted_at を更新
+    const now = new Date().toISOString();
+    await db.prepare(`
+      UPDATE agency_members 
+      SET accepted_at = ?, role_in_agency = ?
+      WHERE agency_id = ? AND user_id = ?
+    `).bind(now, invite.role_in_agency, invite.agency_id, user.id).run();
+  } else {
+    // 新規メンバー追加
+    const memberId = generateId();
+    const now = new Date().toISOString();
+    
+    await db.prepare(`
+      INSERT INTO agency_members (
+        id, agency_id, user_id, role_in_agency, invited_at, accepted_at, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).bind(
+      memberId, invite.agency_id, user.id, invite.role_in_agency,
+      invite.created_at, now, now
+    ).run();
+  }
+  
+  // 招待を受諾済みに更新
+  const now = new Date().toISOString();
+  await db.prepare(`
+    UPDATE agency_member_invites
+    SET accepted_at = ?, accepted_by_user_id = ?
+    WHERE id = ?
+  `).bind(now, user.id, invite.id).run();
+  
+  // ユーザーのロールをagencyに変更（まだagencyロールでない場合）
+  if (user.role !== 'agency') {
+    await db.prepare(`
+      UPDATE users SET role = 'agency', updated_at = ?
+      WHERE id = ? AND role = 'user'
+    `).bind(now, user.id).run();
+  }
+  
+  // agency情報を取得
+  const agency = await db.prepare('SELECT * FROM agencies WHERE id = ?')
+    .bind(invite.agency_id).first();
+  
+  return c.json<ApiResponse<any>>({
+    success: true,
+    data: {
+      message: 'Successfully joined the agency',
+      agency: {
+        id: agency?.id,
+        name: agency?.name,
+      },
+      role: invite.role_in_agency,
+    },
+  });
+});
+
+/**
+ * DELETE /api/agency/members/:id - メンバー削除（オーナーのみ）
+ */
+agencyRoutes.delete('/members/:id', async (c) => {
+  const db = c.env.DB;
+  const user = getCurrentUser(c);
+  const memberId = c.req.param('id');
+  
+  const agencyInfo = await getUserAgency(db, user.id);
+  if (!agencyInfo) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'NOT_AGENCY', message: 'Agency account required' },
+    }, 403);
+  }
+  
+  // オーナーのみ削除可能
+  if (agencyInfo.role !== 'owner') {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'FORBIDDEN', message: 'Only owner can remove members' },
+    }, 403);
+  }
+  
+  const agencyId = agencyInfo.agency.id;
+  
+  // 自分自身は削除不可
+  const member = await db.prepare(`
+    SELECT user_id FROM agency_members WHERE id = ? AND agency_id = ?
+  `).bind(memberId, agencyId).first<any>();
+  
+  if (!member) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'NOT_FOUND', message: 'Member not found' },
+    }, 404);
+  }
+  
+  if (member.user_id === user.id) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'CANNOT_REMOVE_SELF', message: 'Cannot remove yourself' },
+    }, 400);
+  }
+  
+  await db.prepare(`
+    DELETE FROM agency_members WHERE id = ? AND agency_id = ?
+  `).bind(memberId, agencyId).run();
+  
+  return c.json<ApiResponse<any>>({
+    success: true,
+    data: { message: 'Member removed' },
+  });
+});
+
+/**
+ * PUT /api/agency/members/:id/role - メンバー役割変更（オーナーのみ）
+ */
+agencyRoutes.put('/members/:id/role', async (c) => {
+  const db = c.env.DB;
+  const user = getCurrentUser(c);
+  const memberId = c.req.param('id');
+  
+  const agencyInfo = await getUserAgency(db, user.id);
+  if (!agencyInfo) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'NOT_AGENCY', message: 'Agency account required' },
+    }, 403);
+  }
+  
+  // オーナーのみ役割変更可能
+  if (agencyInfo.role !== 'owner') {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'FORBIDDEN', message: 'Only owner can change member roles' },
+    }, 403);
+  }
+  
+  const body = await c.req.json();
+  const { role } = body;
+  
+  if (!['admin', 'staff'].includes(role)) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'VALIDATION_ERROR', message: 'Invalid role' },
+    }, 400);
+  }
+  
+  const agencyId = agencyInfo.agency.id;
+  
+  const result = await db.prepare(`
+    UPDATE agency_members 
+    SET role_in_agency = ?
+    WHERE id = ? AND agency_id = ?
+  `).bind(role, memberId, agencyId).run();
+  
+  if (result.meta.changes === 0) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'NOT_FOUND', message: 'Member not found' },
+    }, 404);
+  }
+  
+  return c.json<ApiResponse<any>>({
+    success: true,
+    data: { message: 'Role updated', role },
+  });
+});
+
 export { agencyRoutes };
