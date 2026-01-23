@@ -2180,137 +2180,740 @@ agencyPages.get('/agency/settings', (c) => {
 
 /**
  * GET /agency/search - 士業向け補助金検索
+ * 凍結仕様v1: User版 /subsidies と同一のUI/UXに統一
  */
 agencyPages.get('/agency/search', (c) => {
   const content = `
-    <div class="space-y-6">
-      <h1 class="text-2xl font-bold text-gray-900">
-        <i class="fas fa-search mr-2"></i>補助金検索
+    <style>
+      .condition-badge { transition: all 0.2s; }
+      .condition-badge:hover { transform: scale(1.05); }
+      .card-hover { transition: all 0.3s; }
+      .card-hover:hover { transform: translateY(-2px); box-shadow: 0 10px 20px rgba(0,0,0,0.1); }
+      .mode-toggle { transition: all 0.2s; }
+      .mode-toggle.active { background-color: #059669; color: white; }
+    </style>
+    
+    <div class="mb-6">
+      <h1 class="text-2xl font-bold text-gray-800">
+        <i class="fas fa-search text-emerald-600 mr-2"></i>補助金を探す（顧客向け）
       </h1>
+      <p class="text-gray-600 mt-1">顧客企業に合った補助金を検索・マッチングします</p>
+    </div>
+    
+    <!-- 顧客企業ステータス表示 -->
+    <div id="client-status" class="hidden mb-6"></div>
+    
+    <!-- 検索・フィルターパネル -->
+    <div id="search-panel" class="bg-white rounded-lg shadow p-6 mb-6">
+      <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <!-- 顧客企業選択 -->
+        <div>
+          <label class="block text-sm font-medium text-gray-700 mb-1">顧客企業</label>
+          <select id="client-select" class="w-full px-3 py-2 border rounded-md focus:ring-2 focus:ring-emerald-500">
+            <option value="">顧客を選択...</option>
+          </select>
+        </div>
+        
+        <!-- キーワード -->
+        <div>
+          <label class="block text-sm font-medium text-gray-700 mb-1">キーワード</label>
+          <input type="text" id="keyword" placeholder="例: IT導入、省エネ、人材育成" 
+                 class="w-full px-3 py-2 border rounded-md focus:ring-2 focus:ring-emerald-500">
+        </div>
+        
+        <!-- 受付状況 -->
+        <div>
+          <label class="block text-sm font-medium text-gray-700 mb-1">受付状況</label>
+          <select id="acceptance" class="w-full px-3 py-2 border rounded-md focus:ring-2 focus:ring-emerald-500">
+            <option value="1">受付中のみ</option>
+            <option value="0">すべて表示</option>
+          </select>
+        </div>
+        
+        <!-- 検索ボタン -->
+        <div class="flex items-end">
+          <button onclick="searchSubsidies()" 
+                  class="w-full bg-emerald-600 text-white px-4 py-2 rounded-md hover:bg-emerald-700 flex items-center justify-center">
+            <i class="fas fa-search mr-2"></i>検索
+          </button>
+        </div>
+      </div>
       
-      <!-- 顧客選択 -->
-      <div class="bg-white rounded-lg shadow p-6">
-        <h2 class="text-lg font-semibold mb-4">顧客を選択</h2>
-        <div class="flex gap-4 items-end">
-          <div class="flex-1">
-            <label class="block text-sm font-medium text-gray-700 mb-1">顧客企業</label>
-            <select id="client-select" class="w-full border rounded-lg px-3 py-2">
-              <option value="">選択してください</option>
+      <!-- 検索モード切替 -->
+      <div class="mt-4 pt-4 border-t">
+        <div class="flex items-center justify-between">
+          <div class="flex items-center space-x-2">
+            <span class="text-sm font-medium text-gray-700">表示モード:</span>
+            <div class="flex rounded-md overflow-hidden border">
+              <button onclick="setSearchMode('match')" id="mode-match" 
+                      class="mode-toggle px-4 py-2 text-sm font-medium active">
+                <i class="fas fa-check-circle mr-1"></i>当てはまるもの優先
+              </button>
+              <button onclick="setSearchMode('all')" id="mode-all"
+                      class="mode-toggle px-4 py-2 text-sm font-medium border-l">
+                <i class="fas fa-list mr-1"></i>全件表示
+              </button>
+            </div>
+          </div>
+          <div id="mode-description" class="text-xs text-gray-500">
+            <i class="fas fa-info-circle mr-1"></i>条件に合う補助金を優先表示し、合わないものは下部に表示します
+          </div>
+        </div>
+      </div>
+      
+      <!-- フィルター（折りたたみ） -->
+      <details class="mt-4">
+        <summary class="text-sm text-gray-600 cursor-pointer hover:text-gray-800">
+          <i class="fas fa-filter mr-1"></i>詳細フィルター
+        </summary>
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mt-3 pt-3 border-t">
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">ステータス</label>
+            <select id="status-filter" class="w-full px-3 py-2 border rounded-md text-sm">
+              <option value="">すべて</option>
+              <option value="PROCEED">推奨（PROCEED）</option>
+              <option value="CAUTION">注意（CAUTION）</option>
+              <option value="NO">非推奨（NO）</option>
             </select>
           </div>
-          <button onclick="searchForClient()" class="bg-emerald-600 text-white px-6 py-2 rounded-lg hover:bg-emerald-700">
-            <i class="fas fa-search mr-2"></i>検索
-          </button>
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">ソート</label>
+            <select id="sort" class="w-full px-3 py-2 border rounded-md text-sm">
+              <option value="score">マッチ度順</option>
+              <option value="acceptance_end_datetime">締切日順</option>
+              <option value="subsidy_max_limit">補助上限順</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">表示件数</label>
+            <select id="limit" class="w-full px-3 py-2 border rounded-md text-sm">
+              <option value="20">20件</option>
+              <option value="50">50件</option>
+              <option value="100">100件</option>
+            </select>
+          </div>
         </div>
-        <p class="text-sm text-gray-500 mt-2">
-          顧客を選択すると、その企業の情報に基づいてマッチする補助金を検索します。
-        </p>
+      </details>
+    </div>
+    
+    <!-- 検索結果サマリー -->
+    <div id="result-summary" class="hidden mb-4">
+      <div class="flex items-center justify-between">
+        <div class="text-sm text-gray-600">
+          <span id="result-count">0</span>件の補助金が見つかりました
+          <span id="data-source" class="ml-2 px-2 py-0.5 bg-gray-100 rounded text-xs"></span>
+        </div>
+        <div class="flex space-x-2">
+          <span class="px-2 py-1 bg-green-100 text-green-800 rounded text-xs cursor-help" title="条件に合致。申請の検討をおすすめします">
+            <i class="fas fa-check-circle mr-1"></i>推奨: <span id="count-proceed">0</span>
+          </span>
+          <span class="px-2 py-1 bg-yellow-100 text-yellow-800 rounded text-xs cursor-help" title="一部条件の確認が必要。詳細を確認してください">
+            <i class="fas fa-exclamation-triangle mr-1"></i>注意: <span id="count-caution">0</span>
+          </span>
+          <span class="px-2 py-1 bg-red-100 text-red-800 rounded text-xs cursor-help" title="現在の条件では申請が難しい可能性があります">
+            <i class="fas fa-times-circle mr-1"></i>非推奨: <span id="count-no">0</span>
+          </span>
+        </div>
       </div>
       
-      <!-- 検索結果 -->
-      <div id="search-results" class="hidden">
-        <div class="bg-white rounded-lg shadow p-6">
-          <h2 class="text-lg font-semibold mb-4">
-            <i class="fas fa-list mr-2"></i>検索結果
-            <span id="result-count" class="text-sm font-normal text-gray-500 ml-2"></span>
-          </h2>
-          <div id="results-list" class="space-y-4">
+      <!-- ステータス説明 -->
+      <div class="mt-3 p-3 bg-white rounded-lg border text-xs">
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <div class="flex items-start gap-2">
+            <span class="px-2 py-1 bg-green-100 text-green-800 rounded font-medium whitespace-nowrap"><i class="fas fa-check-circle mr-1"></i>推奨</span>
+            <span class="text-gray-600">会社の条件に合致しており、申請を検討することをおすすめします</span>
+          </div>
+          <div class="flex items-start gap-2">
+            <span class="px-2 py-1 bg-yellow-100 text-yellow-800 rounded font-medium whitespace-nowrap"><i class="fas fa-exclamation-triangle mr-1"></i>注意</span>
+            <span class="text-gray-600">一部条件の確認が必要です。詳細ページで要件を確認してください</span>
+          </div>
+          <div class="flex items-start gap-2">
+            <span class="px-2 py-1 bg-red-100 text-red-800 rounded font-medium whitespace-nowrap"><i class="fas fa-times-circle mr-1"></i>非推奨</span>
+            <span class="text-gray-600">現在の会社情報では申請要件を満たしていない可能性があります</span>
           </div>
         </div>
       </div>
       
-      <!-- キーワード検索 -->
-      <div class="bg-white rounded-lg shadow p-6">
-        <h2 class="text-lg font-semibold mb-4">キーワードで検索</h2>
-        <div class="flex gap-4">
-          <input type="text" id="keyword-input" placeholder="補助金名、キーワード" 
-            class="flex-1 border rounded-lg px-3 py-2 focus:ring-2 focus:ring-emerald-500">
-          <button onclick="searchByKeyword()" class="bg-emerald-600 text-white px-6 py-2 rounded-lg hover:bg-emerald-700">
-            <i class="fas fa-search mr-2"></i>検索
-          </button>
-        </div>
+      <!-- 条件凡例 -->
+      <div class="mt-2 flex items-center space-x-4 text-xs text-gray-500">
+        <span><span class="inline-block w-3 h-3 bg-green-100 border border-green-400 rounded mr-1"></span>達成条件</span>
+        <span><span class="inline-block w-3 h-3 bg-red-100 border border-red-400 rounded mr-1"></span>未達条件</span>
+        <span><span class="inline-block w-3 h-3 bg-gray-100 border border-gray-400 rounded mr-1"></span>確認が必要</span>
+      </div>
+    </div>
+    
+    <!-- 補助金一覧 -->
+    <div id="subsidies-list" class="space-y-4">
+      <div class="bg-white rounded-lg shadow p-8 text-center text-gray-500">
+        <i class="fas fa-info-circle text-4xl mb-4"></i>
+        <p>顧客企業を選択して検索を実行してください</p>
+      </div>
+    </div>
+    
+    <!-- ページネーション -->
+    <div id="pagination" class="hidden mt-6 flex justify-center space-x-2">
+    </div>
+    
+    <!-- ローディング -->
+    <div id="loading" class="hidden fixed inset-0 bg-black bg-opacity-30 flex items-center justify-center z-50">
+      <div class="bg-white rounded-lg p-6 shadow-xl">
+        <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-emerald-600 mx-auto"></div>
+        <p class="mt-4 text-gray-600">補助金を検索中...</p>
       </div>
     </div>
     
     <script>
+      let currentResults = [];
+      let currentPage = 1;
+      let searchMode = 'match';
       let clients = [];
       
+      // 検索モード切替
+      window.setSearchMode = function(mode) {
+        searchMode = mode;
+        document.getElementById('mode-match').classList.toggle('active', mode === 'match');
+        document.getElementById('mode-all').classList.toggle('active', mode === 'all');
+        
+        const desc = document.getElementById('mode-description');
+        if (mode === 'match') {
+          desc.innerHTML = '<i class="fas fa-info-circle mr-1"></i>条件に合う補助金を優先表示し、合わないものは下部に表示します';
+        } else {
+          desc.innerHTML = '<i class="fas fa-info-circle mr-1"></i>条件に関係なく全件を表示します（学習・比較用）';
+        }
+        
+        if (currentResults.length > 0) {
+          renderResults(currentResults, null);
+        }
+      }
+      
+      // 顧客一覧取得
       async function loadClients() {
-        const data = await apiCall('/api/agency/clients?limit=100');
-        if (data.success) {
-          clients = data.data.clients;
-          const select = document.getElementById('client-select');
-          select.innerHTML = '<option value="">選択してください</option>' +
-            clients.map(c => '<option value="' + c.company_id + '">' + (c.client_name || c.company_name) + '</option>').join('');
+        try {
+          const res = await apiCall('/api/agency/clients?limit=100');
+          console.log('[Agency検索] Clients API response:', JSON.stringify(res, null, 2));
+          
+          if (!res || !res.success) {
+            console.error('[Agency検索] API error:', res?.error);
+            showNoClientAlert();
+            return;
+          }
+          
+          if (res.data && res.data.clients && res.data.clients.length > 0) {
+            clients = res.data.clients;
+            const select = document.getElementById('client-select');
+            if (!select) return;
+            
+            clients.forEach(client => {
+              const option = document.createElement('option');
+              option.value = client.company_id;
+              option.textContent = client.client_name || client.company_name || '(顧客名未設定)';
+              select.appendChild(option);
+            });
+            
+            // 顧客選択変更時にcompleteness確認
+            select.addEventListener('change', async function() {
+              var selectedCompanyId = this.value;
+              if (selectedCompanyId) {
+                await checkClientCompleteness(selectedCompanyId);
+              }
+            });
+            
+            // 最初の顧客を自動選択
+            select.value = clients[0].company_id;
+            await checkClientCompleteness(clients[0].company_id);
+            
+          } else {
+            showNoClientAlert();
+          }
+        } catch (e) {
+          console.error('loadClients error:', e);
+          showNoClientAlert();
         }
       }
       
-      async function searchForClient() {
-        const companyId = document.getElementById('client-select').value;
+      // Completeness APIによる顧客企業情報チェック
+      async function checkClientCompleteness(companyId) {
+        try {
+          const res = await apiCall('/api/companies/' + companyId + '/completeness');
+          console.log('[Agency検索] Completeness API response:', JSON.stringify(res, null, 2));
+          
+          if (!res || !res.success) {
+            console.error('[Agency検索] Completeness API error:', res?.error);
+            showBlockedClientAlert({}, null);
+            return;
+          }
+          
+          const completeness = res.data;
+          const client = clients.find(c => c.company_id === companyId);
+          
+          if (completeness.status === 'BLOCKED') {
+            showBlockedClientAlert(completeness, client);
+          } else if (completeness.status === 'NEEDS_RECOMMENDED') {
+            showNeedsRecommendedAlert(completeness, client);
+          } else {
+            showClientReady(completeness, client);
+          }
+        } catch (e) {
+          console.error('[Agency検索] checkClientCompleteness error:', e);
+          showNoClientAlert();
+        }
+      }
+      
+      // OK: 顧客情報完了
+      function showClientReady(completeness, client) {
+        const statusEl = document.getElementById('client-status');
+        if (!statusEl) return;
+        
+        statusEl.className = 'bg-gradient-to-r from-green-50 to-emerald-50 border border-green-300 rounded-xl p-4 mb-6';
+        statusEl.innerHTML = 
+          '<div class="flex items-start gap-3">' +
+            '<div class="w-10 h-10 bg-green-200 rounded-full flex items-center justify-center flex-shrink-0">' +
+              '<i class="fas fa-check-circle text-green-600 text-lg"></i>' +
+            '</div>' +
+            '<div class="flex-1">' +
+              '<p class="text-green-800 font-semibold">✓ 顧客情報完了 - 最適なマッチングが可能です</p>' +
+              '<p class="text-green-700 text-sm mt-1">' +
+                '<strong>' + (client?.client_name || client?.company_name || '') + '</strong> で検索できます。' +
+                '必須情報・推奨情報がすべて登録されているため、最も精度の高いマッチングが可能です。' +
+              '</p>' +
+              '<div class="flex items-center gap-2 mt-2 text-sm text-green-600">' +
+                '<span class="px-2 py-1 bg-green-100 rounded-full"><i class="fas fa-check mr-1"></i>必須 ' + completeness.required_filled + '/' + completeness.required_count + '</span>' +
+                '<span class="px-2 py-1 bg-green-100 rounded-full"><i class="fas fa-check mr-1"></i>推奨 ' + completeness.recommended_filled + '/' + completeness.recommended_count + '</span>' +
+              '</div>' +
+            '</div>' +
+          '</div>';
+        statusEl.classList.remove('hidden');
+        enableSearchPanel();
+      }
+      
+      // NEEDS_RECOMMENDED: 必須OK、推奨不足
+      function showNeedsRecommendedAlert(completeness, client) {
+        const statusEl = document.getElementById('client-status');
+        if (!statusEl) return;
+        
+        statusEl.className = 'bg-gradient-to-r from-green-50 to-blue-50 border border-green-300 rounded-xl p-4 mb-6';
+        statusEl.classList.remove('hidden');
+        
+        var missingBadges = completeness.missing_recommended.map(function(m) {
+          return '<span class="px-2 py-1 bg-blue-100 text-blue-700 rounded-full text-xs"><i class="fas fa-plus-circle mr-1"></i>' + m + '</span>';
+        }).join(' ');
+        
+        var benefitsHtml = completeness.benefits.slice(0, 3).map(function(b) {
+          return '<li class="text-sm text-blue-700">• ' + b + '</li>';
+        }).join('');
+        
+        statusEl.innerHTML = 
+          '<div class="flex items-start gap-3">' +
+            '<div class="w-10 h-10 bg-green-200 rounded-full flex items-center justify-center flex-shrink-0">' +
+              '<i class="fas fa-check-circle text-green-600 text-lg"></i>' +
+            '</div>' +
+            '<div class="flex-1">' +
+              '<p class="text-green-800 font-semibold">✓ 検索可能 - <strong>' + (client?.client_name || client?.company_name || '') + '</strong></p>' +
+              '<div class="flex items-center gap-2 mt-1 text-sm">' +
+                '<span class="px-2 py-1 bg-green-100 text-green-700 rounded-full"><i class="fas fa-check mr-1"></i>必須 ' + completeness.required_filled + '/' + completeness.required_count + '</span>' +
+                '<span class="px-2 py-1 bg-blue-100 text-blue-700 rounded-full"><i class="fas fa-info-circle mr-1"></i>推奨 ' + completeness.recommended_filled + '/' + completeness.recommended_count + '</span>' +
+              '</div>' +
+              '<details class="mt-3">' +
+                '<summary class="text-sm text-blue-700 cursor-pointer hover:text-blue-800"><i class="fas fa-lightbulb mr-1"></i>さらに精度を上げるには（推奨項目）</summary>' +
+                '<div class="mt-2 p-3 bg-white/70 rounded-lg">' +
+                  '<div class="flex flex-wrap gap-1 mb-2">' + missingBadges + '</div>' +
+                  '<ul class="space-y-1 mb-2">' + benefitsHtml + '</ul>' +
+                  '<a href="/agency/clients/' + (client?.id || '') + '" class="inline-flex items-center gap-1 text-blue-600 hover:text-blue-800 text-sm">' +
+                    '<i class="fas fa-edit text-xs"></i> 顧客情報を編集' +
+                  '</a>' +
+                '</div>' +
+              '</details>' +
+            '</div>' +
+          '</div>';
+        
+        enableSearchPanel();
+      }
+      
+      // BLOCKED: 必須項目不足
+      function showBlockedClientAlert(completeness, client) {
+        const statusEl = document.getElementById('client-status');
+        if (!statusEl) return;
+        
+        statusEl.className = 'bg-gradient-to-r from-red-50 to-orange-50 border border-red-300 rounded-xl p-5 mb-6';
+        statusEl.classList.remove('hidden');
+        
+        var requiredChecklist = '';
+        requiredChecklist += '<div class="flex items-center gap-2 ' + (completeness.required?.name ? 'text-green-600' : 'text-red-600') + '">';
+        requiredChecklist += '<i class="fas fa-' + (completeness.required?.name ? 'check-circle' : 'times-circle') + '"></i>';
+        requiredChecklist += '<span>会社名</span></div>';
+        
+        requiredChecklist += '<div class="flex items-center gap-2 ' + (completeness.required?.prefecture ? 'text-green-600' : 'text-red-600') + '">';
+        requiredChecklist += '<i class="fas fa-' + (completeness.required?.prefecture ? 'check-circle' : 'times-circle') + '"></i>';
+        requiredChecklist += '<span>都道府県</span></div>';
+        
+        requiredChecklist += '<div class="flex items-center gap-2 ' + (completeness.required?.industry_major ? 'text-green-600' : 'text-red-600') + '">';
+        requiredChecklist += '<i class="fas fa-' + (completeness.required?.industry_major ? 'check-circle' : 'times-circle') + '"></i>';
+        requiredChecklist += '<span>業種</span></div>';
+        
+        requiredChecklist += '<div class="flex items-center gap-2 ' + (completeness.required?.employee_count ? 'text-green-600' : 'text-red-600') + '">';
+        requiredChecklist += '<i class="fas fa-' + (completeness.required?.employee_count ? 'check-circle' : 'times-circle') + '"></i>';
+        requiredChecklist += '<span>従業員数（数値 &gt; 0）</span></div>';
+        
+        statusEl.innerHTML = 
+          '<div class="flex items-start gap-4">' +
+            '<div class="w-12 h-12 bg-red-200 rounded-full flex items-center justify-center flex-shrink-0">' +
+              '<i class="fas fa-exclamation-triangle text-red-600 text-xl"></i>' +
+            '</div>' +
+            '<div class="flex-1">' +
+              '<p class="text-red-800 font-semibold text-lg"><i class="fas fa-lock mr-1"></i>顧客情報が不足しています</p>' +
+              '<p class="text-red-700 text-sm mt-1 mb-3">' +
+                '<strong>' + (client?.client_name || client?.company_name || 'この顧客') + '</strong> の補助金検索を行うには、以下の<strong>必須4項目</strong>をすべて入力してください:' +
+              '</p>' +
+              '<div class="grid grid-cols-2 md:grid-cols-4 gap-2 mb-4 p-3 bg-white/50 rounded-lg">' + requiredChecklist + '</div>' +
+              '<div class="bg-white/70 rounded-lg p-3 mb-3 text-sm text-red-800">' +
+                '<i class="fas fa-lightbulb mr-2 text-yellow-500"></i>' +
+                '<strong>メリット:</strong> 必須情報を登録すると、' +
+                '<span class="font-semibold">47都道府県＋国の補助金から最適なものを自動マッチング</span>できます。' +
+              '</div>' +
+              '<a href="/agency/clients/' + (client?.id || '') + '" class="inline-flex items-center gap-2 bg-red-600 text-white px-5 py-2.5 rounded-lg hover:bg-red-700 transition shadow">' +
+                '<i class="fas fa-edit"></i> 顧客情報を編集する' +
+              '</a>' +
+            '</div>' +
+          '</div>';
+        
+        disableSearchPanel();
+      }
+      
+      // 顧客が存在しない場合
+      function showNoClientAlert() {
+        const statusEl = document.getElementById('client-status');
+        if (!statusEl) return;
+        
+        statusEl.className = 'bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-300 rounded-xl p-5 mb-6';
+        statusEl.innerHTML = 
+          '<div class="flex items-start gap-4">' +
+            '<div class="w-12 h-12 bg-blue-200 rounded-full flex items-center justify-center flex-shrink-0">' +
+              '<i class="fas fa-building text-blue-600 text-xl"></i>' +
+            '</div>' +
+            '<div class="flex-1">' +
+              '<p class="text-blue-800 font-semibold text-lg">顧客企業を登録して、補助金を探しましょう</p>' +
+              '<p class="text-blue-700 text-sm mt-1 mb-3">' +
+                '補助金検索を始めるには、まず<strong>顧客企業の基本情報</strong>を登録してください。' +
+              '</p>' +
+              '<a href="/agency/clients" class="inline-flex items-center gap-2 bg-blue-600 text-white px-6 py-3 rounded-lg hover:bg-blue-700 transition shadow-md">' +
+                '<i class="fas fa-plus-circle"></i> 顧客企業を追加する' +
+              '</a>' +
+            '</div>' +
+          '</div>';
+        statusEl.classList.remove('hidden');
+        
+        disableSearchPanel();
+      }
+      
+      function enableSearchPanel() {
+        const panel = document.getElementById('search-panel');
+        if (panel) {
+          panel.classList.remove('opacity-50', 'pointer-events-none');
+        }
+      }
+      
+      function disableSearchPanel() {
+        const panel = document.getElementById('search-panel');
+        if (panel) {
+          panel.classList.add('opacity-50', 'pointer-events-none');
+        }
+        
+        document.getElementById('subsidies-list').innerHTML = 
+          '<div class="bg-white rounded-lg shadow p-8 text-center">' +
+            '<div class="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-4">' +
+              '<i class="fas fa-lock text-gray-400 text-2xl"></i>' +
+            '</div>' +
+            '<p class="text-gray-600">必須4項目を入力すると検索できます</p>' +
+          '</div>';
+      }
+      
+      // 補助金検索
+      window.searchSubsidies = async function(page = 1) {
+        var clientSelect = document.getElementById('client-select');
+        var companyId = clientSelect ? clientSelect.value : '';
         if (!companyId) {
-          alert('顧客を選択してください');
+          alert('顧客企業を選択してください');
           return;
         }
         
-        document.getElementById('search-results').classList.remove('hidden');
-        document.getElementById('results-list').innerHTML = '<p class="text-gray-500 loading">検索中...</p>';
+        currentPage = page;
+        var limitEl = document.getElementById('limit');
+        var limit = limitEl ? parseInt(limitEl.value) || 20 : 20;
+        var offset = (page - 1) * limit;
         
-        const data = await apiCall('/api/subsidies/search?company_id=' + companyId + '&limit=20');
-        renderResults(data);
+        var keywordEl = document.getElementById('keyword');
+        var acceptanceEl = document.getElementById('acceptance');
+        var sortEl = document.getElementById('sort');
+        
+        var params = new URLSearchParams({
+          company_id: companyId,
+          keyword: keywordEl ? keywordEl.value || '' : '',
+          acceptance: acceptanceEl ? acceptanceEl.value || '1' : '1',
+          sort: sortEl ? sortEl.value || 'score' : 'score',
+          order: sortEl && sortEl.value === 'score' ? 'DESC' : 'ASC',
+          limit: limit.toString(),
+          offset: offset.toString()
+        });
+        
+        document.getElementById('loading').classList.remove('hidden');
+        
+        try {
+          const res = await apiCall('/api/subsidies/search?' + params);
+          
+          if (res.success) {
+            currentResults = res.data;
+            renderResults(res.data, res.meta);
+          } else {
+            document.getElementById('subsidies-list').innerHTML = 
+              '<div class="bg-red-50 rounded-lg p-4 text-red-600"><i class="fas fa-exclamation-circle mr-2"></i>' + 
+              (res.error?.message || '検索に失敗しました') + '</div>';
+          }
+        } catch (e) {
+          console.error('Search error:', e);
+          document.getElementById('subsidies-list').innerHTML = 
+            '<div class="bg-red-50 rounded-lg p-4 text-red-600"><i class="fas fa-exclamation-circle mr-2"></i>検索中にエラーが発生しました</div>';
+        } finally {
+          document.getElementById('loading').classList.add('hidden');
+        }
       }
       
-      async function searchByKeyword() {
-        const keyword = document.getElementById('keyword-input').value.trim();
-        if (!keyword) {
-          alert('キーワードを入力してください');
+      // 結果描画（User版と同一）
+      function renderResults(results, meta) {
+        const statusFilter = document.getElementById('status-filter').value;
+        let filtered = results;
+        
+        if (statusFilter) {
+          filtered = results.filter(r => r.evaluation.status === statusFilter);
+        }
+        
+        if (searchMode === 'match') {
+          const statusOrder = { 'PROCEED': 0, 'CAUTION': 1, 'NO': 2 };
+          filtered.sort((a, b) => {
+            const orderDiff = statusOrder[a.evaluation.status] - statusOrder[b.evaluation.status];
+            if (orderDiff !== 0) return orderDiff;
+            return (b.evaluation.score || 0) - (a.evaluation.score || 0);
+          });
+        }
+        
+        document.getElementById('result-summary').classList.remove('hidden');
+        document.getElementById('result-count').textContent = meta?.total || filtered.length;
+        document.getElementById('data-source').textContent = 'データソース: ' + (meta?.source || 'API');
+        
+        const countProceed = results.filter(r => r.evaluation.status === 'PROCEED').length;
+        const countCaution = results.filter(r => r.evaluation.status === 'CAUTION').length;
+        const countNo = results.filter(r => r.evaluation.status === 'NO').length;
+        document.getElementById('count-proceed').textContent = countProceed;
+        document.getElementById('count-caution').textContent = countCaution;
+        document.getElementById('count-no').textContent = countNo;
+        
+        if (filtered.length === 0) {
+          document.getElementById('subsidies-list').innerHTML = 
+            '<div class="bg-white rounded-lg shadow p-8 text-center text-gray-500">' +
+            '<i class="fas fa-search text-4xl mb-4"></i>' +
+            '<p>条件に一致する補助金が見つかりませんでした</p>' +
+            '<p class="text-sm mt-2">キーワードを変更するか、フィルターを調整してください</p></div>';
           return;
         }
         
-        document.getElementById('search-results').classList.remove('hidden');
-        document.getElementById('results-list').innerHTML = '<p class="text-gray-500 loading">検索中...</p>';
-        
-        const data = await apiCall('/api/subsidies/search?keyword=' + encodeURIComponent(keyword) + '&limit=20');
-        renderResults(data);
-      }
-      
-      function renderResults(data) {
-        const container = document.getElementById('results-list');
-        const countEl = document.getElementById('result-count');
-        
-        if (!data.success) {
-          container.innerHTML = '<p class="text-red-500">検索エラー: ' + (data.error?.message || '不明なエラー') + '</p>';
-          countEl.textContent = '';
-          return;
-        }
-        
-        const subsidies = data.data.subsidies || data.data.results || [];
-        countEl.textContent = subsidies.length + '件';
-        
-        if (subsidies.length === 0) {
-          container.innerHTML = '<p class="text-gray-500">該当する補助金が見つかりませんでした</p>';
-          return;
-        }
-        
-        container.innerHTML = subsidies.map(s => \`
-          <div class="border rounded-lg p-4 hover:bg-gray-50">
-            <div class="flex justify-between items-start">
-              <div class="flex-1">
-                <h3 class="font-semibold text-gray-900">\${s.title || s.name || '補助金'}</h3>
-                <p class="text-sm text-gray-600 mt-1">\${s.target_area_search || s.area || ''}</p>
-                <div class="flex items-center gap-4 mt-2 text-sm text-gray-500">
-                  \${s.subsidy_max_limit ? '<span><i class="fas fa-yen-sign mr-1"></i>上限: ' + Number(s.subsidy_max_limit).toLocaleString() + '円</span>' : ''}
-                  \${s.subsidy_rate ? '<span><i class="fas fa-percentage mr-1"></i>補助率: ' + s.subsidy_rate + '</span>' : ''}
-                  \${s.acceptance_end_datetime ? '<span><i class="fas fa-calendar mr-1"></i>締切: ' + new Date(s.acceptance_end_datetime).toLocaleDateString('ja-JP') + '</span>' : ''}
+        const html = filtered.map(item => {
+          const s = item.subsidy;
+          const e = item.evaluation;
+          
+          const statusConfig = {
+            'PROCEED': { bg: 'bg-green-100', text: 'text-green-800', border: 'border-green-500', icon: 'fa-check-circle', label: '推奨' },
+            'CAUTION': { bg: 'bg-yellow-100', text: 'text-yellow-800', border: 'border-yellow-500', icon: 'fa-exclamation-triangle', label: '注意' },
+            'NO': { bg: 'bg-red-100', text: 'text-red-800', border: 'border-red-500', icon: 'fa-times-circle', label: '非推奨' }
+          };
+          const sc = statusConfig[e.status] || statusConfig['CAUTION'];
+          
+          var endDate = s.acceptance_end_datetime ? new Date(s.acceptance_end_datetime) : null;
+          if (endDate && isNaN(endDate.getTime())) endDate = null;
+          var daysLeft = endDate ? Math.ceil((endDate - new Date()) / (1000 * 60 * 60 * 24)) : null;
+          var urgencyClass = daysLeft !== null && daysLeft <= 14 ? 'text-red-600 font-bold' : 'text-gray-600';
+          
+          const conditionBadges = generateConditionBadges(e);
+          const whyMatched = generateWhyMatched(e);
+          
+          return \`
+            <div class="card-hover bg-white rounded-lg shadow border-l-4 \${sc.border}">
+              <div class="p-5">
+                <div class="flex items-start justify-between">
+                  <div class="flex-1">
+                    <div class="flex items-center space-x-2 mb-2">
+                      <span class="px-2 py-1 \${sc.bg} \${sc.text} rounded text-xs font-medium">
+                        <i class="fas \${sc.icon} mr-1"></i>\${sc.label}
+                      </span>
+                      <span class="px-2 py-1 bg-blue-100 text-blue-800 rounded text-xs">
+                        スコア: \${e.score}%
+                      </span>
+                      \${e.risk_flags.length > 0 ? \`
+                        <span class="px-2 py-1 bg-orange-100 text-orange-800 rounded text-xs">
+                          <i class="fas fa-flag mr-1"></i>リスク: \${e.risk_flags.length}件
+                        </span>
+                      \` : ''}
+                    </div>
+                    
+                    <h3 class="text-lg font-semibold text-gray-800 mb-2">
+                      <a href="/subsidies/\${s.id}?company_id=\${document.getElementById('client-select').value}" 
+                         class="hover:text-emerald-600 hover:underline" target="_blank">
+                        \${s.title || s.name || '補助金名未設定'}
+                      </a>
+                    </h3>
+                    
+                    \${whyMatched ? \`
+                      <div class="mb-3 px-3 py-2 bg-gray-50 rounded-md text-sm text-gray-700">
+                        <i class="fas fa-lightbulb text-yellow-500 mr-1"></i>\${whyMatched}
+                      </div>
+                    \` : ''}
+                    
+                    <div class="flex flex-wrap gap-4 text-sm mb-3">
+                      <div class="flex items-center text-gray-600">
+                        <i class="fas fa-building mr-1"></i>
+                        \${s.subsidy_executing_organization || '事務局情報なし'}
+                      </div>
+                      <div class="flex items-center \${urgencyClass}">
+                        <i class="fas fa-calendar-alt mr-1"></i>
+                        \${endDate ? \`締切: \${endDate.toLocaleDateString('ja-JP')}\` : '締切情報なし'}
+                        \${daysLeft !== null ? \` (あと\${daysLeft}日)\` : ''}
+                      </div>
+                      <div class="flex items-center text-gray-600">
+                        <i class="fas fa-yen-sign mr-1"></i>
+                        上限: \${s.subsidy_max_limit ? Number(s.subsidy_max_limit).toLocaleString() + '円' : '情報なし'}
+                      </div>
+                    </div>
+                    
+                    \${conditionBadges}
+                  </div>
+                  
+                  <div class="ml-4 flex flex-col space-y-2">
+                    <a href="/subsidies/\${s.id}?company_id=\${document.getElementById('client-select').value}" 
+                       class="bg-emerald-600 text-white px-4 py-2 rounded-md hover:bg-emerald-700 text-sm text-center" target="_blank">
+                      <i class="fas fa-arrow-right mr-1"></i>詳細を見る
+                    </a>
+                    \${e.status !== 'NO' ? \`
+                      <a href="/chat?subsidy_id=\${s.id}&company_id=\${document.getElementById('client-select').value}" 
+                         class="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700 text-sm text-center" target="_blank">
+                        <i class="fas fa-comments mr-1"></i>壁打ち
+                      </a>
+                    \` : ''}
+                  </div>
                 </div>
               </div>
-              <a href="/subsidies/' + (s.id || s.subsidy_id) + '" target="_blank" 
-                class="text-emerald-600 hover:text-emerald-800 p-2">
-                <i class="fas fa-external-link-alt"></i>
-              </a>
             </div>
-          </div>
-        \`).join('');
+          \`;
+        }).join('');
+        
+        document.getElementById('subsidies-list').innerHTML = html;
+        
+        // ページネーション
+        if (meta && meta.total > parseInt(document.getElementById('limit').value)) {
+          const totalPages = Math.ceil(meta.total / parseInt(document.getElementById('limit').value));
+          let pagHtml = '';
+          
+          if (currentPage > 1) {
+            pagHtml += \`<button onclick="searchSubsidies(\${currentPage - 1})" class="px-3 py-1 border rounded hover:bg-gray-50">前へ</button>\`;
+          }
+          
+          for (let i = Math.max(1, currentPage - 2); i <= Math.min(totalPages, currentPage + 2); i++) {
+            pagHtml += \`<button onclick="searchSubsidies(\${i})" class="px-3 py-1 border rounded \${i === currentPage ? 'bg-emerald-600 text-white' : 'hover:bg-gray-50'}">\${i}</button>\`;
+          }
+          
+          if (currentPage < totalPages) {
+            pagHtml += \`<button onclick="searchSubsidies(\${currentPage + 1})" class="px-3 py-1 border rounded hover:bg-gray-50">次へ</button>\`;
+          }
+          
+          document.getElementById('pagination').innerHTML = pagHtml;
+          document.getElementById('pagination').classList.remove('hidden');
+        } else {
+          document.getElementById('pagination').classList.add('hidden');
+        }
       }
+      
+      // 条件バッジ生成（User版と同一）
+      function generateConditionBadges(evaluation) {
+        const badges = [];
+        
+        function toDisplayString(item) {
+          if (typeof item === 'string') return item;
+          if (item && typeof item === 'object') {
+            return item.reason || item.text || item.message || item.description || item.name || JSON.stringify(item);
+          }
+          return String(item);
+        }
+        
+        if (evaluation.match_reasons && evaluation.match_reasons.length > 0) {
+          evaluation.match_reasons.slice(0, 3).forEach(reason => {
+            var displayText = toDisplayString(reason);
+            badges.push(\`
+              <span class="condition-badge px-2 py-1 bg-green-100 border border-green-300 text-green-800 rounded text-xs">
+                <i class="fas fa-check text-green-500 mr-1"></i>\${displayText}
+              </span>
+            \`);
+          });
+        }
+        
+        if (evaluation.risk_flags && evaluation.risk_flags.length > 0) {
+          evaluation.risk_flags.slice(0, 2).forEach(flag => {
+            var displayText = toDisplayString(flag);
+            badges.push(\`
+              <span class="condition-badge px-2 py-1 bg-red-100 border border-red-300 text-red-800 rounded text-xs">
+                <i class="fas fa-times text-red-500 mr-1"></i>\${displayText}
+              </span>
+            \`);
+          });
+        }
+        
+        const totalItems = (evaluation.match_reasons?.length || 0) + (evaluation.risk_flags?.length || 0);
+        const shownItems = Math.min(3, evaluation.match_reasons?.length || 0) + Math.min(2, evaluation.risk_flags?.length || 0);
+        if (totalItems > shownItems) {
+          badges.push(\`<span class="text-xs text-gray-500">+\${totalItems - shownItems}件</span>\`);
+        }
+        
+        if (badges.length === 0) return '';
+        
+        return \`
+          <div class="flex flex-wrap gap-2 pt-2 border-t">
+            \${badges.join('')}
+          </div>
+        \`;
+      }
+      
+      // なぜ出てきたかの説明（User版と同一）
+      function generateWhyMatched(evaluation) {
+        function toDisplayString(item) {
+          if (typeof item === 'string') return item;
+          if (item && typeof item === 'object') {
+            return item.reason || item.text || item.message || item.description || item.name || '';
+          }
+          return String(item);
+        }
+        
+        if (evaluation.status === 'PROCEED') {
+          if (evaluation.match_reasons && evaluation.match_reasons.length > 0) {
+            var reason = toDisplayString(evaluation.match_reasons[0]);
+            if (reason) return \`顧客企業は「\${reason}」に該当するため、この補助金が推奨されています。\`;
+          }
+          return '顧客企業の条件に合致しています。';
+        } else if (evaluation.status === 'CAUTION') {
+          if (evaluation.risk_flags && evaluation.risk_flags.length > 0) {
+            var flag = toDisplayString(evaluation.risk_flags[0]);
+            if (flag) return \`「\${flag}」の確認が必要です。条件を満たせば申請可能な可能性があります。\`;
+          }
+          return '一部の条件について確認が必要です。';
+        } else if (evaluation.status === 'NO') {
+          if (evaluation.risk_flags && evaluation.risk_flags.length > 0) {
+            var flag = toDisplayString(evaluation.risk_flags[0]);
+            if (flag) return \`「\${flag}」のため、現在の条件では申請が難しい可能性があります。\`;
+          }
+          return '現在の条件では申請要件を満たしていません。';
+        }
+        return '';
+      }
+      
+      // フィルター変更時に再描画
+      document.getElementById('status-filter').addEventListener('change', () => {
+        renderResults(currentResults, null);
+      });
       
       // 初期化
       if (document.readyState === 'loading') {

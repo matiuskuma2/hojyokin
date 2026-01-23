@@ -405,7 +405,6 @@ subsidyPages.get('/subsidies', (c) => {
           // APIエラーの場合
           if (!res || !res.success) {
             console.error('[補助金検索] API error:', res?.error);
-            // 認証エラーの場合はログインページへリダイレクトされるはずなので、ここでは別のエラー
             showNoCompanyAlert();
             return;
           }
@@ -417,79 +416,29 @@ subsidyPages.get('/subsidies', (c) => {
               return;
             }
             
-            // 検索可能な会社があるかチェック（必須4項目が揃っている会社）
-            let hasSearchableCompany = false;
-            let firstSearchableValue = null;
-            
-            res.data.forEach(company => {
-              console.log('[補助金検索] Company data:', JSON.stringify(company, null, 2));
-              
-              // 必須4項目のチェック（フィールド名のバリエーションに対応）
-              const hasName = !!company.name;
-              const hasPref = !!company.prefecture;
-              const hasIndustry = !!(company.industry_major || company.industry || company.industry_minor);
-              const hasEmployees = company.employee_count !== null && company.employee_count !== undefined && company.employee_count > 0;
-              const isSearchable = hasName && hasPref && hasIndustry && hasEmployees;
-              
-              console.log('[補助金検索] Searchable check:', { 
-                companyName: company.name,
-                hasName, hasPref, hasIndustry, hasEmployees, isSearchable,
-                industry_major: company.industry_major,
-                industry: company.industry,
-                employee_count: company.employee_count,
-                prefecture: company.prefecture
-              });
-              
-              const option = document.createElement('option');
-              option.value = company.id;
-              
-              if (isSearchable) {
-                option.textContent = company.name + ' (' + company.prefecture + ')';
-                if (!hasSearchableCompany) {
-                  firstSearchableValue = company.id;
-                }
-                hasSearchableCompany = true;
-              } else {
-                // 必須項目が足りない会社
-                const missing = [];
-                if (!hasName) missing.push('会社名');
-                if (!hasPref) missing.push('都道府県');
-                if (!hasIndustry) missing.push('業種');
-                if (!hasEmployees) missing.push('従業員数');
-                option.textContent = (company.name || '(会社名未設定)') + ' [情報不足: ' + missing.join('、') + ']';
-                option.disabled = true;
-                option.style.color = '#9ca3af';
-              }
-              
-              select.appendChild(option);
-            });
-            
             // 会社リストをグローバルに保存
             window.companiesList = res.data;
             
-            // 会社選択変更時のイベントリスナー
-            select.addEventListener('change', function() {
+            // まず全会社をセレクトに追加（後でcompleteness APIで状態を確認）
+            res.data.forEach(company => {
+              const option = document.createElement('option');
+              option.value = company.id;
+              option.textContent = company.name || '(会社名未設定)';
+              select.appendChild(option);
+            });
+            
+            // 会社選択変更時のイベントリスナー（Completeness APIを使用）
+            select.addEventListener('change', async function() {
               var selectedId = this.value;
-              var selectedCompany = window.companiesList.find(c => c.id === selectedId);
-              if (selectedCompany) {
-                showCompanyReady(selectedCompany);
+              if (selectedId) {
+                await checkCompanyCompleteness(selectedId);
               }
             });
             
-            if (hasSearchableCompany && firstSearchableValue) {
-              // 検索可能な会社を自動選択
-              select.value = firstSearchableValue;
-              showCompanyReady(res.data.find(c => c.id === firstSearchableValue));
-              
-              // 検索パネルを有効化
-              const searchPanel = document.querySelector('.bg-white.rounded-lg.shadow.p-6.mb-6');
-              if (searchPanel) {
-                searchPanel.classList.remove('opacity-50', 'pointer-events-none');
-              }
-            } else {
-              // 会社はあるが、必須情報が足りない
-              showIncompleteCompanyAlert(res.data[0]);
-            }
+            // 最初の会社を自動選択してcompleteness確認
+            select.value = res.data[0].id;
+            await checkCompanyCompleteness(res.data[0].id);
+            
           } else {
             // 会社情報未登録
             showNoCompanyAlert();
@@ -500,8 +449,45 @@ subsidyPages.get('/subsidies', (c) => {
         }
       }
       
-      // 会社情報準備完了の表示
-      function showCompanyReady(company) {
+      // ========================================
+      // Completeness API による会社情報チェック（凍結仕様v1）
+      // ========================================
+      async function checkCompanyCompleteness(companyId) {
+        try {
+          const res = await api('/api/companies/' + companyId + '/completeness');
+          console.log('[補助金検索] Completeness API response:', JSON.stringify(res, null, 2));
+          
+          if (!res || !res.success) {
+            console.error('[補助金検索] Completeness API error:', res?.error);
+            showIncompleteCompanyAlert(res?.data || {});
+            return;
+          }
+          
+          const completeness = res.data;
+          const company = window.companiesList.find(c => c.id === companyId);
+          
+          if (completeness.status === 'BLOCKED') {
+            // 必須項目不足 → 検索不可
+            showBlockedCompanyAlert(completeness, company);
+          } else if (completeness.status === 'NEEDS_RECOMMENDED') {
+            // 必須OK、推奨不足 → 検索可能、精度向上を推奨
+            showNeedsRecommendedAlert(completeness, company);
+          } else {
+            // OK → 完全に検索可能
+            showCompanyReady(completeness, company);
+          }
+        } catch (e) {
+          console.error('[補助金検索] checkCompanyCompleteness error:', e);
+          showNoCompanyAlert();
+        }
+      }
+      
+      // ========================================
+      // StatusBanner/Checklist - Completeness API 統一版（凍結仕様v1）
+      // ========================================
+      
+      // OK: 会社情報準備完了（必須+推奨充足）
+      function showCompanyReady(completeness, company) {
         const statusEl = document.getElementById('company-status');
         if (!statusEl) return;
         
@@ -512,55 +498,112 @@ subsidyPages.get('/subsidies', (c) => {
               '<i class="fas fa-check-circle text-green-600 text-lg"></i>' +
             '</div>' +
             '<div class="flex-1">' +
-              '<p class="text-green-800 font-semibold">✓ 会社情報登録済み</p>' +
+              '<p class="text-green-800 font-semibold">✓ 会社情報完了 - 最適なマッチングが可能です</p>' +
               '<p class="text-green-700 text-sm mt-1">' +
-                '<strong>' + (company.name || '') + '</strong> で検索できます。' +
-                '都道府県・業種・従業員数が登録されているため、最適な補助金をマッチングできます。' +
+                '<strong>' + (company?.name || '') + '</strong> で検索できます。' +
+                '必須情報・推奨情報がすべて登録されているため、最も精度の高いマッチングが可能です。' +
               '</p>' +
-              '<a href="/company" class="inline-flex items-center gap-2 text-green-700 hover:text-green-800 text-sm mt-2">' +
-                '<i class="fas fa-edit text-xs"></i> さらに精度を上げるには会社情報を編集' +
-              '</a>' +
+              '<div class="flex items-center gap-2 mt-2 text-sm text-green-600">' +
+                '<span class="px-2 py-1 bg-green-100 rounded-full"><i class="fas fa-check mr-1"></i>必須 ' + completeness.required_filled + '/' + completeness.required_count + '</span>' +
+                '<span class="px-2 py-1 bg-green-100 rounded-full"><i class="fas fa-check mr-1"></i>推奨 ' + completeness.recommended_filled + '/' + completeness.recommended_count + '</span>' +
+              '</div>' +
             '</div>' +
           '</div>';
         statusEl.classList.remove('hidden');
+        
+        // 検索パネルを有効化
+        enableSearchPanel();
       }
       
-      // 会社情報が不完全な場合のアラート
-      function showIncompleteCompanyAlert(company) {
+      // NEEDS_RECOMMENDED: 必須OK、推奨不足（検索可能だが精度向上を推奨）
+      function showNeedsRecommendedAlert(completeness, company) {
         const statusEl = document.getElementById('company-status');
         if (!statusEl) return;
         
-        statusEl.className = 'bg-gradient-to-r from-orange-50 to-amber-50 border border-orange-300 rounded-xl p-5 mb-6';
+        statusEl.className = 'bg-gradient-to-r from-green-50 to-blue-50 border border-green-300 rounded-xl p-4 mb-6';
         statusEl.classList.remove('hidden');
         
-        // 何が足りないかを表示
-        const missing = [];
-        if (!company.name) missing.push('会社名');
-        if (!company.prefecture) missing.push('都道府県');
-        if (!(company.industry_major || company.industry)) missing.push('業種');
-        if (!company.employee_count || company.employee_count <= 0) missing.push('従業員数');
+        // 推奨不足項目
+        var missingBadges = completeness.missing_recommended.map(function(m) {
+          return '<span class="px-2 py-1 bg-blue-100 text-blue-700 rounded-full text-xs"><i class="fas fa-plus-circle mr-1"></i>' + m + '</span>';
+        }).join(' ');
         
-        var missingBadges = missing.map(function(m) {
-          return '<span class="px-3 py-1 bg-orange-100 text-orange-700 rounded-full text-sm"><i class="fas fa-exclamation-circle mr-1"></i>' + m + '</span>';
+        // メリット表示（最大3つ）
+        var benefitsHtml = completeness.benefits.slice(0, 3).map(function(b) {
+          return '<li class="text-sm text-blue-700">• ' + b + '</li>';
         }).join('');
         
         statusEl.innerHTML = 
-          '<div class="flex items-start gap-4">' +
-            '<div class="w-12 h-12 bg-orange-200 rounded-full flex items-center justify-center flex-shrink-0">' +
-              '<i class="fas fa-exclamation-triangle text-orange-600 text-xl"></i>' +
+          '<div class="flex items-start gap-3">' +
+            '<div class="w-10 h-10 bg-green-200 rounded-full flex items-center justify-center flex-shrink-0">' +
+              '<i class="fas fa-check-circle text-green-600 text-lg"></i>' +
             '</div>' +
             '<div class="flex-1">' +
-              '<p class="text-orange-800 font-semibold text-lg">会社情報を完成させましょう</p>' +
-              '<p class="text-orange-700 text-sm mt-1 mb-3">' +
-                '補助金検索には以下の情報が<strong>必須</strong>です。現在不足しています:' +
+              '<p class="text-green-800 font-semibold">✓ 検索可能 - <strong>' + (company?.name || '') + '</strong></p>' +
+              '<div class="flex items-center gap-2 mt-1 text-sm">' +
+                '<span class="px-2 py-1 bg-green-100 text-green-700 rounded-full"><i class="fas fa-check mr-1"></i>必須 ' + completeness.required_filled + '/' + completeness.required_count + '</span>' +
+                '<span class="px-2 py-1 bg-blue-100 text-blue-700 rounded-full"><i class="fas fa-info-circle mr-1"></i>推奨 ' + completeness.recommended_filled + '/' + completeness.recommended_count + '</span>' +
+              '</div>' +
+              '<details class="mt-3">' +
+                '<summary class="text-sm text-blue-700 cursor-pointer hover:text-blue-800"><i class="fas fa-lightbulb mr-1"></i>さらに精度を上げるには（推奨項目）</summary>' +
+                '<div class="mt-2 p-3 bg-white/70 rounded-lg">' +
+                  '<div class="flex flex-wrap gap-1 mb-2">' + missingBadges + '</div>' +
+                  '<ul class="space-y-1 mb-2">' + benefitsHtml + '</ul>' +
+                  '<a href="/company" class="inline-flex items-center gap-1 text-blue-600 hover:text-blue-800 text-sm">' +
+                    '<i class="fas fa-edit text-xs"></i> 会社情報を編集' +
+                  '</a>' +
+                '</div>' +
+              '</details>' +
+            '</div>' +
+          '</div>';
+        
+        // 検索パネルを有効化（検索可能）
+        enableSearchPanel();
+      }
+      
+      // BLOCKED: 必須項目不足（検索不可）
+      function showBlockedCompanyAlert(completeness, company) {
+        const statusEl = document.getElementById('company-status');
+        if (!statusEl) return;
+        
+        statusEl.className = 'bg-gradient-to-r from-red-50 to-orange-50 border border-red-300 rounded-xl p-5 mb-6';
+        statusEl.classList.remove('hidden');
+        
+        // 必須不足項目（赤いチェックリスト）
+        var requiredChecklist = '';
+        requiredChecklist += '<div class="flex items-center gap-2 ' + (completeness.required.name ? 'text-green-600' : 'text-red-600') + '">';
+        requiredChecklist += '<i class="fas fa-' + (completeness.required.name ? 'check-circle' : 'times-circle') + '"></i>';
+        requiredChecklist += '<span>会社名</span></div>';
+        
+        requiredChecklist += '<div class="flex items-center gap-2 ' + (completeness.required.prefecture ? 'text-green-600' : 'text-red-600') + '">';
+        requiredChecklist += '<i class="fas fa-' + (completeness.required.prefecture ? 'check-circle' : 'times-circle') + '"></i>';
+        requiredChecklist += '<span>都道府県</span></div>';
+        
+        requiredChecklist += '<div class="flex items-center gap-2 ' + (completeness.required.industry_major ? 'text-green-600' : 'text-red-600') + '">';
+        requiredChecklist += '<i class="fas fa-' + (completeness.required.industry_major ? 'check-circle' : 'times-circle') + '"></i>';
+        requiredChecklist += '<span>業種</span></div>';
+        
+        requiredChecklist += '<div class="flex items-center gap-2 ' + (completeness.required.employee_count ? 'text-green-600' : 'text-red-600') + '">';
+        requiredChecklist += '<i class="fas fa-' + (completeness.required.employee_count ? 'check-circle' : 'times-circle') + '"></i>';
+        requiredChecklist += '<span>従業員数（数値 &gt; 0）</span></div>';
+        
+        statusEl.innerHTML = 
+          '<div class="flex items-start gap-4">' +
+            '<div class="w-12 h-12 bg-red-200 rounded-full flex items-center justify-center flex-shrink-0">' +
+              '<i class="fas fa-exclamation-triangle text-red-600 text-xl"></i>' +
+            '</div>' +
+            '<div class="flex-1">' +
+              '<p class="text-red-800 font-semibold text-lg"><i class="fas fa-lock mr-1"></i>検索には必須情報が必要です</p>' +
+              '<p class="text-red-700 text-sm mt-1 mb-3">' +
+                '補助金検索を行うには、以下の<strong>必須4項目</strong>をすべて入力してください:' +
               '</p>' +
-              '<div class="flex gap-2 flex-wrap mb-4">' + missingBadges + '</div>' +
-              '<div class="bg-white/50 rounded-lg p-3 mb-3 text-sm text-orange-800">' +
-                '<i class="fas fa-lightbulb mr-2"></i>' +
+              '<div class="grid grid-cols-2 md:grid-cols-4 gap-2 mb-4 p-3 bg-white/50 rounded-lg">' + requiredChecklist + '</div>' +
+              '<div class="bg-white/70 rounded-lg p-3 mb-3 text-sm text-red-800">' +
+                '<i class="fas fa-lightbulb mr-2 text-yellow-500"></i>' +
                 '<strong>メリット:</strong> 必須情報を登録すると、' +
                 '<span class="font-semibold">47都道府県＋国の補助金から最適なものを自動マッチング</span>できます。' +
               '</div>' +
-              '<a href="/company" class="inline-flex items-center gap-2 bg-orange-500 text-white px-5 py-2.5 rounded-lg hover:bg-orange-600 transition">' +
+              '<a href="/company" class="inline-flex items-center gap-2 bg-red-600 text-white px-5 py-2.5 rounded-lg hover:bg-red-700 transition shadow">' +
                 '<i class="fas fa-edit"></i> 会社情報を編集する（必須項目を入力）' +
               '</a>' +
             '</div>' +
@@ -569,16 +612,29 @@ subsidyPages.get('/subsidies', (c) => {
         document.getElementById('subsidies-list').innerHTML = 
           '<div class="bg-white rounded-lg shadow p-8 text-center">' +
             '<div class="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-4">' +
-              '<i class="fas fa-search text-gray-400 text-2xl"></i>' +
+              '<i class="fas fa-lock text-gray-400 text-2xl"></i>' +
             '</div>' +
-            '<p class="text-gray-600">必須情報を登録すると検索できます</p>' +
+            '<p class="text-gray-600 font-medium">必須4項目を入力すると検索できます</p>' +
+            '<p class="text-gray-500 text-sm mt-1">会社名・都道府県・業種・従業員数</p>' +
           '</div>';
         
-        // 検索パネルを無効化
-        const searchPanel = document.querySelector('.bg-white.rounded-lg.shadow.p-6.mb-6');
-        if (searchPanel) {
-          searchPanel.classList.add('opacity-50', 'pointer-events-none');
+        // 検索パネルを無効化（BLOCKEDは検索不可）
+        disableSearchPanel();
+      }
+      
+      // 旧：会社情報が不完全な場合のアラート（後方互換）
+      function showIncompleteCompanyAlert(data) {
+        // Completeness APIの形式でなければ旧ロジックで表示
+        if (data && data.status && (data.status === 'BLOCKED' || data.status === 'NEEDS_RECOMMENDED')) {
+          if (data.status === 'BLOCKED') {
+            showBlockedCompanyAlert(data, null);
+          } else {
+            showNeedsRecommendedAlert(data, null);
+          }
+          return;
         }
+        // フォールバック: 情報なし扱い
+        showNoCompanyAlert();
       }
       
       // 会社情報がない場合のアラート
@@ -608,19 +664,19 @@ subsidyPages.get('/subsidies', (c) => {
               '</div>' +
               '<div class="grid grid-cols-2 md:grid-cols-4 gap-2 mb-4">' +
                 '<div class="flex items-center gap-2 px-3 py-2 bg-white rounded-lg border border-blue-200">' +
-                  '<i class="fas fa-circle text-blue-400 text-xs"></i>' +
+                  '<i class="fas fa-times-circle text-red-400 text-xs"></i>' +
                   '<span class="text-sm text-gray-700">会社名</span>' +
                 '</div>' +
                 '<div class="flex items-center gap-2 px-3 py-2 bg-white rounded-lg border border-blue-200">' +
-                  '<i class="fas fa-circle text-blue-400 text-xs"></i>' +
+                  '<i class="fas fa-times-circle text-red-400 text-xs"></i>' +
                   '<span class="text-sm text-gray-700">都道府県</span>' +
                 '</div>' +
                 '<div class="flex items-center gap-2 px-3 py-2 bg-white rounded-lg border border-blue-200">' +
-                  '<i class="fas fa-circle text-blue-400 text-xs"></i>' +
+                  '<i class="fas fa-times-circle text-red-400 text-xs"></i>' +
                   '<span class="text-sm text-gray-700">業種</span>' +
                 '</div>' +
                 '<div class="flex items-center gap-2 px-3 py-2 bg-white rounded-lg border border-blue-200">' +
-                  '<i class="fas fa-circle text-blue-400 text-xs"></i>' +
+                  '<i class="fas fa-times-circle text-red-400 text-xs"></i>' +
                   '<span class="text-sm text-gray-700">従業員数</span>' +
                 '</div>' +
               '</div>' +
@@ -632,6 +688,28 @@ subsidyPages.get('/subsidies', (c) => {
         statusEl.classList.remove('hidden');
         
         // 検索パネルを無効化
+        disableSearchPanel();
+        
+        document.getElementById('subsidies-list').innerHTML = 
+          '<div class="bg-white rounded-lg shadow p-8 text-center">' +
+            '<div class="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-4">' +
+              '<i class="fas fa-info-circle text-gray-400 text-2xl"></i>' +
+            '</div>' +
+            '<p class="text-gray-600">まずは会社情報を登録してください</p>' +
+          '</div>';
+      }
+      
+      // ========================================
+      // 検索パネル有効/無効化ヘルパー
+      // ========================================
+      function enableSearchPanel() {
+        const searchPanel = document.querySelector('.bg-white.rounded-lg.shadow.p-6.mb-6');
+        if (searchPanel) {
+          searchPanel.classList.remove('opacity-50', 'pointer-events-none');
+        }
+      }
+      
+      function disableSearchPanel() {
         const searchPanel = document.querySelector('.bg-white.rounded-lg.shadow.p-6.mb-6');
         if (searchPanel) {
           searchPanel.classList.add('opacity-50', 'pointer-events-none');
@@ -640,9 +718,9 @@ subsidyPages.get('/subsidies', (c) => {
         document.getElementById('subsidies-list').innerHTML = 
           '<div class="bg-white rounded-lg shadow p-8 text-center">' +
             '<div class="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-4">' +
-              '<i class="fas fa-info-circle text-gray-400 text-2xl"></i>' +
+              '<i class="fas fa-lock text-gray-400 text-2xl"></i>' +
             '</div>' +
-            '<p class="text-gray-600">まずは会社情報を登録してください</p>' +
+            '<p class="text-gray-600">必須4項目を入力すると検索できます</p>' +
           '</div>';
       }
       

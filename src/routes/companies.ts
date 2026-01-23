@@ -81,27 +81,44 @@ companies.post('/', async (c) => {
   try {
     const body = await c.req.json<CompanyCreateInput>();
     
-    // バリデーション
-    const requiredFields = ['name', 'prefecture', 'industry_major', 'employee_count'];
-    const missingFields = requiredFields.filter(f => !(f in body) || body[f as keyof CompanyCreateInput] === undefined);
+    // ========================================
+    // 凍結仕様v1: 必須4項目のバリデーション
+    // 1. 会社名 (name) - 空文字NG
+    // 2. 都道府県 (prefecture) - 空文字NG
+    // 3. 業種 (industry_major) - 空文字NG
+    // 4. 従業員数 (employee_count) - 数値 > 0
+    // ========================================
+    const validationErrors: string[] = [];
     
-    if (missingFields.length > 0) {
-      return c.json<ApiResponse<null>>({
-        success: false,
-        error: {
-          code: 'VALIDATION_ERROR',
-          message: `Missing required fields: ${missingFields.join(', ')}`,
-        },
-      }, 400);
+    // 会社名チェック
+    if (!body.name || (typeof body.name === 'string' && !body.name.trim())) {
+      validationErrors.push('会社名は必須です');
     }
     
-    // 従業員数のバリデーション
-    if (typeof body.employee_count !== 'number' || body.employee_count < 0) {
+    // 都道府県チェック
+    if (!body.prefecture || (typeof body.prefecture === 'string' && !body.prefecture.trim())) {
+      validationErrors.push('都道府県は必須です');
+    }
+    
+    // 業種チェック
+    if (!body.industry_major || (typeof body.industry_major === 'string' && !body.industry_major.trim())) {
+      validationErrors.push('業種は必須です');
+    }
+    
+    // 従業員数チェック（凍結仕様: 数値 > 0 が必須）
+    if (body.employee_count === undefined || body.employee_count === null) {
+      validationErrors.push('従業員数は必須です');
+    } else if (typeof body.employee_count !== 'number' || body.employee_count <= 0) {
+      validationErrors.push('従業員数は1以上の数値を入力してください');
+    }
+    
+    if (validationErrors.length > 0) {
       return c.json<ApiResponse<null>>({
         success: false,
         error: {
           code: 'VALIDATION_ERROR',
-          message: 'employee_count must be a non-negative number',
+          message: validationErrors.join('、'),
+          details: validationErrors,
         },
       }, 400);
     }
