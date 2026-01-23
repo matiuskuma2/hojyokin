@@ -14,6 +14,7 @@ import type { Env, Variables, User, UserPublic, ApiResponse } from '../types';
 import { hashPassword, verifyPassword, validatePasswordStrength } from '../lib/password';
 import { signJWT } from '../lib/jwt';
 import { requireAuth, getCurrentUser } from '../middleware/auth';
+import { sendPasswordResetEmail } from '../services/email';
 
 /**
  * SHA-256ハッシュ生成（トークン保存用）
@@ -502,7 +503,25 @@ auth.post('/password-reset/request', async (c) => {
       requestId,
     });
     
-    // TODO: SendGrid でメール送信
+    // SendGrid でメール送信
+    const baseUrl = c.req.header('origin') || 'https://hojyokin.pages.dev';
+    const resetUrl = `${baseUrl}/reset-password?token=${rawToken}`;
+    
+    // ユーザー名を取得
+    const userInfo = await db.prepare('SELECT name FROM users WHERE id = ?')
+      .bind(user.id).first<{ name: string }>();
+    
+    const emailResult = await sendPasswordResetEmail(c.env, {
+      to: user.email,
+      userName: userInfo?.name || user.email,
+      resetUrl,
+      expiresAt,
+    });
+    
+    if (!emailResult.success) {
+      console.warn(`Password reset email failed for ${email}:`, emailResult.error);
+    }
+    
     // 開発環境ではトークンをレスポンスに含める（本番では削除）
     console.log(`Password reset token for ${email}: ${rawToken}`);
     
@@ -510,7 +529,7 @@ auth.post('/password-reset/request', async (c) => {
       success: true,
       data: {
         message: 'If the email exists, a reset link will be sent',
-        // 開発用: 本番では削除
+        // 開発用: 本番では削除（ENVIRONMENTが未設定またはproduction以外でのみ表示）
         debug_token: c.env.ENVIRONMENT !== 'production' ? rawToken : undefined,
       },
     });
@@ -741,6 +760,141 @@ auth.get('/me', requireAuth, async (c) => {
         code: 'INTERNAL_ERROR',
         message: 'Failed to get user info',
       },
+    }, 500);
+  }
+});
+
+/**
+ * PUT /api/auth/me - ユーザー情報更新（名前など）
+ */
+auth.put('/me', requireAuth, async (c) => {
+  const db = c.env.DB;
+  const user = getCurrentUser(c);
+  
+  try {
+    const body = await c.req.json();
+    const { name } = body;
+    
+    if (!name || typeof name !== 'string' || name.trim().length === 0) {
+      return c.json<ApiResponse<null>>({
+        success: false,
+        error: { code: 'VALIDATION_ERROR', message: 'name is required' },
+      }, 400);
+    }
+    
+    const now = new Date().toISOString();
+    await db.prepare(`
+      UPDATE users SET name = ?, updated_at = ? WHERE id = ?
+    `).bind(name.trim(), now, user.id).run();
+    
+    // 監査ログ
+    await writeAuditLog(db, {
+      actorUserId: user.id,
+      targetUserId: user.id,
+      action: 'profile_updated',
+      actionCategory: 'auth',
+      severity: 'info',
+      detailsJson: { field: 'name' },
+      ip: c.req.header('CF-Connecting-IP'),
+      userAgent: c.req.header('User-Agent'),
+    });
+    
+    return c.json<ApiResponse<any>>({
+      success: true,
+      data: { message: 'Profile updated', name: name.trim() },
+    });
+  } catch (error) {
+    console.error('Update profile error:', error);
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'INTERNAL_ERROR', message: 'Failed to update profile' },
+    }, 500);
+  }
+});
+
+/**
+ * POST /api/auth/change-password - パスワード変更（ログイン中）
+ */
+auth.post('/change-password', requireAuth, async (c) => {
+  const db = c.env.DB;
+  const user = getCurrentUser(c);
+  
+  try {
+    const body = await c.req.json();
+    const { currentPassword, newPassword } = body;
+    
+    if (!currentPassword || !newPassword) {
+      return c.json<ApiResponse<null>>({
+        success: false,
+        error: { code: 'VALIDATION_ERROR', message: 'currentPassword and newPassword are required' },
+      }, 400);
+    }
+    
+    // 現在のパスワードを確認
+    const userRecord = await db.prepare(
+      'SELECT password_hash FROM users WHERE id = ?'
+    ).bind(user.id).first<{ password_hash: string }>();
+    
+    if (!userRecord) {
+      return c.json<ApiResponse<null>>({
+        success: false,
+        error: { code: 'NOT_FOUND', message: 'User not found' },
+      }, 404);
+    }
+    
+    const isValidPassword = await verifyPassword(currentPassword, userRecord.password_hash);
+    if (!isValidPassword) {
+      await writeAuditLog(db, {
+        actorUserId: user.id,
+        action: 'password_change_failed',
+        actionCategory: 'auth',
+        severity: 'warning',
+        detailsJson: { reason: 'invalid_current_password' },
+        ip: c.req.header('CF-Connecting-IP'),
+      });
+      
+      return c.json<ApiResponse<null>>({
+        success: false,
+        error: { code: 'INVALID_PASSWORD', message: '現在のパスワードが正しくありません' },
+      }, 400);
+    }
+    
+    // 新しいパスワードの強度を確認
+    const passwordValidation = validatePasswordStrength(newPassword);
+    if (!passwordValidation.valid) {
+      return c.json<ApiResponse<null>>({
+        success: false,
+        error: { code: 'WEAK_PASSWORD', message: passwordValidation.message },
+      }, 400);
+    }
+    
+    // パスワード更新
+    const newPasswordHash = await hashPassword(newPassword);
+    const now = new Date().toISOString();
+    
+    await db.prepare(`
+      UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?
+    `).bind(newPasswordHash, now, user.id).run();
+    
+    await writeAuditLog(db, {
+      actorUserId: user.id,
+      targetUserId: user.id,
+      action: 'password_changed',
+      actionCategory: 'auth',
+      severity: 'info',
+      ip: c.req.header('CF-Connecting-IP'),
+      userAgent: c.req.header('User-Agent'),
+    });
+    
+    return c.json<ApiResponse<any>>({
+      success: true,
+      data: { message: 'パスワードが変更されました' },
+    });
+  } catch (error) {
+    console.error('Change password error:', error);
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'INTERNAL_ERROR', message: 'Failed to change password' },
     }, 500);
   }
 });

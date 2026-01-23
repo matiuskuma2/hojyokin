@@ -153,8 +153,8 @@ const agencyLayout = (title: string, content: string, activeTab: string = '') =>
           </div>
         </div>
         <div class="flex items-center gap-4">
-          <span id="agency-name" class="text-sm"></span>
-          <span id="user-name" class="text-sm text-emerald-200"></span>
+          <a href="/agency/settings" id="agency-name" class="text-sm hover:text-emerald-200 cursor-pointer" title="事務所設定"></a>
+          <a href="/agency/settings" id="user-name" class="text-sm text-emerald-200 hover:text-white cursor-pointer" title="アカウント設定"></a>
           <button onclick="logout()" class="text-sm hover:text-emerald-200">
             <i class="fas fa-sign-out-alt mr-1"></i>ログアウト
           </button>
@@ -1000,9 +1000,13 @@ agencyPages.get('/agency/members', (c) => {
                 <option value="admin">管理者（スタッフ招待も可能）</option>
               </select>
             </div>
+            <div class="flex items-center gap-2">
+              <input type="checkbox" name="sendEmail" id="send-email-checkbox" class="rounded border-gray-300 text-emerald-600 focus:ring-emerald-500">
+              <label for="send-email-checkbox" class="text-sm text-gray-700">招待メールを送信する</label>
+            </div>
             <div class="bg-gray-50 p-3 rounded-lg text-sm text-gray-600">
               <i class="fas fa-info-circle mr-1"></i>
-              招待リンクが生成されます。メールアドレス宛にリンクを共有してください。
+              招待リンクが生成されます。メール送信を選択すると、自動で招待メールが送信されます。
             </div>
             <div class="flex gap-2 pt-4">
               <button type="button" onclick="hideInviteModal()" class="flex-1 border border-gray-300 text-gray-700 px-4 py-2 rounded-lg hover:bg-gray-50">
@@ -1187,6 +1191,7 @@ agencyPages.get('/agency/members', (c) => {
           body: JSON.stringify({
             email: formData.get('email'),
             role: formData.get('role'),
+            sendEmail: formData.get('sendEmail') === 'on',
           }),
         });
         
@@ -1194,6 +1199,15 @@ agencyPages.get('/agency/members', (c) => {
           hideInviteModal();
           document.getElementById('invite-url-input').value = data.data.invite_url;
           document.getElementById('invite-url-modal').classList.remove('hidden');
+          
+          // メール送信結果を表示
+          if (data.data.email_sent) {
+            var urlModalTitle = document.querySelector('#invite-url-modal h3');
+            if (urlModalTitle) {
+              urlModalTitle.innerHTML = '<i class="fas fa-check-circle text-emerald-600 mr-2"></i>招待メールを送信しました';
+            }
+          }
+          
           loadMembers();
         } else {
           alert('エラー: ' + (data.error?.message || '招待の発行に失敗しました'));
@@ -1382,6 +1396,208 @@ agencyPages.get('/agency/join', (c) => {
   `;
   
   return c.html(agencyLayout('招待を受諾', content, ''));
+});
+
+/**
+ * /agency/settings - 設定画面
+ */
+agencyPages.get('/agency/settings', (c) => {
+  const content = `
+    <div class="max-w-2xl mx-auto space-y-6">
+      <h1 class="text-2xl font-bold text-gray-900">
+        <i class="fas fa-cog mr-2"></i>設定
+      </h1>
+      
+      <!-- アカウント設定 -->
+      <div class="bg-white rounded-lg shadow">
+        <div class="px-6 py-4 border-b border-gray-200">
+          <h2 class="text-lg font-semibold text-gray-900">
+            <i class="fas fa-user mr-2"></i>アカウント設定
+          </h2>
+        </div>
+        <div class="p-6 space-y-4">
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">メールアドレス</label>
+            <input type="email" id="user-email" readonly
+              class="w-full border rounded-lg px-3 py-2 bg-gray-50 text-gray-500">
+            <p class="text-xs text-gray-500 mt-1">メールアドレスは変更できません</p>
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">名前</label>
+            <input type="text" id="user-name-input"
+              class="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500">
+          </div>
+          <button onclick="updateName()" class="bg-emerald-600 text-white px-4 py-2 rounded-lg hover:bg-emerald-700 transition">
+            名前を更新
+          </button>
+        </div>
+      </div>
+      
+      <!-- パスワード変更 -->
+      <div class="bg-white rounded-lg shadow">
+        <div class="px-6 py-4 border-b border-gray-200">
+          <h2 class="text-lg font-semibold text-gray-900">
+            <i class="fas fa-lock mr-2"></i>パスワード変更
+          </h2>
+        </div>
+        <div class="p-6 space-y-4">
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">現在のパスワード</label>
+            <input type="password" id="current-password"
+              class="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500">
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">新しいパスワード</label>
+            <input type="password" id="new-password"
+              class="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500">
+            <p class="text-xs text-gray-500 mt-1">8文字以上、大文字・小文字・数字を含む</p>
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">新しいパスワード（確認）</label>
+            <input type="password" id="confirm-password"
+              class="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500">
+          </div>
+          <button onclick="changePassword()" class="bg-emerald-600 text-white px-4 py-2 rounded-lg hover:bg-emerald-700 transition">
+            パスワードを変更
+          </button>
+        </div>
+      </div>
+      
+      <!-- 事務所設定（オーナーのみ） -->
+      <div id="agency-settings-section" class="bg-white rounded-lg shadow hidden">
+        <div class="px-6 py-4 border-b border-gray-200">
+          <h2 class="text-lg font-semibold text-gray-900">
+            <i class="fas fa-building mr-2"></i>事務所設定
+          </h2>
+        </div>
+        <div class="p-6 space-y-4">
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">事務所名</label>
+            <input type="text" id="agency-name-input"
+              class="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500">
+          </div>
+          <button onclick="updateAgencyName()" class="bg-emerald-600 text-white px-4 py-2 rounded-lg hover:bg-emerald-700 transition">
+            事務所名を更新
+          </button>
+        </div>
+      </div>
+    </div>
+    
+    <script>
+      var agencyInfo = null;
+      var isOwner = false;
+      
+      async function loadSettings() {
+        // ユーザー情報
+        var user = window.currentUser;
+        if (user) {
+          document.getElementById('user-email').value = user.email || '';
+          document.getElementById('user-name-input').value = user.name || '';
+        }
+        
+        // Agency情報
+        var data = await window.apiCall('/api/agency/me');
+        if (data.success && data.data) {
+          agencyInfo = data.data.agency;
+          isOwner = data.data.role === 'owner';
+          
+          if (isOwner && agencyInfo) {
+            document.getElementById('agency-settings-section').classList.remove('hidden');
+            document.getElementById('agency-name-input').value = agencyInfo.name || '';
+          }
+        }
+      }
+      
+      async function updateName() {
+        var name = document.getElementById('user-name-input').value.trim();
+        if (!name) {
+          alert('名前を入力してください');
+          return;
+        }
+        
+        var data = await window.apiCall('/api/auth/me', {
+          method: 'PUT',
+          body: JSON.stringify({ name }),
+        });
+        
+        if (data.success) {
+          alert('名前が更新されました');
+          // localStorageも更新
+          var userStr = localStorage.getItem('user');
+          if (userStr) {
+            var user = JSON.parse(userStr);
+            user.name = name;
+            localStorage.setItem('user', JSON.stringify(user));
+          }
+        } else {
+          alert('エラー: ' + (data.error?.message || '更新に失敗しました'));
+        }
+      }
+      
+      async function changePassword() {
+        var currentPassword = document.getElementById('current-password').value;
+        var newPassword = document.getElementById('new-password').value;
+        var confirmPassword = document.getElementById('confirm-password').value;
+        
+        if (!currentPassword || !newPassword || !confirmPassword) {
+          alert('すべてのフィールドを入力してください');
+          return;
+        }
+        
+        if (newPassword !== confirmPassword) {
+          alert('新しいパスワードが一致しません');
+          return;
+        }
+        
+        if (newPassword.length < 8) {
+          alert('パスワードは8文字以上必要です');
+          return;
+        }
+        
+        var data = await window.apiCall('/api/auth/change-password', {
+          method: 'POST',
+          body: JSON.stringify({ currentPassword, newPassword }),
+        });
+        
+        if (data.success) {
+          alert('パスワードが変更されました');
+          document.getElementById('current-password').value = '';
+          document.getElementById('new-password').value = '';
+          document.getElementById('confirm-password').value = '';
+        } else {
+          alert('エラー: ' + (data.error?.message || 'パスワード変更に失敗しました'));
+        }
+      }
+      
+      async function updateAgencyName() {
+        var name = document.getElementById('agency-name-input').value.trim();
+        if (!name) {
+          alert('事務所名を入力してください');
+          return;
+        }
+        
+        var data = await window.apiCall('/api/agency/settings', {
+          method: 'PUT',
+          body: JSON.stringify({ name }),
+        });
+        
+        if (data.success) {
+          alert('事務所名が更新されました');
+        } else {
+          alert('エラー: ' + (data.error?.message || '更新に失敗しました'));
+        }
+      }
+      
+      // 初期化
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', loadSettings);
+      } else {
+        loadSettings();
+      }
+    </script>
+  `;
+  
+  return c.html(agencyLayout('設定', content, 'settings'));
 });
 
 export default agencyPages;

@@ -19,6 +19,7 @@
 import { Hono } from 'hono';
 import type { Env, Variables, ApiResponse } from '../types';
 import { requireAuth, getCurrentUser } from '../middleware/auth';
+import { sendStaffInviteEmail, sendClientInviteEmail } from '../services/email';
 
 const agencyRoutes = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -342,11 +343,11 @@ agencyRoutes.post('/clients', async (c) => {
     now
   ).run();
   
-  // company_profileも作成
+  // company_profileも作成（company_id がPK）
   await db.prepare(`
-    INSERT INTO company_profile (id, company_id, created_at, updated_at)
-    VALUES (?, ?, ?, ?)
-  `).bind(generateId(), companyId, now, now).run();
+    INSERT INTO company_profile (company_id, created_at, updated_at)
+    VALUES (?, ?, ?)
+  `).bind(companyId, now, now).run();
   
   // agency_clientとして登録
   const clientId = generateId();
@@ -488,7 +489,7 @@ agencyRoutes.post('/links', async (c) => {
   }
   
   const body = await c.req.json();
-  const { companyId, sessionId, type, expiresInDays = 7, maxUses = 1, label, message } = body;
+  const { companyId, sessionId, type, expiresInDays = 7, maxUses = 1, label, message, sendEmail = false, recipientEmail } = body;
   
   if (!companyId || !type) {
     return c.json<ApiResponse<null>>({
@@ -537,6 +538,27 @@ agencyRoutes.post('/links', async (c) => {
   const baseUrl = new URL(c.req.url).origin;
   const linkUrl = `${baseUrl}/${type}?code=${shortCode}`;
   
+  // メール送信（オプション）
+  let emailSent = false;
+  const clientRecord = client as any;
+  const emailRecipient = recipientEmail || clientRecord.client_email;
+  
+  if (sendEmail && emailRecipient) {
+    const inviterUser = await db.prepare('SELECT name FROM users WHERE id = ?')
+      .bind(user.id).first<{ name: string }>();
+    
+    const emailResult = await sendClientInviteEmail(c.env, {
+      to: emailRecipient,
+      inviterName: inviterUser?.name || '担当者',
+      agencyName: agencyInfo.agency.name,
+      clientName: clientRecord.client_name || '顧客',
+      inviteUrl: linkUrl,
+      expiresAt,
+      message: message || undefined,
+    });
+    emailSent = emailResult.success;
+  }
+  
   return c.json<ApiResponse<any>>({
     success: true,
     data: {
@@ -546,6 +568,7 @@ agencyRoutes.post('/links', async (c) => {
       token, // ⚠️ これは一度だけ表示される
       expiresAt,
       type,
+      email_sent: emailSent,
     },
   }, 201);
 });
@@ -917,7 +940,7 @@ agencyRoutes.post('/members/invite', async (c) => {
   }
   
   const body = await c.req.json();
-  const { email, role = 'staff' } = body;
+  const { email, role = 'staff', sendEmail = false } = body;
   
   if (!email) {
     return c.json<ApiResponse<null>>({
@@ -988,6 +1011,23 @@ agencyRoutes.post('/members/invite', async (c) => {
   const baseUrl = c.req.header('origin') || 'https://hojyokin.pages.dev';
   const inviteUrl = `${baseUrl}/agency/join?code=${inviteCode}&token=${inviteToken}`;
   
+  // メール送信（オプション）
+  let emailSent = false;
+  if (sendEmail) {
+    const inviterUser = await db.prepare('SELECT name FROM users WHERE id = ?')
+      .bind(user.id).first<{ name: string }>();
+    
+    const emailResult = await sendStaffInviteEmail(c.env, {
+      to: email,
+      inviterName: inviterUser?.name || user.email || '管理者',
+      agencyName: agencyInfo.agency.name,
+      inviteUrl,
+      role,
+      expiresAt,
+    });
+    emailSent = emailResult.success;
+  }
+  
   return c.json<ApiResponse<any>>({
     success: true,
     data: {
@@ -997,7 +1037,10 @@ agencyRoutes.post('/members/invite', async (c) => {
       invite_code: inviteCode,
       invite_url: inviteUrl,
       expires_at: expiresAt,
-      message: 'Invite created. Share the invite URL with the user.',
+      email_sent: emailSent,
+      message: sendEmail && emailSent 
+        ? 'Invite created and email sent.'
+        : 'Invite created. Share the invite URL with the user.',
     },
   }, 201);
 });
@@ -1261,6 +1304,50 @@ agencyRoutes.put('/members/:id/role', async (c) => {
   return c.json<ApiResponse<any>>({
     success: true,
     data: { message: 'Role updated', role },
+  });
+});
+
+/**
+ * PUT /api/agency/settings - 事務所設定更新（オーナーのみ）
+ */
+agencyRoutes.put('/settings', async (c) => {
+  const db = c.env.DB;
+  const user = getCurrentUser(c);
+  
+  const agencyInfo = await getUserAgency(db, user.id);
+  if (!agencyInfo) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'NOT_AGENCY', message: 'Agency account required' },
+    }, 403);
+  }
+  
+  // オーナーのみ設定変更可能
+  if (agencyInfo.role !== 'owner') {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'FORBIDDEN', message: 'Only owner can update agency settings' },
+    }, 403);
+  }
+  
+  const body = await c.req.json();
+  const { name } = body;
+  
+  if (!name || typeof name !== 'string' || name.trim().length === 0) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'VALIDATION_ERROR', message: 'name is required' },
+    }, 400);
+  }
+  
+  const now = new Date().toISOString();
+  await db.prepare(`
+    UPDATE agencies SET name = ?, updated_at = ? WHERE id = ?
+  `).bind(name.trim(), now, agencyInfo.agency.id).run();
+  
+  return c.json<ApiResponse<any>>({
+    success: true,
+    data: { message: 'Agency settings updated', name: name.trim() },
   });
 });
 
