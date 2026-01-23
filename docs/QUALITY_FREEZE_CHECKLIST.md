@@ -1,7 +1,20 @@
 # 品質凍結チェックリスト
 
 **作成日**: 2026-01-23  
+**最終更新**: 2026-01-23  
 **目的**: 仕様・DB・API契約がブレない状態を確保し、運用事故を防ぐ
+
+---
+
+## 凍結ステータス
+
+| 項目 | ステータス | 備考 |
+|------|-----------|------|
+| Q1-1: データ移行 | ✅ 完了 | missing=0, primary_cnt=1達成 |
+| Q1-2: コード参照統一 | ✅ 完了 | company_memberships参照を全排除 |
+| Q3: Agency導線 | ✅ 完了 | /agency/search実装済み・ナビ追加済み |
+| Q2: SendGrid | ⏸️ 後回し | 完成後にローテーション |
+| 会社情報フロー | 🔄 進行中 | Completeness API実装済み、UI統一は次フェーズ |
 
 ---
 
@@ -435,6 +448,45 @@ SELECT role FROM user_companies WHERE user_id = ? AND company_id = ?
   }
 }
 ```
+
+#### GET /api/companies/:id/completeness（新規追加・凍結仕様v1）
+```json
+{
+  "success": true,
+  "data": {
+    "status": "OK | NEEDS_RECOMMENDED | BLOCKED",
+    "required": {
+      "name": true,
+      "prefecture": true,
+      "industry_major": true,
+      "employee_count": true
+    },
+    "recommended": {
+      "city": false,
+      "capital": true,
+      "established_date": false,
+      "annual_revenue": false,
+      "representative_name": true,
+      "website_url": false
+    },
+    "missing_required": [],
+    "missing_recommended": ["市区町村", "設立日", "年商", "Webサイト"],
+    "required_count": 4,
+    "required_filled": 4,
+    "recommended_count": 6,
+    "recommended_filled": 2,
+    "benefits": [
+      "市区町村を入力すると、地域限定の補助金がより正確にマッチします",
+      "設立日を入力すると、創業〇年以内の補助金がマッチします"
+    ]
+  }
+}
+```
+
+**凍結ルール（従業員数必須）**:
+- `employee_count > 0` が必須
+- 必須4項目が揃わないと `status: BLOCKED`（検索不可）
+- `NEEDS_RECOMMENDED` でも検索は可能（精度向上の推奨のみ）
 
 #### GET /api/agency/clients
 ```json
