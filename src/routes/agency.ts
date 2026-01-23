@@ -746,16 +746,35 @@ agencyRoutes.post('/submissions/:id/approve', async (c) => {
     }, 500);
   }
   
-  // 会社情報を更新
+  // 会社情報を更新（companiesテーブル）
   if (Object.keys(payload).length > 0) {
     const updateFields: string[] = [];
     const updateValues: any[] = [];
     
-    const allowedFields = ['name', 'prefecture', 'city', 'industry', 'employee_count', 'capital', 'founded_date'];
-    for (const field of allowedFields) {
-      if (payload[field] !== undefined) {
-        updateFields.push(`${field} = ?`);
-        updateValues.push(payload[field]);
+    // companiesテーブルの許可フィールド（カラム名マッピング）
+    const fieldMapping: Record<string, string> = {
+      'name': 'name',
+      'companyName': 'name',
+      'prefecture': 'prefecture',
+      'city': 'city',
+      'industry': 'industry_major',
+      'industry_major': 'industry_major',
+      'industry_minor': 'industry_minor',
+      'employee_count': 'employee_count',
+      'employeeCount': 'employee_count',
+      'capital': 'capital',
+      'founded_date': 'established_date',
+      'establishedDate': 'established_date',
+      'annual_revenue': 'annual_revenue',
+      'annualRevenue': 'annual_revenue',
+    };
+    
+    const processedFields = new Set<string>();
+    for (const [payloadKey, dbField] of Object.entries(fieldMapping)) {
+      if (payload[payloadKey] !== undefined && !processedFields.has(dbField)) {
+        updateFields.push(`${dbField} = ?`);
+        updateValues.push(payload[payloadKey]);
+        processedFields.add(dbField);
       }
     }
     
@@ -767,6 +786,50 @@ agencyRoutes.post('/submissions/:id/approve', async (c) => {
       await db.prepare(`
         UPDATE companies SET ${updateFields.join(', ')} WHERE id = ?
       `).bind(...updateValues).run();
+    }
+    
+    // company_profileテーブルも更新（存在する場合）
+    const profileFieldMapping: Record<string, string> = {
+      'representative_name': 'representative_name',
+      'representativeName': 'representative_name',
+      'representative_title': 'representative_title',
+      'representativeTitle': 'representative_title',
+      'website_url': 'website_url',
+      'websiteUrl': 'website_url',
+      'contact_email': 'contact_email',
+      'contactEmail': 'contact_email',
+      'contact_phone': 'contact_phone',
+      'contactPhone': 'contact_phone',
+      'business_summary': 'business_summary',
+      'businessSummary': 'business_summary',
+      'main_products': 'main_products',
+      'mainProducts': 'main_products',
+      'main_customers': 'main_customers',
+      'mainCustomers': 'main_customers',
+      'competitive_advantage': 'competitive_advantage',
+      'competitiveAdvantage': 'competitive_advantage',
+    };
+    
+    const profileUpdateFields: string[] = [];
+    const profileUpdateValues: any[] = [];
+    const processedProfileFields = new Set<string>();
+    
+    for (const [payloadKey, dbField] of Object.entries(profileFieldMapping)) {
+      if (payload[payloadKey] !== undefined && !processedProfileFields.has(dbField)) {
+        profileUpdateFields.push(`${dbField} = ?`);
+        profileUpdateValues.push(payload[payloadKey]);
+        processedProfileFields.add(dbField);
+      }
+    }
+    
+    if (profileUpdateFields.length > 0) {
+      profileUpdateFields.push('updated_at = ?');
+      profileUpdateValues.push(now);
+      profileUpdateValues.push(submission.company_id);
+      
+      await db.prepare(`
+        UPDATE company_profile SET ${profileUpdateFields.join(', ')} WHERE company_id = ?
+      `).bind(...profileUpdateValues).run();
     }
   }
   
@@ -1131,7 +1194,10 @@ agencyRoutes.post('/members/join', async (c) => {
   if (invite.email.toLowerCase() !== user.email?.toLowerCase()) {
     return c.json<ApiResponse<null>>({
       success: false,
-      error: { code: 'EMAIL_MISMATCH', message: 'This invite was sent to a different email address. Please login with the correct account.' },
+      error: { 
+        code: 'EMAIL_MISMATCH', 
+        message: `この招待は ${invite.email} 宛てに送信されました。招待を受諾するには、そのメールアドレスでログインしてください。` 
+      },
     }, 403);
   }
   

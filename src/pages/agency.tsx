@@ -624,6 +624,452 @@ agencyPages.get('/agency/clients', (c) => {
 });
 
 /**
+ * GET /agency/clients/:id - 顧客詳細
+ */
+agencyPages.get('/agency/clients/:id', (c) => {
+  const clientId = c.req.param('id');
+  
+  const content = `
+    <div class="space-y-6">
+      <!-- Header -->
+      <div class="flex items-center justify-between">
+        <div class="flex items-center gap-4">
+          <a href="/agency/clients" class="text-gray-500 hover:text-gray-700">
+            <i class="fas fa-arrow-left text-xl"></i>
+          </a>
+          <div>
+            <h1 id="client-name" class="text-2xl font-bold text-gray-900 loading">読み込み中...</h1>
+            <p id="company-name" class="text-gray-600"></p>
+          </div>
+        </div>
+        <div class="flex gap-2">
+          <button onclick="issueIntakeLink()" class="bg-emerald-600 text-white px-4 py-2 rounded-lg hover:bg-emerald-700">
+            <i class="fas fa-link mr-2"></i>入力リンク発行
+          </button>
+          <button onclick="showEditModal()" class="bg-white border border-gray-300 text-gray-700 px-4 py-2 rounded-lg hover:bg-gray-50">
+            <i class="fas fa-edit mr-2"></i>編集
+          </button>
+        </div>
+      </div>
+      
+      <!-- Status Badge and Info -->
+      <div class="bg-white rounded-lg shadow p-6">
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+          <div>
+            <h3 class="text-sm font-medium text-gray-500 mb-2">ステータス</h3>
+            <span id="client-status" class="px-3 py-1 rounded-full text-sm font-medium bg-gray-100 text-gray-700">-</span>
+          </div>
+          <div>
+            <h3 class="text-sm font-medium text-gray-500 mb-2">担当者</h3>
+            <p id="contact-info" class="text-gray-900">-</p>
+          </div>
+          <div>
+            <h3 class="text-sm font-medium text-gray-500 mb-2">登録日</h3>
+            <p id="created-at" class="text-gray-900">-</p>
+          </div>
+        </div>
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mt-6">
+          <div>
+            <h3 class="text-sm font-medium text-gray-500 mb-2">メールアドレス</h3>
+            <p id="client-email" class="text-gray-900">-</p>
+          </div>
+          <div>
+            <h3 class="text-sm font-medium text-gray-500 mb-2">電話番号</h3>
+            <p id="client-phone" class="text-gray-900">-</p>
+          </div>
+          <div>
+            <h3 class="text-sm font-medium text-gray-500 mb-2">地域・業種</h3>
+            <p id="area-industry" class="text-gray-900">-</p>
+          </div>
+        </div>
+      </div>
+      
+      <!-- Tabs -->
+      <div class="border-b">
+        <nav class="flex gap-4">
+          <button onclick="showTab('profile')" class="tab-btn px-4 py-2 border-b-2 border-emerald-500 text-emerald-600 font-medium" data-tab="profile">
+            <i class="fas fa-user mr-2"></i>企業情報
+          </button>
+          <button onclick="showTab('submissions')" class="tab-btn px-4 py-2 border-b-2 border-transparent text-gray-500 hover:text-gray-700" data-tab="submissions">
+            <i class="fas fa-inbox mr-2"></i>入力履歴
+          </button>
+          <button onclick="showTab('drafts')" class="tab-btn px-4 py-2 border-b-2 border-transparent text-gray-500 hover:text-gray-700" data-tab="drafts">
+            <i class="fas fa-file-alt mr-2"></i>申請書ドラフト
+          </button>
+          <button onclick="showTab('links')" class="tab-btn px-4 py-2 border-b-2 border-transparent text-gray-500 hover:text-gray-700" data-tab="links">
+            <i class="fas fa-link mr-2"></i>発行リンク
+          </button>
+        </nav>
+      </div>
+      
+      <!-- Tab Contents -->
+      <div id="tab-profile" class="tab-content">
+        <div class="bg-white rounded-lg shadow p-6">
+          <h3 class="text-lg font-semibold mb-4">企業プロフィール</h3>
+          <div id="profile-content" class="text-gray-500">読み込み中...</div>
+        </div>
+      </div>
+      
+      <div id="tab-submissions" class="tab-content hidden">
+        <div class="bg-white rounded-lg shadow">
+          <div class="p-4 border-b">
+            <h3 class="text-lg font-semibold">入力履歴</h3>
+          </div>
+          <div id="submissions-list" class="divide-y">
+            <p class="p-4 text-gray-500">読み込み中...</p>
+          </div>
+        </div>
+      </div>
+      
+      <div id="tab-drafts" class="tab-content hidden">
+        <div class="bg-white rounded-lg shadow">
+          <div class="p-4 border-b">
+            <h3 class="text-lg font-semibold">申請書ドラフト</h3>
+          </div>
+          <div id="drafts-list" class="divide-y">
+            <p class="p-4 text-gray-500">読み込み中...</p>
+          </div>
+        </div>
+      </div>
+      
+      <div id="tab-links" class="tab-content hidden">
+        <div class="bg-white rounded-lg shadow">
+          <div class="p-4 border-b flex justify-between items-center">
+            <h3 class="text-lg font-semibold">発行リンク</h3>
+            <button onclick="issueIntakeLink()" class="text-sm bg-emerald-600 text-white px-3 py-1 rounded hover:bg-emerald-700">
+              <i class="fas fa-plus mr-1"></i>新規発行
+            </button>
+          </div>
+          <div id="links-list" class="divide-y">
+            <p class="p-4 text-gray-500">読み込み中...</p>
+          </div>
+        </div>
+      </div>
+      
+      <!-- Notes Section -->
+      <div class="bg-white rounded-lg shadow p-6">
+        <h3 class="text-lg font-semibold mb-4">メモ</h3>
+        <textarea id="notes-input" rows="3" class="w-full border rounded-lg px-3 py-2" placeholder="顧客に関するメモを入力..."></textarea>
+        <div class="mt-2 flex justify-end">
+          <button onclick="saveNotes()" class="bg-emerald-600 text-white px-4 py-2 rounded-lg hover:bg-emerald-700">
+            <i class="fas fa-save mr-2"></i>保存
+          </button>
+        </div>
+      </div>
+    </div>
+    
+    <!-- Edit Modal -->
+    <div id="edit-modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center hidden z-50">
+      <div class="bg-white rounded-lg shadow-xl w-full max-w-lg mx-4">
+        <div class="p-6">
+          <h2 class="text-xl font-bold mb-4">顧客情報を編集</h2>
+          <form id="edit-form" class="space-y-4">
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">顧客名/担当者名</label>
+              <input type="text" name="clientName" id="edit-client-name" class="w-full border rounded-lg px-3 py-2">
+            </div>
+            <div class="grid grid-cols-2 gap-4">
+              <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">メールアドレス</label>
+                <input type="email" name="clientEmail" id="edit-client-email" class="w-full border rounded-lg px-3 py-2">
+              </div>
+              <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">電話番号</label>
+                <input type="tel" name="clientPhone" id="edit-client-phone" class="w-full border rounded-lg px-3 py-2">
+              </div>
+            </div>
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">ステータス</label>
+              <select name="status" id="edit-status" class="w-full border rounded-lg px-3 py-2">
+                <option value="active">アクティブ</option>
+                <option value="paused">一時停止</option>
+                <option value="archived">アーカイブ</option>
+              </select>
+            </div>
+            <div class="flex gap-2 pt-4">
+              <button type="button" onclick="hideEditModal()" class="flex-1 border border-gray-300 text-gray-700 px-4 py-2 rounded-lg hover:bg-gray-50">
+                キャンセル
+              </button>
+              <button type="submit" class="flex-1 bg-emerald-600 text-white px-4 py-2 rounded-lg hover:bg-emerald-700">
+                保存
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+    
+    <script>
+      const clientId = '${clientId}';
+      let clientData = null;
+      
+      async function loadClientDetail() {
+        const data = await apiCall('/api/agency/clients/' + clientId);
+        
+        if (!data.success) {
+          alert('顧客情報の取得に失敗しました: ' + (data.error?.message || '不明なエラー'));
+          window.location.href = '/agency/clients';
+          return;
+        }
+        
+        clientData = data.data;
+        renderClientDetail();
+      }
+      
+      function renderClientDetail() {
+        const client = clientData.client;
+        
+        // Header
+        document.getElementById('client-name').textContent = client.client_name || client.name || '名前未設定';
+        document.getElementById('client-name').classList.remove('loading');
+        document.getElementById('company-name').textContent = client.name || '';
+        
+        // Status
+        const statusEl = document.getElementById('client-status');
+        const statusMap = { active: ['アクティブ', 'bg-emerald-100 text-emerald-700'], paused: ['一時停止', 'bg-yellow-100 text-yellow-700'], archived: ['アーカイブ', 'bg-gray-100 text-gray-700'] };
+        const [statusText, statusClass] = statusMap[client.status] || ['不明', 'bg-gray-100 text-gray-700'];
+        statusEl.textContent = statusText;
+        statusEl.className = 'px-3 py-1 rounded-full text-sm font-medium ' + statusClass;
+        
+        // Info
+        document.getElementById('contact-info').textContent = client.client_name || '-';
+        document.getElementById('created-at').textContent = client.created_at ? new Date(client.created_at).toLocaleDateString('ja-JP') : '-';
+        document.getElementById('client-email').textContent = client.client_email || '-';
+        document.getElementById('client-phone').textContent = client.client_phone || '-';
+        document.getElementById('area-industry').textContent = [client.prefecture, client.industry_major || client.industry].filter(Boolean).join(' / ') || '-';
+        
+        // Notes
+        document.getElementById('notes-input').value = client.notes || '';
+        
+        // Profile tab
+        renderProfile();
+        
+        // Submissions tab
+        renderSubmissions();
+        
+        // Drafts tab
+        renderDrafts();
+        
+        // Links tab
+        renderLinks();
+      }
+      
+      function renderProfile() {
+        const client = clientData.client;
+        const fields = [
+          { label: '法人番号', value: client.corp_number },
+          { label: '法人形態', value: client.corp_type },
+          { label: '代表者名', value: client.representative_name },
+          { label: '代表者肩書', value: client.representative_title },
+          { label: '設立年', value: client.founding_year ? client.founding_year + '年' + (client.founding_month ? client.founding_month + '月' : '') : null },
+          { label: 'Webサイト', value: client.website_url },
+          { label: '連絡先メール', value: client.contact_email },
+          { label: '連絡先電話', value: client.contact_phone },
+          { label: '事業概要', value: client.business_summary },
+          { label: '主要製品/サービス', value: client.main_products },
+          { label: '主要顧客', value: client.main_customers },
+          { label: '競合優位性', value: client.competitive_advantage },
+          { label: '従業員数', value: client.employee_count ? client.employee_count + '名' : null },
+          { label: '決算月', value: client.fiscal_year_end ? client.fiscal_year_end + '月' : null },
+        ];
+        
+        const hasData = fields.some(f => f.value);
+        
+        if (!hasData) {
+          document.getElementById('profile-content').innerHTML = '<p class="text-gray-500">企業プロフィールがまだ入力されていません。</p>';
+          return;
+        }
+        
+        document.getElementById('profile-content').innerHTML = '<div class="grid grid-cols-1 md:grid-cols-2 gap-4">' +
+          fields.filter(f => f.value).map(f => 
+            '<div><span class="text-sm text-gray-500">' + f.label + '</span><p class="text-gray-900">' + f.value + '</p></div>'
+          ).join('') + '</div>';
+      }
+      
+      function renderSubmissions() {
+        const submissions = clientData.submissions || [];
+        const container = document.getElementById('submissions-list');
+        
+        if (submissions.length === 0) {
+          container.innerHTML = '<p class="p-4 text-gray-500">入力履歴がありません</p>';
+          return;
+        }
+        
+        container.innerHTML = submissions.map(s => \`
+          <div class="p-4 hover:bg-gray-50">
+            <div class="flex justify-between items-start">
+              <div>
+                <p class="font-medium">\${s.form_type || '一般入力'}</p>
+                <p class="text-sm text-gray-500">\${new Date(s.created_at).toLocaleString('ja-JP')}</p>
+              </div>
+              <span class="px-2 py-1 text-xs rounded-full \${
+                s.status === 'approved' ? 'bg-emerald-100 text-emerald-700' :
+                s.status === 'pending' ? 'bg-yellow-100 text-yellow-700' :
+                'bg-gray-100 text-gray-700'
+              }">\${s.status === 'approved' ? '承認済' : s.status === 'pending' ? '確認待ち' : s.status}</span>
+            </div>
+          </div>
+        \`).join('');
+      }
+      
+      function renderDrafts() {
+        const drafts = clientData.drafts || [];
+        const container = document.getElementById('drafts-list');
+        
+        if (drafts.length === 0) {
+          container.innerHTML = '<p class="p-4 text-gray-500">申請書ドラフトがありません</p>';
+          return;
+        }
+        
+        container.innerHTML = drafts.map(d => \`
+          <div class="p-4 hover:bg-gray-50 cursor-pointer">
+            <div class="flex justify-between items-start">
+              <div>
+                <p class="font-medium">\${d.title || '無題のドラフト'}</p>
+                <p class="text-sm text-gray-500">更新: \${new Date(d.updated_at).toLocaleString('ja-JP')}</p>
+              </div>
+              <span class="px-2 py-1 text-xs rounded-full bg-blue-100 text-blue-700">\${d.status || '作成中'}</span>
+            </div>
+          </div>
+        \`).join('');
+      }
+      
+      function renderLinks() {
+        const links = clientData.links || [];
+        const container = document.getElementById('links-list');
+        
+        if (links.length === 0) {
+          container.innerHTML = '<p class="p-4 text-gray-500">発行リンクがありません</p>';
+          return;
+        }
+        
+        const now = new Date();
+        container.innerHTML = links.map(l => {
+          const expiresAt = new Date(l.expires_at);
+          const isExpired = expiresAt < now;
+          const isRevoked = l.revoked_at;
+          const status = isRevoked ? '無効化済' : isExpired ? '期限切れ' : '有効';
+          const statusClass = isRevoked || isExpired ? 'bg-gray-100 text-gray-700' : 'bg-emerald-100 text-emerald-700';
+          
+          return \`
+            <div class="p-4 hover:bg-gray-50">
+              <div class="flex justify-between items-start">
+                <div>
+                  <p class="font-medium">\${l.type === 'intake' ? '入力リンク' : l.type}</p>
+                  <p class="text-sm text-gray-500">発行: \${new Date(l.created_at).toLocaleString('ja-JP')}</p>
+                  <p class="text-sm text-gray-500">期限: \${expiresAt.toLocaleString('ja-JP')}</p>
+                  <p class="text-sm text-gray-400">使用回数: \${l.used_count || 0} / \${l.max_uses || '無制限'}</p>
+                </div>
+                <span class="px-2 py-1 text-xs rounded-full \${statusClass}">\${status}</span>
+              </div>
+            </div>
+          \`;
+        }).join('');
+      }
+      
+      function showTab(tabName) {
+        // Hide all tabs
+        document.querySelectorAll('.tab-content').forEach(el => el.classList.add('hidden'));
+        document.querySelectorAll('.tab-btn').forEach(el => {
+          el.classList.remove('border-emerald-500', 'text-emerald-600');
+          el.classList.add('border-transparent', 'text-gray-500');
+        });
+        
+        // Show selected tab
+        document.getElementById('tab-' + tabName).classList.remove('hidden');
+        document.querySelector('[data-tab="' + tabName + '"]').classList.add('border-emerald-500', 'text-emerald-600');
+        document.querySelector('[data-tab="' + tabName + '"]').classList.remove('border-transparent', 'text-gray-500');
+      }
+      
+      async function issueIntakeLink() {
+        if (!clientData) return;
+        
+        const companyId = clientData.client.company_id;
+        const data = await apiCall('/api/agency/links', {
+          method: 'POST',
+          body: JSON.stringify({ companyId, type: 'intake', expiresInDays: 7 }),
+        });
+        
+        if (data.success) {
+          const url = data.data.url;
+          await navigator.clipboard.writeText(url);
+          alert('入力リンクをクリップボードにコピーしました:\\n' + url);
+          loadClientDetail(); // Reload to show new link
+        } else {
+          alert('エラー: ' + (data.error?.message || '不明なエラー'));
+        }
+      }
+      
+      async function saveNotes() {
+        const notes = document.getElementById('notes-input').value;
+        
+        const data = await apiCall('/api/agency/clients/' + clientId, {
+          method: 'PUT',
+          body: JSON.stringify({ notes }),
+        });
+        
+        if (data.success) {
+          alert('メモを保存しました');
+        } else {
+          alert('エラー: ' + (data.error?.message || '保存に失敗しました'));
+        }
+      }
+      
+      function showEditModal() {
+        if (!clientData) return;
+        const client = clientData.client;
+        
+        document.getElementById('edit-client-name').value = client.client_name || '';
+        document.getElementById('edit-client-email').value = client.client_email || '';
+        document.getElementById('edit-client-phone').value = client.client_phone || '';
+        document.getElementById('edit-status').value = client.status || 'active';
+        
+        document.getElementById('edit-modal').classList.remove('hidden');
+      }
+      
+      function hideEditModal() {
+        document.getElementById('edit-modal').classList.add('hidden');
+      }
+      
+      document.getElementById('edit-form').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const form = e.target;
+        
+        const data = await apiCall('/api/agency/clients/' + clientId, {
+          method: 'PUT',
+          body: JSON.stringify({
+            clientName: form.clientName.value,
+            clientEmail: form.clientEmail.value,
+            clientPhone: form.clientPhone.value,
+            status: form.status.value,
+          }),
+        });
+        
+        if (data.success) {
+          hideEditModal();
+          loadClientDetail();
+        } else {
+          alert('エラー: ' + (data.error?.message || '更新に失敗しました'));
+        }
+      });
+      
+      // Initialize
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', loadClientDetail);
+      } else {
+        if (typeof window.apiCall === 'function') {
+          loadClientDetail();
+        } else {
+          setTimeout(loadClientDetail, 100);
+        }
+      }
+    </script>
+  `;
+  
+  return c.html(agencyLayout('顧客詳細', content, 'clients'));
+});
+
+/**
  * GET /agency/links - リンク管理
  */
 agencyPages.get('/agency/links', (c) => {
@@ -798,6 +1244,8 @@ agencyPages.get('/agency/submissions', (c) => {
     </div>
     
     <script>
+      let currentSubmissions = []; // グローバル変数として定義
+      
       async function loadSubmissions() {
         const status = document.getElementById('status-filter').value;
         let url = '/api/agency/submissions';
@@ -805,7 +1253,8 @@ agencyPages.get('/agency/submissions', (c) => {
         
         const data = await apiCall(url);
         if (data.success) {
-          renderSubmissions(data.data.submissions);
+          currentSubmissions = data.data.submissions; // データを保存
+          renderSubmissions(currentSubmissions);
         }
       }
       
@@ -849,20 +1298,6 @@ agencyPages.get('/agency/submissions', (c) => {
             </div>
           </div>
         \`).join('');
-      }
-      
-      let currentSubmissions = [];
-      
-      async function loadSubmissions() {
-        const status = document.getElementById('status-filter').value;
-        let url = '/api/agency/submissions';
-        if (status) url += '?status=' + status;
-        
-        const data = await apiCall(url);
-        if (data.success) {
-          currentSubmissions = data.data.submissions;
-          renderSubmissions(currentSubmissions);
-        }
       }
       
       function showDetail(id) {
