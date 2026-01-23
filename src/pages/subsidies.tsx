@@ -565,7 +565,6 @@ subsidyPages.get('/subsidies', (c) => {
             '</div>' +
           '</div>';
         statusEl.classList.remove('hidden');
-        statusEl.classList.remove('hidden');
         
         // 検索パネルを無効化
         const searchPanel = document.querySelector('.bg-white.rounded-lg.shadow.p-6.mb-6');
@@ -579,21 +578,6 @@ subsidyPages.get('/subsidies', (c) => {
               '<i class="fas fa-info-circle text-gray-400 text-2xl"></i>' +
             '</div>' +
             '<p class="text-gray-600">まずは会社情報を登録してください</p>' +
-          '</div>';
-      }
-        document.getElementById('subsidies-list').innerHTML = 
-          '<div class="bg-white rounded-lg shadow p-8">' +
-            '<div class="text-center">' +
-              '<div class="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center mx-auto mb-4">' +
-                '<i class="fas fa-building text-blue-500 text-2xl"></i>' +
-              '</div>' +
-              '<h3 class="text-lg font-semibold text-gray-800 mb-2">まず会社情報を登録しましょう</h3>' +
-              '<p class="text-gray-600 mb-2">補助金検索を利用するには、会社情報の登録が必要です。</p>' +
-              '<p class="text-sm text-gray-500 mb-6">必要な情報: 会社名、都道府県、業種、従業員数（約2分で完了）</p>' +
-              '<a href="/company" class="inline-flex items-center gap-2 bg-blue-600 text-white px-6 py-3 rounded-lg hover:bg-blue-700 transition">' +
-                '<i class="fas fa-edit"></i> 会社情報を登録する' +
-              '</a>' +
-            '</div>' +
           '</div>';
       }
       
