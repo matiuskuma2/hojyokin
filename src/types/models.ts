@@ -8,7 +8,7 @@ export interface User {
   email: string;
   password_hash: string;
   name: string | null;
-  role: 'user' | 'admin' | 'super_admin';
+  role: 'user' | 'admin' | 'super_admin' | 'agency';
   email_verified_at: string | null;
   password_reset_token: string | null;
   password_reset_expires: string | null;

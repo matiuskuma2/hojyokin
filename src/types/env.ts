@@ -69,7 +69,7 @@ export type Bindings = Env;
 export interface JWTPayload {
   sub: string;        // user_id
   email: string;
-  role: 'user' | 'admin' | 'super_admin';
+  role: 'user' | 'admin' | 'super_admin' | 'agency';
   iss: string;
   aud: string;
   iat: number;
@@ -95,7 +95,7 @@ export interface InternalJWTPayload {
 export interface AuthUser {
   id: string;
   email: string;
-  role: 'user' | 'admin' | 'super_admin';
+  role: 'user' | 'admin' | 'super_admin' | 'agency';
 }
 
 // 内部API認証情報

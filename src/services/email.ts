@@ -9,6 +9,20 @@
 
 import type { Env } from '../types';
 
+/**
+ * HTMLエスケープ（XSS対策）
+ * ユーザー入力値をHTMLテンプレートに挿入する前に必ず適用
+ */
+function escapeHtml(str: string | null | undefined): string {
+  if (!str) return '';
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
 interface SendEmailParams {
   to: string;
   subject: string;
@@ -124,7 +138,7 @@ export async function sendStaffInviteEmail(
     <div class="content">
       <h2 style="color: #047857; margin-top: 0;">事務所への招待</h2>
       
-      <p>${params.inviterName} さんから <strong>「${params.agencyName}」</strong> への招待が届いています。</p>
+      <p>${escapeHtml(params.inviterName)} さんから <strong>「${escapeHtml(params.agencyName)}」</strong> への招待が届いています。</p>
       
       <div class="info-box">
         <p style="margin: 0;"><strong>役割:</strong> ${roleLabel}</p>
@@ -143,7 +157,7 @@ export async function sendStaffInviteEmail(
       </p>
     </div>
     <div class="footer">
-      <p>このメールは ${params.inviterName} さんがあなたを招待したために送信されました。</p>
+      <p>このメールは ${escapeHtml(params.inviterName)} さんがあなたを招待したために送信されました。</p>
       <p>心当たりのない場合は、このメールを無視してください。</p>
       <p>&copy; ホジョラク</p>
     </div>
@@ -154,7 +168,7 @@ export async function sendStaffInviteEmail(
   
   return sendEmail(env, {
     to: params.to,
-    subject: `【ホジョラク】${params.inviterName}さんから「${params.agencyName}」への招待`,
+    subject: `【ホジョラク】${escapeHtml(params.inviterName)}さんから「${escapeHtml(params.agencyName)}」への招待`,
     html,
   });
 }
@@ -183,7 +197,7 @@ export async function sendClientInviteEmail(
   const messageSection = params.message ? `
       <div class="info-box">
         <p style="margin: 0; font-weight: bold;">メッセージ:</p>
-        <p style="margin: 10px 0 0 0;">${params.message}</p>
+        <p style="margin: 10px 0 0 0;">${escapeHtml(params.message)}</p>
       </div>
   ` : '';
   
@@ -209,9 +223,9 @@ export async function sendClientInviteEmail(
       <p style="margin: 10px 0 0 0; opacity: 0.9;">補助金マッチングプラットフォーム</p>
     </div>
     <div class="content">
-      <h2 style="color: #047857; margin-top: 0;">${params.clientName} 様</h2>
+      <h2 style="color: #047857; margin-top: 0;">${escapeHtml(params.clientName)} 様</h2>
       
-      <p><strong>${params.agencyName}</strong> の ${params.inviterName} さんから、企業情報の入力依頼が届いています。</p>
+      <p><strong>${escapeHtml(params.agencyName)}</strong> の ${escapeHtml(params.inviterName)} さんから、企業情報の入力依頼が届いています。</p>
       
       ${messageSection}
       
@@ -230,7 +244,7 @@ export async function sendClientInviteEmail(
       </p>
     </div>
     <div class="footer">
-      <p>このメールは ${params.agencyName} からの依頼により送信されました。</p>
+      <p>このメールは ${escapeHtml(params.agencyName)} からの依頼により送信されました。</p>
       <p>心当たりのない場合は、このメールを無視してください。</p>
       <p>&copy; ホジョラク</p>
     </div>
@@ -241,7 +255,7 @@ export async function sendClientInviteEmail(
   
   return sendEmail(env, {
     to: params.to,
-    subject: `【ホジョラク】${params.agencyName}から企業情報入力のご依頼`,
+    subject: `【ホジョラク】${escapeHtml(params.agencyName)}から企業情報入力のご依頼`,
     html,
   });
 }
@@ -288,7 +302,7 @@ export async function sendPasswordResetEmail(
       <p style="margin: 10px 0 0 0; opacity: 0.9;">パスワードリセット</p>
     </div>
     <div class="content">
-      <h2 style="color: #047857; margin-top: 0;">${params.userName} 様</h2>
+      <h2 style="color: #047857; margin-top: 0;">${escapeHtml(params.userName)} 様</h2>
       
       <p>パスワードリセットのリクエストを受け付けました。</p>
       

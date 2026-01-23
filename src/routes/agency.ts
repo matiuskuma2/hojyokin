@@ -21,6 +21,155 @@ import type { Env, Variables, ApiResponse } from '../types';
 import { requireAuth, getCurrentUser } from '../middleware/auth';
 import { sendStaffInviteEmail, sendClientInviteEmail } from '../services/email';
 
+// =====================================================
+// 型定義（P2-10: any型排除）
+// =====================================================
+
+/** NEWSアイテム共通型 */
+interface NewsItem {
+  id: string;
+  title: string;
+  url: string | null;
+  summary: string | null;
+  published_at: string | null;
+  detected_at: string;
+  event_type: 'new' | 'updated' | 'closing' | 'info' | 'alert' | null;
+  priority?: number;
+  tags?: string[];
+  source_key?: string;
+}
+
+/** 都道府県NEWSアイテム型 */
+interface PrefectureNewsItem extends NewsItem {
+  region_prefecture: string | null;
+  is_client_area: boolean;
+}
+
+/** おすすめ補助金型 */
+interface Suggestion {
+  agency_client_id: string;
+  company_id: string;
+  client_name: string | null;
+  company_name: string | null;
+  prefecture: string | null;
+  subsidy_id: string;
+  status: 'PROCEED' | 'CAUTION' | 'NO';
+  score: number;
+  match_reasons: string[];
+  risk_flags: string[];
+  subsidy_title: string | null;
+  subsidy_deadline: string | null;
+  subsidy_max_limit: number | null;
+  deadline_days: number | null;
+  rank: number;
+}
+
+/** ダッシュボードv2レスポンス型 */
+interface DashboardV2Response {
+  news: {
+    platform: NewsItem[];
+    support_info: NewsItem[];
+    prefecture: PrefectureNewsItem[];
+    ministry: NewsItem[];
+    other_public: NewsItem[];
+  };
+  suggestions: Suggestion[];
+  tasks: {
+    pending_intakes: Array<{
+      id: string;
+      submitted_at: string;
+      client_name: string | null;
+      company_name: string | null;
+      link_code: string | null;
+    }>;
+    expiring_links: Array<{
+      id: string;
+      short_code: string | null;
+      link_type: string;
+      expires_at: string;
+      label: string | null;
+      client_name: string | null;
+      company_name: string | null;
+    }>;
+    drafts_in_progress: Array<{
+      id: string;
+      subsidy_id: string | null;
+      status: string;
+      updated_at: string;
+      company_name: string | null;
+      client_name: string | null;
+    }>;
+  };
+  kpi: {
+    today_search_count: number;
+    today_chat_count: number;
+    today_draft_count: number;
+  };
+  stats: {
+    totalClients: number;
+    activeClients: number;
+    clientPrefectures: string[];
+  };
+  meta: {
+    generated_at: string;
+    version: string;
+    partial_errors?: string[];  // P1-5: 部分エラー通知
+  };
+}
+
+// =====================================================
+// 定数定義（P0-3: 境界値）
+// =====================================================
+const LIMITS = {
+  DEFAULT_PAGE_SIZE: 50,
+  MAX_PAGE_SIZE: 100,
+  MIN_PAGE_SIZE: 1,
+  DEFAULT_EXPIRES_DAYS: 7,
+  MAX_EXPIRES_DAYS: 90,
+  MIN_EXPIRES_DAYS: 1,
+  DEFAULT_MAX_USES: 1,
+  MAX_MAX_USES: 100,
+  MIN_MAX_USES: 1,
+} as const;
+
+// =====================================================
+// ヘルパー関数
+// =====================================================
+
+/**
+ * 境界値制限付き数値パース（P0-3）
+ */
+function parseIntWithLimits(value: string | undefined, defaultVal: number, min: number, max: number): number {
+  const parsed = parseInt(value || '', 10);
+  if (isNaN(parsed)) return defaultVal;
+  return Math.min(Math.max(parsed, min), max);
+}
+
+/**
+ * 安全なJSONパース（P1-9）
+ */
+async function safeParseJsonBody<T>(c: { req: { json: () => Promise<T> } }): Promise<{ ok: true; data: T } | { ok: false; error: string }> {
+  try {
+    const data = await c.req.json() as T;
+    return { ok: true, data };
+  } catch {
+    return { ok: false, error: 'Invalid JSON in request body' };
+  }
+}
+
+/**
+ * employee_band計算（P0-4: 境界条件修正）
+ */
+function calculateEmployeeBand(employeeCount: unknown): string {
+  const count = Math.max(Number(employeeCount) || 0, 0);
+  if (count <= 5) return '1-5';
+  if (count <= 20) return '6-20';
+  if (count <= 50) return '21-50';
+  if (count <= 100) return '51-100';
+  if (count <= 300) return '101-300';
+  return '301+';
+}
+
 const agencyRoutes = new Hono<{ Bindings: Env; Variables: Variables }>();
 
 // 全ルートで認証必須
@@ -245,7 +394,11 @@ agencyRoutes.get('/clients', async (c) => {
   }
   
   const agencyId = agencyInfo.agency.id;
-  const { status, search, limit = '50', offset = '0' } = c.req.query();
+  const { status, search, limit: limitStr, offset: offsetStr } = c.req.query();
+  
+  // P0-3: 境界値チェック
+  const parsedLimit = parseIntWithLimits(limitStr, LIMITS.DEFAULT_PAGE_SIZE, LIMITS.MIN_PAGE_SIZE, LIMITS.MAX_PAGE_SIZE);
+  const parsedOffset = parseIntWithLimits(offsetStr, 0, 0, Number.MAX_SAFE_INTEGER);
   
   let query = `
     SELECT 
@@ -260,7 +413,7 @@ agencyRoutes.get('/clients', async (c) => {
     JOIN companies c ON ac.company_id = c.id
     WHERE ac.agency_id = ?
   `;
-  const params: any[] = [agencyId];
+  const params: (string | number)[] = [agencyId];
   
   if (status) {
     query += ' AND ac.status = ?';
@@ -273,13 +426,13 @@ agencyRoutes.get('/clients', async (c) => {
   }
   
   query += ' ORDER BY ac.created_at DESC LIMIT ? OFFSET ?';
-  params.push(parseInt(limit), parseInt(offset));
+  params.push(parsedLimit, parsedOffset);
   
   const clients = await db.prepare(query).bind(...params).all();
   
   // 総数
   let countQuery = 'SELECT COUNT(*) as count FROM agency_clients ac WHERE ac.agency_id = ?';
-  const countParams: any[] = [agencyId];
+  const countParams: (string | number)[] = [agencyId];
   if (status) {
     countQuery += ' AND ac.status = ?';
     countParams.push(status);
@@ -288,7 +441,7 @@ agencyRoutes.get('/clients', async (c) => {
   
   // 凍結仕様: id を必ず返す + agency_client_id エイリアス追加（互換用）
   // id 欠損があればログ出力（データ健全性監視）
-  const safeClients = (clients?.results || []).map((client: any) => {
+  const safeClients = (clients?.results || []).map((client: Record<string, unknown>) => {
     if (!client.id) {
       console.warn('[Agency API] client.id is missing:', JSON.stringify(client));
     }
@@ -300,13 +453,18 @@ agencyRoutes.get('/clients', async (c) => {
     };
   });
   
-  return c.json<ApiResponse<any>>({
+  return c.json<ApiResponse<{
+    clients: typeof safeClients;
+    total: number;
+    limit: number;
+    offset: number;
+  }>>({
     success: true,
     data: {
       clients: safeClients,
       total: total?.count || 0,
-      limit: parseInt(limit),
-      offset: parseInt(offset),
+      limit: parsedLimit,
+      offset: parsedOffset,
     },
   });
 });
@@ -326,8 +484,26 @@ agencyRoutes.post('/clients', async (c) => {
     }, 403);
   }
   
-  const body = await c.req.json();
-  const { clientName, clientEmail, clientPhone, companyName, prefecture, industry, notes, tags } = body;
+  // P1-9: JSON parse例外ハンドリング
+  const parseResult = await safeParseJsonBody<{
+    clientName?: string;
+    clientEmail?: string;
+    clientPhone?: string;
+    companyName?: string;
+    prefecture?: string;
+    industry?: string;
+    notes?: string;
+    tags?: string[];
+  }>(c);
+  
+  if (!parseResult.ok) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'INVALID_JSON', message: parseResult.error },
+    }, 400);
+  }
+  
+  const { clientName, clientEmail, clientPhone, companyName, prefecture, industry, notes, tags } = parseResult.data;
   
   if (!clientName || !companyName) {
     return c.json<ApiResponse<null>>({
@@ -341,8 +517,8 @@ agencyRoutes.post('/clients', async (c) => {
   
   // 会社を作成
   const companyId = generateId();
-  // ⚠️ companiesテーブルには user_id カラムはない
   // 必須カラム: name, prefecture, industry_major, employee_count, employee_band
+  // P0-4: calculateEmployeeBand使用
   await db.prepare(`
     INSERT INTO companies (id, name, prefecture, industry_major, employee_count, employee_band, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -352,7 +528,7 @@ agencyRoutes.post('/clients', async (c) => {
     prefecture || '13', // デフォルト: 東京都
     industry || '情報通信業', 
     0, // デフォルト従業員数
-    '1-5', // デフォルト従業員帯
+    calculateEmployeeBand(0),
     now, 
     now
   ).run();
@@ -374,7 +550,7 @@ agencyRoutes.post('/clients', async (c) => {
     tags ? JSON.stringify(tags) : null, now, now
   ).run();
   
-  return c.json<ApiResponse<any>>({
+  return c.json<ApiResponse<{ id: string; companyId: string }>>({
     success: true,
     data: { id: clientId, companyId },
   }, 201);
@@ -454,8 +630,24 @@ agencyRoutes.put('/clients/:id', async (c) => {
     }, 403);
   }
   
-  const body = await c.req.json();
-  const { clientName, clientEmail, clientPhone, status, notes, tags } = body;
+  // P1-9: JSON parse例外ハンドリング
+  const parseResult = await safeParseJsonBody<{
+    clientName?: string;
+    clientEmail?: string;
+    clientPhone?: string;
+    status?: string;
+    notes?: string;
+    tags?: string[];
+  }>(c);
+  
+  if (!parseResult.ok) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'INVALID_JSON', message: parseResult.error },
+    }, 400);
+  }
+  
+  const { clientName, clientEmail, clientPhone, status, notes, tags } = parseResult.data;
   const now = new Date().toISOString();
   
   const result = await db.prepare(`
@@ -481,7 +673,7 @@ agencyRoutes.put('/clients/:id', async (c) => {
     }, 404);
   }
   
-  return c.json<ApiResponse<any>>({
+  return c.json<ApiResponse<{ message: string }>>({
     success: true,
     data: { message: 'Updated' },
   });
@@ -517,19 +709,43 @@ agencyRoutes.put('/clients/:id/company', async (c) => {
     }, 404);
   }
   
-  const body = await c.req.json();
+  // P1-9: JSON parse例外ハンドリング
+  const parseResult = await safeParseJsonBody<{
+    companyName?: string;
+    prefecture?: string;
+    city?: string;
+    industry_major?: string;
+    industry_minor?: string;
+    employee_count?: number;
+    capital?: number;
+    established_date?: string;
+    annual_revenue?: number;
+    representative_name?: string;
+    website_url?: string;
+    contact_email?: string;
+    contact_phone?: string;
+    business_summary?: string;
+  }>(c);
+  
+  if (!parseResult.ok) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'INVALID_JSON', message: parseResult.error },
+    }, 400);
+  }
+  
   const { 
     companyName, prefecture, city, industry_major, industry_minor,
     employee_count, capital, established_date, annual_revenue,
     representative_name, website_url, contact_email, contact_phone,
     business_summary
-  } = body;
+  } = parseResult.data;
   
   const now = new Date().toISOString();
   
   // companiesテーブルを更新
   const companyUpdateFields: string[] = [];
-  const companyUpdateValues: any[] = [];
+  const companyUpdateValues: (string | number | null)[] = [];
   
   if (companyName !== undefined) {
     companyUpdateFields.push('name = ?');
@@ -554,14 +770,9 @@ agencyRoutes.put('/clients/:id/company', async (c) => {
   if (employee_count !== undefined) {
     companyUpdateFields.push('employee_count = ?');
     companyUpdateValues.push(employee_count);
-    // employee_bandも更新
-    const band = employee_count <= 5 ? '1-5' : 
-                 employee_count <= 20 ? '6-20' :
-                 employee_count <= 50 ? '21-50' :
-                 employee_count <= 100 ? '51-100' :
-                 employee_count <= 300 ? '101-300' : '301+';
+    // P0-4: calculateEmployeeBand使用
     companyUpdateFields.push('employee_band = ?');
-    companyUpdateValues.push(band);
+    companyUpdateValues.push(calculateEmployeeBand(employee_count));
   }
   if (capital !== undefined) {
     companyUpdateFields.push('capital = ?');
@@ -588,7 +799,7 @@ agencyRoutes.put('/clients/:id/company', async (c) => {
   
   // company_profileテーブルを更新
   const profileUpdateFields: string[] = [];
-  const profileUpdateValues: any[] = [];
+  const profileUpdateValues: (string | number | null)[] = [];
   
   if (representative_name !== undefined) {
     profileUpdateFields.push('representative_name = ?');
@@ -642,8 +853,41 @@ agencyRoutes.post('/links', async (c) => {
     }, 403);
   }
   
-  const body = await c.req.json();
-  const { companyId, sessionId, type, expiresInDays = 7, maxUses = 1, label, message, sendEmail = false, recipientEmail } = body;
+  // P1-9: JSON parse例外ハンドリング
+  const parseResult = await safeParseJsonBody<{
+    companyId?: string;
+    sessionId?: string;
+    type?: string;
+    expiresInDays?: number;
+    maxUses?: number;
+    label?: string;
+    message?: string;
+    sendEmail?: boolean;
+    recipientEmail?: string;
+  }>(c);
+  
+  if (!parseResult.ok) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'INVALID_JSON', message: parseResult.error },
+    }, 400);
+  }
+  
+  const { companyId, sessionId, type, label, message, sendEmail = false, recipientEmail } = parseResult.data;
+  
+  // P0-3: 境界値チェック
+  const safeExpiresInDays = parseIntWithLimits(
+    String(parseResult.data.expiresInDays ?? LIMITS.DEFAULT_EXPIRES_DAYS),
+    LIMITS.DEFAULT_EXPIRES_DAYS,
+    LIMITS.MIN_EXPIRES_DAYS,
+    LIMITS.MAX_EXPIRES_DAYS
+  );
+  const safeMaxUses = parseIntWithLimits(
+    String(parseResult.data.maxUses ?? LIMITS.DEFAULT_MAX_USES),
+    LIMITS.DEFAULT_MAX_USES,
+    LIMITS.MIN_MAX_USES,
+    LIMITS.MAX_MAX_USES
+  );
   
   if (!companyId || !type) {
     return c.json<ApiResponse<null>>({
@@ -675,7 +919,7 @@ agencyRoutes.post('/links', async (c) => {
   const token = generateToken();
   const tokenHash = await hashToken(token);
   const shortCode = generateShortCode();
-  const expiresAt = new Date(Date.now() + expiresInDays * 24 * 60 * 60 * 1000).toISOString();
+  const expiresAt = new Date(Date.now() + safeExpiresInDays * 24 * 60 * 60 * 1000).toISOString();
   const now = new Date().toISOString();
   
   await db.prepare(`
@@ -685,7 +929,7 @@ agencyRoutes.post('/links', async (c) => {
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).bind(
     linkId, agencyInfo.agency.id, companyId, sessionId || null, type,
-    tokenHash, shortCode, expiresAt, maxUses, user.id, label || null, message || null, now
+    tokenHash, shortCode, expiresAt, safeMaxUses, user.id, label || null, message || null, now
   ).run();
   
   // 生成されたURLを返す（tokenは一度だけ）
@@ -713,13 +957,26 @@ agencyRoutes.post('/links', async (c) => {
     emailSent = emailResult.success;
   }
   
-  return c.json<ApiResponse<any>>({
+  // P0-2: トークン露出リスク対策 - キャッシュ禁止ヘッダー追加
+  // トークンは一度だけ表示されるため、ログやキャッシュに残らないようにする
+  c.header('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+  c.header('Pragma', 'no-cache');
+  
+  return c.json<ApiResponse<{
+    id: string;
+    shortCode: string;
+    url: string;
+    token: string;  // WARNING: ワンタイムトークン - ログに記録しないこと
+    expiresAt: string;
+    type: string;
+    email_sent: boolean;
+  }>>({
     success: true,
     data: {
       id: linkId,
       shortCode,
       url: linkUrl,
-      token, // ⚠️ これは一度だけ表示される
+      token, // WARNING: ワンタイムトークン - この値はログに記録しないこと
       expiresAt,
       type,
       email_sent: emailSent,
@@ -1015,8 +1272,16 @@ agencyRoutes.post('/submissions/:id/reject', async (c) => {
     }, 403);
   }
   
-  const body = await c.req.json();
-  const { reason } = body;
+  // P1-9: JSON parse例外ハンドリング
+  const parseResult = await safeParseJsonBody<{ reason?: string }>(c);
+  if (!parseResult.ok) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'INVALID_JSON', message: parseResult.error },
+    }, 400);
+  }
+  
+  const { reason } = parseResult.data;
   const now = new Date().toISOString();
   
   const result = await db.prepare(`
@@ -1156,8 +1421,21 @@ agencyRoutes.post('/members/invite', async (c) => {
     }, 403);
   }
   
-  const body = await c.req.json();
-  const { email, role = 'staff', sendEmail = false } = body;
+  // P1-9: JSON parse例外ハンドリング
+  const parseResult = await safeParseJsonBody<{
+    email?: string;
+    role?: string;
+    sendEmail?: boolean;
+  }>(c);
+  
+  if (!parseResult.ok) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'INVALID_JSON', message: parseResult.error },
+    }, 400);
+  }
+  
+  const { email, role = 'staff', sendEmail = false } = parseResult.data;
   
   if (!email) {
     return c.json<ApiResponse<null>>({
@@ -1325,8 +1603,16 @@ agencyRoutes.post('/members/join', async (c) => {
   const db = c.env.DB;
   const user = getCurrentUser(c);
   
-  const body = await c.req.json();
-  const { code, token } = body;
+  // P1-9: JSON parse例外ハンドリング
+  const parseResult = await safeParseJsonBody<{ code?: string; token?: string }>(c);
+  if (!parseResult.ok) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'INVALID_JSON', message: parseResult.error },
+    }, 400);
+  }
+  
+  const { code, token } = parseResult.data;
   
   if (!code || !token) {
     return c.json<ApiResponse<null>>({
@@ -1504,10 +1790,18 @@ agencyRoutes.put('/members/:id/role', async (c) => {
     }, 403);
   }
   
-  const body = await c.req.json();
-  const { role } = body;
+  // P1-9: JSON parse例外ハンドリング
+  const parseResult = await safeParseJsonBody<{ role?: string }>(c);
+  if (!parseResult.ok) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'INVALID_JSON', message: parseResult.error },
+    }, 400);
+  }
   
-  if (!['admin', 'staff'].includes(role)) {
+  const { role } = parseResult.data;
+  
+  if (!role || !['admin', 'staff'].includes(role)) {
     return c.json<ApiResponse<null>>({
       success: false,
       error: { code: 'VALIDATION_ERROR', message: 'Invalid role' },
@@ -1558,8 +1852,16 @@ agencyRoutes.put('/settings', async (c) => {
     }, 403);
   }
   
-  const body = await c.req.json();
-  const { name } = body;
+  // P1-9: JSON parse例外ハンドリング
+  const parseResult = await safeParseJsonBody<{ name?: string }>(c);
+  if (!parseResult.ok) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'INVALID_JSON', message: parseResult.error },
+    }, 400);
+  }
+  
+  const { name } = parseResult.data;
   
   if (!name || typeof name !== 'string' || name.trim().length === 0) {
     return c.json<ApiResponse<null>>({
@@ -1612,17 +1914,26 @@ agencyRoutes.get('/dashboard-v2', async (c) => {
   const agencyId = agencyInfo.agency.id;
   const today = new Date().toISOString().split('T')[0];
   
-  // ===== 1. 顧客の都道府県を取得（NEWS優先表示用） =====
-  const clientPrefectures = await db.prepare(`
-    SELECT DISTINCT c.prefecture
-    FROM agency_clients ac
-    JOIN companies c ON ac.company_id = c.id
-    WHERE ac.agency_id = ? AND c.prefecture IS NOT NULL
-  `).bind(agencyId).all();
+  // P1-5: 部分エラー追跡
+  const partialErrors: string[] = [];
   
-  const prefCodes = (clientPrefectures.results || [])
-    .map((r: any) => r.prefecture)
-    .filter((p: string) => p && p.length === 2);
+  // ===== 1. 顧客の都道府県を取得（NEWS優先表示用） =====
+  let prefCodes: string[] = [];
+  try {
+    const clientPrefectures = await db.prepare(`
+      SELECT DISTINCT c.prefecture
+      FROM agency_clients ac
+      JOIN companies c ON ac.company_id = c.id
+      WHERE ac.agency_id = ? AND c.prefecture IS NOT NULL
+    `).bind(agencyId).all();
+    
+    prefCodes = (clientPrefectures.results || [])
+      .map((r: any) => r.prefecture)
+      .filter((p: string) => p && p.length === 2);
+  } catch (e) {
+    console.error('[dashboard-v2] clientPrefectures error:', e);
+    partialErrors.push('clientPrefectures');
+  }
   
   // ===== 2. NEWSフィード取得（カテゴリ別、堅牢化） =====
   const newsLimit = 10;
@@ -1640,6 +1951,7 @@ agencyRoutes.get('/dashboard-v2', async (c) => {
     `).bind(newsLimit).all();
   } catch (e) {
     console.error('[dashboard-v2] platformNews error:', e);
+    partialErrors.push('platformNews');
   }
   
   // 2-2. 新着支援情報サマリー
@@ -1655,6 +1967,7 @@ agencyRoutes.get('/dashboard-v2', async (c) => {
     `).bind(newsLimit).all();
   } catch (e) {
     console.error('[dashboard-v2] supportInfoNews error:', e);
+    partialErrors.push('supportInfoNews');
   }
   
   // 2-3. 都道府県NEWS（顧客所在地優先）
@@ -1689,6 +2002,7 @@ agencyRoutes.get('/dashboard-v2', async (c) => {
     }
   } catch (e) {
     console.error('[dashboard-v2] prefectureNews error:', e);
+    partialErrors.push('prefectureNews');
   }
   
   // 2-4. 省庁NEWS
@@ -1704,6 +2018,7 @@ agencyRoutes.get('/dashboard-v2', async (c) => {
     `).bind(newsLimit).all();
   } catch (e) {
     console.error('[dashboard-v2] ministryNews error:', e);
+    partialErrors.push('ministryNews');
   }
   
   // 2-5. その他公的機関NEWS
@@ -1719,6 +2034,7 @@ agencyRoutes.get('/dashboard-v2', async (c) => {
     `).bind(newsLimit).all();
   } catch (e) {
     console.error('[dashboard-v2] otherPublicNews error:', e);
+    partialErrors.push('otherPublicNews');
   }
   
   // ===== 3. 顧客おすすめ（suggestions） =====
@@ -1753,6 +2069,7 @@ agencyRoutes.get('/dashboard-v2', async (c) => {
     `).bind(agencyId).all();
   } catch (e) {
     console.error('[dashboard-v2] suggestions error:', e);
+    partialErrors.push('suggestions');
   }
   
   // ===== 4. 未処理タスク（堅牢化: 各クエリを個別にtry-catch） =====
@@ -1779,6 +2096,7 @@ agencyRoutes.get('/dashboard-v2', async (c) => {
     `).bind(agencyId).all();
   } catch (e) {
     console.error('[dashboard-v2] pendingIntakes error:', e);
+    partialErrors.push('pendingIntakes');
   }
   
   // 4-2. 期限切れ間近リンク（7日以内）
@@ -1805,6 +2123,7 @@ agencyRoutes.get('/dashboard-v2', async (c) => {
     `).bind(agencyId).all();
   } catch (e) {
     console.error('[dashboard-v2] expiringLinks error:', e);
+    partialErrors.push('expiringLinks');
   }
   
   // 4-3. 進行中ドラフト
@@ -1826,6 +2145,7 @@ agencyRoutes.get('/dashboard-v2', async (c) => {
     `).bind(agencyId).all();
   } catch (e) {
     console.error('[dashboard-v2] draftsInProgress error:', e);
+    partialErrors.push('draftsInProgress');
   }
   
   // ===== 5. KPI（今日のアクティビティ、堅牢化） =====
@@ -1859,6 +2179,7 @@ agencyRoutes.get('/dashboard-v2', async (c) => {
     [todaySearches, todayChats, todayDrafts] = kpiResults;
   } catch (e) {
     console.error('[dashboard-v2] KPI error:', e);
+    partialErrors.push('kpi');
   }
   
   // ===== 6. 統計（既存dashboard互換、堅牢化） =====
@@ -1875,6 +2196,7 @@ agencyRoutes.get('/dashboard-v2', async (c) => {
     [totalClients, activeClients] = statsResults;
   } catch (e) {
     console.error('[dashboard-v2] stats error:', e);
+    partialErrors.push('stats');
   }
   
   // ===== レスポンス組み立て（凍結仕様） =====
@@ -1977,10 +2299,11 @@ agencyRoutes.get('/dashboard-v2', async (c) => {
         clientPrefectures: prefCodes,
       },
       
-      // メタ情報
+      // メタ情報（P1-5: 部分エラー通知）
       meta: {
         generated_at: new Date().toISOString(),
         version: 'v2',
+        ...(partialErrors.length > 0 ? { partial_errors: partialErrors } : {}),
       },
     },
   });
