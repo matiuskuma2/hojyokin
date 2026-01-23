@@ -223,6 +223,11 @@ const AppLayout = ({ children, title, activeNav }: { children: any; title: strin
               roleEl.textContent = '士業';
               roleEl.className = 'px-2 py-1 text-xs font-medium rounded-full bg-green-100 text-green-800';
             }
+          } else if (user.role === 'user') {
+            if (roleEl) {
+              roleEl.textContent = 'ユーザー';
+              roleEl.className = 'px-2 py-1 text-xs font-medium rounded-full bg-gray-100 text-gray-800';
+            }
           }
           
           // ログアウトボタン

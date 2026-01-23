@@ -131,8 +131,11 @@ const subsidyLayout = (title: string, content: string, currentPath: string = '/s
           <a id="admin-link" href="/admin" class="hidden text-indigo-600 hover:text-indigo-800 text-sm font-medium">
             <i class="fas fa-shield-halved mr-1"></i>管理画面
           </a>
-          <button onclick="logout()" class="text-sm text-gray-600 hover:text-gray-900">
-            <i class="fas fa-sign-out-alt mr-1"></i>ログアウト
+          <a href="/settings" class="text-gray-500 hover:text-gray-700 transition" title="設定">
+            <i class="fas fa-cog"></i>
+          </a>
+          <button onclick="logout()" class="text-gray-500 hover:text-red-600 transition" title="ログアウト">
+            <i class="fas fa-sign-out-alt"></i>
           </button>
         </div>
       </div>
@@ -174,11 +177,15 @@ const subsidyLayout = (title: string, content: string, currentPath: string = '/s
               if (adminLink) adminLink.classList.remove('hidden');
             } else if (user.role === 'agency') {
               if (roleEl) {
-                roleEl.textContent = 'Agency';
+                roleEl.textContent = '士業';
                 roleEl.className = 'px-2 py-1 text-xs font-medium rounded-full bg-green-100 text-green-800';
               }
+            } else if (user.role === 'user') {
+              if (roleEl) {
+                roleEl.textContent = 'ユーザー';
+                roleEl.className = 'px-2 py-1 text-xs font-medium rounded-full bg-gray-100 text-gray-800';
+              }
             }
-            // userロールの場合は何も表示しない
             
             // ユーザー情報をグローバルに保存
             window.currentUser = user;
