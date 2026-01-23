@@ -1565,6 +1565,19 @@ adminDashboard.get('/ops/data-health', async (c) => {
       latest_expiry: string;
     }>();
     
+    // F. 壊れURLの検出（example.com混入チェック）
+    const brokenLinks = await db.prepare(`
+      SELECT COUNT(*) AS broken_count
+      FROM subsidy_cache
+      WHERE detail_json LIKE '%example.com%'
+    `).first<{ broken_count: number }>();
+    
+    // G. 最終同期からの経過時間
+    const lastSync = await db.prepare(`
+      SELECT MAX(cached_at) AS last_sync
+      FROM subsidy_cache
+    `).first<{ last_sync: string }>();
+    
     // 凍結基準に基づく健全性判定
     const total = mainStats?.total || 0;
     const valid = mainStats?.valid || 0;
@@ -1595,6 +1608,8 @@ adminDashboard.get('/ops/data-health', async (c) => {
         has_industry: hasIndustry,
         expired_subsidies: expiredCount?.expired || 0,
         updated_last_24h: updated24h,
+        broken_links: brokenLinks?.broken_count || 0,
+        last_sync: lastSync?.last_sync || null,
       },
       
       // 充足率（%）
@@ -1614,7 +1629,12 @@ adminDashboard.get('/ops/data-health', async (c) => {
         area_ok: total > 0 && (hasArea / total) >= 0.95,
         amount_ok: total > 0 && (hasAmount / total) >= 0.80,
         cron_ok: updated24h > 0,
-        overall: total >= 500 && updated24h > 0 ? 'HEALTHY' : total >= 100 ? 'BUILDING' : 'CRITICAL',
+        broken_links_ok: (brokenLinks?.broken_count || 0) === 0,
+        overall: total >= 500 && updated24h > 0 && (brokenLinks?.broken_count || 0) === 0 
+          ? 'HEALTHY' 
+          : total >= 100 
+            ? 'BUILDING' 
+            : 'CRITICAL',
       },
       
       // ソース別

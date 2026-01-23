@@ -867,6 +867,143 @@ const clientId = client?.id || client?.agency_client_id || client?.client_id;
 
 ---
 
+## O. Ops KPI 凍結セット（subsidy_cache健全性）
+
+### O-1. KPI項目と凍結目標
+
+| 指標 | 凍結目標 | API フィールド | 備考 |
+|------|----------|---------------|------|
+| 総件数 | ≧500件 | `current.total` | 最優先達成項目 |
+| 有効率 | ≧95% | `percentages.valid_pct` | expires_at > now |
+| 締切あり | ≧95% | `percentages.deadline_pct` | acceptance_end_datetime NOT NULL |
+| 地域あり | ≧95% | `percentages.area_pct` | target_area_search NOT NULL |
+| 金額あり | ≧80% | `percentages.amount_pct` | subsidy_max_limit > 0 |
+| 24h更新 | >0件 | `current.updated_last_24h` | Cron稼働確認 |
+| 壊れURL | 0件 | `current.broken_links` | example.com混入 |
+| 最終同期 | ≦24h | `current.last_sync` | 48hでアラート |
+
+### O-2. API エンドポイント
+
+```
+GET /api/admin/ops/data-health
+POST /api/admin/ops/trigger-sync
+```
+
+### O-3. 検証SQL（コピペ用）
+
+```sql
+-- 1. 総量・有効性
+SELECT
+  COUNT(*) AS total,
+  SUM(CASE WHEN expires_at > datetime('now') THEN 1 ELSE 0 END) AS valid,
+  ROUND(SUM(CASE WHEN expires_at > datetime('now') THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 1) AS valid_pct
+FROM subsidy_cache;
+
+-- 2. 必須カラム充足率
+SELECT
+  COUNT(*) AS total,
+  SUM(CASE WHEN acceptance_end_datetime IS NOT NULL THEN 1 ELSE 0 END) AS has_deadline,
+  SUM(CASE WHEN target_area_search IS NOT NULL AND target_area_search != '' THEN 1 ELSE 0 END) AS has_area,
+  SUM(CASE WHEN subsidy_max_limit IS NOT NULL AND subsidy_max_limit > 0 THEN 1 ELSE 0 END) AS has_amount
+FROM subsidy_cache;
+
+-- 3. ソース別件数
+SELECT source, COUNT(*) AS cnt
+FROM subsidy_cache
+GROUP BY source
+ORDER BY cnt DESC;
+
+-- 4. 直近24h更新
+SELECT COUNT(*) AS updated_last_24h
+FROM subsidy_cache
+WHERE cached_at >= datetime('now', '-24 hours');
+
+-- 5. 壊れURL（example.com混入）
+SELECT COUNT(*) AS broken_links
+FROM subsidy_cache
+WHERE detail_json LIKE '%example.com%';
+
+-- 6. 最終同期時刻
+SELECT MAX(cached_at) AS last_sync
+FROM subsidy_cache;
+```
+
+### O-4. 運用ルール
+
+- 🔴 赤1個で即対応: cron動作確認・同期トリガー・ログ確認
+- 🟡 黄1個で翌日対応: 金額充足率低下・同期間隔超過
+- 🟢 全緑でOK: 次の改善に着手
+
+---
+
+## P. Super Admin E2E チェックリスト
+
+### P-1. ログイン〜権限
+
+| チェック | 手順 | 合格条件 |
+|----------|------|----------|
+| P-1-1 | super_admin でログイン | ヘッダーに「Super Admin」表示 |
+| P-1-2 | /admin から各タブ遷移 | JSエラー0（Console確認） |
+| P-1-3 | トークン期限切れ（localStorage削除） | 自動ログアウト→/login |
+| P-1-4 | role=user でログイン | Ops/Costsタブ非表示 |
+
+### P-2. Users（ユーザー管理）
+
+| チェック | 手順 | 合格条件 |
+|----------|------|----------|
+| P-2-1 | /admin/users 表示 | 一覧が表示される |
+| P-2-2 | ユーザー無効化 | 成功/失敗理由が表示 |
+| P-2-3 | ユーザー有効化 | 成功後に一覧更新 |
+| P-2-4 | 監査ログ確認 | /admin/audit に記録あり |
+
+### P-3. Costs（コスト管理）
+
+| チェック | 手順 | 合格条件 |
+|----------|------|----------|
+| P-3-1 | /admin/costs 表示 | 空でも落ちない・0表示正常 |
+| P-3-2 | 期間切替 | 7日/30日/90日で再描画 |
+| P-3-3 | グラフ表示 | Chart.js描画エラーなし |
+
+### P-4. Updates/Audit
+
+| チェック | 手順 | 合格条件 |
+|----------|------|----------|
+| P-4-1 | /admin/updates 表示 | デプロイ履歴表示（なしでも落ちない） |
+| P-4-2 | /admin/audit 表示 | イベント一覧表示 |
+| P-4-3 | フィルタリング | user_id/event_type で絞込 |
+
+### P-5. Ops（運用チェック）
+
+| チェック | 手順 | 合格条件 |
+|----------|------|----------|
+| P-5-1 | /admin/ops 表示 | KPI全項目が表示される |
+| P-5-2 | 「全チェック実行」ボタン | Coverage/Dashboard/Data-freshnessがOK |
+| P-5-3 | KPI表示 | 総件数・有効率・締切率・金額率・Cron稼働 |
+| P-5-4 | 壊れURL | 0件で緑、1件以上で赤 |
+| P-5-5 | 「今すぐ同期」ボタン | 同期完了アラート |
+| P-5-6 | ステータス判定 | HEALTHY/BUILDING/CRITICAL正しく表示 |
+
+### P-6. Agency管理
+
+| チェック | 手順 | 合格条件 |
+|----------|------|----------|
+| P-6-1 | agency一覧表示 | /admin から遷移可能 |
+| P-6-2 | 顧客一覧 | agency_clients表示 |
+| P-6-3 | access_links | リンク一覧表示 |
+| P-6-4 | intake_submissions | 入力履歴表示 |
+
+---
+
+## Q. 実行順の推奨
+
+1. **Ops KPI先行** - データが取れてるかを毎日確認
+2. **example.com混入ゼロ** - 壊れURLを即排除
+3. **subsidy_cache 500件達成** - cron同期の安定運用
+4. **super_admin E2E** - P-1〜P-6を全OK化
+5. **ローカルD1凍結** - 再現環境を固める
+
+---
+
 ## 修正履歴
 
 | 日付 | 修正内容 | 担当 |
@@ -876,3 +1013,6 @@ const clientId = client?.id || client?.agency_client_id || client?.client_id;
 | 2026-01-23 | E2Eチェックリスト追加（セクションI-L） | - |
 | 2026-01-23 | /agency/search顧客編集リンク修正・XSS対策強化 | - |
 | 2026-01-23 | escapeHtml関数統一（escapeHtmlDetail削除） | - |
+| 2026-01-23 | Ops KPI凍結セット追加（セクションO） | - |
+| 2026-01-23 | Super Admin E2Eチェックリスト追加（セクションP） | - |
+| 2026-01-23 | example.com混入検出API追加 | - |

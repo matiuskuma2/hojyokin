@@ -1575,6 +1575,30 @@ adminPages.get('/admin/ops', (c) => {
           </div>
         </div>
 
+        <!-- 追加KPI行 -->
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+          <div id="data-health-broken" class="border-2 rounded-lg p-3 text-center">
+            <p class="text-xs text-gray-500">壊れURL</p>
+            <p class="text-2xl font-bold text-gray-700 loading">-</p>
+            <p class="text-xs text-gray-400">example.com混入</p>
+          </div>
+          <div id="data-health-sync-hours" class="border-2 rounded-lg p-3 text-center">
+            <p class="text-xs text-gray-500">最終同期</p>
+            <p class="text-2xl font-bold text-gray-700 loading">-h</p>
+            <p class="text-xs text-gray-400">目標: ≦24h</p>
+          </div>
+          <div id="data-health-accepting" class="border-2 rounded-lg p-3 text-center">
+            <p class="text-xs text-gray-500">受付中</p>
+            <p class="text-2xl font-bold text-gray-700 loading">-</p>
+            <p class="text-xs text-gray-400">flag=1</p>
+          </div>
+          <div id="data-health-industry" class="border-2 rounded-lg p-3 text-center">
+            <p class="text-xs text-gray-500">業種あり</p>
+            <p class="text-2xl font-bold text-gray-700 loading">-%</p>
+            <p class="text-xs text-gray-400">空=全業種</p>
+          </div>
+        </div>
+
         <!-- 凍結ステータス判定 -->
         <div id="data-health-status" class="p-4 rounded-lg bg-gray-50 mb-4">
           <div class="loading text-gray-400">データ取得中...</div>
@@ -1887,7 +1911,10 @@ adminPages.get('/admin/ops', (c) => {
           await withTimeout(loadDashboardData(), 15000, 'Dashboard');
           setStep('ops-step-dashboard', 'ok', 'OK');
 
-          setStep('ops-step-freshness', 'ok', '（Coverage内）');
+          setStep('ops-step-freshness', 'running', '実行中…');
+          console.log('[OPS] Loading data health...');
+          await withTimeout(loadDataHealth(), 15000, 'Data-freshness');
+          setStep('ops-step-freshness', 'ok', 'OK');
 
           window.__opsState.finishedAt = new Date().toISOString();
           setStatus('完了 ✅', window.__opsState.startedAt, window.__opsState.finishedAt);
@@ -2234,6 +2261,38 @@ adminPages.get('/admin/ops', (c) => {
             cronEl.querySelector('p.text-2xl').className = 'text-2xl font-bold ' + (cronOk ? 'text-green-700' : 'text-red-700');
           }
 
+          // 壊れURL（example.com混入）
+          const brokenEl = document.getElementById('data-health-broken');
+          if (brokenEl) {
+            const brokenOk = status.broken_links_ok;
+            brokenEl.className = 'border-2 rounded-lg p-3 text-center ' + (brokenOk ? 'border-green-500 bg-green-50' : 'border-red-500 bg-red-50');
+            brokenEl.querySelector('p.text-2xl').textContent = current.broken_links || 0;
+            brokenEl.querySelector('p.text-2xl').className = 'text-2xl font-bold ' + (brokenOk ? 'text-green-700' : 'text-red-700');
+          }
+
+          // 最終同期からの経過時間
+          const syncHoursEl = document.getElementById('data-health-sync-hours');
+          if (syncHoursEl && current.last_sync) {
+            const lastSyncDate = new Date(current.last_sync);
+            const hoursSince = Math.round((Date.now() - lastSyncDate.getTime()) / (1000 * 60 * 60));
+            const syncOk = hoursSince <= 24;
+            syncHoursEl.className = 'border-2 rounded-lg p-3 text-center ' + (syncOk ? 'border-green-500 bg-green-50' : hoursSince <= 48 ? 'border-yellow-500 bg-yellow-50' : 'border-red-500 bg-red-50');
+            syncHoursEl.querySelector('p.text-2xl').textContent = hoursSince + 'h';
+            syncHoursEl.querySelector('p.text-2xl').className = 'text-2xl font-bold ' + (syncOk ? 'text-green-700' : hoursSince <= 48 ? 'text-yellow-700' : 'text-red-700');
+          }
+
+          // 受付中件数
+          const acceptingEl = document.getElementById('data-health-accepting');
+          if (acceptingEl) {
+            acceptingEl.querySelector('p.text-2xl').textContent = current.accepting || 0;
+          }
+
+          // 業種あり
+          const industryEl = document.getElementById('data-health-industry');
+          if (industryEl) {
+            industryEl.querySelector('p.text-2xl').textContent = percentages.industry_pct + '%';
+          }
+
           // ステータス判定
           const statusEl = document.getElementById('data-health-status');
           if (statusEl) {
@@ -2252,12 +2311,13 @@ adminPages.get('/admin/ops', (c) => {
               '<span class="font-bold text-lg">' + (statusLabels[status.overall] || status.overall) + '</span>' +
               '<span class="text-sm">生成時刻: ' + new Date(data.data.generated_at).toLocaleString('ja-JP') + '</span>' +
               '</div>' +
-              '<div class="mt-2 text-sm grid grid-cols-2 md:grid-cols-5 gap-2">' +
+              '<div class="mt-2 text-sm grid grid-cols-2 md:grid-cols-6 gap-2">' +
               '<span>総数: ' + (status.total_ok ? '✅' : '❌') + '</span>' +
               '<span>締切: ' + (status.deadline_ok ? '✅' : '❌') + '</span>' +
               '<span>地域: ' + (status.area_ok ? '✅' : '❌') + '</span>' +
               '<span>金額: ' + (status.amount_ok ? '✅' : '❌') + '</span>' +
               '<span>Cron: ' + (status.cron_ok ? '✅' : '❌') + '</span>' +
+              '<span>壊URL: ' + (status.broken_links_ok ? '✅' : '❌') + '</span>' +
               '</div>';
           }
 
