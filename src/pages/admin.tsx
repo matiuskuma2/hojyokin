@@ -32,6 +32,72 @@ const adminLayout = (title: string, content: string, activeTab: string = '') => 
   <script src="https://cdn.tailwindcss.com"></script>
   <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet">
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script>
+    // ============================================================
+    // 共通初期化スクリプト（headで先に定義）
+    // ============================================================
+    (function() {
+      'use strict';
+      
+      var token = localStorage.getItem('token');
+      if (!token) {
+        window.location.href = '/login';
+        return;
+      }
+      
+      // グローバルAPI呼び出しヘルパー
+      window.api = async function(path, options) {
+        options = options || {};
+        
+        var headers = {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ' + token
+        };
+        
+        if (options.headers) {
+          for (var key in options.headers) {
+            headers[key] = options.headers[key];
+          }
+        }
+        
+        var fetchOptions = {
+          method: options.method || 'GET',
+          headers: headers
+        };
+        
+        if (options.body) {
+          fetchOptions.body = options.body;
+        }
+        
+        try {
+          var res = await fetch(path, fetchOptions);
+          var data = await res.json();
+          
+          // 認証エラー時は自動ログアウト
+          if (res.status === 401 || (data && data.error && data.error.code === 'UNAUTHORIZED')) {
+            console.warn('認証エラー: 自動ログアウトします');
+            localStorage.removeItem('token');
+            localStorage.removeItem('user');
+            alert('セッションの有効期限が切れました。再度ログインしてください。');
+            window.location.href = '/login';
+            return data;
+          }
+          
+          return data;
+        } catch (err) {
+          console.error('API呼び出しエラー:', err);
+          return { success: false, error: { code: 'NETWORK_ERROR', message: '通信エラーが発生しました' } };
+        }
+      };
+      
+      // ログアウト関数
+      window.logout = function() {
+        localStorage.removeItem('token');
+        localStorage.removeItem('user');
+        window.location.href = '/login';
+      };
+    })();
+  </script>
   <style>
     .stat-card { transition: all 0.3s; }
     .stat-card:hover { transform: translateY(-2px); box-shadow: 0 10px 20px rgba(0,0,0,0.1); }
@@ -174,12 +240,11 @@ const adminLayout = (title: string, content: string, activeTab: string = '') => 
 
   <script>
     // ============================================================
-    // 共通初期化スクリプト
+    // ユーザー情報表示とナビ初期化（API定義は<head>で完了済み）
     // ============================================================
     (function() {
       'use strict';
       
-      var token = localStorage.getItem('token');
       var userStr = localStorage.getItem('user');
       var user = null;
       
@@ -190,7 +255,7 @@ const adminLayout = (title: string, content: string, activeTab: string = '') => 
         user = null;
       }
       
-      if (!token || !user) {
+      if (!user) {
         window.location.href = '/login';
         return;
       }
@@ -242,58 +307,6 @@ const adminLayout = (title: string, content: string, activeTab: string = '') => 
           menu.classList.remove('open');
           overlay.classList.remove('open');
         }
-      };
-      
-      // グローバルAPI呼び出しヘルパー
-      window.api = async function(path, options) {
-        options = options || {};
-        
-        var headers = {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer ' + token
-        };
-        
-        if (options.headers) {
-          for (var key in options.headers) {
-            headers[key] = options.headers[key];
-          }
-        }
-        
-        var fetchOptions = {
-          method: options.method || 'GET',
-          headers: headers
-        };
-        
-        if (options.body) {
-          fetchOptions.body = options.body;
-        }
-        
-        try {
-          var res = await fetch(path, fetchOptions);
-          var data = await res.json();
-          
-          // 認証エラー時は自動ログアウト
-          if (res.status === 401 || (data && data.error && data.error.code === 'UNAUTHORIZED')) {
-            console.warn('認証エラー: 自動ログアウトします');
-            localStorage.removeItem('token');
-            localStorage.removeItem('user');
-            alert('セッションの有効期限が切れました。再度ログインしてください。');
-            window.location.href = '/login';
-            return data;
-          }
-          
-          return data;
-        } catch (err) {
-          console.error('API呼び出しエラー:', err);
-          return { success: false, error: { code: 'NETWORK_ERROR', message: '通信エラーが発生しました' } };
-        }
-      };
-      
-      // ログアウト関数
-      window.logout = function() {
-        localStorage.removeItem('token');
-        localStorage.removeItem('user');
-        window.location.href = '/login';
       };
       
       // Service Worker 登録（PWA対応）
