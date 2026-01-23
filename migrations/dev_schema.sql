@@ -344,6 +344,26 @@ CREATE INDEX IF NOT EXISTS idx_audit_log_user ON audit_log(user_id);
 CREATE INDEX IF NOT EXISTS idx_audit_log_action ON audit_log(action);
 CREATE INDEX IF NOT EXISTS idx_audit_log_created ON audit_log(created_at);
 
+-- Cron実行履歴テーブル（P2-0 安全ゲート）
+CREATE TABLE IF NOT EXISTS cron_runs (
+  id TEXT PRIMARY KEY,
+  job_type TEXT NOT NULL,              -- 'sync-jgrants', 'scrape-tokyo-kosha', 'scrape-tokyo-shigoto'
+  status TEXT NOT NULL DEFAULT 'running', -- 'running', 'success', 'failed', 'partial'
+  started_at TEXT NOT NULL DEFAULT (datetime('now')),
+  finished_at TEXT,
+  items_processed INTEGER DEFAULT 0,
+  items_inserted INTEGER DEFAULT 0,
+  items_updated INTEGER DEFAULT 0,
+  items_skipped INTEGER DEFAULT 0,
+  error_count INTEGER DEFAULT 0,
+  errors_json TEXT,                    -- JSON array of error messages
+  metadata_json TEXT,                  -- Additional job-specific metadata
+  triggered_by TEXT,                   -- 'cron', 'manual', 'api'
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_cron_runs_job ON cron_runs(job_type, status);
+CREATE INDEX IF NOT EXISTS idx_cron_runs_started ON cron_runs(started_at);
+
 -- =====================================================
 -- PHASE 7: Agency（士業）関連
 -- =====================================================

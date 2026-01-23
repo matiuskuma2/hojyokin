@@ -172,7 +172,121 @@ function calculateEmployeeBand(employeeCount: unknown): string {
 
 const agencyRoutes = new Hono<{ Bindings: Env; Variables: Variables }>();
 
-// 全ルートで認証必須
+// =====================================================================
+// 公開APIエンドポイント（認証不要）
+// 認証ミドルウェアの前に配置
+// =====================================================================
+
+/**
+ * GET /api/agency/public-news - 公開NEWSフィード（認証不要）
+ * 
+ * クエリパラメータ:
+ * - prefecture: 都道府県コード（例: 13）
+ * - limit: 取得件数（デフォルト: 20、最大: 50）
+ * 
+ * P2-1: 士業ダッシュボード連携のテスト用
+ */
+agencyRoutes.get('/public-news', async (c) => {
+  const db = c.env.DB;
+  
+  const prefectureCode = c.req.query('prefecture') || null;
+  const limit = Math.min(parseInt(c.req.query('limit') || '20', 10), 50);
+  
+  try {
+    let newsQuery;
+    
+    if (prefectureCode) {
+      newsQuery = await db.prepare(`
+        SELECT id, title, url, summary, 
+               COALESCE(published_at, first_seen_at) as published_at, 
+               first_seen_at as detected_at, 
+               CASE 
+                 WHEN is_new = 1 THEN 'new'
+                 WHEN status = 'closed' THEN 'closing'
+                 ELSE 'info'
+               END as event_type, 
+               prefecture_code as region_prefecture, 
+               issuer_name,
+               subsidy_amount_max,
+               subsidy_rate_text,
+               status,
+               source_type
+        FROM subsidy_feed_items
+        WHERE source_type IN ('prefecture', 'government')
+        AND (prefecture_code = ? OR prefecture_code IS NULL)
+        ORDER BY 
+          CASE WHEN prefecture_code = ? THEN 0 ELSE 1 END,
+          is_new DESC,
+          first_seen_at DESC
+        LIMIT ?
+      `).bind(prefectureCode, prefectureCode, limit).all();
+    } else {
+      newsQuery = await db.prepare(`
+        SELECT id, title, url, summary, 
+               COALESCE(published_at, first_seen_at) as published_at, 
+               first_seen_at as detected_at, 
+               CASE 
+                 WHEN is_new = 1 THEN 'new'
+                 WHEN status = 'closed' THEN 'closing'
+                 ELSE 'info'
+               END as event_type, 
+               prefecture_code as region_prefecture, 
+               issuer_name,
+               subsidy_amount_max,
+               subsidy_rate_text,
+               status,
+               source_type
+        FROM subsidy_feed_items
+        WHERE source_type IN ('prefecture', 'government')
+        ORDER BY is_new DESC, first_seen_at DESC
+        LIMIT ?
+      `).bind(limit).all();
+    }
+    
+    const items = (newsQuery.results || []).map((n: any) => ({
+      id: n.id,
+      title: n.title,
+      url: n.url,
+      summary: n.summary,
+      published_at: n.published_at,
+      detected_at: n.detected_at,
+      event_type: n.event_type,
+      region_prefecture: n.region_prefecture,
+      issuer_name: n.issuer_name,
+      subsidy_amount_max: n.subsidy_amount_max,
+      subsidy_rate_text: n.subsidy_rate_text,
+      status: n.status,
+      source_type: n.source_type,
+    }));
+    
+    return c.json<ApiResponse<{
+      items: typeof items;
+      total: number;
+      prefecture_filter: string | null;
+      generated_at: string;
+    }>>({
+      success: true,
+      data: {
+        items,
+        total: items.length,
+        prefecture_filter: prefectureCode,
+        generated_at: new Date().toISOString(),
+      },
+    });
+    
+  } catch (error) {
+    console.error('[public-news] Error:', error);
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: 'INTERNAL_ERROR',
+        message: 'Failed to fetch news',
+      },
+    }, 500);
+  }
+});
+
+// 全ルートで認証必須（public-news以外）
 agencyRoutes.use('/*', requireAuth);
 
 // ヘルパー: ユーザーのagency取得
@@ -1971,32 +2085,57 @@ agencyRoutes.get('/dashboard-v2', async (c) => {
   }
   
   // 2-3. 都道府県NEWS（顧客所在地優先）
+  // source_type: 'prefecture' または 'government' を含む
+  // カラム: prefecture_code（2桁コード）
   let prefectureNews: any = { results: [] };
   try {
     if (prefCodes.length > 0) {
       // 顧客所在地の都道府県を優先
       const placeholders = prefCodes.map(() => '?').join(',');
       prefectureNews = await db.prepare(`
-        SELECT id, title, url, summary, published_at, detected_at, event_type, 
-               region_prefecture, tags_json
+        SELECT id, title, url, summary, 
+               COALESCE(published_at, first_seen_at) as published_at, 
+               first_seen_at as detected_at, 
+               CASE 
+                 WHEN is_new = 1 THEN 'new'
+                 WHEN status = 'closed' THEN 'closing'
+                 ELSE 'info'
+               END as event_type, 
+               prefecture_code as region_prefecture, 
+               tags_json,
+               issuer_name,
+               subsidy_amount_max,
+               subsidy_rate_text,
+               status
         FROM subsidy_feed_items
-        WHERE source_type = 'prefecture'
-        AND (region_prefecture IN (${placeholders}) OR region_prefecture = '00')
-        AND (expires_at IS NULL OR expires_at > datetime('now'))
+        WHERE source_type IN ('prefecture', 'government')
+        AND (prefecture_code IN (${placeholders}) OR prefecture_code IS NULL)
         ORDER BY 
-          CASE WHEN region_prefecture IN (${placeholders}) THEN 0 ELSE 1 END,
-          detected_at DESC
+          CASE WHEN prefecture_code IN (${placeholders}) THEN 0 ELSE 1 END,
+          is_new DESC,
+          first_seen_at DESC
         LIMIT ?
       `).bind(...prefCodes, ...prefCodes, newsLimit * 2).all();
     } else {
       // 顧客なしの場合は全国分を表示
       prefectureNews = await db.prepare(`
-        SELECT id, title, url, summary, published_at, detected_at, event_type,
-               region_prefecture, tags_json
+        SELECT id, title, url, summary, 
+               COALESCE(published_at, first_seen_at) as published_at, 
+               first_seen_at as detected_at, 
+               CASE 
+                 WHEN is_new = 1 THEN 'new'
+                 WHEN status = 'closed' THEN 'closing'
+                 ELSE 'info'
+               END as event_type,
+               prefecture_code as region_prefecture, 
+               tags_json,
+               issuer_name,
+               subsidy_amount_max,
+               subsidy_rate_text,
+               status
         FROM subsidy_feed_items
-        WHERE source_type = 'prefecture'
-        AND (expires_at IS NULL OR expires_at > datetime('now'))
-        ORDER BY detected_at DESC
+        WHERE source_type IN ('prefecture', 'government')
+        ORDER BY is_new DESC, first_seen_at DESC
         LIMIT ?
       `).bind(newsLimit * 2).all();
     }
@@ -2236,6 +2375,11 @@ agencyRoutes.get('/dashboard-v2', async (c) => {
           region_prefecture: n.region_prefecture,
           tags: safeParseJSON(n.tags_json, []),
           is_client_area: prefCodes.includes(n.region_prefecture),
+          // 追加情報（P2-1: 士業ダッシュボード連携）
+          issuer_name: n.issuer_name,
+          subsidy_amount_max: n.subsidy_amount_max,
+          subsidy_rate_text: n.subsidy_rate_text,
+          status: n.status,
         })),
         ministry: (ministryNews.results || []).map((n: any) => ({
           id: n.id,
