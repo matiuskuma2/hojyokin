@@ -1101,7 +1101,7 @@ cron.post('/scrape-tokyo-shigoto', async (c) => {
               safeId,
               subsidy.dedupeKey,
               'src-tokyo-shigoto',
-              'government',
+              'prefecture',  // CHECK制約: platform, support_info, prefecture, municipal, ministry, other_public
               subsidy.title,
               subsidy.description,
               subsidy.detailUrl,
