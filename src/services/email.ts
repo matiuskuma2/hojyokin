@@ -32,8 +32,17 @@ export async function sendEmail(
   const apiKey = env.SENDGRID_API_KEY;
   const fromEmail = env.SENDGRID_FROM_EMAIL || 'noreply@hojyokin.pages.dev';
   
+  // デバッグログ
+  console.log('[Email] Attempting to send email:', {
+    to: params.to,
+    subject: params.subject,
+    hasApiKey: !!apiKey,
+    apiKeyPrefix: apiKey ? apiKey.substring(0, 10) + '...' : 'N/A',
+    fromEmail,
+  });
+  
   if (!apiKey) {
-    console.warn('SendGrid API key not configured, skipping email send');
+    console.warn('[Email] SendGrid API key not configured, skipping email send');
     return { success: false, error: 'Email service not configured' };
   }
   
@@ -57,14 +66,15 @@ export async function sendEmail(
     
     if (response.ok || response.status === 202) {
       const messageId = response.headers.get('X-Message-Id') || undefined;
+      console.log('[Email] Successfully sent:', { to: params.to, messageId });
       return { success: true, messageId };
     } else {
       const errorText = await response.text();
-      console.error('SendGrid error:', response.status, errorText);
-      return { success: false, error: `SendGrid error: ${response.status}` };
+      console.error('[Email] SendGrid error:', response.status, errorText);
+      return { success: false, error: `SendGrid error: ${response.status} - ${errorText}` };
     }
   } catch (error) {
-    console.error('Email send error:', error);
+    console.error('[Email] Send error:', error);
     return { success: false, error: String(error) };
   }
 }

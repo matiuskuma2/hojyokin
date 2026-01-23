@@ -150,6 +150,9 @@ const agencyLayout = (title: string, content: string, activeTab: string = '') =>
             <a href="/agency/members" class="px-3 py-2 rounded-md text-sm font-medium ${activeTab === 'members' ? 'bg-emerald-700' : 'hover:bg-emerald-700'}">
               <i class="fas fa-users mr-1"></i>スタッフ
             </a>
+            <a href="/agency/search" class="px-3 py-2 rounded-md text-sm font-medium ${activeTab === 'search' ? 'bg-emerald-700' : 'hover:bg-emerald-700'}">
+              <i class="fas fa-search mr-1"></i>補助金検索
+            </a>
           </div>
         </div>
         <div class="flex items-center gap-4">
@@ -297,7 +300,7 @@ agencyPages.get('/agency', (c) => {
             </div>
           </a>
           
-          <a href="/subsidies" class="flex items-center gap-3 p-4 border rounded-lg hover:bg-gray-50 transition">
+          <a href="/agency/search" class="flex items-center gap-3 p-4 border rounded-lg hover:bg-gray-50 transition">
             <div class="bg-blue-100 p-3 rounded-full">
               <i class="fas fa-search text-blue-600"></i>
             </div>
@@ -1075,9 +1078,14 @@ agencyPages.get('/agency/clients/:id', (c) => {
 agencyPages.get('/agency/links', (c) => {
   const content = `
     <div class="space-y-6">
-      <h1 class="text-2xl font-bold text-gray-900">
-        <i class="fas fa-link mr-2"></i>リンク管理
-      </h1>
+      <div class="flex items-center justify-between">
+        <h1 class="text-2xl font-bold text-gray-900">
+          <i class="fas fa-link mr-2"></i>リンク管理
+        </h1>
+        <button onclick="showIssueLinkModal()" class="bg-emerald-600 text-white px-4 py-2 rounded-lg hover:bg-emerald-700 transition">
+          <i class="fas fa-plus mr-2"></i>リンクを発行
+        </button>
+      </div>
       
       <!-- Filters -->
       <div class="bg-white rounded-lg shadow p-4">
@@ -1101,6 +1109,78 @@ agencyPages.get('/agency/links', (c) => {
       <!-- Link List -->
       <div id="link-list" class="space-y-4">
         <p class="text-gray-500 loading">読み込み中...</p>
+      </div>
+    </div>
+    
+    <!-- リンク発行モーダル -->
+    <div id="issue-link-modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center hidden z-50">
+      <div class="bg-white rounded-lg shadow-xl w-full max-w-lg mx-4">
+        <div class="p-6">
+          <h2 class="text-xl font-bold mb-4">リンクを発行</h2>
+          <form id="issue-link-form" class="space-y-4">
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">顧客企業 *</label>
+              <select name="companyId" id="company-select" required class="w-full border rounded-lg px-3 py-2">
+                <option value="">選択してください</option>
+              </select>
+            </div>
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">リンクタイプ *</label>
+              <select name="type" class="w-full border rounded-lg px-3 py-2">
+                <option value="intake">企業情報入力</option>
+              </select>
+            </div>
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">有効期限（日数）</label>
+              <select name="expiresInDays" class="w-full border rounded-lg px-3 py-2">
+                <option value="7">7日間</option>
+                <option value="14">14日間</option>
+                <option value="30">30日間</option>
+              </select>
+            </div>
+            <div class="flex items-center gap-2">
+              <input type="checkbox" name="sendEmail" id="send-link-email" class="rounded border-gray-300 text-emerald-600">
+              <label for="send-link-email" class="text-sm text-gray-700">顧客にメールで送信する</label>
+            </div>
+            <div class="flex gap-2 pt-4">
+              <button type="button" onclick="hideIssueLinkModal()" class="flex-1 border border-gray-300 text-gray-700 px-4 py-2 rounded-lg hover:bg-gray-50">
+                キャンセル
+              </button>
+              <button type="submit" class="flex-1 bg-emerald-600 text-white px-4 py-2 rounded-lg hover:bg-emerald-700">
+                発行
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+    
+    <!-- 発行完了モーダル -->
+    <div id="link-result-modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center hidden z-50">
+      <div class="bg-white rounded-lg shadow-xl w-full max-w-lg mx-4">
+        <div class="p-6">
+          <div class="text-center mb-4">
+            <div class="w-16 h-16 bg-emerald-100 rounded-full flex items-center justify-center mx-auto mb-4">
+              <i class="fas fa-check text-emerald-600 text-2xl"></i>
+            </div>
+            <h3 class="text-xl font-bold">リンクを発行しました</h3>
+          </div>
+          <div class="mb-4">
+            <label class="block text-sm font-medium text-gray-700 mb-1">発行リンク</label>
+            <div class="flex gap-2">
+              <input type="text" id="issued-link-url" readonly class="flex-1 border rounded-lg px-3 py-2 bg-gray-50">
+              <button onclick="copyIssuedLink()" class="bg-emerald-600 text-white px-4 py-2 rounded-lg hover:bg-emerald-700">
+                <i class="fas fa-copy"></i>
+              </button>
+            </div>
+          </div>
+          <p id="email-sent-message" class="text-sm text-emerald-600 mb-4 hidden">
+            <i class="fas fa-check-circle mr-1"></i>顧客にメールを送信しました
+          </p>
+          <button onclick="hideLinkResultModal()" class="w-full border border-gray-300 text-gray-700 px-4 py-2 rounded-lg hover:bg-gray-50">
+            閉じる
+          </button>
+        </div>
       </div>
     </div>
     
@@ -1186,6 +1266,69 @@ agencyPages.get('/agency/links', (c) => {
           alert('エラー: ' + (data.error?.message || '不明なエラー'));
         }
       }
+      
+      // リンク発行モーダル
+      let clients = [];
+      
+      async function showIssueLinkModal() {
+        // 顧客一覧を取得
+        if (clients.length === 0) {
+          const data = await apiCall('/api/agency/clients?limit=100');
+          if (data.success) {
+            clients = data.data.clients;
+            const select = document.getElementById('company-select');
+            select.innerHTML = '<option value="">選択してください</option>' +
+              clients.map(c => '<option value="' + c.company_id + '">' + (c.client_name || c.company_name) + '</option>').join('');
+          }
+        }
+        document.getElementById('issue-link-modal').classList.remove('hidden');
+      }
+      
+      function hideIssueLinkModal() {
+        document.getElementById('issue-link-modal').classList.add('hidden');
+        document.getElementById('issue-link-form').reset();
+      }
+      
+      function hideLinkResultModal() {
+        document.getElementById('link-result-modal').classList.add('hidden');
+      }
+      
+      function copyIssuedLink() {
+        const input = document.getElementById('issued-link-url');
+        input.select();
+        document.execCommand('copy');
+        alert('リンクをコピーしました');
+      }
+      
+      document.getElementById('issue-link-form').addEventListener('submit', async function(e) {
+        e.preventDefault();
+        const form = e.target;
+        const formData = new FormData(form);
+        
+        const data = await apiCall('/api/agency/links', {
+          method: 'POST',
+          body: JSON.stringify({
+            companyId: formData.get('companyId'),
+            type: formData.get('type'),
+            expiresInDays: parseInt(formData.get('expiresInDays')),
+            sendEmail: formData.get('sendEmail') === 'on',
+          }),
+        });
+        
+        if (data.success) {
+          hideIssueLinkModal();
+          document.getElementById('issued-link-url').value = data.data.url;
+          if (data.data.email_sent) {
+            document.getElementById('email-sent-message').classList.remove('hidden');
+          } else {
+            document.getElementById('email-sent-message').classList.add('hidden');
+          }
+          document.getElementById('link-result-modal').classList.remove('hidden');
+          loadLinks();
+        } else {
+          alert('エラー: ' + (data.error?.message || 'リンクの発行に失敗しました'));
+        }
+      });
       
       // DOMContentLoaded で apiCall が定義されてから実行
       if (document.readyState === 'loading') {
@@ -2033,6 +2176,156 @@ agencyPages.get('/agency/settings', (c) => {
   `;
   
   return c.html(agencyLayout('設定', content, 'settings'));
+});
+
+/**
+ * GET /agency/search - 士業向け補助金検索
+ */
+agencyPages.get('/agency/search', (c) => {
+  const content = `
+    <div class="space-y-6">
+      <h1 class="text-2xl font-bold text-gray-900">
+        <i class="fas fa-search mr-2"></i>補助金検索
+      </h1>
+      
+      <!-- 顧客選択 -->
+      <div class="bg-white rounded-lg shadow p-6">
+        <h2 class="text-lg font-semibold mb-4">顧客を選択</h2>
+        <div class="flex gap-4 items-end">
+          <div class="flex-1">
+            <label class="block text-sm font-medium text-gray-700 mb-1">顧客企業</label>
+            <select id="client-select" class="w-full border rounded-lg px-3 py-2">
+              <option value="">選択してください</option>
+            </select>
+          </div>
+          <button onclick="searchForClient()" class="bg-emerald-600 text-white px-6 py-2 rounded-lg hover:bg-emerald-700">
+            <i class="fas fa-search mr-2"></i>検索
+          </button>
+        </div>
+        <p class="text-sm text-gray-500 mt-2">
+          顧客を選択すると、その企業の情報に基づいてマッチする補助金を検索します。
+        </p>
+      </div>
+      
+      <!-- 検索結果 -->
+      <div id="search-results" class="hidden">
+        <div class="bg-white rounded-lg shadow p-6">
+          <h2 class="text-lg font-semibold mb-4">
+            <i class="fas fa-list mr-2"></i>検索結果
+            <span id="result-count" class="text-sm font-normal text-gray-500 ml-2"></span>
+          </h2>
+          <div id="results-list" class="space-y-4">
+          </div>
+        </div>
+      </div>
+      
+      <!-- キーワード検索 -->
+      <div class="bg-white rounded-lg shadow p-6">
+        <h2 class="text-lg font-semibold mb-4">キーワードで検索</h2>
+        <div class="flex gap-4">
+          <input type="text" id="keyword-input" placeholder="補助金名、キーワード" 
+            class="flex-1 border rounded-lg px-3 py-2 focus:ring-2 focus:ring-emerald-500">
+          <button onclick="searchByKeyword()" class="bg-emerald-600 text-white px-6 py-2 rounded-lg hover:bg-emerald-700">
+            <i class="fas fa-search mr-2"></i>検索
+          </button>
+        </div>
+      </div>
+    </div>
+    
+    <script>
+      let clients = [];
+      
+      async function loadClients() {
+        const data = await apiCall('/api/agency/clients?limit=100');
+        if (data.success) {
+          clients = data.data.clients;
+          const select = document.getElementById('client-select');
+          select.innerHTML = '<option value="">選択してください</option>' +
+            clients.map(c => '<option value="' + c.company_id + '">' + (c.client_name || c.company_name) + '</option>').join('');
+        }
+      }
+      
+      async function searchForClient() {
+        const companyId = document.getElementById('client-select').value;
+        if (!companyId) {
+          alert('顧客を選択してください');
+          return;
+        }
+        
+        document.getElementById('search-results').classList.remove('hidden');
+        document.getElementById('results-list').innerHTML = '<p class="text-gray-500 loading">検索中...</p>';
+        
+        const data = await apiCall('/api/subsidies/search?company_id=' + companyId + '&limit=20');
+        renderResults(data);
+      }
+      
+      async function searchByKeyword() {
+        const keyword = document.getElementById('keyword-input').value.trim();
+        if (!keyword) {
+          alert('キーワードを入力してください');
+          return;
+        }
+        
+        document.getElementById('search-results').classList.remove('hidden');
+        document.getElementById('results-list').innerHTML = '<p class="text-gray-500 loading">検索中...</p>';
+        
+        const data = await apiCall('/api/subsidies/search?keyword=' + encodeURIComponent(keyword) + '&limit=20');
+        renderResults(data);
+      }
+      
+      function renderResults(data) {
+        const container = document.getElementById('results-list');
+        const countEl = document.getElementById('result-count');
+        
+        if (!data.success) {
+          container.innerHTML = '<p class="text-red-500">検索エラー: ' + (data.error?.message || '不明なエラー') + '</p>';
+          countEl.textContent = '';
+          return;
+        }
+        
+        const subsidies = data.data.subsidies || data.data.results || [];
+        countEl.textContent = subsidies.length + '件';
+        
+        if (subsidies.length === 0) {
+          container.innerHTML = '<p class="text-gray-500">該当する補助金が見つかりませんでした</p>';
+          return;
+        }
+        
+        container.innerHTML = subsidies.map(s => \`
+          <div class="border rounded-lg p-4 hover:bg-gray-50">
+            <div class="flex justify-between items-start">
+              <div class="flex-1">
+                <h3 class="font-semibold text-gray-900">\${s.title || s.name || '補助金'}</h3>
+                <p class="text-sm text-gray-600 mt-1">\${s.target_area_search || s.area || ''}</p>
+                <div class="flex items-center gap-4 mt-2 text-sm text-gray-500">
+                  \${s.subsidy_max_limit ? '<span><i class="fas fa-yen-sign mr-1"></i>上限: ' + Number(s.subsidy_max_limit).toLocaleString() + '円</span>' : ''}
+                  \${s.subsidy_rate ? '<span><i class="fas fa-percentage mr-1"></i>補助率: ' + s.subsidy_rate + '</span>' : ''}
+                  \${s.acceptance_end_datetime ? '<span><i class="fas fa-calendar mr-1"></i>締切: ' + new Date(s.acceptance_end_datetime).toLocaleDateString('ja-JP') + '</span>' : ''}
+                </div>
+              </div>
+              <a href="/subsidies/' + (s.id || s.subsidy_id) + '" target="_blank" 
+                class="text-emerald-600 hover:text-emerald-800 p-2">
+                <i class="fas fa-external-link-alt"></i>
+              </a>
+            </div>
+          </div>
+        \`).join('');
+      }
+      
+      // 初期化
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', loadClients);
+      } else {
+        if (typeof window.apiCall === 'function') {
+          loadClients();
+        } else {
+          setTimeout(loadClients, 100);
+        }
+      }
+    </script>
+  `;
+  
+  return c.html(agencyLayout('補助金検索', content, 'search'));
 });
 
 export default agencyPages;

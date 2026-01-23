@@ -1076,7 +1076,11 @@ agencyRoutes.post('/members/invite', async (c) => {
   
   // メール送信（オプション）
   let emailSent = false;
+  let emailError: string | undefined;
+  console.log('[Invite] sendEmail flag:', sendEmail, 'type:', typeof sendEmail);
+  
   if (sendEmail) {
+    console.log('[Invite] Attempting to send invite email to:', email);
     const inviterUser = await db.prepare('SELECT name FROM users WHERE id = ?')
       .bind(user.id).first<{ name: string }>();
     
@@ -1089,6 +1093,10 @@ agencyRoutes.post('/members/invite', async (c) => {
       expiresAt,
     });
     emailSent = emailResult.success;
+    emailError = emailResult.error;
+    console.log('[Invite] Email result:', { sent: emailSent, error: emailError });
+  } else {
+    console.log('[Invite] Email sending skipped - sendEmail is false or falsy');
   }
   
   return c.json<ApiResponse<any>>({
