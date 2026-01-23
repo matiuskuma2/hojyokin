@@ -1,8 +1,31 @@
 # フィードデータパイプライン 凍結仕様書
 
-**バージョン**: 1.0  
+**バージョン**: 1.1  
 **凍結日**: 2026-01-23  
-**ステータス**: 凍結（本番反映準備完了）
+**ステータス**: ✅ 凍結完了（本番反映済み）
+
+---
+
+## 🎉 凍結完了報告（2026-01-23）
+
+### 本番反映済み項目
+
+| 項目 | ステータス | 検証結果 |
+|------|-----------|---------|
+| 0101マイグレーション適用 | ✅ | テーブル入れ替え方式で適用完了 |
+| subsidy_feed_items スキーマ | ✅ | dedupe_key UNIQUE, content_hash NOT NULL, source_type CHECK |
+| feed_sources シード | ✅ | src-tokyo-shigoto/kosha/hataraku 投入済み |
+| public-news API | ✅ | prefecture=13で5件取得OK |
+| Cron冪等性 | ✅ | items_skipped=4, items_new=0 |
+| DB件数 | ✅ | total=16件 (prefecture=15, platform=1) |
+
+### source_type 許容値（CHECK制約）
+
+```sql
+source_type IN ('platform','support_info','prefecture','municipal','ministry','other_public')
+```
+
+**注意**: `government` は廃止。`prefecture` に統一。
 
 ---
 
@@ -208,8 +231,10 @@ CREATE TABLE IF NOT EXISTS feed_daily_snapshots (
 ### 3.2 カテゴリ統一
 
 `source_type` + `tags_json` の組み合わせで管理:
-- source_type: 'government' | 'jgrants' | 'api' | 'manual'
+- source_type: 'platform' | 'support_info' | 'prefecture' | 'municipal' | 'ministry' | 'other_public'
 - tags_json: ["設備投資", "人材育成", "DX"] 等
+
+**注意**: 旧 `government` は `prefecture` に統一済み
 
 ### 3.3 URL正規化
 
