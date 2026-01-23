@@ -201,7 +201,7 @@ agencyRoutes.get('/public-news', async (c) => {
                COALESCE(published_at, first_seen_at) as published_at, 
                first_seen_at as detected_at, 
                CASE 
-                 WHEN is_new = 1 THEN 'new'
+                 WHEN first_seen_at >= datetime('now', '-7 days') THEN 'new'
                  WHEN status = 'closed' THEN 'closing'
                  ELSE 'info'
                END as event_type, 
@@ -212,11 +212,10 @@ agencyRoutes.get('/public-news', async (c) => {
                status,
                source_type
         FROM subsidy_feed_items
-        WHERE source_type IN ('prefecture', 'government')
+        WHERE source_type IN ('prefecture', 'municipal', 'ministry')
         AND (prefecture_code = ? OR prefecture_code IS NULL)
         ORDER BY 
           CASE WHEN prefecture_code = ? THEN 0 ELSE 1 END,
-          is_new DESC,
           first_seen_at DESC
         LIMIT ?
       `).bind(prefectureCode, prefectureCode, limit).all();
@@ -226,7 +225,7 @@ agencyRoutes.get('/public-news', async (c) => {
                COALESCE(published_at, first_seen_at) as published_at, 
                first_seen_at as detected_at, 
                CASE 
-                 WHEN is_new = 1 THEN 'new'
+                 WHEN first_seen_at >= datetime('now', '-7 days') THEN 'new'
                  WHEN status = 'closed' THEN 'closing'
                  ELSE 'info'
                END as event_type, 
@@ -237,8 +236,8 @@ agencyRoutes.get('/public-news', async (c) => {
                status,
                source_type
         FROM subsidy_feed_items
-        WHERE source_type IN ('prefecture', 'government')
-        ORDER BY is_new DESC, first_seen_at DESC
+        WHERE source_type IN ('prefecture', 'municipal', 'ministry')
+        ORDER BY first_seen_at DESC
         LIMIT ?
       `).bind(limit).all();
     }
