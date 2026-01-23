@@ -2,8 +2,16 @@
  * Cron用API（外部Cronサービスから呼び出し）
  * 
  * POST /api/cron/sync-jgrants - JGrantsデータ同期
+ * POST /api/cron/scrape-tokyo-kosha - 東京都中小企業振興公社スクレイピング
+ * POST /api/cron/scrape-tokyo-shigoto - 東京しごと財団スクレイピング
  * 
  * 認証: X-Cron-Secret ヘッダーで CRON_SECRET と照合
+ * 
+ * P2-0 安全ゲート仕様:
+ * - CRON_SECRET 必須（未設定/不一致は403）
+ * - 冪等性保証（dedupe_key + ON CONFLICT）
+ * - 監査ログ（cron_runs テーブルに実行履歴を記録）
+ * - エラー時のトランザクション安全性
  */
 
 import { Hono } from 'hono';
@@ -11,6 +19,116 @@ import type { Env, Variables, ApiResponse } from '../types';
 import { simpleScrape, parseTokyoKoshaList, extractPdfLinks, calculateContentHash } from '../services/firecrawl';
 
 const cron = new Hono<{ Bindings: Env; Variables: Variables }>();
+
+// =====================================================
+// P2-0: Cron安全ゲート用ヘルパー
+// =====================================================
+
+/**
+ * UUID v4 生成
+ */
+function generateUUID(): string {
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = Math.random() * 16 | 0;
+    const v = c === 'x' ? r : (r & 0x3 | 0x8);
+    return v.toString(16);
+  });
+}
+
+/**
+ * Cron実行ログを開始
+ */
+async function startCronRun(
+  db: D1Database,
+  jobType: string,
+  triggeredBy: 'cron' | 'manual' | 'api' = 'cron'
+): Promise<string> {
+  const runId = generateUUID();
+  await db.prepare(`
+    INSERT INTO cron_runs (id, job_type, status, triggered_by)
+    VALUES (?, ?, 'running', ?)
+  `).bind(runId, jobType, triggeredBy).run();
+  return runId;
+}
+
+/**
+ * Cron実行ログを完了
+ */
+async function finishCronRun(
+  db: D1Database,
+  runId: string,
+  status: 'success' | 'failed' | 'partial',
+  stats: {
+    items_processed?: number;
+    items_inserted?: number;
+    items_updated?: number;
+    items_skipped?: number;
+    error_count?: number;
+    errors?: string[];
+    metadata?: Record<string, any>;
+  }
+): Promise<void> {
+  await db.prepare(`
+    UPDATE cron_runs SET
+      status = ?,
+      finished_at = datetime('now'),
+      items_processed = ?,
+      items_inserted = ?,
+      items_updated = ?,
+      items_skipped = ?,
+      error_count = ?,
+      errors_json = ?,
+      metadata_json = ?
+    WHERE id = ?
+  `).bind(
+    status,
+    stats.items_processed ?? 0,
+    stats.items_inserted ?? 0,
+    stats.items_updated ?? 0,
+    stats.items_skipped ?? 0,
+    stats.error_count ?? (stats.errors?.length ?? 0),
+    stats.errors ? JSON.stringify(stats.errors.slice(0, 100)) : null, // 最大100件
+    stats.metadata ? JSON.stringify(stats.metadata) : null,
+    runId
+  ).run();
+}
+
+/**
+ * CRON_SECRET 検証（P2-0 安全ゲート）
+ * 未設定または不一致の場合は403を返す
+ */
+function verifyCronSecret(c: any): { valid: boolean; error?: { code: string; message: string; status: number } } {
+  const cronSecret = c.req.header('X-Cron-Secret');
+  const expectedSecret = (c.env as any).CRON_SECRET;
+  
+  // CRON_SECRET未設定の場合は403
+  if (!expectedSecret) {
+    console.error('[Cron] CRON_SECRET not configured');
+    return {
+      valid: false,
+      error: {
+        code: 'CONFIG_ERROR',
+        message: 'Cron not configured: CRON_SECRET is required',
+        status: 403,
+      },
+    };
+  }
+  
+  // シークレット不一致の場合は403
+  if (cronSecret !== expectedSecret) {
+    console.warn('[Cron] Invalid cron secret attempt');
+    return {
+      valid: false,
+      error: {
+        code: 'FORBIDDEN',
+        message: 'Invalid cron secret',
+        status: 403,
+      },
+    };
+  }
+  
+  return { valid: true };
+}
 
 /**
  * Cron用 JGrants同期エンドポイント
@@ -20,34 +138,34 @@ const cron = new Hono<{ Bindings: Env; Variables: Variables }>();
  * Header: X-Cron-Secret: {CRON_SECRET}
  * 
  * 外部Cronサービス（cron-job.org等）から日次で呼び出し
+ * 
+ * P2-0 安全ゲート適用:
+ * - CRON_SECRET必須（403）
+ * - cron_runs テーブルに実行履歴を記録
+ * - 冪等性保証（INSERT OR REPLACE）
  */
 cron.post('/sync-jgrants', async (c) => {
   const db = c.env.DB;
   
-  // シークレット認証
-  const cronSecret = c.req.header('X-Cron-Secret');
-  const expectedSecret = (c.env as any).CRON_SECRET;
-  
-  if (!expectedSecret) {
-    console.warn('CRON_SECRET not configured');
+  // P2-0: CRON_SECRET 検証
+  const authResult = verifyCronSecret(c);
+  if (!authResult.valid) {
     return c.json<ApiResponse<null>>({
       success: false,
       error: {
-        code: 'CONFIG_ERROR',
-        message: 'Cron not configured',
+        code: authResult.error!.code,
+        message: authResult.error!.message,
       },
-    }, 500);
+    }, authResult.error!.status);
   }
   
-  if (cronSecret !== expectedSecret) {
-    console.warn('Invalid cron secret attempt');
-    return c.json<ApiResponse<null>>({
-      success: false,
-      error: {
-        code: 'UNAUTHORIZED',
-        message: 'Invalid cron secret',
-      },
-    }, 401);
+  // P2-0: 実行ログ開始
+  let runId: string | null = null;
+  try {
+    runId = await startCronRun(db, 'sync-jgrants', 'cron');
+  } catch (logErr) {
+    console.warn('[Cron] Failed to start cron_run log:', logErr);
+    // ログ失敗は処理を止めない
   }
   
   try {
@@ -227,6 +345,21 @@ cron.post('/sync-jgrants', async (c) => {
     // 同期結果をログ
     console.log(`Cron JGrants sync completed: fetched=${totalFetched}, inserted=${totalInserted}, unique=${seenIds.size}, errors=${errors.length}`);
     
+    // P2-0: 実行ログ完了
+    if (runId) {
+      try {
+        await finishCronRun(db, runId, errors.length > 0 ? 'partial' : 'success', {
+          items_processed: seenIds.size,
+          items_inserted: totalInserted,
+          error_count: errors.length,
+          errors: errors,
+          metadata: { total_fetched: totalFetched },
+        });
+      } catch (logErr) {
+        console.warn('[Cron] Failed to finish cron_run log:', logErr);
+      }
+    }
+    
     return c.json<ApiResponse<{
       message: string;
       total_fetched: number;
@@ -234,6 +367,7 @@ cron.post('/sync-jgrants', async (c) => {
       unique_count: number;
       errors: string[];
       timestamp: string;
+      run_id?: string;
     }>>({
       success: true,
       data: {
@@ -243,10 +377,24 @@ cron.post('/sync-jgrants', async (c) => {
         unique_count: seenIds.size,
         errors,
         timestamp: new Date().toISOString(),
+        run_id: runId ?? undefined,
       },
     });
   } catch (error) {
     console.error('Cron JGrants sync error:', error);
+    
+    // P2-0: 失敗ログ
+    if (runId) {
+      try {
+        await finishCronRun(db, runId, 'failed', {
+          error_count: 1,
+          errors: [error instanceof Error ? error.message : String(error)],
+        });
+      } catch (logErr) {
+        console.warn('[Cron] Failed to finish cron_run log:', logErr);
+      }
+    }
+    
     return c.json<ApiResponse<null>>({
       success: false,
       error: {
@@ -263,19 +411,33 @@ cron.post('/sync-jgrants', async (c) => {
  * POST /api/cron/scrape-tokyo-kosha
  * 
  * Phase1: 東京都の補助金データ収集パイロット
+ * 
+ * P2-0 安全ゲート適用:
+ * - CRON_SECRET必須（403）
+ * - cron_runs テーブルに実行履歴を記録
+ * - 冪等性保証（INSERT OR REPLACE）
  */
 cron.post('/scrape-tokyo-kosha', async (c) => {
   const db = c.env.DB;
   
-  // シークレット認証
-  const cronSecret = c.req.header('X-Cron-Secret');
-  const expectedSecret = (c.env as any).CRON_SECRET;
-  
-  if (expectedSecret && cronSecret !== expectedSecret) {
+  // P2-0: CRON_SECRET 検証
+  const authResult = verifyCronSecret(c);
+  if (!authResult.valid) {
     return c.json<ApiResponse<null>>({
       success: false,
-      error: { code: 'UNAUTHORIZED', message: 'Invalid cron secret' },
-    }, 401);
+      error: {
+        code: authResult.error!.code,
+        message: authResult.error!.message,
+      },
+    }, authResult.error!.status);
+  }
+  
+  // P2-0: 実行ログ開始
+  let runId: string | null = null;
+  try {
+    runId = await startCronRun(db, 'scrape-tokyo-kosha', 'cron');
+  } catch (logErr) {
+    console.warn('[Cron] Failed to start cron_run log:', logErr);
   }
   
   try {
@@ -455,6 +617,21 @@ cron.post('/scrape-tokyo-kosha', async (c) => {
     
     console.log(`[Tokyo-Kosha] Inserted ${insertedCount} to DB`);
     
+    // P2-0: 実行ログ完了
+    if (runId) {
+      try {
+        await finishCronRun(db, runId, errors.length > 0 ? 'partial' : 'success', {
+          items_processed: results.length,
+          items_inserted: insertedCount,
+          error_count: errors.length,
+          errors: errors,
+          metadata: { links_found: seenUrls.size },
+        });
+      } catch (logErr) {
+        console.warn('[Cron] Failed to finish cron_run log:', logErr);
+      }
+    }
+    
     return c.json<ApiResponse<{
       message: string;
       links_found: number;
@@ -463,6 +640,7 @@ cron.post('/scrape-tokyo-kosha', async (c) => {
       results: any[];
       errors: string[];
       timestamp: string;
+      run_id?: string;
     }>>({
       success: true,
       data: {
@@ -473,11 +651,25 @@ cron.post('/scrape-tokyo-kosha', async (c) => {
         results,
         errors,
         timestamp: new Date().toISOString(),
+        run_id: runId ?? undefined,
       },
     });
     
   } catch (error) {
     console.error('[Tokyo-Kosha] Scrape error:', error);
+    
+    // P2-0: 失敗ログ
+    if (runId) {
+      try {
+        await finishCronRun(db, runId, 'failed', {
+          error_count: 1,
+          errors: [error instanceof Error ? error.message : String(error)],
+        });
+      } catch (logErr) {
+        console.warn('[Cron] Failed to finish cron_run log:', logErr);
+      }
+    }
+    
     return c.json<ApiResponse<null>>({
       success: false,
       error: {
@@ -612,20 +804,46 @@ cron.get('/verify-data-quality', async (c) => {
  * 
  * Phase1: 東京都の補助金データ収集（推奨1番目ソース）
  * URL: https://www.koyokankyo.shigotozaidan.or.jp/
+ * 
+ * P2-0 安全ゲート適用:
+ * - CRON_SECRET必須（403）
+ * - cron_runs テーブルに実行履歴を記録
+ * - 冪等性保証（dedupe_key + ON CONFLICT）
+ * - 差分検知（新規/更新/スキップを区別）
+ * 
+ * P2-2 定期実行設計:
+ * - Cron schedule推奨: 毎日 06:00 JST (cron-job.org等で設定)
+ * - dedupe_keyベースで重複防止
+ * - content_hashで変更検知
  */
 cron.post('/scrape-tokyo-shigoto', async (c) => {
   const db = c.env.DB;
   
-  // シークレット認証
-  const cronSecret = c.req.header('X-Cron-Secret');
-  const expectedSecret = (c.env as any).CRON_SECRET;
-  
-  if (expectedSecret && cronSecret !== expectedSecret) {
+  // P2-0: CRON_SECRET 検証（未設定/不一致は403）
+  const authResult = verifyCronSecret(c);
+  if (!authResult.valid) {
     return c.json<ApiResponse<null>>({
       success: false,
-      error: { code: 'UNAUTHORIZED', message: 'Invalid cron secret' },
-    }, 401);
+      error: {
+        code: authResult.error!.code,
+        message: authResult.error!.message,
+      },
+    }, authResult.error!.status);
   }
+  
+  // P2-0: 実行ログ開始
+  let runId: string | null = null;
+  try {
+    runId = await startCronRun(db, 'scrape-tokyo-shigoto', 'cron');
+  } catch (logErr) {
+    console.warn('[Tokyo-Shigoto] Failed to start cron_run log:', logErr);
+    // ログ失敗は処理を止めない
+  }
+  
+  // P2-2: 差分検知用カウンター
+  let itemsNew = 0;
+  let itemsUpdated = 0;
+  let itemsSkipped = 0;
   
   try {
     const BASE_URL = 'https://www.koyokankyo.shigotozaidan.or.jp';
@@ -636,6 +854,13 @@ cron.post('/scrape-tokyo-shigoto', async (c) => {
     // 1. トップページを取得
     const listResult = await simpleScrape(LIST_URL);
     if (!listResult.success || !listResult.html) {
+      // P2-0: エラー時もログ記録
+      if (runId) {
+        await finishCronRun(db, runId, 'failed', {
+          items_processed: 0,
+          errors: [listResult.error || 'Failed to fetch list page'],
+        });
+      }
       return c.json<ApiResponse<null>>({
         success: false,
         error: { code: 'SCRAPE_ERROR', message: listResult.error || 'Failed to fetch list page' },
@@ -820,46 +1045,80 @@ cron.post('/scrape-tokyo-shigoto', async (c) => {
         
         insertedCount++;
         
-        // subsidy_feed_items にも保存（新仕様）
+        // subsidy_feed_items にも保存（新仕様 + P2-2 差分検知）
+        // dedupe_key をベースにしてid重複問題を回避
         try {
-          await db.prepare(`
-            INSERT INTO subsidy_feed_items 
-            (id, dedupe_key, source_id, source_type, title, summary, url, detail_url,
-             pdf_urls, issuer_name, prefecture_code, target_area_codes,
-             subsidy_amount_max, subsidy_rate_text, status, raw_json, content_hash,
-             is_new, first_seen_at, last_seen_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
-            ON CONFLICT(dedupe_key) DO UPDATE SET
-              title = excluded.title,
-              summary = excluded.summary,
-              subsidy_amount_max = excluded.subsidy_amount_max,
-              subsidy_rate_text = excluded.subsidy_rate_text,
-              status = excluded.status,
-              content_hash = excluded.content_hash,
-              last_seen_at = datetime('now'),
-              updated_at = datetime('now')
-          `).bind(
-            subsidy.id,
-            subsidy.dedupeKey,
-            'src-tokyo-shigoto',
-            'government',
-            subsidy.title,
-            subsidy.description,
-            subsidy.detailUrl,
-            subsidy.detailUrl,
-            JSON.stringify(subsidy.pdfUrls),
-            subsidy.issuerName,
-            subsidy.prefectureCode,
-            JSON.stringify(['13']),
-            subsidy.maxAmount,
-            subsidy.subsidyRate,
-            subsidy.status,
-            JSON.stringify(subsidy),
-            subsidy.contentHash,
-            1
-          ).run();
+          // 既存レコードを確認
+          const existing = await db.prepare(`
+            SELECT content_hash FROM subsidy_feed_items WHERE dedupe_key = ?
+          `).bind(subsidy.dedupeKey).first<{ content_hash: string }>();
           
-          feedInsertedCount++;
+          if (existing) {
+            // 既存レコードあり: content_hashで変更を検知
+            if (existing.content_hash === subsidy.contentHash) {
+              // 変更なし: last_seen_at のみ更新
+              await db.prepare(`
+                UPDATE subsidy_feed_items SET last_seen_at = datetime('now') WHERE dedupe_key = ?
+              `).bind(subsidy.dedupeKey).run();
+              itemsSkipped++;
+            } else {
+              // 変更あり: 更新
+              await db.prepare(`
+                UPDATE subsidy_feed_items SET
+                  title = ?,
+                  summary = ?,
+                  subsidy_amount_max = ?,
+                  subsidy_rate_text = ?,
+                  status = ?,
+                  content_hash = ?,
+                  is_new = 0,
+                  last_seen_at = datetime('now'),
+                  updated_at = datetime('now')
+                WHERE dedupe_key = ?
+              `).bind(
+                subsidy.title,
+                subsidy.description,
+                subsidy.maxAmount,
+                subsidy.subsidyRate,
+                subsidy.status,
+                subsidy.contentHash,
+                subsidy.dedupeKey
+              ).run();
+              itemsUpdated++;
+              feedInsertedCount++;
+            }
+          } else {
+            // 新規レコード: dedupe_keyからidを生成してUNIQUE制約を回避
+            const safeId = subsidy.dedupeKey.replace(':', '-');
+            await db.prepare(`
+              INSERT INTO subsidy_feed_items 
+              (id, dedupe_key, source_id, source_type, title, summary, url, detail_url,
+               pdf_urls, issuer_name, prefecture_code, target_area_codes,
+               subsidy_amount_max, subsidy_rate_text, status, raw_json, content_hash,
+               is_new, first_seen_at, last_seen_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, datetime('now'), datetime('now'))
+            `).bind(
+              safeId,
+              subsidy.dedupeKey,
+              'src-tokyo-shigoto',
+              'government',
+              subsidy.title,
+              subsidy.description,
+              subsidy.detailUrl,
+              subsidy.detailUrl,
+              JSON.stringify(subsidy.pdfUrls),
+              subsidy.issuerName,
+              subsidy.prefectureCode,
+              JSON.stringify(['13']),
+              subsidy.maxAmount,
+              subsidy.subsidyRate,
+              subsidy.status,
+              JSON.stringify(subsidy),
+              subsidy.contentHash
+            ).run();
+            itemsNew++;
+            feedInsertedCount++;
+          }
         } catch (feedErr) {
           // feed_itemsへの保存エラーは警告のみ（後方互換）
           console.warn(`[Tokyo-Shigoto] Feed insert warning: ${feedErr}`);
@@ -871,6 +1130,28 @@ cron.post('/scrape-tokyo-shigoto', async (c) => {
     }
     
     console.log(`[Tokyo-Shigoto] Inserted ${insertedCount} to cache, ${feedInsertedCount} to feed_items`);
+    console.log(`[Tokyo-Shigoto] New: ${itemsNew}, Updated: ${itemsUpdated}, Skipped: ${itemsSkipped}`);
+    
+    // P2-0: 実行ログ完了
+    if (runId) {
+      try {
+        await finishCronRun(db, runId, errors.length > 0 ? 'partial' : 'success', {
+          items_processed: results.length,
+          items_inserted: itemsNew,
+          items_updated: itemsUpdated,
+          items_skipped: itemsSkipped,
+          error_count: errors.length,
+          errors: errors,
+          metadata: {
+            links_found: seenUrls.size,
+            cache_inserted: insertedCount,
+            feed_inserted: feedInsertedCount,
+          },
+        });
+      } catch (logErr) {
+        console.warn('[Tokyo-Shigoto] Failed to finish cron_run log:', logErr);
+      }
+    }
     
     return c.json<ApiResponse<{
       message: string;
@@ -878,9 +1159,13 @@ cron.post('/scrape-tokyo-shigoto', async (c) => {
       details_fetched: number;
       inserted: number;
       feed_inserted: number;
+      items_new: number;
+      items_updated: number;
+      items_skipped: number;
       results: any[];
       errors: string[];
       timestamp: string;
+      run_id?: string;
     }>>({
       success: true,
       data: {
@@ -889,14 +1174,31 @@ cron.post('/scrape-tokyo-shigoto', async (c) => {
         details_fetched: results.length,
         inserted: insertedCount,
         feed_inserted: feedInsertedCount,
+        items_new: itemsNew,
+        items_updated: itemsUpdated,
+        items_skipped: itemsSkipped,
         results,
         errors,
         timestamp: new Date().toISOString(),
+        run_id: runId ?? undefined,
       },
     });
     
   } catch (error) {
     console.error('[Tokyo-Shigoto] Scrape error:', error);
+    
+    // P2-0: 失敗ログ
+    if (runId) {
+      try {
+        await finishCronRun(db, runId, 'failed', {
+          error_count: 1,
+          errors: [error instanceof Error ? error.message : String(error)],
+        });
+      } catch (logErr) {
+        console.warn('[Tokyo-Shigoto] Failed to finish cron_run log:', logErr);
+      }
+    }
+    
     return c.json<ApiResponse<null>>({
       success: false,
       error: {

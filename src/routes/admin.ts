@@ -1183,4 +1183,299 @@ admin.get('/subsidy-cache/stats', async (c) => {
   }
 });
 
+// =====================================================
+// P2-3: フィードアイテム JSON インポートAPI
+// =====================================================
+
+/**
+ * フィードアイテム入力型（インポート用）
+ */
+interface FeedItemInput {
+  title: string;
+  summary?: string | null;
+  url: string;
+  detail_url?: string | null;
+  issuer_name?: string | null;
+  prefecture_code?: string | null;
+  target_area_codes?: string[] | null;
+  subsidy_amount_max?: number | null;
+  subsidy_rate_text?: string | null;
+  deadline?: string | null;
+  status?: 'open' | 'closed' | 'upcoming' | 'unknown' | null;
+  source_type?: 'platform' | 'support_info' | 'prefecture' | 'ministry' | 'other_public' | 'government' | null;
+  pdf_urls?: string[] | null;
+  tags?: string[] | null;
+}
+
+/**
+ * dedupe_key 生成（凍結仕様に準拠）
+ * パターン: {source_id}:{urlハッシュ12桁}
+ */
+async function generateDedupeKey(sourceId: string, url: string): Promise<string> {
+  const urlHash = await sha256Hash(url);
+  return `${sourceId}:${urlHash.slice(0, 12)}`;
+}
+
+/**
+ * content_hash 生成（差分検知用）
+ */
+async function generateContentHash(item: FeedItemInput): Promise<string> {
+  const content = JSON.stringify({
+    title: item.title,
+    summary: item.summary,
+    subsidy_amount_max: item.subsidy_amount_max,
+    subsidy_rate_text: item.subsidy_rate_text,
+    deadline: item.deadline,
+    status: item.status,
+  });
+  const hash = await sha256Hash(content);
+  return hash.slice(0, 16);
+}
+
+/**
+ * POST /api/admin/feed/import
+ * 
+ * JSONからフィードアイテムを一括インポート
+ * 
+ * Body:
+ * {
+ *   source_id: string;           // 必須: ソースID（例: 'manual-import', 'api-partner-xxx'）
+ *   items: FeedItemInput[];      // 必須: インポートするアイテム配列
+ *   dry_run?: boolean;           // オプション: true の場合は検証のみ（DB保存しない）
+ * }
+ * 
+ * 権限: super_admin のみ
+ * 上限: 1回最大200件
+ */
+admin.post('/feed/import', requireAuth, async (c) => {
+  const db = c.env.DB;
+  const user = getCurrentUser(c);
+  
+  // super_admin のみ許可
+  if (user.role !== 'super_admin') {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: 'FORBIDDEN',
+        message: 'Super admin access required for feed import',
+      },
+    }, 403);
+  }
+  
+  try {
+    const body = await c.req.json<{
+      source_id: string;
+      items: FeedItemInput[];
+      dry_run?: boolean;
+    }>();
+    
+    // バリデーション
+    if (!body.source_id || typeof body.source_id !== 'string') {
+      return c.json<ApiResponse<null>>({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'source_id is required',
+        },
+      }, 400);
+    }
+    
+    if (!Array.isArray(body.items) || body.items.length === 0) {
+      return c.json<ApiResponse<null>>({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'items array is required and must not be empty',
+        },
+      }, 400);
+    }
+    
+    // 上限チェック（200件）
+    const MAX_ITEMS = 200;
+    if (body.items.length > MAX_ITEMS) {
+      return c.json<ApiResponse<null>>({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: `Maximum ${MAX_ITEMS} items allowed per import`,
+        },
+      }, 400);
+    }
+    
+    const isDryRun = body.dry_run === true;
+    const sourceId = body.source_id;
+    
+    // 処理結果カウンター
+    let itemsNew = 0;
+    let itemsUpdated = 0;
+    let itemsSkipped = 0;
+    let itemsError = 0;
+    const errors: { index: number; url: string; message: string }[] = [];
+    const processedItems: { url: string; action: 'new' | 'updated' | 'skipped' | 'error'; dedupe_key: string }[] = [];
+    
+    // 各アイテムを処理
+    for (let i = 0; i < body.items.length; i++) {
+      const item = body.items[i];
+      
+      // 必須フィールドチェック
+      if (!item.title || !item.url) {
+        errors.push({ index: i, url: item.url || 'N/A', message: 'title and url are required' });
+        itemsError++;
+        continue;
+      }
+      
+      try {
+        // dedupe_key と content_hash を生成
+        const dedupeKey = await generateDedupeKey(sourceId, item.url);
+        const contentHash = await generateContentHash(item);
+        const itemId = `${sourceId}-${Date.now()}-${i}`;
+        
+        // 既存レコードを確認
+        const existing = await db.prepare(`
+          SELECT content_hash FROM subsidy_feed_items WHERE dedupe_key = ?
+        `).bind(dedupeKey).first<{ content_hash: string }>();
+        
+        if (existing) {
+          if (existing.content_hash === contentHash) {
+            // 変更なし: スキップ
+            itemsSkipped++;
+            processedItems.push({ url: item.url, action: 'skipped', dedupe_key: dedupeKey });
+            continue;
+          } else {
+            // 変更あり: 更新
+            if (!isDryRun) {
+              await db.prepare(`
+                UPDATE subsidy_feed_items SET
+                  title = ?,
+                  summary = ?,
+                  subsidy_amount_max = ?,
+                  subsidy_rate_text = ?,
+                  deadline = ?,
+                  status = ?,
+                  content_hash = ?,
+                  is_new = 0,
+                  last_seen_at = datetime('now'),
+                  updated_at = datetime('now')
+                WHERE dedupe_key = ?
+              `).bind(
+                item.title,
+                item.summary || null,
+                item.subsidy_amount_max || null,
+                item.subsidy_rate_text || null,
+                item.deadline || null,
+                item.status || 'unknown',
+                contentHash,
+                dedupeKey
+              ).run();
+            }
+            itemsUpdated++;
+            processedItems.push({ url: item.url, action: 'updated', dedupe_key: dedupeKey });
+          }
+        } else {
+          // 新規: 挿入
+          if (!isDryRun) {
+            await db.prepare(`
+              INSERT INTO subsidy_feed_items 
+              (id, dedupe_key, source_id, source_type, title, summary, url, detail_url,
+               pdf_urls, issuer_name, prefecture_code, target_area_codes,
+               subsidy_amount_max, subsidy_rate_text, deadline, status, 
+               tags_json, content_hash, is_new, first_seen_at, last_seen_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, datetime('now'), datetime('now'))
+            `).bind(
+              itemId,
+              dedupeKey,
+              sourceId,
+              item.source_type || 'other_public',
+              item.title,
+              item.summary || null,
+              item.url,
+              item.detail_url || item.url,
+              item.pdf_urls ? JSON.stringify(item.pdf_urls) : null,
+              item.issuer_name || null,
+              item.prefecture_code || null,
+              item.target_area_codes ? JSON.stringify(item.target_area_codes) : null,
+              item.subsidy_amount_max || null,
+              item.subsidy_rate_text || null,
+              item.deadline || null,
+              item.status || 'unknown',
+              item.tags ? JSON.stringify(item.tags) : null,
+              contentHash
+            ).run();
+          }
+          itemsNew++;
+          processedItems.push({ url: item.url, action: 'new', dedupe_key: dedupeKey });
+        }
+        
+      } catch (itemErr) {
+        errors.push({ 
+          index: i, 
+          url: item.url, 
+          message: itemErr instanceof Error ? itemErr.message : String(itemErr) 
+        });
+        itemsError++;
+        processedItems.push({ url: item.url, action: 'error', dedupe_key: 'N/A' });
+      }
+    }
+    
+    // 監査ログ
+    if (!isDryRun) {
+      await writeAuditLog(db, {
+        actorUserId: user.id,
+        action: 'FEED_IMPORT',
+        actionCategory: 'admin',
+        severity: errors.length > 0 ? 'warning' : 'info',
+        detailsJson: {
+          source_id: sourceId,
+          total: body.items.length,
+          new: itemsNew,
+          updated: itemsUpdated,
+          skipped: itemsSkipped,
+          errors: itemsError,
+        },
+        ip: c.req.header('x-forwarded-for') || c.req.header('x-real-ip'),
+        userAgent: c.req.header('user-agent'),
+      });
+    }
+    
+    return c.json<ApiResponse<{
+      message: string;
+      dry_run: boolean;
+      source_id: string;
+      total_submitted: number;
+      items_new: number;
+      items_updated: number;
+      items_skipped: number;
+      items_error: number;
+      errors: { index: number; url: string; message: string }[];
+      processed: { url: string; action: string; dedupe_key: string }[];
+      timestamp: string;
+    }>>({
+      success: true,
+      data: {
+        message: isDryRun ? 'Dry run completed (no changes made)' : 'Feed import completed',
+        dry_run: isDryRun,
+        source_id: sourceId,
+        total_submitted: body.items.length,
+        items_new: itemsNew,
+        items_updated: itemsUpdated,
+        items_skipped: itemsSkipped,
+        items_error: itemsError,
+        errors,
+        processed: processedItems,
+        timestamp: new Date().toISOString(),
+      },
+    });
+    
+  } catch (error) {
+    console.error('Feed import error:', error);
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: 'INTERNAL_ERROR',
+        message: `Import failed: ${error instanceof Error ? error.message : String(error)}`,
+      },
+    }, 500);
+  }
+});
+
 export default admin;

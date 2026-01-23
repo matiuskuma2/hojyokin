@@ -13,7 +13,9 @@ module.exports = {
     {
       name: 'subsidy-matching',
       script: 'npx',
-      args: 'wrangler pages dev dist --d1=subsidy-matching-production --local --ip 0.0.0.0 --port 3000',
+      // wrangler pages dev は .dev.vars を自動読み込み
+      // --binding で環境変数を追加
+      args: 'wrangler pages dev dist --d1=subsidy-matching-production --local --ip 0.0.0.0 --port 3000 --binding CRON_SECRET=dev-cron-secret-2026',
       env: {
         NODE_ENV: 'development',
         PORT: 3000
