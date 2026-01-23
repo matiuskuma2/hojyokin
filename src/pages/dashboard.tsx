@@ -78,20 +78,13 @@ const commonScripts = `
     }
   };
   
-  // 補助金検索ナビゲーション（会社情報必須）
+  // 補助金検索ナビゲーション（会社情報チェックは/subsidiesページで行う）
   window.navigateToSubsidies = function(e) {
     if (e && e.preventDefault) {
       e.preventDefault();
     }
-    if (window.searchReady) {
-      window.location.href = '/subsidies';
-    } else if (window.hasCompanyInfo) {
-      alert('補助金検索には以下の情報が必要です：\\n\\n・会社名\\n・都道府県\\n・業種\\n・従業員数\\n\\n会社情報ページで入力してください。');
-      window.location.href = '/company';
-    } else {
-      alert('補助金検索には会社情報の登録が必要です。\\n先に会社情報を入力してください。');
-      window.location.href = '/company';
-    }
+    // 常に /subsidies に遷移し、ページ側で会社情報をチェックさせる
+    window.location.href = '/subsidies';
   };
   
   // タブ切り替え（会社情報ページ用）
