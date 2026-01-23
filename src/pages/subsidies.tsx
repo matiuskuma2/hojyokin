@@ -1350,6 +1350,24 @@ subsidyPages.get('/subsidies/:id', (c) => {
         </div>
       </div>
       
+      <!-- 補助金情報不足の警告 -->
+      <div id="data-warning" class="hidden mt-6 bg-yellow-50 border border-yellow-200 rounded-lg p-4">
+        <div class="flex items-start">
+          <i class="fas fa-exclamation-triangle text-yellow-500 text-xl mr-3 mt-0.5"></i>
+          <div class="flex-1">
+            <h3 class="font-semibold text-yellow-800 mb-1">補助金の詳細情報が不足しています</h3>
+            <p class="text-sm text-yellow-700 mb-2">
+              この補助金の申請要件・必要書類の情報がまだ登録されていないため、申請書の作成に必要な情報が不十分です。
+            </p>
+            <ul id="missing-data-list" class="text-sm text-yellow-600 list-disc list-inside mb-3"></ul>
+            <p class="text-xs text-yellow-600">
+              <i class="fas fa-info-circle mr-1"></i>
+              壁打ちを開始すると、AIが公募要領から情報を収集します。より正確なドラフトを作成するには、まず「申請要件」タブから要件の読み込みを行うことをお勧めします。
+            </p>
+          </div>
+        </div>
+      </div>
+      
       <!-- 壁打ち開始CTA -->
       <div id="cta-section" class="hidden mt-6 bg-gradient-to-r from-green-600 to-green-700 rounded-lg shadow-lg p-6 text-white">
         <div class="flex items-center justify-between">
@@ -1452,6 +1470,28 @@ subsidyPages.get('/subsidies/:id', (c) => {
             document.getElementById('cta-section').classList.remove('hidden');
           }
           
+          // オブジェクトを文字列に変換するヘルパー関数
+          function toDisplayText(item) {
+            if (typeof item === 'string') return item;
+            if (item && typeof item === 'object') {
+              // オブジェクトの場合、適切なプロパティを探す
+              return item.reason || item.text || item.message || item.description || item.name || item.label || 
+                     (item.field ? \`\${item.field}: \${item.value || item.condition || ''}\` : '') ||
+                     (typeof item.toString === 'function' && item.toString() !== '[object Object]' ? item.toString() : '');
+            }
+            return String(item || '');
+          }
+          
+          // マッチ理由をフィルタリングして有効なものだけ表示
+          const validMatchReasons = (e.match_reasons || [])
+            .map(r => toDisplayText(r))
+            .filter(r => r && r.trim() && r !== '[object Object]');
+          
+          // リスクフラグをフィルタリングして有効なものだけ表示
+          const validRiskFlags = (e.risk_flags || [])
+            .map(r => toDisplayText(r))
+            .filter(r => r && r.trim() && r !== '[object Object]');
+          
           // マッチング結果タブの内容
           document.getElementById('evaluation-content').innerHTML = \`
             <div class="space-y-4">
@@ -1462,20 +1502,24 @@ subsidyPages.get('/subsidies/:id', (c) => {
                 <p class="text-gray-700">\${e.explanation || '説明なし'}</p>
               </div>
               
-              \${e.match_reasons.length > 0 ? \`
+              \${validMatchReasons.length > 0 ? \`
                 <div>
                   <h4 class="font-medium text-gray-800 mb-2"><i class="fas fa-check text-green-500 mr-1"></i>マッチ理由</h4>
                   <ul class="space-y-1">
-                    \${e.match_reasons.map(r => \`<li class="text-sm text-gray-700">・\${r}</li>\`).join('')}
+                    \${validMatchReasons.map(r => \`<li class="text-sm text-gray-700">・\${r}</li>\`).join('')}
                   </ul>
                 </div>
-              \` : ''}
+              \` : \`
+                <div class="p-3 bg-gray-50 rounded-lg">
+                  <p class="text-sm text-gray-500">マッチ理由の詳細情報は取得されていません。</p>
+                </div>
+              \`}
               
-              \${e.risk_flags.length > 0 ? \`
+              \${validRiskFlags.length > 0 ? \`
                 <div>
                   <h4 class="font-medium text-gray-800 mb-2"><i class="fas fa-flag text-orange-500 mr-1"></i>リスクフラグ</h4>
                   <ul class="space-y-1">
-                    \${e.risk_flags.map(r => \`<li class="text-sm text-orange-700">・\${r}</li>\`).join('')}
+                    \${validRiskFlags.map(r => \`<li class="text-sm text-orange-700">・\${r}</li>\`).join('')}
                   </ul>
                 </div>
               \` : ''}
@@ -1531,11 +1575,39 @@ subsidyPages.get('/subsidies/:id', (c) => {
         document.getElementById('action-buttons').innerHTML = actionsHtml;
       }
       
+      // データ不足チェック用のフラグ
+      let hasEligibilityData = false;
+      let hasDocumentsData = false;
+      
+      // データ不足警告を表示
+      function checkAndShowDataWarning() {
+        const missingItems = [];
+        
+        // 補助金基本情報のチェック
+        if (subsidyData && subsidyData.subsidy) {
+          const s = subsidyData.subsidy;
+          if (!s.subsidy_rate) missingItems.push('補助率');
+          if (!s.subsidy_summary && !s.outline) missingItems.push('補助金の概要');
+        }
+        
+        if (!hasEligibilityData) missingItems.push('申請要件');
+        if (!hasDocumentsData) missingItems.push('必要書類');
+        
+        if (missingItems.length > 0) {
+          const warningEl = document.getElementById('data-warning');
+          const listEl = document.getElementById('missing-data-list');
+          
+          listEl.innerHTML = missingItems.map(item => \`<li>\${item}</li>\`).join('');
+          warningEl.classList.remove('hidden');
+        }
+      }
+      
       // 要件読み込み
       async function loadEligibility() {
         try {
           const res = await api('/api/subsidies/' + subsidyId + '/eligibility');
           if (res.success && res.data.length > 0) {
+            hasEligibilityData = true;
             const html = res.data.map(rule => {
               const typeLabel = rule.check_type === 'AUTO' ? 
                 '<span class="px-2 py-0.5 bg-green-100 text-green-800 rounded text-xs">AUTO</span>' :
@@ -1554,12 +1626,16 @@ subsidyPages.get('/subsidies/:id', (c) => {
             }).join('');
             document.getElementById('eligibility-list').innerHTML = html;
           } else {
+            hasEligibilityData = false;
             document.getElementById('eligibility-list').innerHTML = 
               '<p class="text-gray-500">要件情報がまだ登録されていません。下の「要件を読み込む」ボタンで取り込みを開始できます。</p>';
           }
         } catch (e) {
           console.error('Load eligibility error:', e);
+          hasEligibilityData = false;
         }
+        // 両方のデータ読み込みが完了したら警告をチェック
+        checkAndShowDataWarning();
       }
       
       // 必要書類読み込み
@@ -1567,6 +1643,7 @@ subsidyPages.get('/subsidies/:id', (c) => {
         try {
           const res = await api('/api/subsidies/' + subsidyId + '/documents');
           if (res.success && res.data.length > 0) {
+            hasDocumentsData = true;
             const html = res.data.map(doc => {
               const levelIcon = doc.required_level === 'required' ? 
                 '<span class="text-red-500">●</span>' :
@@ -1586,12 +1663,16 @@ subsidyPages.get('/subsidies/:id', (c) => {
             }).join('');
             document.getElementById('documents-list').innerHTML = html;
           } else {
+            hasDocumentsData = false;
             document.getElementById('documents-list').innerHTML = 
               '<p class="text-gray-500">必要書類情報がまだ登録されていません。</p>';
           }
         } catch (e) {
           console.error('Load documents error:', e);
+          hasDocumentsData = false;
         }
+        // 両方のデータ読み込みが完了したら警告をチェック
+        checkAndShowDataWarning();
       }
       
       // 要件取り込みジョブ開始
