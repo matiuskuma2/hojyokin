@@ -298,42 +298,196 @@ subsidyPages.get('/subsidies', (c) => {
         </div>
       </div>
       
-      <!-- フィルター（折りたたみ） -->
-      <details class="mt-4">
-        <summary class="text-sm text-gray-600 cursor-pointer hover:text-gray-800">
-          <i class="fas fa-filter mr-1"></i>詳細フィルター
-        </summary>
-        <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mt-3 pt-3 border-t">
-          <div>
-            <label class="block text-sm font-medium text-gray-700 mb-1">ステータス</label>
-            <select id="status-filter" class="w-full px-3 py-2 border rounded-md text-sm">
-              <option value="">すべて</option>
-              <option value="PROCEED">推奨（PROCEED）</option>
-              <option value="CAUTION">注意（CAUTION）</option>
-              <option value="NO">非推奨（NO）</option>
-            </select>
-          </div>
-          <div>
-            <label class="block text-sm font-medium text-gray-700 mb-1">ソート</label>
-            <select id="sort" class="w-full px-3 py-2 border rounded-md text-sm">
-              <option value="score">マッチ度順</option>
-              <option value="acceptance_end_datetime">締切日順</option>
-              <option value="subsidy_max_limit">補助上限順</option>
-            </select>
-          </div>
-          <div>
-            <label class="block text-sm font-medium text-gray-700 mb-1">表示件数</label>
-            <select id="limit" class="w-full px-3 py-2 border rounded-md text-sm">
-              <option value="20">20件</option>
-              <option value="50" selected>50件</option>
-              <option value="100">100件</option>
-              <option value="200">200件</option>
-              <option value="500">500件</option>
-              <option value="all">全件（最大500件）</option>
-            </select>
+      <!-- 詳細フィルター（タブ形式） -->
+      <div class="mt-4 pt-4 border-t">
+        <div class="flex items-center justify-between mb-3">
+          <button onclick="toggleAdvancedFilter()" id="btn-advanced-filter" 
+                  class="text-sm text-gray-600 hover:text-gray-800 flex items-center gap-1">
+            <i class="fas fa-filter"></i>
+            <span>詳細フィルター</span>
+            <i id="filter-toggle-icon" class="fas fa-chevron-down ml-1 text-xs transition-transform"></i>
+          </button>
+          <div id="active-filters" class="flex flex-wrap gap-1 text-xs">
+            <!-- 選択中のフィルターがチップで表示される -->
           </div>
         </div>
-      </details>
+        
+        <!-- 詳細フィルターパネル（初期非表示） -->
+        <div id="advanced-filter-panel" class="hidden">
+          <!-- フィルタータブ -->
+          <div class="border-b mb-3">
+            <nav class="flex -mb-px text-sm">
+              <button onclick="switchFilterTab('basic')" data-filter-tab="basic" 
+                      class="filter-tab-btn px-4 py-2 border-b-2 border-green-600 text-green-600 font-medium">
+                <i class="fas fa-sliders-h mr-1"></i>基本
+              </button>
+              <button onclick="switchFilterTab('issuer')" data-filter-tab="issuer"
+                      class="filter-tab-btn px-4 py-2 border-b-2 border-transparent text-gray-500 hover:text-gray-700">
+                <i class="fas fa-building-columns mr-1"></i>発行機関
+                <span id="issuer-count-badge" class="hidden ml-1 px-1.5 py-0.5 bg-green-100 text-green-800 rounded-full text-xs"></span>
+              </button>
+              <button onclick="switchFilterTab('region')" data-filter-tab="region"
+                      class="filter-tab-btn px-4 py-2 border-b-2 border-transparent text-gray-500 hover:text-gray-700">
+                <i class="fas fa-map-location-dot mr-1"></i>対象地域
+                <span id="region-count-badge" class="hidden ml-1 px-1.5 py-0.5 bg-green-100 text-green-800 rounded-full text-xs"></span>
+              </button>
+              <button onclick="switchFilterTab('category')" data-filter-tab="category"
+                      class="filter-tab-btn px-4 py-2 border-b-2 border-transparent text-gray-500 hover:text-gray-700">
+                <i class="fas fa-tags mr-1"></i>カテゴリ
+                <span id="category-count-badge" class="hidden ml-1 px-1.5 py-0.5 bg-green-100 text-green-800 rounded-full text-xs"></span>
+              </button>
+              <button onclick="switchFilterTab('industry')" data-filter-tab="industry"
+                      class="filter-tab-btn px-4 py-2 border-b-2 border-transparent text-gray-500 hover:text-gray-700">
+                <i class="fas fa-industry mr-1"></i>業種
+                <span id="industry-count-badge" class="hidden ml-1 px-1.5 py-0.5 bg-green-100 text-green-800 rounded-full text-xs"></span>
+              </button>
+            </nav>
+          </div>
+          
+          <!-- 基本フィルター -->
+          <div id="filter-tab-basic" class="filter-tab-content">
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">ステータス</label>
+                <select id="status-filter" class="w-full px-3 py-2 border rounded-md text-sm">
+                  <option value="">すべて</option>
+                  <option value="PROCEED">推奨（PROCEED）</option>
+                  <option value="CAUTION">注意（CAUTION）</option>
+                  <option value="NO">非推奨（NO）</option>
+                </select>
+              </div>
+              <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">ソート</label>
+                <select id="sort" class="w-full px-3 py-2 border rounded-md text-sm">
+                  <option value="score">マッチ度順</option>
+                  <option value="acceptance_end_datetime">締切日順</option>
+                  <option value="subsidy_max_limit">補助上限順</option>
+                </select>
+              </div>
+              <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">表示件数</label>
+                <select id="limit" class="w-full px-3 py-2 border rounded-md text-sm">
+                  <option value="20">20件</option>
+                  <option value="50" selected>50件</option>
+                  <option value="100">100件</option>
+                  <option value="200">200件</option>
+                  <option value="500">500件</option>
+                  <option value="all">全件（最大500件）</option>
+                </select>
+              </div>
+            </div>
+          </div>
+          
+          <!-- 発行機関フィルター -->
+          <div id="filter-tab-issuer" class="filter-tab-content hidden">
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <!-- 省庁 -->
+              <div>
+                <h4 class="text-sm font-medium text-gray-700 mb-2 flex items-center gap-1">
+                  <i class="fas fa-landmark text-blue-500"></i>省庁
+                </h4>
+                <div id="issuer-ministry-list" class="space-y-1 max-h-48 overflow-y-auto border rounded-md p-2 bg-gray-50">
+                  <p class="text-xs text-gray-400">読み込み中...</p>
+                </div>
+              </div>
+              <!-- その他機関 -->
+              <div>
+                <h4 class="text-sm font-medium text-gray-700 mb-2 flex items-center gap-1">
+                  <i class="fas fa-building text-purple-500"></i>独立行政法人・その他
+                </h4>
+                <div id="issuer-org-list" class="space-y-1 max-h-48 overflow-y-auto border rounded-md p-2 bg-gray-50">
+                  <p class="text-xs text-gray-400">読み込み中...</p>
+                </div>
+              </div>
+            </div>
+          </div>
+          
+          <!-- 対象地域フィルター -->
+          <div id="filter-tab-region" class="filter-tab-content hidden">
+            <div class="mb-3">
+              <label class="flex items-center gap-2 text-sm">
+                <input type="checkbox" id="region-national" class="rounded text-green-600" />
+                <span class="font-medium">全国（国の補助金）</span>
+              </label>
+            </div>
+            <div class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3">
+              <!-- 北海道・東北 -->
+              <div>
+                <h4 class="text-xs font-medium text-gray-500 mb-1">北海道・東北</h4>
+                <div id="region-group-hokkaido" class="space-y-0.5 text-sm">
+                  <p class="text-xs text-gray-400">読み込み中...</p>
+                </div>
+              </div>
+              <!-- 関東 -->
+              <div>
+                <h4 class="text-xs font-medium text-gray-500 mb-1">関東</h4>
+                <div id="region-group-kanto" class="space-y-0.5 text-sm">
+                  <p class="text-xs text-gray-400">読み込み中...</p>
+                </div>
+              </div>
+              <!-- 中部 -->
+              <div>
+                <h4 class="text-xs font-medium text-gray-500 mb-1">中部</h4>
+                <div id="region-group-chubu" class="space-y-0.5 text-sm">
+                  <p class="text-xs text-gray-400">読み込み中...</p>
+                </div>
+              </div>
+              <!-- 近畿 -->
+              <div>
+                <h4 class="text-xs font-medium text-gray-500 mb-1">近畿</h4>
+                <div id="region-group-kinki" class="space-y-0.5 text-sm">
+                  <p class="text-xs text-gray-400">読み込み中...</p>
+                </div>
+              </div>
+              <!-- 中国 -->
+              <div>
+                <h4 class="text-xs font-medium text-gray-500 mb-1">中国</h4>
+                <div id="region-group-chugoku" class="space-y-0.5 text-sm">
+                  <p class="text-xs text-gray-400">読み込み中...</p>
+                </div>
+              </div>
+              <!-- 四国 -->
+              <div>
+                <h4 class="text-xs font-medium text-gray-500 mb-1">四国</h4>
+                <div id="region-group-shikoku" class="space-y-0.5 text-sm">
+                  <p class="text-xs text-gray-400">読み込み中...</p>
+                </div>
+              </div>
+              <!-- 九州・沖縄 -->
+              <div>
+                <h4 class="text-xs font-medium text-gray-500 mb-1">九州・沖縄</h4>
+                <div id="region-group-kyushu" class="space-y-0.5 text-sm">
+                  <p class="text-xs text-gray-400">読み込み中...</p>
+                </div>
+              </div>
+            </div>
+          </div>
+          
+          <!-- カテゴリフィルター -->
+          <div id="filter-tab-category" class="filter-tab-content hidden">
+            <div id="category-tree" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              <p class="text-xs text-gray-400">読み込み中...</p>
+            </div>
+          </div>
+          
+          <!-- 業種フィルター -->
+          <div id="filter-tab-industry" class="filter-tab-content hidden">
+            <div id="industry-list" class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2">
+              <p class="text-xs text-gray-400">読み込み中...</p>
+            </div>
+          </div>
+          
+          <!-- フィルター適用ボタン -->
+          <div class="mt-4 pt-3 border-t flex items-center justify-between">
+            <button onclick="clearAllFilters()" class="text-sm text-gray-500 hover:text-gray-700">
+              <i class="fas fa-times mr-1"></i>フィルターをクリア
+            </button>
+            <button onclick="applyFilters()" class="bg-green-600 text-white px-4 py-2 rounded-md hover:bg-green-700 text-sm">
+              <i class="fas fa-check mr-1"></i>フィルターを適用
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
     
     <!-- 検索結果サマリー -->
@@ -1207,10 +1361,13 @@ subsidyPages.get('/subsidies', (c) => {
       }
       
       // ===== パフォーマンス最適化: フィルター変更時にページリセット =====
-      document.getElementById('status-filter').addEventListener('change', () => {
-        displayPage = 1; // ページをリセット
-        renderResults(currentResults, null);
-      });
+      const statusFilterEl = document.getElementById('status-filter');
+      if (statusFilterEl) {
+        statusFilterEl.addEventListener('change', () => {
+          displayPage = 1; // ページをリセット
+          renderResults(currentResults, null);
+        });
+      }
       
       // ===== デバウンス: キーワード入力時の遅延検索 =====
       let searchTimeout;
@@ -1226,6 +1383,361 @@ subsidyPages.get('/subsidies', (c) => {
           }, 300);
         });
       }
+      
+      // =============================================================================
+      // 詳細フィルター関連
+      // =============================================================================
+      
+      // マスタデータキャッシュ
+      let masterData = null;
+      
+      // 選択中のフィルター
+      let selectedFilters = {
+        issuers: [],
+        regions: [],
+        categories: [],
+        industries: [],
+      };
+      
+      // 詳細フィルターパネルの開閉
+      window.toggleAdvancedFilter = function() {
+        const panel = document.getElementById('advanced-filter-panel');
+        const icon = document.getElementById('filter-toggle-icon');
+        
+        if (panel.classList.contains('hidden')) {
+          panel.classList.remove('hidden');
+          icon.classList.add('rotate-180');
+          // 初回オープン時にマスタデータを読み込む
+          if (!masterData) {
+            loadMasterData();
+          }
+        } else {
+          panel.classList.add('hidden');
+          icon.classList.remove('rotate-180');
+        }
+      };
+      
+      // フィルタータブ切替
+      window.switchFilterTab = function(tabName) {
+        document.querySelectorAll('.filter-tab-btn').forEach(btn => {
+          if (btn.dataset.filterTab === tabName) {
+            btn.classList.add('border-green-600', 'text-green-600');
+            btn.classList.remove('border-transparent', 'text-gray-500');
+          } else {
+            btn.classList.remove('border-green-600', 'text-green-600');
+            btn.classList.add('border-transparent', 'text-gray-500');
+          }
+        });
+        
+        document.querySelectorAll('.filter-tab-content').forEach(content => {
+          content.classList.add('hidden');
+        });
+        document.getElementById('filter-tab-' + tabName).classList.remove('hidden');
+      };
+      
+      // XSS対策: HTMLエスケープ関数
+      function escapeHtml(str) {
+        if (str == null) return '';
+        if (typeof str !== 'string') str = String(str);
+        return str
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&#039;');
+      }
+      
+      // 安全な属性値エスケープ（id/value用）
+      function escapeAttr(str) {
+        if (str == null) return '';
+        if (typeof str !== 'string') str = String(str);
+        // 英数字とハイフン、アンダースコアのみ許可
+        return str.replace(/[^a-zA-Z0-9_-]/g, '');
+      }
+      
+      // マスタデータ読み込み
+      async function loadMasterData() {
+        try {
+          const res = await api('/api/masters/all');
+          if (res && res.success && res.data) {
+            masterData = res.data;
+            renderMasterFilters();
+          } else {
+            console.error('Failed to load masters:', res?.error || 'Unknown error');
+            // エラー時はUIに通知
+            showMasterLoadError();
+          }
+        } catch (e) {
+          console.error('Load masters error:', e);
+          showMasterLoadError();
+        }
+      }
+      
+      // マスタ読み込みエラー表示
+      function showMasterLoadError() {
+        const containers = [
+          'issuer-ministry-list', 'issuer-org-list', 'category-tree', 'industry-list',
+          'region-group-hokkaido', 'region-group-kanto', 'region-group-chubu',
+          'region-group-kinki', 'region-group-chugoku', 'region-group-shikoku', 'region-group-kyushu'
+        ];
+        containers.forEach(id => {
+          const el = document.getElementById(id);
+          if (el) el.innerHTML = '<p class="text-xs text-red-500">読み込みに失敗しました</p>';
+        });
+      }
+      
+      // マスタフィルターのレンダリング
+      function renderMasterFilters() {
+        if (!masterData) return;
+        
+        // 安全なデータアクセス用ヘルパー
+        const safeGet = (obj, path, defaultVal) => {
+          try {
+            const keys = path.split('.');
+            let result = obj;
+            for (const key of keys) {
+              if (result == null) return defaultVal;
+              result = result[key];
+            }
+            return result ?? defaultVal;
+          } catch {
+            return defaultVal;
+          }
+        };
+        
+        // 発行機関（省庁）
+        const ministryList = document.getElementById('issuer-ministry-list');
+        const ministryData = safeGet(masterData, 'issuers.grouped.ministry', []);
+        if (ministryList && Array.isArray(ministryData)) {
+          ministryList.innerHTML = ministryData.map(issuer => {
+            if (!issuer || !issuer.id) return '';
+            const safeId = escapeAttr(issuer.id);
+            const safeName = escapeHtml(issuer.name_short || issuer.name || '');
+            const safeCount = Number(issuer.subsidy_count) || 0;
+            return \`
+            <label class="flex items-center gap-2 text-sm cursor-pointer hover:bg-gray-100 px-1 py-0.5 rounded">
+              <input type="checkbox" value="\${safeId}" class="issuer-checkbox rounded text-green-600" 
+                     onchange="updateFilterSelection('issuers', '\${safeId}', this.checked)" />
+              <span>\${safeName}</span>
+              <span class="text-xs text-gray-400 ml-auto">\${safeCount}</span>
+            </label>
+          \`;
+          }).join('');
+        }
+        
+        // 発行機関（その他）
+        const orgList = document.getElementById('issuer-org-list');
+        const orgData = safeGet(masterData, 'issuers.grouped.organization', []);
+        if (orgList && Array.isArray(orgData)) {
+          orgList.innerHTML = orgData.map(issuer => {
+            if (!issuer || !issuer.id) return '';
+            const safeId = escapeAttr(issuer.id);
+            const safeName = escapeHtml(issuer.name_short || issuer.name || '');
+            const safeCount = Number(issuer.subsidy_count) || 0;
+            return \`
+            <label class="flex items-center gap-2 text-sm cursor-pointer hover:bg-gray-100 px-1 py-0.5 rounded">
+              <input type="checkbox" value="\${safeId}" class="issuer-checkbox rounded text-green-600"
+                     onchange="updateFilterSelection('issuers', '\${safeId}', this.checked)" />
+              <span>\${safeName}</span>
+              <span class="text-xs text-gray-400 ml-auto">\${safeCount}</span>
+            </label>
+          \`;
+          }).join('');
+        }
+        
+        // 地域（グループ別）
+        const regionGroupMap = {
+          '北海道・東北': 'hokkaido',
+          '関東': 'kanto',
+          '中部': 'chubu',
+          '近畿': 'kinki',
+          '中国': 'chugoku',
+          '四国': 'shikoku',
+          '九州・沖縄': 'kyushu',
+        };
+        
+        const regionGroups = safeGet(masterData, 'regions.groups', []);
+        if (Array.isArray(regionGroups)) {
+          regionGroups.forEach(group => {
+            if (!group || !group.name) return;
+            const containerId = 'region-group-' + (regionGroupMap[group.name] || '');
+            const container = document.getElementById(containerId);
+            if (container && Array.isArray(group.prefectures)) {
+              container.innerHTML = group.prefectures.map(pref => {
+                if (!pref || !pref.code) return '';
+                const safeCode = escapeAttr(pref.code);
+                const safeName = escapeHtml((pref.name || '').replace(/県|府|都|道$/, ''));
+                const safeCount = Number(pref.subsidy_count) || 0;
+                return \`
+                <label class="flex items-center gap-1 text-xs cursor-pointer hover:bg-gray-100 px-1 py-0.5 rounded">
+                  <input type="checkbox" value="\${safeCode}" class="region-checkbox rounded text-green-600 w-3 h-3"
+                         onchange="updateFilterSelection('regions', '\${safeCode}', this.checked)" />
+                  <span>\${safeName}</span>
+                  <span class="text-gray-400 ml-auto">\${safeCount}</span>
+                </label>
+              \`;
+              }).join('');
+            }
+          });
+        }
+        
+        // カテゴリ（ツリー形式）
+        const categoryTree = document.getElementById('category-tree');
+        const categoryTreeData = safeGet(masterData, 'categories.tree', []);
+        if (categoryTree && Array.isArray(categoryTreeData)) {
+          categoryTree.innerHTML = categoryTreeData.map(major => {
+            if (!major || !major.id) return '';
+            const safeId = escapeAttr(major.id);
+            const safeName = escapeHtml(major.name || '');
+            const safeCount = Number(major.subsidy_count) || 0;
+            const children = Array.isArray(major.children) ? major.children : [];
+            
+            return \`
+            <div class="border rounded-lg p-3">
+              <label class="flex items-center gap-2 font-medium text-sm cursor-pointer">
+                <input type="checkbox" value="\${safeId}" class="category-checkbox rounded text-green-600"
+                       onchange="updateFilterSelection('categories', '\${safeId}', this.checked)" />
+                <span>\${safeName}</span>
+                <span class="text-xs text-gray-400 ml-auto">\${safeCount}</span>
+              </label>
+              \${children.length > 0 ? \`
+                <div class="ml-5 mt-2 space-y-1">
+                  \${children.map(minor => {
+                    if (!minor || !minor.id) return '';
+                    const minorId = escapeAttr(minor.id);
+                    const minorName = escapeHtml(minor.name || '');
+                    const minorCount = Number(minor.subsidy_count) || 0;
+                    return \`
+                    <label class="flex items-center gap-2 text-sm cursor-pointer hover:bg-gray-50 px-1 py-0.5 rounded">
+                      <input type="checkbox" value="\${minorId}" class="category-checkbox rounded text-green-600"
+                             onchange="updateFilterSelection('categories', '\${minorId}', this.checked)" />
+                      <span class="text-gray-700">\${minorName}</span>
+                      <span class="text-xs text-gray-400 ml-auto">\${minorCount}</span>
+                    </label>
+                  \`;
+                  }).join('')}
+                </div>
+              \` : ''}
+            </div>
+          \`;
+          }).join('');
+        }
+        
+        // 業種
+        const industryList = document.getElementById('industry-list');
+        const industriesData = safeGet(masterData, 'industries', []);
+        if (industryList && Array.isArray(industriesData)) {
+          industryList.innerHTML = industriesData.map(ind => {
+            if (!ind || !ind.id) return '';
+            const safeId = escapeAttr(ind.id);
+            const safeName = escapeHtml(ind.name_short || ind.name || '');
+            return \`
+            <label class="flex items-center gap-2 text-sm cursor-pointer hover:bg-gray-100 px-2 py-1 rounded border">
+              <input type="checkbox" value="\${safeId}" class="industry-checkbox rounded text-green-600"
+                     onchange="updateFilterSelection('industries', '\${safeId}', this.checked)" />
+              <span>\${safeName}</span>
+            </label>
+          \`;
+          }).join('');
+        }
+      }
+      
+      // フィルター選択更新
+      window.updateFilterSelection = function(type, value, checked) {
+        if (checked) {
+          if (!selectedFilters[type].includes(value)) {
+            selectedFilters[type].push(value);
+          }
+        } else {
+          selectedFilters[type] = selectedFilters[type].filter(v => v !== value);
+        }
+        updateFilterBadges();
+        updateActiveFiltersChips();
+      };
+      
+      // フィルターバッジ更新
+      function updateFilterBadges() {
+        const badges = {
+          'issuer-count-badge': selectedFilters.issuers.length,
+          'region-count-badge': selectedFilters.regions.length,
+          'category-count-badge': selectedFilters.categories.length,
+          'industry-count-badge': selectedFilters.industries.length,
+        };
+        
+        Object.keys(badges).forEach(id => {
+          const badge = document.getElementById(id);
+          if (badge) {
+            if (badges[id] > 0) {
+              badge.textContent = badges[id];
+              badge.classList.remove('hidden');
+            } else {
+              badge.classList.add('hidden');
+            }
+          }
+        });
+      }
+      
+      // アクティブフィルターチップ表示
+      function updateActiveFiltersChips() {
+        const container = document.getElementById('active-filters');
+        if (!container) return;
+        
+        const chips = [];
+        
+        // 各フィルタータイプごとにチップを生成
+        if (selectedFilters.issuers.length > 0) {
+          chips.push(\`<span class="px-2 py-1 bg-blue-100 text-blue-800 rounded-full">発行機関: \${selectedFilters.issuers.length}件</span>\`);
+        }
+        if (selectedFilters.regions.length > 0) {
+          chips.push(\`<span class="px-2 py-1 bg-green-100 text-green-800 rounded-full">地域: \${selectedFilters.regions.length}件</span>\`);
+        }
+        if (selectedFilters.categories.length > 0) {
+          chips.push(\`<span class="px-2 py-1 bg-purple-100 text-purple-800 rounded-full">カテゴリ: \${selectedFilters.categories.length}件</span>\`);
+        }
+        if (selectedFilters.industries.length > 0) {
+          chips.push(\`<span class="px-2 py-1 bg-orange-100 text-orange-800 rounded-full">業種: \${selectedFilters.industries.length}件</span>\`);
+        }
+        
+        container.innerHTML = chips.join('');
+      }
+      
+      // フィルターをクリア
+      window.clearAllFilters = function() {
+        selectedFilters = { issuers: [], regions: [], categories: [], industries: [] };
+        
+        // チェックボックスをすべて解除
+        document.querySelectorAll('.issuer-checkbox, .region-checkbox, .category-checkbox, .industry-checkbox')
+          .forEach(cb => cb.checked = false);
+        
+        updateFilterBadges();
+        updateActiveFiltersChips();
+      };
+      
+      // フィルター適用
+      window.applyFilters = function() {
+        // 現在は選択されたフィルターをログに出力（実際のフィルタリングは検索APIパラメータで行う）
+        console.log('Applied filters:', selectedFilters);
+        
+        // TODO: 検索APIにフィルターパラメータを渡す
+        // 現在のJグランツAPIは詳細フィルターをサポートしていないため、
+        // 将来的にsource_registry等から取得するデータに対してフィルタリングを行う
+        
+        // フィルターパネルを閉じる
+        const panel = document.getElementById('advanced-filter-panel');
+        const icon = document.getElementById('filter-toggle-icon');
+        panel.classList.add('hidden');
+        icon.classList.remove('rotate-180');
+        
+        // 検索を再実行（フィルターパラメータ付き）
+        if (currentResults.length > 0) {
+          displayPage = 1;
+          // クライアント側でフィルタリング（暫定実装）
+          // 将来的にはサーバー側でフィルタリング
+          renderResults(currentResults, { total: currentResults.length, source: 'cache (filtered)' });
+        } else {
+          searchSubsidies(1);
+        }
+      };
       
       // 初期化（window.apiが定義されるのを待つ）
       if (typeof window.api === 'function') {
