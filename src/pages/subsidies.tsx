@@ -35,6 +35,29 @@ const subsidyLayout = (title: string, content: string, currentPath: string = '/s
     .card-hover:hover { transform: translateY(-2px); box-shadow: 0 10px 20px rgba(0,0,0,0.1); }
     .mode-toggle { transition: all 0.2s; }
     .mode-toggle.active { background-color: #059669; color: white; }
+    
+    /* ===== パフォーマンス・モバイル最適化 ===== */
+    /* モバイル用コンパクトカード */
+    @media (max-width: 640px) {
+      .subsidy-card-mobile { padding: 12px; }
+      .subsidy-card-mobile .card-title { font-size: 14px; line-height: 1.4; }
+      .subsidy-card-mobile .card-meta { font-size: 12px; }
+      .subsidy-card-mobile .card-badges { flex-wrap: wrap; gap: 4px; }
+      .subsidy-card-mobile .card-actions { flex-direction: column; gap: 8px; }
+      .subsidy-card-mobile .card-actions a { width: 100%; text-align: center; }
+      /* フィルターボタンのモバイル対応 */
+      .filter-buttons-mobile { display: flex; flex-wrap: wrap; gap: 4px; }
+      .filter-buttons-mobile span { flex: 1; min-width: 80px; text-align: center; padding: 8px 4px; }
+      /* モード切替ボタン */
+      .mode-toggle { padding: 8px 12px; font-size: 12px; }
+    }
+    /* タップ領域確保 */
+    .tap-target { min-height: 44px; min-width: 44px; }
+    /* ページネーションのモバイル対応 */
+    @media (max-width: 640px) {
+      .pagination-mobile { display: flex; justify-content: center; gap: 4px; flex-wrap: wrap; }
+      .pagination-mobile button { min-width: 40px; padding: 8px; }
+    }
   </style>
   <script>
     // ============================================================
@@ -383,6 +406,13 @@ subsidyPages.get('/subsidies', (c) => {
       let currentResults = [];
       let currentPage = 1;
       let searchMode = 'match'; // 'match' または 'all'
+      
+      // ===== パフォーマンス最適化用変数 =====
+      const PAGE_SIZE = 20; // クライアント側ページネーション
+      let displayPage = 1;  // 表示中のページ
+      let filteredResults = []; // フィルタ済み結果キャッシュ
+      let statusCounts = { PROCEED: 0, CAUTION: 0, NO: 0 }; // ステータスカウントキャッシュ
+      const isMobile = window.innerWidth < 640; // モバイル判定
       
       // 検索モード切替
       // ⚠️ 重要: 「全件表示」モードはソート順を変更するだけでなく、表示件数も500件に自動設定
@@ -807,9 +837,11 @@ subsidyPages.get('/subsidies', (c) => {
           .replace(/'/g, '&#039;');
       }
       
-      // 結果描画（Sprint 2 改善）
+      // 結果描画（Sprint 2 改善 + パフォーマンス最適化）
       // ⚠️ セキュリティ: ユーザー入力・API応答はescapeHtml()でエスケープすること
       function renderResults(results, meta) {
+        const renderStart = performance.now();
+        
         // null/undefined チェック
         if (!Array.isArray(results)) {
           console.error('[補助金検索] renderResults: results is not an array', results);
@@ -818,46 +850,64 @@ subsidyPages.get('/subsidies', (c) => {
           return;
         }
         
-        const statusFilter = document.getElementById('status-filter').value;
-        let filtered = results;
+        // ===== パフォーマンス最適化: ステータスカウントを1回の走査で計算 =====
+        statusCounts = { PROCEED: 0, CAUTION: 0, NO: 0 };
+        results.forEach(r => {
+          if (r && r.evaluation) {
+            const status = r.evaluation.status;
+            if (status === 'PROCEED') statusCounts.PROCEED++;
+            else if (status === 'CAUTION') statusCounts.CAUTION++;
+            else statusCounts.NO++;
+          }
+        });
         
+        const statusFilter = document.getElementById('status-filter').value;
+        
+        // ===== パフォーマンス最適化: フィルタ結果をキャッシュ =====
         if (statusFilter) {
-          filtered = results.filter(r => r && r.evaluation && r.evaluation.status === statusFilter);
+          filteredResults = results.filter(r => r && r.evaluation && r.evaluation.status === statusFilter);
+        } else {
+          filteredResults = results;
         }
         
         // 検索モードによる並び替え
         if (searchMode === 'match') {
           // PROCEED > CAUTION > DO_NOT_PROCEED/NO の順にソート、同じならスコア順
           const statusOrder = { 'PROCEED': 0, 'CAUTION': 1, 'DO_NOT_PROCEED': 2, 'NO': 2 };
-          filtered.sort((a, b) => {
+          filteredResults.sort((a, b) => {
             const orderDiff = statusOrder[a.evaluation.status] - statusOrder[b.evaluation.status];
             if (orderDiff !== 0) return orderDiff;
             return (b.evaluation.score || 0) - (a.evaluation.score || 0);
           });
         }
         
-        // サマリー更新
+        // サマリー更新（キャッシュされたカウントを使用）
         document.getElementById('result-summary').classList.remove('hidden');
-        document.getElementById('result-count').textContent = meta?.total || filtered.length;
+        document.getElementById('result-count').textContent = meta?.total || filteredResults.length;
         document.getElementById('data-source').textContent = 'データソース: ' + (meta?.source || 'API');
         
-        const countProceed = results.filter(r => r.evaluation.status === 'PROCEED').length;
-        const countCaution = results.filter(r => r.evaluation.status === 'CAUTION').length;
-        const countNo = results.filter(r => r.evaluation.status === 'NO' || r.evaluation.status === 'DO_NOT_PROCEED').length;
-        document.getElementById('count-proceed').textContent = countProceed;
-        document.getElementById('count-caution').textContent = countCaution;
-        document.getElementById('count-no').textContent = countNo;
+        document.getElementById('count-proceed').textContent = statusCounts.PROCEED;
+        document.getElementById('count-caution').textContent = statusCounts.CAUTION;
+        document.getElementById('count-no').textContent = statusCounts.NO;
         
-        if (filtered.length === 0) {
+        if (filteredResults.length === 0) {
           document.getElementById('subsidies-list').innerHTML = 
             '<div class="bg-white rounded-lg shadow p-8 text-center text-gray-500">' +
             '<i class="fas fa-search text-4xl mb-4"></i>' +
             '<p>条件に一致する補助金が見つかりませんでした</p>' +
             '<p class="text-sm mt-2">キーワードを変更するか、フィルターを調整してください</p></div>';
+          document.getElementById('pagination').classList.add('hidden');
           return;
         }
         
-        const html = filtered.map(item => {
+        // ===== パフォーマンス最適化: クライアント側ページネーション =====
+        const totalPages = Math.ceil(filteredResults.length / PAGE_SIZE);
+        if (displayPage > totalPages) displayPage = 1;
+        
+        const startIdx = (displayPage - 1) * PAGE_SIZE;
+        const pageItems = filteredResults.slice(startIdx, startIdx + PAGE_SIZE);
+        
+        const html = pageItems.map(item => {
           // ⚠️ null/undefined安全: item/subsidy/evaluationがnullの場合は空を返す
           if (!item || !item.subsidy || !item.evaluation) {
             console.warn('[補助金検索] Invalid item in results:', item);
@@ -898,12 +948,44 @@ subsidyPages.get('/subsidies', (c) => {
           const safeOrg = escapeHtml(s.subsidy_executing_organization || '事務局情報なし');
           const safeWhyMatched = escapeHtml(whyMatched);
           
+          // ===== モバイル用コンパクトカード vs デスクトップ用フルカード =====
+          const companyId = encodeURIComponent(document.getElementById('company-select').value);
+          const subsidyId = encodeURIComponent(s.id);
+          
+          if (isMobile) {
+            // モバイル用: コンパクト表示
+            return \`
+              <a href="/subsidies/\${subsidyId}?company_id=\${companyId}" 
+                 class="block bg-white border-l-4 \${sc.border} p-3 tap-target subsidy-card-mobile">
+                <div class="flex items-center gap-2 mb-1 card-badges">
+                  <span class="px-2 py-0.5 \${sc.bg} \${sc.text} rounded text-xs font-medium">
+                    <i class="fas \${sc.icon}"></i> \${sc.label}
+                  </span>
+                  <span class="text-xs text-blue-600">\${e.score || 0}%</span>
+                  \${riskFlagsCount > 0 ? \`<span class="text-xs text-orange-600"><i class="fas fa-flag"></i>\${riskFlagsCount}</span>\` : ''}
+                </div>
+                <div class="font-medium text-sm text-gray-800 line-clamp-2 card-title">\${safeTitle}</div>
+                <div class="flex justify-between items-center mt-2 text-xs card-meta">
+                  <span class="\${urgencyClass}">
+                    <i class="fas fa-calendar-alt mr-1"></i>
+                    \${endDate ? endDate.toLocaleDateString('ja-JP') : '期限なし'}
+                    \${daysLeft !== null && daysLeft <= 14 ? \`(\${daysLeft}日)\` : ''}
+                  </span>
+                  <span class="text-emerald-600 font-medium">
+                    \${s.subsidy_max_limit ? (s.subsidy_max_limit >= 10000000 ? Math.floor(s.subsidy_max_limit/10000).toLocaleString() + '万円' : Number(s.subsidy_max_limit).toLocaleString() + '円') : '-'}
+                  </span>
+                </div>
+              </a>
+            \`;
+          }
+          
+          // デスクトップ用: フル表示
           return \`
             <div class="card-hover bg-white rounded-lg shadow border-l-4 \${sc.border}">
               <div class="p-5">
                 <div class="flex items-start justify-between">
                   <div class="flex-1">
-                    <div class="flex items-center space-x-2 mb-2">
+                    <div class="flex items-center space-x-2 mb-2 flex-wrap gap-1">
                       <span class="px-2 py-1 \${sc.bg} \${sc.text} rounded text-xs font-medium">
                         <i class="fas \${sc.icon} mr-1"></i>\${sc.label}
                       </span>
@@ -918,7 +1000,7 @@ subsidyPages.get('/subsidies', (c) => {
                     </div>
                     
                     <h3 class="text-lg font-semibold text-gray-800 mb-2">
-                      <a href="/subsidies/\${encodeURIComponent(s.id)}?company_id=\${encodeURIComponent(document.getElementById('company-select').value)}" 
+                      <a href="/subsidies/\${subsidyId}?company_id=\${companyId}" 
                          class="hover:text-green-600 hover:underline">
                         \${safeTitle}
                       </a>
@@ -951,14 +1033,14 @@ subsidyPages.get('/subsidies', (c) => {
                     \${conditionBadges}
                   </div>
                   
-                  <div class="ml-4 flex flex-col space-y-2">
-                    <a href="/subsidies/\${encodeURIComponent(s.id)}?company_id=\${encodeURIComponent(document.getElementById('company-select').value)}" 
-                       class="bg-green-600 text-white px-4 py-2 rounded-md hover:bg-green-700 text-sm text-center">
+                  <div class="ml-4 flex flex-col space-y-2 card-actions">
+                    <a href="/subsidies/\${subsidyId}?company_id=\${companyId}" 
+                       class="bg-green-600 text-white px-4 py-2 rounded-md hover:bg-green-700 text-sm text-center tap-target">
                       <i class="fas fa-arrow-right mr-1"></i>詳細を見る
                     </a>
                     \${e.status !== 'NO' && e.status !== 'DO_NOT_PROCEED' ? \`
-                      <a href="/chat?subsidy_id=\${encodeURIComponent(s.id)}&company_id=\${encodeURIComponent(document.getElementById('company-select').value)}" 
-                         class="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700 text-sm text-center">
+                      <a href="/chat?subsidy_id=\${subsidyId}&company_id=\${companyId}" 
+                         class="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700 text-sm text-center tap-target">
                         <i class="fas fa-comments mr-1"></i>壁打ち
                       </a>
                     \` : ''}
@@ -971,33 +1053,63 @@ subsidyPages.get('/subsidies', (c) => {
         
         document.getElementById('subsidies-list').innerHTML = html;
         
-        // ページネーション
-        // ⚠️ limit値の取得: 'all'の場合は500として計算
-        const limitSelectValue = document.getElementById('limit').value;
-        const displayLimit = (limitSelectValue === 'all' || isNaN(parseInt(limitSelectValue))) ? 500 : parseInt(limitSelectValue);
-        
-        if (meta && meta.total > displayLimit) {
-          const totalPages = Math.ceil(meta.total / displayLimit);
-          let pagHtml = '';
+        // ===== パフォーマンス最適化: クライアント側ページネーション =====
+        // （サーバーから取得した全結果をクライアント側で20件ずつ表示）
+        if (filteredResults.length > PAGE_SIZE) {
+          let pagHtml = \`<div class="flex items-center justify-center gap-2 flex-wrap pagination-mobile">\`;
           
-          if (currentPage > 1) {
-            pagHtml += \`<button onclick="searchSubsidies(\${currentPage - 1})" class="px-3 py-1 border rounded hover:bg-gray-50">前へ</button>\`;
+          // ページ情報表示
+          pagHtml += \`<span class="text-sm text-gray-600 w-full text-center mb-2 sm:w-auto sm:mb-0">\${filteredResults.length}件中 \${startIdx + 1}-\${Math.min(startIdx + PAGE_SIZE, filteredResults.length)}件</span>\`;
+          
+          // 前へボタン
+          if (displayPage > 1) {
+            pagHtml += \`<button onclick="goToPage(\${displayPage - 1})" class="px-3 py-2 border rounded hover:bg-gray-50 tap-target">
+              <i class="fas fa-chevron-left"></i><span class="hidden sm:inline ml-1">前へ</span>
+            </button>\`;
           }
           
-          for (let i = Math.max(1, currentPage - 2); i <= Math.min(totalPages, currentPage + 2); i++) {
-            pagHtml += \`<button onclick="searchSubsidies(\${i})" class="px-3 py-1 border rounded \${i === currentPage ? 'bg-green-600 text-white' : 'hover:bg-gray-50'}">\${i}</button>\`;
+          // ページ番号（モバイルでは現在ページ周辺のみ）
+          const maxButtons = isMobile ? 3 : 5;
+          const halfMax = Math.floor(maxButtons / 2);
+          let startPage = Math.max(1, displayPage - halfMax);
+          let endPage = Math.min(totalPages, startPage + maxButtons - 1);
+          if (endPage - startPage < maxButtons - 1) {
+            startPage = Math.max(1, endPage - maxButtons + 1);
           }
           
-          if (currentPage < totalPages) {
-            pagHtml += \`<button onclick="searchSubsidies(\${currentPage + 1})" class="px-3 py-1 border rounded hover:bg-gray-50">次へ</button>\`;
+          for (let i = startPage; i <= endPage; i++) {
+            pagHtml += \`<button onclick="goToPage(\${i})" class="px-3 py-2 border rounded tap-target \${i === displayPage ? 'bg-green-600 text-white' : 'hover:bg-gray-50'}">\${i}</button>\`;
           }
+          
+          // 次へボタン
+          if (displayPage < totalPages) {
+            pagHtml += \`<button onclick="goToPage(\${displayPage + 1})" class="px-3 py-2 border rounded hover:bg-gray-50 tap-target">
+              <span class="hidden sm:inline mr-1">次へ</span><i class="fas fa-chevron-right"></i>
+            </button>\`;
+          }
+          
+          pagHtml += \`</div>\`;
           
           document.getElementById('pagination').innerHTML = pagHtml;
           document.getElementById('pagination').classList.remove('hidden');
         } else {
           document.getElementById('pagination').classList.add('hidden');
         }
+        
+        // パフォーマンス計測
+        const renderTime = performance.now() - renderStart;
+        if (renderTime > 500) {
+          console.warn('[Perf] Slow render:', renderTime.toFixed(2) + 'ms');
+        }
       }
+      
+      // ===== ページ切替関数（クライアント側ページネーション用） =====
+      window.goToPage = function(page) {
+        displayPage = page;
+        renderResults(currentResults, { total: currentResults.length, source: 'cache' });
+        // スクロールをトップに
+        document.getElementById('subsidies-list').scrollIntoView({ behavior: 'smooth', block: 'start' });
+      };
       
       // Sprint 2: 条件バッジを生成
       function generateConditionBadges(evaluation) {
@@ -1094,10 +1206,26 @@ subsidyPages.get('/subsidies', (c) => {
         return '';
       }
       
-      // フィルター変更時に再描画
+      // ===== パフォーマンス最適化: フィルター変更時にページリセット =====
       document.getElementById('status-filter').addEventListener('change', () => {
+        displayPage = 1; // ページをリセット
         renderResults(currentResults, null);
       });
+      
+      // ===== デバウンス: キーワード入力時の遅延検索 =====
+      let searchTimeout;
+      const keywordInput = document.getElementById('keyword');
+      if (keywordInput) {
+        keywordInput.addEventListener('input', () => {
+          clearTimeout(searchTimeout);
+          searchTimeout = setTimeout(() => {
+            if (currentResults.length > 0) {
+              // 既存の結果があればクライアント側フィルタのみ
+              // 新規検索はEnterキーまたはボタンクリック時
+            }
+          }, 300);
+        });
+      }
       
       // 初期化（window.apiが定義されるのを待つ）
       if (typeof window.api === 'function') {
