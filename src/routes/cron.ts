@@ -50,8 +50,13 @@ cron.post('/sync-jgrants', async (c) => {
   }
   
   try {
-    // 凍結キーワードセット（データ収集パイプライン v1.2）
-    // 目標: 500件以上の補助金データを収集
+    // =====================================================================
+    // 凍結キーワードセット（データ収集パイプライン v1.3）
+    // Phase1-1: 500件達成を目標
+    // 
+    // 変更履歴:
+    // v1.2 -> v1.3: 受付終了分も取得（acceptance='0'を追加）
+    // =====================================================================
     const KEYWORDS = [
       // 基本キーワード（汎用性が高く、多くの補助金をカバー）
       '補助金',
@@ -125,77 +130,96 @@ cron.post('/sync-jgrants', async (c) => {
     const seenIds = new Set<string>();
     const errors: string[] = [];
     
-    for (const keyword of KEYWORDS) {
-      try {
-        const params = new URLSearchParams({
-          keyword,
-          sort: 'acceptance_end_datetime',
-          order: 'DESC',
-          acceptance: '1',
-          limit: '200',
-        });
-        
-        console.log(`Cron sync: keyword=${keyword}`);
-        
-        const response = await fetch(`${JGRANTS_API_URL}?${params.toString()}`, {
-          method: 'GET',
-          headers: { 'Accept': 'application/json' },
-        });
-        
-        if (!response.ok) {
-          errors.push(`${keyword}: API ${response.status}`);
-          continue;
-        }
-        
-        const data = await response.json() as any;
-        const subsidies = data.result || data.subsidies || data.data || [];
-        
-        // 重複排除
-        const uniqueSubsidies = subsidies.filter((s: any) => {
-          if (seenIds.has(s.id)) return false;
-          seenIds.add(s.id);
-          return true;
-        });
-        
-        if (uniqueSubsidies.length > 0) {
-          const statements = uniqueSubsidies.map((s: any) => 
-            db.prepare(`
-              INSERT OR REPLACE INTO subsidy_cache 
-              (id, source, title, subsidy_max_limit, subsidy_rate,
-               target_area_search, target_industry, target_number_of_employees,
-               acceptance_start_datetime, acceptance_end_datetime, request_reception_display_flag,
-               cached_at, expires_at)
-              VALUES (?, 'jgrants', ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?)
-            `).bind(
-              s.id,
-              s.title || s.name || '',
-              s.subsidy_max_limit || null,
-              s.subsidy_rate || null,
-              s.target_area_search || null,
-              s.target_industry || null,
-              s.target_number_of_employees || null,
-              s.acceptance_start_datetime || null,
-              s.acceptance_end_datetime || null,
-              s.request_reception_display_flag ?? 1,
-              expiresAt
-            )
-          );
+    // Phase1-1改善: 受付中と受付終了の両方を取得
+    const acceptanceFlags = ['1', '0']; // 1=受付中, 0=受付終了
+    
+    for (const acceptance of acceptanceFlags) {
+      for (const keyword of KEYWORDS) {
+        try {
+          const params = new URLSearchParams({
+            keyword,
+            sort: 'acceptance_end_datetime',
+            order: 'DESC',
+            acceptance,
+            limit: '200',
+          });
           
-          // D1バッチ実行（100件ごと）
-          for (let i = 0; i < statements.length; i += 100) {
-            const batch = statements.slice(i, i + 100);
-            await db.batch(batch);
+          console.log(`Cron sync: keyword=${keyword}, acceptance=${acceptance}`);
+          
+          const response = await fetch(`${JGRANTS_API_URL}?${params.toString()}`, {
+            method: 'GET',
+            headers: { 'Accept': 'application/json' },
+          });
+          
+          if (!response.ok) {
+            errors.push(`${keyword}(acc=${acceptance}): API ${response.status}`);
+            continue;
           }
+          
+          const data = await response.json() as any;
+          const subsidies = data.result || data.subsidies || data.data || [];
+          
+          // 重複排除
+          const uniqueSubsidies = subsidies.filter((s: any) => {
+            if (seenIds.has(s.id)) return false;
+            seenIds.add(s.id);
+            return true;
+          });
+          
+          if (uniqueSubsidies.length > 0) {
+            const statements = uniqueSubsidies.map((s: any) => {
+              // detail_json に元データを保存（Phase1-2でOCR/抽出時に使用）
+              const detailJson = JSON.stringify({
+                subsidy_application_url: s.subsidy_application_url || null,
+                subsidy_application_address: s.subsidy_application_address || null,
+                target_detail: s.target_detail || null,
+                usage_detail: s.usage_detail || null,
+                subsidy_rate_detail: s.subsidy_rate_detail || null,
+                subsidy_max_limit_detail: s.subsidy_max_limit_detail || null,
+                acceptance_number_detail: s.acceptance_number_detail || null,
+                contact: s.contact || null,
+                crawled_at: new Date().toISOString(),
+              });
+              
+              return db.prepare(`
+                INSERT OR REPLACE INTO subsidy_cache 
+                (id, source, title, subsidy_max_limit, subsidy_rate,
+                 target_area_search, target_industry, target_number_of_employees,
+                 acceptance_start_datetime, acceptance_end_datetime, request_reception_display_flag,
+                 detail_json, cached_at, expires_at)
+                VALUES (?, 'jgrants', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?)
+              `).bind(
+                s.id,
+                s.title || s.name || '',
+                s.subsidy_max_limit || null,
+                s.subsidy_rate || null,
+                s.target_area_search || null,
+                s.target_industry || null,
+                s.target_number_of_employees || null,
+                s.acceptance_start_datetime || null,
+                s.acceptance_end_datetime || null,
+                s.request_reception_display_flag ?? (acceptance === '1' ? 1 : 0),
+                detailJson,
+                expiresAt
+              );
+            });
+            
+            // D1バッチ実行（100件ごと）
+            for (let i = 0; i < statements.length; i += 100) {
+              const batch = statements.slice(i, i + 100);
+              await db.batch(batch);
+            }
+          }
+          
+          totalFetched += subsidies.length;
+          totalInserted += uniqueSubsidies.length;
+          
+          // レート制限対策: 300ms待機
+          await new Promise(resolve => setTimeout(resolve, 300));
+          
+        } catch (err) {
+          errors.push(`${keyword}(acc=${acceptance}): ${String(err)}`);
         }
-        
-        totalFetched += subsidies.length;
-        totalInserted += uniqueSubsidies.length;
-        
-        // レート制限対策: 300ms待機
-        await new Promise(resolve => setTimeout(resolve, 300));
-        
-      } catch (err) {
-        errors.push(`${keyword}: ${String(err)}`);
       }
     }
     
