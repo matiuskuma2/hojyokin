@@ -3,28 +3,29 @@
 ## 📋 プロジェクト概要
 
 - **Name**: subsidy-matching (hojyokin)
-- **Version**: 1.4.8
+- **Version**: 1.5.4
 - **Goal**: 企業情報を登録するだけで、最適な補助金・助成金を自動でマッチング＆申請書ドラフト作成
 
-### 最新アップデート (v1.4.8) - UI/UX改善 + JavaScript修正
+### 最新アップデート (v1.5.4) - API修正 + モックデータフォールバック
 
 **機能改善とバグフィックス:**
 
-1. **JavaScript スコープ問題の修正**
-   - `searchSubsidies` と `setSearchMode` をグローバルスコープに登録
-   - HTML `onclick` 属性からの関数呼び出しを修正
+1. **管理画面・詳細ページの `api is not defined` 修正**
+   - `window.api` を `<head>` 内で先に定義
+   - admin.tsx / subsidies.tsx 両方に適用
 
-2. **ナビゲーション順序の固定化**
-   - ダッシュボード → 補助金を探す → 会社情報 の順序を固定
-   - 現在のページのみ緑色（下線付き）で表示
+2. **壁打ちチャットAPIのモックデータフォールバック**
+   - `subsidy_cache` にデータがない場合、`getMockSubsidyDetail()` から取得
+   - `/api/chat/precheck` と `/api/chat/sessions` 両方に適用
+   - `precheck.subsidy_info` が正しく含まれるようになった
 
-3. **不要なポップアップの削除**
-   - ダッシュボードからの遷移時のアラートを削除
-   - 会社情報チェックは `/subsidies` ページ内で実施
+3. **precheck UIの null/undefined ガード処理**
+   - `precheck && precheck.status` による安全なチェック
+   - `blocked_reasons` / `missing_items` の null/undefined ガード
 
-4. **会社API修正**
-   - `company_memberships` → `user_companies` テーブルに変更
-   - ユーザーと会社の関連付けを正しく取得
+4. **モックデータの整備**
+   - MOCK-001〜010 の補助金データ
+   - 検索・壁打ち・ドラフト生成で使用可能
 
 ### 設計思想
 
@@ -416,17 +417,19 @@ webapp/
 
 ### 優先度: 高
 
-1. **会社選択ドロップダウンの表示確認**
-   - API `/api/companies` のレスポンス確認
-   - `user_companies` テーブルの関連付け確認
-
-2. **Consumer の安定稼働**
+1. **Consumer Worker の安定稼働**
    - Firecrawl タイムアウトの監視
    - ドメインブロックの適切な設定
+   - クロール結果の subsidy_cache への保存
 
-3. **L2 実稼働の緑化**
-   - 直近24時間の done/failed カウント増加
-   - Prefecture の定期クロール確認
+2. **データ収集パイプラインの本格稼働**
+   - `subsidy_cache` へのデータ格納（現在0件）
+   - `eligibility_rules` へのルール格納（現在0件）
+   - L2 実稼働の緑化（直近24時間の done/failed カウント増加）
+
+3. **L3 網羅性の向上**
+   - source_registry からのデータ取得
+   - 都道府県サイトのクロール結果からデータ抽出・正規化
 
 ### 優先度: 中
 
@@ -436,8 +439,20 @@ webapp/
    - DRAFT_GENERATED イベントの記録
 
 2. **UI/UX 改善**
+   - Tailwind CSS CDN からビルド済みCSSへの移行
    - モバイル対応の強化
    - アクセシビリティ向上
+
+### 現状のデータ状況
+
+| 項目 | 件数 | 備考 |
+|------|------|------|
+| 補助金検索結果 | 7件 | MOCK データ（モード: mock）|
+| subsidy_cache | 0件 | データ未格納（DB） |
+| eligibility_rules | 0件 | ルール未格納（DB） |
+| crawl_queue (done) | 48件 | クロール完了 |
+| crawl_queue (failed) | 14件 | 失敗（リトライ対象） |
+| source_registry | 47 + 13 | 都道府県 + national |
 
 ---
 
@@ -449,6 +464,10 @@ Private
 
 ## 🔄 更新履歴
 
+- **2026-01-23 (v1.5.4)**: 壁打ちチャットAPIでセッション作成時のモックフォールバック追加
+- **2026-01-23 (v1.5.3)**: 壁打ちチャットAPIでモックデータフォールバック取得を追加
+- **2026-01-23 (v1.5.2)**: 管理画面の `api is not defined` 修正、window.api を head で定義
+- **2026-01-23 (v1.5.1)**: 詳細ページ・壁打ちページの `api is not defined` 修正
 - **2026-01-23 (v1.4.8)**: UI/UX改善: JavaScriptスコープ問題修正、ナビゲーション順序固定、不要なポップアップ削除、会社API修正
 - **2026-01-22 (v1.4.7)**: JavaScriptスコープ問題の修正（searchSubsidies, setSearchMode をグローバル化）、ナビゲーション動的スタイル実装
 - **2026-01-22 (v1.4.6)**: 会社API修正（company_memberships → user_companies）、会社選択ドロップダウンの表示修正
