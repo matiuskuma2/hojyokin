@@ -140,7 +140,14 @@ curl -s "https://hojyokin.pages.dev/api/admin/sync-jgrants" \
 
 ### Cron/Consumer Workers
 
-- **Cron Worker**: https://hojyokin-cron.sekiyadubai.workers.dev
+- **Feed Cron Worker**: https://hojyokin-cron-feed.sekiyadubai.workers.dev (**NEW - P2**)
+  - スケジュール: 毎日 06:00 JST (UTC 21:00)
+  - `/health` - ヘルスチェック
+  - `/runs` - 直近10件のCron実行履歴
+  - `POST /trigger` - 手動トリガー（X-Cron-Secret必須）
+  - 責務: 東京しごと財団スクレイピング → subsidy_feed_items → cron_runs
+
+- **Cron Worker (legacy)**: https://hojyokin-cron.sekiyadubai.workers.dev
   - `/cron/run?limitRegistry=200&limitLifecycle=50` - 手動実行
 - **Consumer Worker**: https://hojyokin-consumer.sekiyadubai.workers.dev
   - `/consumer/run?batch=10` - 手動実行
@@ -239,7 +246,12 @@ npx wrangler pages deploy dist --project-name hojyokin
 ### 8. Cron/Consumer Workers のデプロイ
 
 ```bash
-# Cron Worker
+# Feed Cron Worker (P2 新規)
+cd /home/user/hojyokin-cron-feed
+npm install
+npx wrangler deploy
+
+# Legacy Cron Worker
 cd /home/user/hojyokin-cron
 npm install
 npx wrangler deploy
