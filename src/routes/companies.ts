@@ -124,7 +124,6 @@ companies.post('/', async (c) => {
     }
     
     const companyId = uuidv4();
-    const membershipId = uuidv4();
     const now = new Date().toISOString();
     const employeeBand = calculateEmployeeBand(body.employee_count);
     
@@ -153,10 +152,11 @@ companies.post('/', async (c) => {
         now,
         now
       ),
+      // user_companies: 複合主キー(user_id, company_id)、role は必須、is_primary はデフォルト0
       db.prepare(`
-        INSERT INTO user_companies (id, user_id, company_id, created_at)
-        VALUES (?, ?, ?, ?)
-      `).bind(membershipId, user.id, companyId, now),
+        INSERT INTO user_companies (user_id, company_id, role, is_primary, joined_at)
+        VALUES (?, ?, 'owner', 1, ?)
+      `).bind(user.id, companyId, now),
     ];
     
     await db.batch(statements);
