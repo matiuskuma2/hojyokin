@@ -99,8 +99,12 @@ app.route('/api/consumer', consumerRoutes);
 // KPIルート（監視・統計）
 app.route('/api/kpi', kpiRoutes);
 
-// 管理者ルート（U2）
+// 管理者ルート（U2: ユーザー管理、監査ログ、JGrants同期）
 app.route('/api/admin', adminRoutes);
+
+// 管理ダッシュボードAPI（KPI / コスト / 更新状況 / 運用系）
+// 注: /api/admin-ops に分離して競合を回避
+app.route('/api/admin-ops', adminDashboardRoutes);
 
 // プロフィールルート（会社プロフィール拡張）
 app.route('/api/profile', profileRoutes);
@@ -110,9 +114,6 @@ app.route('/api/chat', chatRoutes);
 
 // ドラフトルート（S4: 申請書ドラフト生成）
 app.route('/api/draft', draftRoutes);
-
-// 管理ダッシュボードAPI（KPI / コスト / 更新状況）
-app.route('/api/admin', adminDashboardRoutes);
 
 // Agency（士業）ルート
 app.route('/api/agency', agencyRoutes);

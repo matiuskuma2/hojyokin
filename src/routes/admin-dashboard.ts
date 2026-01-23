@@ -1,9 +1,15 @@
 /**
- * 管理者ダッシュボード API
+ * 管理者ダッシュボード API（運用系）
  * 
- * /api/admin/dashboard - KPI + キュー状況
- * /api/admin/costs - コスト集計（super_admin限定）
- * /api/admin/updates - 更新状況一覧
+ * 注: /api/admin-ops にマウント（/api/admin との競合回避）
+ * 
+ * /api/admin-ops/dashboard - KPI + キュー状況
+ * /api/admin-ops/costs - コスト集計（super_admin限定）
+ * /api/admin-ops/updates - 更新状況一覧
+ * /api/admin-ops/agency-kpi - Agency KPI（super_admin限定）
+ * /api/admin-ops/data-freshness - データ鮮度
+ * /api/admin-ops/alerts - アラート
+ * /api/admin-ops/ops/* - 運用操作系
  */
 
 import { Hono } from 'hono';
