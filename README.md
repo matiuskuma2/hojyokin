@@ -3,12 +3,34 @@
 ## 📋 プロジェクト概要
 
 - **Name**: subsidy-matching (hojyokin)
-- **Version**: 1.5.4
+- **Version**: 1.6.0
 - **Goal**: 企業情報を登録するだけで、最適な補助金・助成金を自動でマッチング＆申請書ドラフト作成
 
-### 最新アップデート (v1.5.4) - API修正 + モックデータフォールバック
+### 🎉 最新アップデート (v1.6.0) - Phase B完了: 実データによる補助金検索
 
-**機能改善とバグフィックス:**
+**Phase B: 実データ収集パイプライン稼働開始**
+
+| 項目 | 状態 |
+|------|------|
+| subsidy_cache | ✅ 8件（実データ） |
+| JGRANTS_MODE | `cached-only`（モック依存解除） |
+| 検索API | ✅ 実データから検索・評価 |
+| 壁打ちAPI | ✅ 実データでprecheck動作 |
+
+**登録済み補助金（REAL-001〜008）:**
+1. IT導入補助金2025（通常枠A・B類型）
+2. 令和6年度補正 ものづくり補助金
+3. 小規模事業者持続化補助金（一般型）第17回
+4. 事業再構築補助金（第13回公募）
+5. 業務改善助成金
+6. 省エネルギー投資促進支援事業費補助金
+7. 東京都中小企業デジタル化支援助成事業
+8. 大阪府DX推進支援補助金
+
+### 過去アップデート
+
+<details>
+<summary>v1.5.4 - API修正 + モックデータフォールバック</summary>
 
 1. **管理画面・詳細ページの `api is not defined` 修正**
    - `window.api` を `<head>` 内で先に定義
@@ -17,15 +39,11 @@
 2. **壁打ちチャットAPIのモックデータフォールバック**
    - `subsidy_cache` にデータがない場合、`getMockSubsidyDetail()` から取得
    - `/api/chat/precheck` と `/api/chat/sessions` 両方に適用
-   - `precheck.subsidy_info` が正しく含まれるようになった
 
 3. **precheck UIの null/undefined ガード処理**
-   - `precheck && precheck.status` による安全なチェック
-   - `blocked_reasons` / `missing_items` の null/undefined ガード
 
-4. **モックデータの整備**
-   - MOCK-001〜010 の補助金データ
-   - 検索・壁打ち・ドラフト生成で使用可能
+4. **モックデータの整備**（MOCK-001〜010）
+</details>
 
 ### 設計思想
 
