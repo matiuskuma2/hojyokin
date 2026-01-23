@@ -29,13 +29,33 @@ CREATE INDEX IF NOT EXISTS idx_crawl_job_queue
 ON crawl_job(status, priority, created_at);
 
 -- crawl_stats テーブル作成（KPI記録用）
+-- 注: 0099_reconcile_schema.sql でより詳細なスキーマで作成されるため、
+-- ここでは IF NOT EXISTS で安全にスキップされる
 CREATE TABLE IF NOT EXISTS crawl_stats (
   id TEXT PRIMARY KEY,
-  stat_day TEXT NOT NULL,         -- date('now') 形式
-  metric TEXT NOT NULL,           -- 'cron_jobs_enqueued', 'crawl_success', 'crawl_error' 等
-  value INTEGER NOT NULL DEFAULT 0,
+  stat_date TEXT NOT NULL,        -- date('now') 形式（stat_dayからstat_dateに統一）
+  stat_hour INTEGER,              -- hour (0-23)
+  total_requests INTEGER DEFAULT 0,
+  success_count INTEGER DEFAULT 0,
+  failure_count INTEGER DEFAULT 0,
+  blocked_count INTEGER DEFAULT 0,
+  error_502_count INTEGER DEFAULT 0,
+  error_403_count INTEGER DEFAULT 0,
+  error_timeout_count INTEGER DEFAULT 0,
+  error_other_count INTEGER DEFAULT 0,
+  total_pages INTEGER DEFAULT 0,
+  total_bytes INTEGER DEFAULT 0,
+  avg_response_time_ms INTEGER,
+  extract_count INTEGER DEFAULT 0,
+  extract_success_count INTEGER DEFAULT 0,
+  missing_required_fields_count INTEGER DEFAULT 0,
+  needs_review_count INTEGER DEFAULT 0,
+  estimated_firecrawl_credits REAL DEFAULT 0,
+  estimated_llm_tokens INTEGER DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
-CREATE INDEX IF NOT EXISTS idx_crawl_stats_day_metric 
-ON crawl_stats(stat_day, metric);
+CREATE INDEX IF NOT EXISTS idx_crawl_stats_date 
+ON crawl_stats(stat_date);
+CREATE INDEX IF NOT EXISTS idx_crawl_stats_date_hour 
+ON crawl_stats(stat_date, stat_hour);

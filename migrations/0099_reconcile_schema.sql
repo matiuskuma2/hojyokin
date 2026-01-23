@@ -2,6 +2,7 @@
 -- Migration: 0099_reconcile_schema.sql
 -- Purpose: 本番DBスキーマとの整合性を確保する reconcile マイグレーション
 -- Date: 2026-01-22
+-- Updated: 2026-01-23 (FK制約問題修正)
 -- =====================================================
 -- 
 -- 設計原則:
@@ -11,10 +12,16 @@
 -- 4. 手動 ALTER が混在していた問題を吸収
 --
 -- 使用方法:
--- ローカル: npx wrangler d1 migrations apply DB --local
--- 本番:     npx wrangler d1 migrations apply DB --remote
+-- ローカル: npx wrangler d1 execute DB --local --file=migrations/0099_reconcile_schema.sql
+-- 本番:     npx wrangler d1 execute DB --remote --file=migrations/0099_reconcile_schema.sql
+--
+-- 注意: wrangler d1 migrations apply ではなく --file で直接実行を推奨
+--       （他のマイグレーションとの競合を避けるため）
 --
 -- =====================================================
+
+-- 外部キー制約を一時的に無効化（テーブル作成順序の問題を回避）
+PRAGMA foreign_keys=OFF;
 
 -- =====================================================
 -- PHASE 1: 基本テーブル（0001_initial_schema.sql 相当）
@@ -247,7 +254,62 @@ CREATE INDEX IF NOT EXISTS idx_domain_policy_enabled ON domain_policy(enabled);
 CREATE INDEX IF NOT EXISTS idx_domain_policy_blocked ON domain_policy(blocked_until);
 
 -- =====================================================
--- PHASE 3: Crawl Queue (0008, 0009 相当)
+-- PHASE 3-A: Crawl Job (0003, 0007 相当)
+-- =====================================================
+
+CREATE TABLE IF NOT EXISTS crawl_job (
+  job_id TEXT PRIMARY KEY,
+  url_id TEXT,                                       -- NULLable for registry-based crawls
+  subsidy_id TEXT,                                   -- NULLable
+  job_type TEXT NOT NULL DEFAULT 'scrape',           -- 'scrape' | 'crawl' | 'extract' | 'pdf_convert' | 'JOB_REGISTRY_CRAWL' | 'JOB_SUBSIDY_CHECK'
+  status TEXT NOT NULL DEFAULT 'pending',            -- 'pending' | 'processing' | 'completed' | 'failed' | 'skipped'
+  progress INTEGER DEFAULT 0,
+  started_at TEXT,
+  completed_at TEXT,
+  error_message TEXT,
+  retry_count INTEGER DEFAULT 0,
+  max_retries INTEGER DEFAULT 3,
+  payload TEXT,                                      -- JSON
+  root_url TEXT,                                     -- for source_registry crawls
+  source_registry_id TEXT,
+  priority INTEGER DEFAULT 3,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_crawl_job_status ON crawl_job(status);
+CREATE INDEX IF NOT EXISTS idx_crawl_job_type ON crawl_job(job_type);
+CREATE INDEX IF NOT EXISTS idx_crawl_job_cron_dedup ON crawl_job(job_type, root_url, status, created_at);
+CREATE INDEX IF NOT EXISTS idx_crawl_job_queue ON crawl_job(status, priority, created_at);
+
+-- Crawl Stats (KPI記録用)
+CREATE TABLE IF NOT EXISTS crawl_stats (
+  id TEXT PRIMARY KEY,
+  stat_date TEXT NOT NULL,                           -- date('now') 形式
+  stat_hour INTEGER,                                 -- hour (0-23)
+  total_requests INTEGER DEFAULT 0,
+  success_count INTEGER DEFAULT 0,
+  failure_count INTEGER DEFAULT 0,
+  blocked_count INTEGER DEFAULT 0,
+  error_502_count INTEGER DEFAULT 0,
+  error_403_count INTEGER DEFAULT 0,
+  error_timeout_count INTEGER DEFAULT 0,
+  error_other_count INTEGER DEFAULT 0,
+  total_pages INTEGER DEFAULT 0,
+  total_bytes INTEGER DEFAULT 0,
+  avg_response_time_ms INTEGER,
+  extract_count INTEGER DEFAULT 0,
+  extract_success_count INTEGER DEFAULT 0,
+  missing_required_fields_count INTEGER DEFAULT 0,
+  needs_review_count INTEGER DEFAULT 0,
+  estimated_firecrawl_credits REAL DEFAULT 0,
+  estimated_llm_tokens INTEGER DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_crawl_stats_date ON crawl_stats(stat_date);
+CREATE INDEX IF NOT EXISTS idx_crawl_stats_date_hour ON crawl_stats(stat_date, stat_hour);
+
+-- =====================================================
+-- PHASE 3-B: Crawl Queue (0008, 0009 相当)
 -- =====================================================
 
 CREATE TABLE IF NOT EXISTS crawl_queue (
@@ -895,6 +957,9 @@ INSERT OR IGNORE INTO alert_rules (id, name, description, metric, operator, thre
   ('alert_error_rate', 'エラー率上昇', 'クロールエラー率が20%を超えた場合', 'crawl_error_rate', 'gt', 0.2, 60, 'log', 1),
   ('alert_stale_data', 'データ鮮度低下', '24時間以上更新がないソースがある場合', 'stale_sources_count', 'gt', 0, 1440, 'log', 1),
   ('alert_queue_depth', 'キュー滞留', '待機キューが1000件を超えた場合', 'queue_pending_count', 'gt', 1000, 30, 'log', 1);
+
+-- 外部キー制約を有効化
+PRAGMA foreign_keys=ON;
 
 -- =====================================================
 -- END OF RECONCILE MIGRATION
