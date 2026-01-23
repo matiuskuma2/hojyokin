@@ -1624,175 +1624,258 @@ agencyRoutes.get('/dashboard-v2', async (c) => {
     .map((r: any) => r.prefecture)
     .filter((p: string) => p && p.length === 2);
   
-  // ===== 2. NEWSフィード取得（カテゴリ別） =====
+  // ===== 2. NEWSフィード取得（カテゴリ別、堅牢化） =====
   const newsLimit = 10;
   
   // 2-1. プラットフォームお知らせ
-  const platformNews = await db.prepare(`
-    SELECT id, title, url, summary, published_at, detected_at, event_type, priority
-    FROM subsidy_feed_items
-    WHERE source_type = 'platform'
-    AND (expires_at IS NULL OR expires_at > datetime('now'))
-    ORDER BY priority DESC, detected_at DESC
-    LIMIT ?
-  `).bind(newsLimit).all();
+  let platformNews: any = { results: [] };
+  try {
+    platformNews = await db.prepare(`
+      SELECT id, title, url, summary, published_at, detected_at, event_type, priority
+      FROM subsidy_feed_items
+      WHERE source_type = 'platform'
+      AND (expires_at IS NULL OR expires_at > datetime('now'))
+      ORDER BY priority DESC, detected_at DESC
+      LIMIT ?
+    `).bind(newsLimit).all();
+  } catch (e) {
+    console.error('[dashboard-v2] platformNews error:', e);
+  }
   
   // 2-2. 新着支援情報サマリー
-  const supportInfoNews = await db.prepare(`
-    SELECT id, title, url, summary, published_at, detected_at, event_type, tags_json
-    FROM subsidy_feed_items
-    WHERE source_type = 'support_info'
-    AND (expires_at IS NULL OR expires_at > datetime('now'))
-    ORDER BY detected_at DESC
-    LIMIT ?
-  `).bind(newsLimit).all();
-  
-  // 2-3. 都道府県NEWS（顧客所在地優先）
-  let prefectureNews: any = { results: [] };
-  if (prefCodes.length > 0) {
-    // 顧客所在地の都道府県を優先
-    const placeholders = prefCodes.map(() => '?').join(',');
-    prefectureNews = await db.prepare(`
-      SELECT id, title, url, summary, published_at, detected_at, event_type, 
-             region_prefecture, tags_json
+  let supportInfoNews: any = { results: [] };
+  try {
+    supportInfoNews = await db.prepare(`
+      SELECT id, title, url, summary, published_at, detected_at, event_type, tags_json
       FROM subsidy_feed_items
-      WHERE source_type = 'prefecture'
-      AND (region_prefecture IN (${placeholders}) OR region_prefecture = '00')
-      AND (expires_at IS NULL OR expires_at > datetime('now'))
-      ORDER BY 
-        CASE WHEN region_prefecture IN (${placeholders}) THEN 0 ELSE 1 END,
-        detected_at DESC
-      LIMIT ?
-    `).bind(...prefCodes, ...prefCodes, newsLimit * 2).all();
-  } else {
-    // 顧客なしの場合は全国分を表示
-    prefectureNews = await db.prepare(`
-      SELECT id, title, url, summary, published_at, detected_at, event_type,
-             region_prefecture, tags_json
-      FROM subsidy_feed_items
-      WHERE source_type = 'prefecture'
+      WHERE source_type = 'support_info'
       AND (expires_at IS NULL OR expires_at > datetime('now'))
       ORDER BY detected_at DESC
       LIMIT ?
-    `).bind(newsLimit * 2).all();
+    `).bind(newsLimit).all();
+  } catch (e) {
+    console.error('[dashboard-v2] supportInfoNews error:', e);
+  }
+  
+  // 2-3. 都道府県NEWS（顧客所在地優先）
+  let prefectureNews: any = { results: [] };
+  try {
+    if (prefCodes.length > 0) {
+      // 顧客所在地の都道府県を優先
+      const placeholders = prefCodes.map(() => '?').join(',');
+      prefectureNews = await db.prepare(`
+        SELECT id, title, url, summary, published_at, detected_at, event_type, 
+               region_prefecture, tags_json
+        FROM subsidy_feed_items
+        WHERE source_type = 'prefecture'
+        AND (region_prefecture IN (${placeholders}) OR region_prefecture = '00')
+        AND (expires_at IS NULL OR expires_at > datetime('now'))
+        ORDER BY 
+          CASE WHEN region_prefecture IN (${placeholders}) THEN 0 ELSE 1 END,
+          detected_at DESC
+        LIMIT ?
+      `).bind(...prefCodes, ...prefCodes, newsLimit * 2).all();
+    } else {
+      // 顧客なしの場合は全国分を表示
+      prefectureNews = await db.prepare(`
+        SELECT id, title, url, summary, published_at, detected_at, event_type,
+               region_prefecture, tags_json
+        FROM subsidy_feed_items
+        WHERE source_type = 'prefecture'
+        AND (expires_at IS NULL OR expires_at > datetime('now'))
+        ORDER BY detected_at DESC
+        LIMIT ?
+      `).bind(newsLimit * 2).all();
+    }
+  } catch (e) {
+    console.error('[dashboard-v2] prefectureNews error:', e);
   }
   
   // 2-4. 省庁NEWS
-  const ministryNews = await db.prepare(`
-    SELECT id, title, url, summary, published_at, detected_at, event_type, source_key
-    FROM subsidy_feed_items
-    WHERE source_type = 'ministry'
-    AND (expires_at IS NULL OR expires_at > datetime('now'))
-    ORDER BY detected_at DESC
-    LIMIT ?
-  `).bind(newsLimit).all();
+  let ministryNews: any = { results: [] };
+  try {
+    ministryNews = await db.prepare(`
+      SELECT id, title, url, summary, published_at, detected_at, event_type, source_key
+      FROM subsidy_feed_items
+      WHERE source_type = 'ministry'
+      AND (expires_at IS NULL OR expires_at > datetime('now'))
+      ORDER BY detected_at DESC
+      LIMIT ?
+    `).bind(newsLimit).all();
+  } catch (e) {
+    console.error('[dashboard-v2] ministryNews error:', e);
+  }
   
   // 2-5. その他公的機関NEWS
-  const otherPublicNews = await db.prepare(`
-    SELECT id, title, url, summary, published_at, detected_at, event_type, source_key
-    FROM subsidy_feed_items
-    WHERE source_type = 'other_public'
-    AND (expires_at IS NULL OR expires_at > datetime('now'))
-    ORDER BY detected_at DESC
-    LIMIT ?
-  `).bind(newsLimit).all();
+  let otherPublicNews: any = { results: [] };
+  try {
+    otherPublicNews = await db.prepare(`
+      SELECT id, title, url, summary, published_at, detected_at, event_type, source_key
+      FROM subsidy_feed_items
+      WHERE source_type = 'other_public'
+      AND (expires_at IS NULL OR expires_at > datetime('now'))
+      ORDER BY detected_at DESC
+      LIMIT ?
+    `).bind(newsLimit).all();
+  } catch (e) {
+    console.error('[dashboard-v2] otherPublicNews error:', e);
+  }
   
   // ===== 3. 顧客おすすめ（suggestions） =====
-  // キャッシュから取得（なければ空）
-  const suggestions = await db.prepare(`
-    SELECT 
-      asc.agency_client_id,
-      asc.company_id,
-      ac.client_name,
-      c.name as company_name,
-      c.prefecture,
-      asc.subsidy_id,
-      asc.status,
-      asc.score,
-      asc.match_reasons_json,
-      asc.risk_flags_json,
-      asc.subsidy_title,
-      asc.subsidy_deadline,
-      asc.subsidy_max_limit,
-      asc.deadline_days,
-      asc.rank_in_client
-    FROM agency_suggestions_cache asc
-    JOIN agency_clients ac ON asc.agency_client_id = ac.id
-    JOIN companies c ON asc.company_id = c.id
-    WHERE asc.agency_id = ?
-    AND asc.rank_in_client <= 3
-    AND (asc.expires_at IS NULL OR asc.expires_at > datetime('now'))
-    ORDER BY ac.client_name, asc.rank_in_client
-    LIMIT 30
-  `).bind(agencyId).all();
+  // キャッシュから取得（なければ空、堅牢化）
+  let suggestions: any = { results: [] };
+  try {
+    suggestions = await db.prepare(`
+      SELECT 
+        asc.agency_client_id,
+        asc.company_id,
+        ac.client_name,
+        c.name as company_name,
+        c.prefecture,
+        asc.subsidy_id,
+        asc.status,
+        asc.score,
+        asc.match_reasons_json,
+        asc.risk_flags_json,
+        asc.subsidy_title,
+        asc.subsidy_deadline,
+        asc.subsidy_max_limit,
+        asc.deadline_days,
+        asc.rank_in_client
+      FROM agency_suggestions_cache asc
+      JOIN agency_clients ac ON asc.agency_client_id = ac.id
+      JOIN companies c ON asc.company_id = c.id
+      WHERE asc.agency_id = ?
+      AND asc.rank_in_client <= 3
+      AND (asc.expires_at IS NULL OR asc.expires_at > datetime('now'))
+      ORDER BY ac.client_name, asc.rank_in_client
+      LIMIT 30
+    `).bind(agencyId).all();
+  } catch (e) {
+    console.error('[dashboard-v2] suggestions error:', e);
+  }
   
-  // ===== 4. 未処理タスク =====
-  const [pendingIntakes, expiringLinks, draftsInProgress] = await Promise.all([
-    // 承認待ち入力
-    db.prepare(`
-      SELECT is_.id, is_.client_name, is_.submitted_at, al.token
+  // ===== 4. 未処理タスク（堅牢化: 各クエリを個別にtry-catch） =====
+  let pendingIntakes: any = { results: [] };
+  let expiringLinks: any = { results: [] };
+  let draftsInProgress: any = { results: [] };
+  
+  // 4-1. 承認待ち入力
+  try {
+    pendingIntakes = await db.prepare(`
+      SELECT 
+        is_.id, 
+        is_.created_at as submitted_at,
+        ac.client_name,
+        c.name as company_name,
+        al.short_code as link_code
       FROM intake_submissions is_
       JOIN access_links al ON is_.access_link_id = al.id
+      LEFT JOIN agency_clients ac ON is_.company_id = ac.company_id AND is_.agency_id = ac.agency_id
+      LEFT JOIN companies c ON is_.company_id = c.id
       WHERE is_.agency_id = ? AND is_.status = 'submitted'
-      ORDER BY is_.submitted_at DESC
+      ORDER BY is_.created_at DESC
       LIMIT 10
-    `).bind(agencyId).all(),
-    
-    // 期限切れ間近リンク（7日以内）
-    db.prepare(`
-      SELECT id, token, purpose, expires_at, client_name
-      FROM access_links
-      WHERE agency_id = ?
-      AND expires_at > datetime('now')
-      AND expires_at < datetime('now', '+7 days')
-      AND used_at IS NULL
-      ORDER BY expires_at ASC
+    `).bind(agencyId).all();
+  } catch (e) {
+    console.error('[dashboard-v2] pendingIntakes error:', e);
+  }
+  
+  // 4-2. 期限切れ間近リンク（7日以内）
+  try {
+    expiringLinks = await db.prepare(`
+      SELECT 
+        al.id, 
+        al.short_code,
+        al.type as link_type,
+        al.expires_at,
+        al.label,
+        ac.client_name,
+        c.name as company_name
+      FROM access_links al
+      LEFT JOIN agency_clients ac ON al.company_id = ac.company_id AND al.agency_id = ac.agency_id
+      LEFT JOIN companies c ON al.company_id = c.id
+      WHERE al.agency_id = ?
+        AND al.expires_at > datetime('now')
+        AND al.expires_at < datetime('now', '+7 days')
+        AND al.revoked_at IS NULL
+        AND (al.max_uses IS NULL OR al.used_count < al.max_uses)
+      ORDER BY al.expires_at ASC
       LIMIT 10
-    `).bind(agencyId).all(),
-    
-    // 進行中ドラフト
-    db.prepare(`
-      SELECT ad.id, ad.subsidy_id, ad.status, ad.updated_at, c.name as company_name, ac.client_name
+    `).bind(agencyId).all();
+  } catch (e) {
+    console.error('[dashboard-v2] expiringLinks error:', e);
+  }
+  
+  // 4-3. 進行中ドラフト
+  try {
+    draftsInProgress = await db.prepare(`
+      SELECT 
+        ad.id, 
+        ad.subsidy_id, 
+        ad.status, 
+        ad.updated_at, 
+        c.name as company_name, 
+        ac.client_name
       FROM application_drafts ad
       JOIN companies c ON ad.company_id = c.id
-      JOIN agency_clients ac ON ad.company_id = ac.company_id AND ac.agency_id = ?
-      WHERE ad.status IN ('draft', 'in_progress')
+      LEFT JOIN agency_clients ac ON ad.company_id = ac.company_id
+      WHERE ac.agency_id = ? AND ad.status IN ('draft', 'in_progress')
       ORDER BY ad.updated_at DESC
       LIMIT 10
-    `).bind(agencyId).all(),
-  ]);
+    `).bind(agencyId).all();
+  } catch (e) {
+    console.error('[dashboard-v2] draftsInProgress error:', e);
+  }
   
-  // ===== 5. KPI（今日のアクティビティ） =====
-  const [todaySearches, todayChats, todayDrafts] = await Promise.all([
-    db.prepare(`
-      SELECT COUNT(*) as count FROM usage_events 
-      WHERE event_type = 'SUBSIDY_SEARCH' 
-      AND user_id IN (SELECT user_id FROM agency_members WHERE agency_id = ? UNION SELECT owner_user_id FROM agencies WHERE id = ?)
-      AND created_at >= ?
-    `).bind(agencyId, agencyId, today).first<{ count: number }>(),
-    
-    db.prepare(`
-      SELECT COUNT(*) as count FROM usage_events 
-      WHERE event_type = 'CHAT_SESSION_STARTED' 
-      AND user_id IN (SELECT user_id FROM agency_members WHERE agency_id = ? UNION SELECT owner_user_id FROM agencies WHERE id = ?)
-      AND created_at >= ?
-    `).bind(agencyId, agencyId, today).first<{ count: number }>(),
-    
-    db.prepare(`
-      SELECT COUNT(*) as count FROM usage_events 
-      WHERE event_type = 'DRAFT_GENERATED' 
-      AND user_id IN (SELECT user_id FROM agency_members WHERE agency_id = ? UNION SELECT owner_user_id FROM agencies WHERE id = ?)
-      AND created_at >= ?
-    `).bind(agencyId, agencyId, today).first<{ count: number }>(),
-  ]);
+  // ===== 5. KPI（今日のアクティビティ、堅牢化） =====
+  let todaySearches: { count: number } | null = { count: 0 };
+  let todayChats: { count: number } | null = { count: 0 };
+  let todayDrafts: { count: number } | null = { count: 0 };
   
-  // ===== 6. 統計（既存dashboard互換） =====
-  const [totalClients, activeClients] = await Promise.all([
-    db.prepare('SELECT COUNT(*) as count FROM agency_clients WHERE agency_id = ?')
-      .bind(agencyId).first<{ count: number }>(),
-    db.prepare('SELECT COUNT(*) as count FROM agency_clients WHERE agency_id = ? AND status = ?')
-      .bind(agencyId, 'active').first<{ count: number }>(),
-  ]);
+  try {
+    const kpiResults = await Promise.all([
+      db.prepare(`
+        SELECT COUNT(*) as count FROM usage_events 
+        WHERE event_type = 'SUBSIDY_SEARCH' 
+        AND user_id IN (SELECT user_id FROM agency_members WHERE agency_id = ? UNION SELECT owner_user_id FROM agencies WHERE id = ?)
+        AND created_at >= ?
+      `).bind(agencyId, agencyId, today).first<{ count: number }>(),
+      
+      db.prepare(`
+        SELECT COUNT(*) as count FROM usage_events 
+        WHERE event_type = 'CHAT_SESSION_STARTED' 
+        AND user_id IN (SELECT user_id FROM agency_members WHERE agency_id = ? UNION SELECT owner_user_id FROM agencies WHERE id = ?)
+        AND created_at >= ?
+      `).bind(agencyId, agencyId, today).first<{ count: number }>(),
+      
+      db.prepare(`
+        SELECT COUNT(*) as count FROM usage_events 
+        WHERE event_type = 'DRAFT_GENERATED' 
+        AND user_id IN (SELECT user_id FROM agency_members WHERE agency_id = ? UNION SELECT owner_user_id FROM agencies WHERE id = ?)
+        AND created_at >= ?
+      `).bind(agencyId, agencyId, today).first<{ count: number }>(),
+    ]);
+    [todaySearches, todayChats, todayDrafts] = kpiResults;
+  } catch (e) {
+    console.error('[dashboard-v2] KPI error:', e);
+  }
+  
+  // ===== 6. 統計（既存dashboard互換、堅牢化） =====
+  let totalClients: { count: number } | null = { count: 0 };
+  let activeClients: { count: number } | null = { count: 0 };
+  
+  try {
+    const statsResults = await Promise.all([
+      db.prepare('SELECT COUNT(*) as count FROM agency_clients WHERE agency_id = ?')
+        .bind(agencyId).first<{ count: number }>(),
+      db.prepare('SELECT COUNT(*) as count FROM agency_clients WHERE agency_id = ? AND status = ?')
+        .bind(agencyId, 'active').first<{ count: number }>(),
+    ]);
+    [totalClients, activeClients] = statsResults;
+  } catch (e) {
+    console.error('[dashboard-v2] stats error:', e);
+  }
   
   // ===== レスポンス組み立て（凍結仕様） =====
   return c.json<ApiResponse<any>>({

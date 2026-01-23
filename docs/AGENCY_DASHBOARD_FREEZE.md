@@ -349,8 +349,69 @@ match_reasons: ["地域一致", "業種一致"]
 
 ---
 
+## 9. 堅牢化ガイドライン（実装済み）
+
+### 9-1. 部分失敗対応
+
+すべてのデータ取得は個別のtry-catchで囲み、部分失敗でも200レスポンスを返す:
+
+```typescript
+// 例: NEWSフィード取得
+let platformNews: any = { results: [] };
+try {
+  platformNews = await db.prepare('...').all();
+} catch (e) {
+  console.error('[dashboard-v2] platformNews error:', e);
+  // platformNews は空配列のまま → レスポンスに含める
+}
+```
+
+### 9-2. カラム名マッピング
+
+**access_links（正しいカラム名）:**
+| API期待 | 実際のカラム |
+|---------|-------------|
+| short_code | short_code |
+| type | type |
+| expires_at | expires_at |
+| label | label |
+| ~~client_name~~ | JOIN agency_clients で取得 |
+| ~~used_at~~ | 不使用（used_count で判定） |
+
+**intake_submissions（正しいカラム名）:**
+| API期待 | 実際のカラム |
+|---------|-------------|
+| submitted_at | created_at |
+| ~~client_name~~ | JOIN agency_clients で取得 |
+
+### 9-3. JSON表示バグ回避
+
+`safeParseJSON()` で [object Object] 表示を防止:
+
+```typescript
+function safeParseJSON(str: string | null, fallback: any[] = []): any[] {
+  if (!str) return fallback;
+  try {
+    const parsed = JSON.parse(str);
+    if (!Array.isArray(parsed)) return fallback;
+    return parsed.map(item => {
+      if (typeof item === 'string') return item;
+      if (item && typeof item === 'object') {
+        return item.reason || item.text || JSON.stringify(item);
+      }
+      return String(item);
+    });
+  } catch { return fallback; }
+}
+```
+
+---
+
 ## 修正履歴
 
 | 日付 | 内容 |
 |------|------|
 | 2026-01-23 | 初版作成（v1凍結仕様） |
+| 2026-01-23 | SQL修正（access_links/intake_submissionsカラム整合性） |
+| 2026-01-23 | 堅牢化（部分失敗対応、try-catch追加） |
+| 2026-01-23 | API動作確認完了 |
