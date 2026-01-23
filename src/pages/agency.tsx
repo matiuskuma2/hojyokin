@@ -2644,6 +2644,9 @@ agencyPages.get('/agency/search', (c) => {
               <option value="20">20件</option>
               <option value="50">50件</option>
               <option value="100">100件</option>
+              <option value="200">200件</option>
+              <option value="500">500件</option>
+              <option value="all">全件（最大500件）</option>
             </select>
           </div>
         </div>
@@ -3020,7 +3023,10 @@ agencyPages.get('/agency/search', (c) => {
         
         currentPage = page;
         var limitEl = document.getElementById('limit');
-        var limit = limitEl ? parseInt(limitEl.value) || 20 : 20;
+        var limitValue = limitEl ? limitEl.value : '50';
+        // 'all' または無効な値の場合は500（バックエンド最大値）を使用
+        var limit = (limitValue === 'all' || isNaN(parseInt(limitValue))) ? 500 : Math.min(parseInt(limitValue), 500);
+        if (limit <= 0) limit = 50;
         var offset = (page - 1) * limit;
         
         var keywordEl = document.getElementById('keyword');

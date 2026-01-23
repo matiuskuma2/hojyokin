@@ -304,7 +304,9 @@ subsidyPages.get('/subsidies', (c) => {
               <option value="20">20件</option>
               <option value="50" selected>50件</option>
               <option value="100">100件</option>
-              <option value="all">全件（最大100件）</option>
+              <option value="200">200件</option>
+              <option value="500">500件</option>
+              <option value="all">全件（最大500件）</option>
             </select>
           </div>
         </div>
@@ -383,7 +385,7 @@ subsidyPages.get('/subsidies', (c) => {
       let searchMode = 'match'; // 'match' または 'all'
       
       // 検索モード切替
-      // ⚠️ 重要: 「全件表示」モードはソート順を変更するだけでなく、表示件数も100件に自動設定
+      // ⚠️ 重要: 「全件表示」モードはソート順を変更するだけでなく、表示件数も500件に自動設定
       window.setSearchMode = function(mode) {
         searchMode = mode;
         
@@ -398,9 +400,9 @@ subsidyPages.get('/subsidies', (c) => {
         if (mode === 'match') {
           desc.innerHTML = '<i class="fas fa-info-circle mr-1"></i>条件に合う補助金を優先表示し、合わないものは下部に表示します';
         } else {
-          desc.innerHTML = '<i class="fas fa-info-circle mr-1"></i>条件に関係なく全件を表示します（最大100件）';
-          // 「全件表示」モード時は表示件数を自動的に最大（100件）に設定
-          if (limitEl && limitEl.value !== 'all' && parseInt(limitEl.value) < 100) {
+          desc.innerHTML = '<i class="fas fa-info-circle mr-1"></i>条件に関係なく全件を表示します（最大500件）';
+          // 「全件表示」モード時は表示件数を自動的に最大（500件）に設定
+          if (limitEl && limitEl.value !== 'all' && parseInt(limitEl.value) < 500) {
             limitEl.value = 'all';
           }
         }
@@ -740,7 +742,7 @@ subsidyPages.get('/subsidies', (c) => {
       }
       
       // 補助金検索
-      // ⚠️ limit: バックエンドの最大値は100。'all'を選択した場合は100を使用
+      // ⚠️ limit: バックエンドの最大値は500。'all'を選択した場合は500を使用
       window.searchSubsidies = async function(page = 1) {
         var companySelect = document.getElementById('company-select');
         var companyId = companySelect ? companySelect.value : '';
@@ -752,8 +754,8 @@ subsidyPages.get('/subsidies', (c) => {
         currentPage = page;
         var limitEl = document.getElementById('limit');
         var limitValue = limitEl ? limitEl.value : '50';
-        // 'all' または無効な値の場合は100（バックエンド最大値）を使用
-        var limit = (limitValue === 'all' || isNaN(parseInt(limitValue))) ? 100 : Math.min(parseInt(limitValue), 100);
+        // 'all' または無効な値の場合は500（バックエンド最大値）を使用
+        var limit = (limitValue === 'all' || isNaN(parseInt(limitValue))) ? 500 : Math.min(parseInt(limitValue), 500);
         // limit が 0 以下の場合は 50 をデフォルトとして使用
         if (limit <= 0) limit = 50;
         var offset = (page - 1) * limit;
@@ -970,9 +972,9 @@ subsidyPages.get('/subsidies', (c) => {
         document.getElementById('subsidies-list').innerHTML = html;
         
         // ページネーション
-        // ⚠️ limit値の取得: 'all'の場合は100として計算
+        // ⚠️ limit値の取得: 'all'の場合は500として計算
         const limitSelectValue = document.getElementById('limit').value;
-        const displayLimit = (limitSelectValue === 'all' || isNaN(parseInt(limitSelectValue))) ? 100 : parseInt(limitSelectValue);
+        const displayLimit = (limitSelectValue === 'all' || isNaN(parseInt(limitSelectValue))) ? 500 : parseInt(limitSelectValue);
         
         if (meta && meta.total > displayLimit) {
           const totalPages = Math.ceil(meta.total / displayLimit);

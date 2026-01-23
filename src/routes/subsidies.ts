@@ -41,7 +41,7 @@ subsidies.get('/search', requireCompanyAccess(), async (c) => {
     const acceptance = c.req.query('acceptance') === '1' ? 1 : 0;
     const sort = c.req.query('sort') as SubsidySearchParams['sort'] || 'acceptance_end_datetime';
     const order = c.req.query('order') as 'ASC' | 'DESC' || 'ASC';
-    const limit = Math.min(parseInt(c.req.query('limit') || '20', 10), 100);
+    const limit = Math.min(parseInt(c.req.query('limit') || '20', 10), 500);
     const offset = parseInt(c.req.query('offset') || '0', 10);
     
     if (!companyId) {
