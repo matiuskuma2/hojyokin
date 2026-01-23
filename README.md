@@ -6,7 +6,31 @@
 - **Version**: 1.7.0
 - **Goal**: 企業情報を登録するだけで、最適な補助金・助成金を自動でマッチング＆申請書ドラフト作成
 
-### 🎉 最新アップデート (v1.8.0) - 士業ダッシュボード v2（情報の泉型）
+### 🎉 最新アップデート (v1.9.0) - P2 安全ゲート + Cron定期化
+
+**P2フェーズ完了（2026-01-23）:**
+
+| 項目 | 状態 | 詳細 |
+|------|------|------|
+| P2-0 安全ゲート | ✅ | CRON_SECRET必須、cron_runs監査ログ、冪等性保証 |
+| P2-1 ダッシュボード連携 | ✅ | prefecture/government統合、公開NEWSAPI |
+| P2-2 Cron定期化 | ✅ | 差分検知（new/updated/skipped）、content_hash |
+| P2-3 JSON import API | ✅ | POST /api/admin/feed/import、super_admin限定 |
+
+**Cron実行ログ:**
+```bash
+# 正常実行時: cron_runsに記録
+# 1回目: items_new=13, items_skipped=0
+# 2回目: items_new=0, items_skipped=13 (完全冪等)
+```
+
+**推奨Cronスケジュール:** 毎日 06:00 JST
+
+**凍結ドキュメント:** `docs/FEED_PIPELINE_SPEC.md`
+
+---
+
+### 過去アップデート (v1.8.0) - 士業ダッシュボード v2（情報の泉型）
 
 **士業向けダッシュボードをリニューアル:**
 
@@ -23,6 +47,7 @@
 - `agency_suggestions_cache` - おすすめキャッシュ
 - `feed_daily_snapshots` - 日次集計
 - `agency_feed_read_status` - 既読管理
+- `cron_runs` - Cron実行履歴（P2-0追加）
 
 **凍結ドキュメント:** `docs/AGENCY_DASHBOARD_FREEZE.md`
 
