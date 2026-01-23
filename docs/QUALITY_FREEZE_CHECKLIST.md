@@ -803,6 +803,70 @@ curl -X POST https://hojyokin.pages.dev/api/cron/sync-jgrants \
 
 ---
 
+## M. Agency Clients API 契約凍結
+
+### M-1. /api/agency/clients レスポンス仕様
+
+```json
+{
+  "success": true,
+  "data": {
+    "clients": [
+      {
+        "id": "必須（agency_clients.id）",
+        "agency_client_id": "互換エイリアス（= id）",
+        "client_id": "互換エイリアス（= id）",
+        "agency_id": "必須",
+        "company_id": "必須",
+        "client_name": "表示名",
+        "company_name": "会社名",
+        ...
+      }
+    ]
+  }
+}
+```
+
+### M-2. UI側の冗長受け取り
+
+```javascript
+// 凍結仕様: APIが揺れても壊れないように冗長に
+const clientId = client?.id || client?.agency_client_id || client?.client_id;
+```
+
+### M-3. 本番データ健全性チェック（Agency）
+
+| チェック項目 | 期待値 | SQLクエリ |
+|-------------|--------|-----------|
+| id欠損 | 0件 | `SELECT COUNT(*) FROM agency_clients WHERE id IS NULL` |
+| company_id欠損 | 0件 | `SELECT COUNT(*) FROM agency_clients WHERE company_id IS NULL` |
+| agency_id欠損 | 0件 | `SELECT COUNT(*) FROM agency_clients WHERE agency_id IS NULL` |
+
+---
+
+## N. ローカルD1環境凍結（TODO）
+
+### N-1. 現状の問題
+
+- `wrangler d1 migrations apply --local` が `stat_day` 不在で失敗
+- `0099_reconcile_schema.sql` が FK制約で失敗
+- **手動CREATE TABLEは禁止**（再現性が崩れる）
+
+### N-2. 修正が必要なマイグレーション
+
+| ファイル | 問題 | 対応 |
+|----------|------|------|
+| 0007_crawl_job_cron_support.sql | stat_day 参照エラー | 要修正 |
+| 0099_reconcile_schema.sql | FK制約エラー | 要修正 |
+
+### N-3. 凍結条件
+
+- [ ] `wrangler d1 migrations apply --local` が全マイグレーション通る
+- [ ] ローカルで `SELECT id FROM agency_clients` が実行できる
+- [ ] seed.sql でテストデータ投入が通る
+
+---
+
 ## 修正履歴
 
 | 日付 | 修正内容 | 担当 |
