@@ -1,0 +1,357 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://hojyokin.pages.dev/schema/extraction_result.json",
+  "title": "Subsidy Extraction Result",
+  "description": "補助金PDF/HTMLから抽出した構造化データのスキーマ（凍結版 v1.0）",
+  "type": "object",
+  "properties": {
+    "version": {
+      "type": "string",
+      "description": "スキーマバージョン",
+      "const": "1.0"
+    },
+    "extracted_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "抽出日時（ISO8601）"
+    },
+    "extractor": {
+      "type": "object",
+      "description": "抽出エンジン情報",
+      "properties": {
+        "model": {
+          "type": "string",
+          "description": "使用モデル",
+          "enum": ["gpt-4", "gpt-4-turbo", "claude-3-opus", "claude-3-sonnet", "rule-based"]
+        },
+        "prompt_version": {
+          "type": "string",
+          "description": "プロンプトバージョン"
+        }
+      }
+    },
+    "source": {
+      "type": "object",
+      "description": "抽出元情報",
+      "properties": {
+        "document_id": { "type": "string" },
+        "document_type": { "type": "string" },
+        "source_url": { "type": "string", "format": "uri" },
+        "page_range": { "type": "string", "description": "抽出対象ページ範囲" }
+      }
+    },
+    "basic_info": {
+      "type": "object",
+      "description": "基本情報",
+      "properties": {
+        "title": {
+          "type": "string",
+          "description": "補助金名称"
+        },
+        "subtitle": {
+          "type": "string",
+          "description": "サブタイトル（第○回等）"
+        },
+        "organizer": {
+          "type": "string",
+          "description": "実施機関"
+        },
+        "secretariat": {
+          "type": "string",
+          "description": "事務局"
+        },
+        "purpose": {
+          "type": "string",
+          "description": "目的・概要"
+        },
+        "target_business": {
+          "type": "string",
+          "description": "対象事業の説明"
+        }
+      }
+    },
+    "application_period": {
+      "type": "object",
+      "description": "申請期間",
+      "properties": {
+        "start_date": {
+          "type": "string",
+          "format": "date",
+          "description": "募集開始日"
+        },
+        "end_date": {
+          "type": "string",
+          "format": "date",
+          "description": "募集終了日"
+        },
+        "end_time": {
+          "type": "string",
+          "description": "締切時刻（例: 17:00）"
+        },
+        "notes": {
+          "type": "string",
+          "description": "期間に関する備考"
+        },
+        "fiscal_year": {
+          "type": "integer",
+          "description": "対象年度"
+        }
+      }
+    },
+    "subsidy_amount": {
+      "type": "object",
+      "description": "補助金額・率",
+      "properties": {
+        "max_limit": {
+          "type": "integer",
+          "description": "補助上限額（円）"
+        },
+        "min_limit": {
+          "type": "integer",
+          "description": "補助下限額（円）"
+        },
+        "rate": {
+          "type": "string",
+          "description": "補助率（例: 2/3, 1/2, 定額）"
+        },
+        "rate_details": {
+          "type": "array",
+          "description": "区分別補助率",
+          "items": {
+            "type": "object",
+            "properties": {
+              "category": { "type": "string" },
+              "rate": { "type": "string" },
+              "max_limit": { "type": "integer" },
+              "condition": { "type": "string" }
+            }
+          }
+        },
+        "budget_total": {
+          "type": "integer",
+          "description": "予算総額（円）"
+        },
+        "notes": {
+          "type": "string",
+          "description": "金額に関する備考"
+        }
+      }
+    },
+    "target_applicants": {
+      "type": "object",
+      "description": "対象者要件",
+      "properties": {
+        "summary": {
+          "type": "string",
+          "description": "対象者の概要説明"
+        },
+        "requirements": {
+          "type": "array",
+          "description": "必須要件リスト",
+          "items": {
+            "type": "object",
+            "properties": {
+              "content": { "type": "string", "description": "要件内容" },
+              "category": { 
+                "type": "string", 
+                "enum": ["business_type", "employee_count", "industry", "location", "financial", "other"],
+                "description": "要件カテゴリ"
+              },
+              "is_mandatory": { "type": "boolean", "default": true }
+            },
+            "required": ["content"]
+          }
+        },
+        "exclusions": {
+          "type": "array",
+          "description": "除外条件リスト",
+          "items": {
+            "type": "object",
+            "properties": {
+              "content": { "type": "string" },
+              "category": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "target_expenses": {
+      "type": "object",
+      "description": "対象経費",
+      "properties": {
+        "summary": {
+          "type": "string",
+          "description": "対象経費の概要説明"
+        },
+        "categories": {
+          "type": "array",
+          "description": "経費区分リスト",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": { "type": "string", "description": "経費区分名" },
+              "description": { "type": "string", "description": "説明" },
+              "examples": { 
+                "type": "array", 
+                "items": { "type": "string" },
+                "description": "具体例"
+              },
+              "rate": { "type": "string", "description": "この区分の補助率" },
+              "max_limit": { "type": "integer", "description": "この区分の上限額" },
+              "is_eligible": { "type": "boolean", "default": true }
+            },
+            "required": ["name"]
+          }
+        },
+        "ineligible_expenses": {
+          "type": "array",
+          "description": "対象外経費リスト",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "required_documents": {
+      "type": "object",
+      "description": "必要書類",
+      "properties": {
+        "summary": {
+          "type": "string",
+          "description": "必要書類の概要説明"
+        },
+        "documents": {
+          "type": "array",
+          "description": "必要書類リスト",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": { "type": "string", "description": "書類名" },
+              "description": { "type": "string", "description": "説明・注意事項" },
+              "is_mandatory": { "type": "boolean", "default": true },
+              "format": { 
+                "type": "string", 
+                "enum": ["specified_form", "free_format", "copy", "certificate", "other"],
+                "description": "提出形式"
+              },
+              "template_url": { "type": "string", "format": "uri", "description": "様式ダウンロードURL" },
+              "deadline": { "type": "string", "description": "提出期限（申請時/交付決定後等）" }
+            },
+            "required": ["name"]
+          }
+        }
+      }
+    },
+    "application_procedure": {
+      "type": "object",
+      "description": "申請手順",
+      "properties": {
+        "method": {
+          "type": "string",
+          "enum": ["electronic", "postal", "both", "in_person", "other"],
+          "description": "申請方法"
+        },
+        "system_name": {
+          "type": "string",
+          "description": "電子申請システム名（jGrants等）"
+        },
+        "system_url": {
+          "type": "string",
+          "format": "uri",
+          "description": "電子申請URL"
+        },
+        "steps": {
+          "type": "array",
+          "description": "申請手順",
+          "items": {
+            "type": "object",
+            "properties": {
+              "step_number": { "type": "integer" },
+              "title": { "type": "string" },
+              "description": { "type": "string" },
+              "deadline": { "type": "string" }
+            }
+          }
+        },
+        "notes": {
+          "type": "string",
+          "description": "申請に関する備考"
+        }
+      }
+    },
+    "scoring_criteria": {
+      "type": "object",
+      "description": "審査基準・加点項目",
+      "properties": {
+        "summary": {
+          "type": "string",
+          "description": "審査の概要説明"
+        },
+        "criteria": {
+          "type": "array",
+          "description": "審査基準リスト",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": { "type": "string", "description": "審査項目名" },
+              "description": { "type": "string", "description": "説明" },
+              "max_points": { "type": "integer", "description": "配点" },
+              "is_bonus": { "type": "boolean", "description": "加点項目かどうか" }
+            },
+            "required": ["name"]
+          }
+        },
+        "bonus_items": {
+          "type": "array",
+          "description": "加点項目リスト",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": { "type": "string" },
+              "points": { "type": "integer" },
+              "condition": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "contact_info": {
+      "type": "object",
+      "description": "問い合わせ先",
+      "properties": {
+        "organization": { "type": "string" },
+        "department": { "type": "string" },
+        "phone": { "type": "string" },
+        "fax": { "type": "string" },
+        "email": { "type": "string", "format": "email" },
+        "url": { "type": "string", "format": "uri" },
+        "hours": { "type": "string", "description": "受付時間" }
+      }
+    },
+    "metadata": {
+      "type": "object",
+      "description": "抽出メタデータ",
+      "properties": {
+        "confidence_score": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "全体の信頼度スコア"
+        },
+        "field_confidences": {
+          "type": "object",
+          "description": "フィールド別信頼度",
+          "additionalProperties": { "type": "number" }
+        },
+        "warnings": {
+          "type": "array",
+          "description": "抽出時の警告",
+          "items": { "type": "string" }
+        },
+        "raw_text_length": {
+          "type": "integer",
+          "description": "元テキストの文字数"
+        }
+      }
+    }
+  },
+  "required": ["version", "extracted_at", "source"]
+}

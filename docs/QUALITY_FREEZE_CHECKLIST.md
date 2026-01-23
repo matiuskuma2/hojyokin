@@ -1004,6 +1004,96 @@ FROM subsidy_cache;
 
 ---
 
+## R. データパイプライン凍結仕様（Phase0-1）
+
+### R-1. データソース台帳（source_registry）
+
+**凍結状態**: 48都道府県 + 13国レベル + 5事務局 = **66件登録済み**
+
+| スコープ | 件数 | 更新頻度 | 備考 |
+|----------|------|----------|------|
+| national | 13 | daily | JGrants API中心 |
+| prefecture | 48 | weekly | 47都道府県（+1テスト） |
+| secretariat | 5 | weekly | 中小機構等 |
+
+### R-2. 新規テーブル（0024_data_pipeline_foundation.sql）
+
+| テーブル | 用途 | 凍結状態 |
+|----------|------|----------|
+| subsidy_documents | PDF/様式管理 | ✅ 作成済 |
+| subsidy_rounds | 募集回（第○回）管理 | ✅ 作成済 |
+| ocr_queue | OCR処理キュー | ✅ 作成済 |
+| extraction_results | AI抽出結果 | ✅ 作成済 |
+
+### R-3. 抽出最低項目セット（凍結）
+
+```json
+{
+  "required": [
+    "application_deadline",
+    "subsidy_max_limit", 
+    "subsidy_rate"
+  ],
+  "optional": [
+    "eligible_expenses",
+    "required_documents",
+    "eligibility_criteria"
+  ]
+}
+```
+
+### R-4. PDFパイプラインルール（凍結）
+
+1. **raw保存必須**: 元PDFは削除しない
+2. **OCRはAI任せにしない**: 構造化は段階的に
+3. **変更検知ベース**: 差分があったもののみ再処理
+4. **業種空=全業種**: target_industryが空の場合は全業種対象
+
+### R-5. 凍結違反チェック
+
+- [ ] `subsidy_documents` に `raw_url` がないデータは警告
+- [ ] `extraction_results` の `confidence_score < 0.7` は要人力確認
+- [ ] `ocr_queue` の `status = 'pending'` が100件超でアラート
+
+---
+
+## S. 47都道府県ソースURL雛形
+
+CSVテンプレート: `docs/data/subsidy_sources_template.csv`
+
+| フィールド | 説明 | 例 |
+|------------|------|-----|
+| registry_id | 一意識別子 | pref_13_tokyo |
+| scope | スコープ | prefecture |
+| geo_id | 都道府県コード | 13 |
+| root_url | ルートURL | https://www.sangyo-rodo.metro.tokyo.lg.jp/ |
+| domain_key | ドメインキー | metro.tokyo.lg.jp |
+| crawl_strategy | 収集方式 | scrape / api |
+| update_freq | 更新頻度 | daily / weekly |
+| priority | 優先度 | 1(高) / 2(通常) |
+
+**優先度1設定済み（6件）**: 東京、愛知、大阪、福岡、JGrants
+
+---
+
+## T. 次フェーズ移行条件
+
+### Phase0→Phase1 移行チェック
+
+- [x] source_registry に47都道府県登録
+- [x] subsidy_cache KPI API実装
+- [x] 抽出スキーマJSON定義
+- [ ] subsidy_cache total >= 500件（現在196件）
+- [ ] 24h更新 Cron安定稼働
+
+### Phase1→Phase2 移行チェック
+
+- [ ] JGrantsパラメータ全洗い出し完了
+- [ ] 受付終了データも取得設定
+- [ ] キーワード拡張検証完了
+
+---
+
 ## 修正履歴
 
 | 日付 | 修正内容 | 担当 |
@@ -1016,3 +1106,5 @@ FROM subsidy_cache;
 | 2026-01-23 | Ops KPI凍結セット追加（セクションO） | - |
 | 2026-01-23 | Super Admin E2Eチェックリスト追加（セクションP） | - |
 | 2026-01-23 | example.com混入検出API追加 | - |
+| 2026-01-23 | データパイプライン凍結仕様追加（セクションR-T） | - |
+| 2026-01-23 | 47都道府県ソースURL雛形追加 | - |
