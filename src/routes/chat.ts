@@ -11,6 +11,7 @@
 import { Hono } from 'hono';
 import type { Env, Variables, ApiResponse } from '../types';
 import { requireAuth } from '../middleware/auth';
+import { getMockSubsidyDetail, MOCK_SUBSIDIES } from '../lib/mock-subsidies';
 
 const chat = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -120,10 +121,35 @@ chat.post('/precheck', async (c) => {
       }, 404);
     }
     
-    // 補助金情報取得（subsidy_cache から）
-    const subsidyInfo = await c.env.DB.prepare(`
+    // 補助金情報取得（subsidy_cache から、なければモックデータ）
+    let subsidyInfo = await c.env.DB.prepare(`
       SELECT * FROM subsidy_cache WHERE id = ?
     `).bind(subsidy_id).first() as Record<string, any> | null;
+    
+    // DBにない場合はモックデータからフォールバック
+    if (!subsidyInfo) {
+      const mockDetail = getMockSubsidyDetail(subsidy_id);
+      if (mockDetail) {
+        subsidyInfo = {
+          id: mockDetail.id,
+          title: mockDetail.title || mockDetail.name,
+          name: mockDetail.name,
+          subsidy_max_limit: mockDetail.subsidy_max_limit,
+          subsidy_rate: mockDetail.subsidy_rate,
+          target_area_search: mockDetail.target_area_search,
+          target_industry: mockDetail.target_industry,
+          target_number_of_employees: mockDetail.target_number_of_employees,
+          acceptance_start_datetime: mockDetail.acceptance_start_datetime,
+          acceptance_end_datetime: mockDetail.acceptance_end_datetime,
+          description: mockDetail.description,
+          application_requirements: mockDetail.application_requirements,
+          eligible_expenses: mockDetail.eligible_expenses,
+          required_documents: mockDetail.required_documents,
+          source: 'mock'
+        };
+        console.log(`[Chat] Using mock subsidy data for ${subsidy_id}`);
+      }
+    }
     
     // eligibility_rules 取得
     const eligibilityRules = await c.env.DB.prepare(`
