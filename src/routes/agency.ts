@@ -286,10 +286,24 @@ agencyRoutes.get('/clients', async (c) => {
   }
   const total = await db.prepare(countQuery).bind(...countParams).first<{ count: number }>();
   
+  // 凍結仕様: id を必ず返す + agency_client_id エイリアス追加（互換用）
+  // id 欠損があればログ出力（データ健全性監視）
+  const safeClients = (clients?.results || []).map((client: any) => {
+    if (!client.id) {
+      console.warn('[Agency API] client.id is missing:', JSON.stringify(client));
+    }
+    return {
+      ...client,
+      // 互換用エイリアス（UIが揺れても壊れない）
+      agency_client_id: client.id,
+      client_id: client.id,
+    };
+  });
+  
   return c.json<ApiResponse<any>>({
     success: true,
     data: {
-      clients: clients?.results || [],
+      clients: safeClients,
       total: total?.count || 0,
       limit: parseInt(limit),
       offset: parseInt(offset),

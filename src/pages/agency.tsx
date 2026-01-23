@@ -2737,21 +2737,27 @@ agencyPages.get('/agency/search', (c) => {
       }
       
       // 顧客編集リンクを安全に生成
+      // 凍結仕様: client.id ?? client.agency_client_id ?? client.client_id で冗長に受け取る
       function getClientEditLink(client, linkText, btnClass) {
         const defaultBtnClass = 'inline-flex items-center gap-1 text-blue-600 hover:text-blue-800 text-sm';
         const fallbackBtnClass = btnClass ? btnClass.replace('bg-red-600', 'bg-gray-600').replace('hover:bg-red-700', 'hover:bg-gray-700') : 'inline-flex items-center gap-1 text-gray-500 text-sm';
         
-        if (!client || !client.id) {
+        // 凍結仕様: 複数の候補から id を取得（APIが揺れても壊れない）
+        const clientId = client?.id || client?.agency_client_id || client?.client_id;
+        
+        if (!client || !clientId) {
           // client.id が無い場合は顧客一覧へのリンクを返す
+          console.warn('[Agency検索] client.id is missing:', client);
           return '<a href="/agency/clients" class="' + fallbackBtnClass + '"><i class="fas fa-list text-xs"></i> 顧客一覧へ</a>';
         }
-        // UUID形式の検証
+        // UUID形式の検証（短いIDも許容：テストデータ用）
         const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-        if (!uuidRegex.test(client.id)) {
-          console.warn('[Agency検索] Invalid client.id format:', client.id);
+        const shortIdRegex = /^[a-zA-Z0-9_-]+$/;
+        if (!uuidRegex.test(clientId) && !shortIdRegex.test(clientId)) {
+          console.warn('[Agency検索] Invalid client.id format:', clientId);
           return '<a href="/agency/clients" class="' + fallbackBtnClass + '"><i class="fas fa-list text-xs"></i> 顧客一覧へ</a>';
         }
-        return '<a href="/agency/clients/' + encodeURIComponent(client.id) + '" class="' + (btnClass || defaultBtnClass) + '"><i class="fas fa-edit"></i> ' + escapeHtml(linkText || '顧客情報を編集') + '</a>';
+        return '<a href="/agency/clients/' + encodeURIComponent(clientId) + '" class="' + (btnClass || defaultBtnClass) + '"><i class="fas fa-edit"></i> ' + escapeHtml(linkText || '顧客情報を編集') + '</a>';
       }
       
       // 検索モード切替
