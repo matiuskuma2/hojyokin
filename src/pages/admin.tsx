@@ -1437,6 +1437,75 @@ adminPages.get('/admin/ops', (c) => {
         </p>
       </div>
 
+      <!-- ★★★ P3-2A: Cron実行状況モニター（東京3ソース） ★★★ -->
+      <div class="bg-white rounded-xl shadow p-6 border-2 border-blue-500">
+        <div class="flex items-center justify-between mb-4">
+          <h2 class="text-lg font-bold text-gray-800">
+            <i class="fas fa-clock text-blue-600 mr-2"></i>Cron実行状況（東京3ソース）
+          </h2>
+          <button id="btn-refresh-cron" onclick="loadCronStatus()" class="px-3 py-1 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm">
+            <i class="fas fa-sync mr-1"></i>更新
+          </button>
+        </div>
+
+        <!-- 健全性サマリー -->
+        <div id="cron-health-summary" class="mb-4">
+          <div class="grid grid-cols-3 gap-4">
+            <div id="cron-shigoto" class="border-2 rounded-lg p-4 text-center">
+              <p class="text-sm text-gray-500">tokyo-shigoto</p>
+              <p class="text-2xl font-bold text-gray-400 loading">⏳</p>
+              <p class="text-xs text-gray-400">-</p>
+            </div>
+            <div id="cron-kosha" class="border-2 rounded-lg p-4 text-center">
+              <p class="text-sm text-gray-500">tokyo-kosha</p>
+              <p class="text-2xl font-bold text-gray-400 loading">⏳</p>
+              <p class="text-xs text-gray-400">-</p>
+            </div>
+            <div id="cron-hataraku" class="border-2 rounded-lg p-4 text-center">
+              <p class="text-sm text-gray-500">tokyo-hataraku</p>
+              <p class="text-2xl font-bold text-gray-400 loading">⏳</p>
+              <p class="text-xs text-gray-400">-</p>
+            </div>
+          </div>
+          <p class="text-xs text-gray-400 mt-2">
+            <i class="fas fa-info-circle mr-1"></i>
+            合格: 24h以内に success あり ✅ / 無し or failed のみ ⚠️
+          </p>
+        </div>
+
+        <!-- 直近の実行履歴 -->
+        <div class="mb-4">
+          <h3 class="text-sm font-medium text-gray-700 mb-2">直近7日間の実行履歴</h3>
+          <div id="cron-runs-table" class="overflow-x-auto">
+            <table class="w-full text-sm">
+              <thead class="bg-gray-50">
+                <tr>
+                  <th class="px-3 py-2 text-left">ジョブ</th>
+                  <th class="px-3 py-2 text-left">ステータス</th>
+                  <th class="px-3 py-2 text-right">処理</th>
+                  <th class="px-3 py-2 text-right">新規</th>
+                  <th class="px-3 py-2 text-right">更新</th>
+                  <th class="px-3 py-2 text-right">スキップ</th>
+                  <th class="px-3 py-2 text-right">エラー</th>
+                  <th class="px-3 py-2 text-left">実行日時</th>
+                </tr>
+              </thead>
+              <tbody id="cron-runs-tbody" class="divide-y divide-gray-100">
+                <tr><td colspan="8" class="px-3 py-4 text-center text-gray-400 loading">読み込み中...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- feed_failures（未解決エラー） -->
+        <div>
+          <h3 class="text-sm font-medium text-gray-700 mb-2">未解決エラー（feed_failures）</h3>
+          <div id="feed-failures-list" class="overflow-x-auto max-h-48">
+            <div class="text-gray-400 text-sm p-2 loading">読み込み中...</div>
+          </div>
+        </div>
+      </div>
+
       <!-- セクションA: サーバー側（10分） -->
       <div class="bg-white rounded-xl shadow p-6">
         <h2 class="text-lg font-bold text-gray-800 mb-4">
@@ -2005,6 +2074,119 @@ adminPages.get('/admin/ops', (c) => {
           clearTimeout(timer);
         }
       }
+
+      // ★★★ P3-2A: Cron実行状況監視 ★★★
+      async function loadCronStatus() {
+        try {
+          const data = await api('/api/admin-ops/cron-status?days=7');
+          if (!data.success) {
+            console.error('Cron status API error:', data.error);
+            return;
+          }
+
+          const { by_job, runs, overall_healthy } = data.data;
+
+          // ジョブ別の健全性カード更新
+          ['shigoto', 'kosha', 'hataraku'].forEach(name => {
+            const jobKey = 'scrape-tokyo-' + name;
+            const job = (by_job || []).find(j => j.job_type === jobKey);
+            const cardEl = document.getElementById('cron-' + name);
+            if (cardEl && job) {
+              const healthy = job.healthy_24h;
+              cardEl.className = 'border-2 rounded-lg p-4 text-center ' + 
+                (healthy ? 'border-green-500 bg-green-50' : 'border-red-500 bg-red-50');
+              cardEl.querySelector('p.text-2xl').textContent = healthy ? '✅' : '⚠️';
+              cardEl.querySelector('p.text-2xl').className = 'text-2xl font-bold ' + 
+                (healthy ? 'text-green-600' : 'text-red-600');
+              const detailEl = cardEl.querySelectorAll('p')[2];
+              if (detailEl) {
+                detailEl.textContent = '成功' + job.success_count + ' / 失敗' + job.failed_count;
+              }
+            } else if (cardEl) {
+              cardEl.className = 'border-2 rounded-lg p-4 text-center border-gray-300 bg-gray-50';
+              cardEl.querySelector('p.text-2xl').textContent = '❓';
+            }
+          });
+
+          // 実行履歴テーブル
+          const tbody = document.getElementById('cron-runs-tbody');
+          if (tbody && runs && runs.length > 0) {
+            tbody.innerHTML = runs.map(r => {
+              const statusClass = {
+                'success': 'bg-green-100 text-green-800',
+                'failed': 'bg-red-100 text-red-800',
+                'partial': 'bg-yellow-100 text-yellow-800',
+                'running': 'bg-blue-100 text-blue-800'
+              }[r.status] || 'bg-gray-100';
+              return '<tr class="hover:bg-gray-50">' +
+                '<td class="px-3 py-2 font-medium">' + r.job_type.replace('scrape-', '') + '</td>' +
+                '<td class="px-3 py-2"><span class="px-2 py-1 rounded text-xs ' + statusClass + '">' + r.status + '</span></td>' +
+                '<td class="px-3 py-2 text-right">' + (r.items_processed || 0) + '</td>' +
+                '<td class="px-3 py-2 text-right text-green-600">' + (r.items_inserted || 0) + '</td>' +
+                '<td class="px-3 py-2 text-right text-blue-600">' + (r.items_updated || 0) + '</td>' +
+                '<td class="px-3 py-2 text-right text-gray-500">' + (r.items_skipped || 0) + '</td>' +
+                '<td class="px-3 py-2 text-right ' + (r.error_count > 0 ? 'text-red-600 font-bold' : '') + '">' + (r.error_count || 0) + '</td>' +
+                '<td class="px-3 py-2 text-gray-600 text-xs">' + new Date(r.started_at).toLocaleString('ja-JP') + '</td>' +
+                '</tr>';
+            }).join('');
+          } else if (tbody) {
+            tbody.innerHTML = '<tr><td colspan="8" class="px-3 py-4 text-center text-gray-400">実行履歴がありません</td></tr>';
+          }
+
+          // feed_failures 読み込み
+          await loadFeedFailures();
+
+          // loadingクラス削除
+          document.querySelectorAll('#cron-health-summary .loading, #cron-runs-tbody .loading').forEach(el => el.classList.remove('loading'));
+
+        } catch (error) {
+          console.error('Cron status load error:', error);
+        }
+      }
+
+      async function loadFeedFailures() {
+        try {
+          const data = await api('/api/admin-ops/feed-failures?status=open&limit=20');
+          if (!data.success) {
+            console.error('Feed failures API error:', data.error);
+            return;
+          }
+
+          const listEl = document.getElementById('feed-failures-list');
+          if (listEl && data.data && data.data.failures && data.data.failures.length > 0) {
+            listEl.innerHTML = '<table class="w-full text-sm">' +
+              '<thead class="bg-gray-50"><tr>' +
+              '<th class="px-2 py-1 text-left">ソース</th>' +
+              '<th class="px-2 py-1 text-left">ステージ</th>' +
+              '<th class="px-2 py-1 text-left">エラー</th>' +
+              '<th class="px-2 py-1 text-left">発生日時</th>' +
+              '</tr></thead><tbody>' +
+              data.data.failures.map(f => 
+                '<tr class="border-t hover:bg-red-50">' +
+                '<td class="px-2 py-1 text-xs">' + f.source_id + '</td>' +
+                '<td class="px-2 py-1 text-xs">' + f.stage + '</td>' +
+                '<td class="px-2 py-1 text-xs text-red-600 max-w-xs truncate" title="' + (f.error_message || '').replace(/"/g, '&quot;') + '">' + (f.error_message || '').slice(0, 50) + '</td>' +
+                '<td class="px-2 py-1 text-xs text-gray-500">' + new Date(f.occurred_at).toLocaleString('ja-JP') + '</td>' +
+                '</tr>'
+              ).join('') +
+              '</tbody></table>';
+          } else if (listEl) {
+            listEl.innerHTML = '<p class="text-green-600 text-sm p-2"><i class="fas fa-check-circle mr-1"></i>未解決エラーはありません</p>';
+          }
+          listEl?.classList.remove('loading');
+        } catch (error) {
+          console.error('Feed failures load error:', error);
+        }
+      }
+
+      // 初回読み込み時にCron状況も取得
+      (function initCronStatus() {
+        setTimeout(function() {
+          loadCronStatus().catch(function(err) {
+            console.error('[OPS] Cron status load failed:', err);
+          });
+        }, 300);
+      })();
 
       // ★★★ Daily Data Report 読み込み ★★★
       window.dailyReportData = null;

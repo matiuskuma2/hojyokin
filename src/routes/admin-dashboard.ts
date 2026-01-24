@@ -2234,4 +2234,497 @@ adminDashboard.get('/ops/source-summary', async (c) => {
   }
 });
 
+// ============================================================
+// P3-2A: Cron運用監視API（cron_runs + feed_failures）
+// ============================================================
+
+/**
+ * GET /api/admin-ops/cron-status
+ * 
+ * Cron実行状況のサマリー（東京3ソース）
+ * - 直近7日間のジョブ別成功/失敗
+ * - 24時間以内に成功があるか（健全性チェック）
+ * - 最新の実行結果
+ */
+adminDashboard.get('/cron-status', async (c) => {
+  const db = c.env.DB;
+  const user = getCurrentUser(c);
+  
+  // super_admin限定
+  if (user.role !== 'super_admin') {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: 'FORBIDDEN',
+        message: 'Super admin access required',
+      },
+    }, 403);
+  }
+
+  try {
+    // 健全性チェック（24h以内に成功があるか）
+    const healthCheck = await db.prepare(`
+      SELECT 
+        job_type,
+        COUNT(*) as total_runs,
+        SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as success_count,
+        SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed_count,
+        SUM(CASE WHEN status = 'partial' THEN 1 ELSE 0 END) as partial_count,
+        MAX(started_at) as last_run,
+        MAX(CASE WHEN status = 'success' THEN started_at END) as last_success,
+        MAX(CASE WHEN status = 'failed' THEN started_at END) as last_failure,
+        CASE 
+          WHEN MAX(CASE WHEN status = 'success' THEN started_at END) >= datetime('now', '-24 hours') 
+          THEN 1 
+          ELSE 0 
+        END as healthy_24h
+      FROM cron_runs
+      WHERE started_at >= datetime('now', '-7 days')
+        AND job_type IN ('scrape-tokyo-shigoto', 'scrape-tokyo-kosha', 'scrape-tokyo-hataraku')
+      GROUP BY job_type
+      ORDER BY job_type
+    `).all<{
+      job_type: string;
+      total_runs: number;
+      success_count: number;
+      failed_count: number;
+      partial_count: number;
+      last_run: string | null;
+      last_success: string | null;
+      last_failure: string | null;
+      healthy_24h: number;
+    }>();
+
+    // 直近10件の実行履歴
+    const recentRuns = await db.prepare(`
+      SELECT 
+        run_id,
+        job_type,
+        status,
+        triggered_by,
+        started_at,
+        finished_at,
+        items_processed,
+        items_inserted,
+        items_updated,
+        items_skipped,
+        error_count,
+        errors_json,
+        metadata_json
+      FROM cron_runs
+      WHERE job_type IN ('scrape-tokyo-shigoto', 'scrape-tokyo-kosha', 'scrape-tokyo-hataraku')
+      ORDER BY started_at DESC
+      LIMIT 20
+    `).all<{
+      run_id: string;
+      job_type: string;
+      status: string;
+      triggered_by: string;
+      started_at: string;
+      finished_at: string | null;
+      items_processed: number;
+      items_inserted: number;
+      items_updated: number;
+      items_skipped: number;
+      error_count: number;
+      errors_json: string | null;
+      metadata_json: string | null;
+    }>();
+
+    // 全体の健全性判定
+    const allHealthy = (healthCheck.results || []).every(h => h.healthy_24h === 1);
+    const anyUnhealthy = (healthCheck.results || []).some(h => h.healthy_24h === 0);
+    const stoppedJobs = (healthCheck.results || []).filter(h => h.healthy_24h === 0).map(h => h.job_type);
+
+    return c.json<ApiResponse<{
+      overall_healthy: boolean;
+      stopped_jobs: string[];
+      health_by_job: Array<{
+        job_type: string;
+        total_runs: number;
+        success_count: number;
+        failed_count: number;
+        partial_count: number;
+        last_run: string | null;
+        last_success: string | null;
+        last_failure: string | null;
+        healthy_24h: boolean;
+      }>;
+      recent_runs: Array<{
+        run_id: string;
+        job_type: string;
+        status: string;
+        triggered_by: string;
+        started_at: string;
+        finished_at: string | null;
+        items_processed: number;
+        items_inserted: number;
+        items_updated: number;
+        items_skipped: number;
+        error_count: number;
+        errors: string[];
+        metadata: Record<string, unknown> | null;
+      }>;
+      generated_at: string;
+    }>>({
+      success: true,
+      data: {
+        overall_healthy: allHealthy,
+        stopped_jobs: stoppedJobs,
+        health_by_job: (healthCheck.results || []).map(h => ({
+          ...h,
+          healthy_24h: h.healthy_24h === 1,
+        })),
+        recent_runs: (recentRuns.results || []).map(r => ({
+          ...r,
+          errors: r.errors_json ? JSON.parse(r.errors_json) : [],
+          metadata: r.metadata_json ? JSON.parse(r.metadata_json) : null,
+        })),
+        generated_at: new Date().toISOString(),
+      },
+    });
+  } catch (error) {
+    console.error('Cron status error:', error);
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: 'CRON_STATUS_ERROR',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      },
+    }, 500);
+  }
+});
+
+/**
+ * GET /api/admin-ops/feed-failures
+ * 
+ * Feed失敗一覧（未解決のみ）
+ * - ソース別・ステージ別の集計
+ * - 個別の失敗詳細
+ */
+adminDashboard.get('/feed-failures', async (c) => {
+  const db = c.env.DB;
+  const user = getCurrentUser(c);
+  
+  // super_admin限定
+  if (user.role !== 'super_admin') {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: 'FORBIDDEN',
+        message: 'Super admin access required',
+      },
+    }, 403);
+  }
+
+  try {
+    const status = c.req.query('status') || 'open';
+    const limit = Math.min(parseInt(c.req.query('limit') || '50'), 200);
+
+    // 集計
+    const summary = await db.prepare(`
+      SELECT 
+        source_id,
+        stage,
+        error_type,
+        COUNT(*) as count
+      FROM feed_failures
+      WHERE status = ?
+      GROUP BY source_id, stage, error_type
+      ORDER BY count DESC
+    `).bind(status).all<{
+      source_id: string;
+      stage: string;
+      error_type: string;
+      count: number;
+    }>();
+
+    // 個別の失敗（最新順）
+    const failures = await db.prepare(`
+      SELECT 
+        id,
+        source_id,
+        url,
+        stage,
+        error_type,
+        error_message,
+        http_status,
+        dedupe_key,
+        subsidy_id,
+        cron_run_id,
+        occurred_at,
+        retry_count,
+        status
+      FROM feed_failures
+      WHERE status = ?
+      ORDER BY occurred_at DESC
+      LIMIT ?
+    `).bind(status, limit).all<{
+      id: string;
+      source_id: string;
+      url: string;
+      stage: string;
+      error_type: string;
+      error_message: string;
+      http_status: number | null;
+      dedupe_key: string | null;
+      subsidy_id: string | null;
+      cron_run_id: string | null;
+      occurred_at: string;
+      retry_count: number;
+      status: string;
+    }>();
+
+    // 全体の未解決件数
+    const totalOpen = await db.prepare(`
+      SELECT COUNT(*) as count FROM feed_failures WHERE status = 'open'
+    `).first<{ count: number }>();
+
+    return c.json<ApiResponse<{
+      total_open: number;
+      summary: Array<{
+        source_id: string;
+        stage: string;
+        error_type: string;
+        count: number;
+      }>;
+      failures: Array<{
+        id: string;
+        source_id: string;
+        url: string;
+        stage: string;
+        error_type: string;
+        error_message: string;
+        http_status: number | null;
+        dedupe_key: string | null;
+        subsidy_id: string | null;
+        cron_run_id: string | null;
+        occurred_at: string;
+        retry_count: number;
+        status: string;
+      }>;
+      generated_at: string;
+    }>>({
+      success: true,
+      data: {
+        total_open: totalOpen?.count || 0,
+        summary: summary.results || [],
+        failures: failures.results || [],
+        generated_at: new Date().toISOString(),
+      },
+    });
+  } catch (error) {
+    console.error('Feed failures error:', error);
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: 'FEED_FAILURES_ERROR',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      },
+    }, 500);
+  }
+});
+
+/**
+ * POST /api/admin-ops/feed-failures/:id/resolve
+ * 
+ * 失敗を解決済みにマーク
+ */
+adminDashboard.post('/feed-failures/:id/resolve', async (c) => {
+  const db = c.env.DB;
+  const user = getCurrentUser(c);
+  
+  // super_admin限定
+  if (user.role !== 'super_admin') {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: 'FORBIDDEN',
+        message: 'Super admin access required',
+      },
+    }, 403);
+  }
+
+  const id = c.req.param('id');
+  const body = await c.req.json<{ notes?: string }>().catch(() => ({}));
+
+  try {
+    await db.prepare(`
+      UPDATE feed_failures SET
+        status = 'resolved',
+        resolution_notes = ?,
+        resolved_at = datetime('now'),
+        resolved_by = ?
+      WHERE id = ?
+    `).bind(body.notes || null, user.email, id).run();
+
+    return c.json<ApiResponse<{ message: string }>>({
+      success: true,
+      data: { message: 'Failure marked as resolved' },
+    });
+  } catch (error) {
+    console.error('Resolve failure error:', error);
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: 'RESOLVE_FAILURE_ERROR',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      },
+    }, 500);
+  }
+});
+
+/**
+ * POST /api/admin-ops/feed-failures/:id/ignore
+ * 
+ * 失敗を無視（対応不要）にマーク
+ */
+adminDashboard.post('/feed-failures/:id/ignore', async (c) => {
+  const db = c.env.DB;
+  const user = getCurrentUser(c);
+  
+  // super_admin限定
+  if (user.role !== 'super_admin') {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: 'FORBIDDEN',
+        message: 'Super admin access required',
+      },
+    }, 403);
+  }
+
+  const id = c.req.param('id');
+  const body = await c.req.json<{ notes?: string }>().catch(() => ({}));
+
+  try {
+    await db.prepare(`
+      UPDATE feed_failures SET
+        status = 'ignored',
+        resolution_notes = ?,
+        resolved_at = datetime('now'),
+        resolved_by = ?
+      WHERE id = ?
+    `).bind(body.notes || null, user.email, id).run();
+
+    return c.json<ApiResponse<{ message: string }>>({
+      success: true,
+      data: { message: 'Failure marked as ignored' },
+    });
+  } catch (error) {
+    console.error('Ignore failure error:', error);
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: 'IGNORE_FAILURE_ERROR',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      },
+    }, 500);
+  }
+});
+
+/**
+ * GET /api/admin-ops/wall-chat-status
+ * 
+ * WALL_CHAT_READY の状況サマリー
+ */
+adminDashboard.get('/wall-chat-status', async (c) => {
+  const db = c.env.DB;
+  const user = getCurrentUser(c);
+  
+  // super_admin限定
+  if (user.role !== 'super_admin') {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: 'FORBIDDEN',
+        message: 'Super admin access required',
+      },
+    }, 403);
+  }
+
+  try {
+    // ソース別 WALL_CHAT_READY 状況
+    const bySource = await db.prepare(`
+      SELECT 
+        source,
+        COUNT(*) as total,
+        SUM(CASE WHEN wall_chat_ready = 1 THEN 1 ELSE 0 END) as ready,
+        SUM(CASE WHEN wall_chat_ready = 0 OR wall_chat_ready IS NULL THEN 1 ELSE 0 END) as not_ready
+      FROM subsidy_cache
+      GROUP BY source
+      ORDER BY ready DESC
+    `).all<{
+      source: string;
+      total: number;
+      ready: number;
+      not_ready: number;
+    }>();
+
+    // 全体の合計
+    const totals = await db.prepare(`
+      SELECT 
+        COUNT(*) as total,
+        SUM(CASE WHEN wall_chat_ready = 1 THEN 1 ELSE 0 END) as ready
+      FROM subsidy_cache
+    `).first<{ total: number; ready: number }>();
+
+    // 最近 WALL_CHAT_READY になったもの
+    const recentReady = await db.prepare(`
+      SELECT id, title, source, cached_at
+      FROM subsidy_cache
+      WHERE wall_chat_ready = 1
+      ORDER BY cached_at DESC
+      LIMIT 10
+    `).all<{
+      id: string;
+      title: string;
+      source: string;
+      cached_at: string;
+    }>();
+
+    return c.json<ApiResponse<{
+      totals: { total: number; ready: number; ready_pct: number };
+      by_source: Array<{
+        source: string;
+        total: number;
+        ready: number;
+        not_ready: number;
+        ready_pct: number;
+      }>;
+      recent_ready: Array<{
+        id: string;
+        title: string;
+        source: string;
+        cached_at: string;
+      }>;
+      generated_at: string;
+    }>>({
+      success: true,
+      data: {
+        totals: {
+          total: totals?.total || 0,
+          ready: totals?.ready || 0,
+          ready_pct: totals?.total ? Math.round((totals.ready / totals.total) * 100) : 0,
+        },
+        by_source: (bySource.results || []).map(s => ({
+          ...s,
+          ready_pct: s.total > 0 ? Math.round((s.ready / s.total) * 100) : 0,
+        })),
+        recent_ready: recentReady.results || [],
+        generated_at: new Date().toISOString(),
+      },
+    });
+  } catch (error) {
+    console.error('Wall chat status error:', error);
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: 'WALL_CHAT_STATUS_ERROR',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      },
+    }, 500);
+  }
+});
+
 export default adminDashboard;
