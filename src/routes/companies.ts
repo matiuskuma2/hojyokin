@@ -87,38 +87,76 @@ companies.post('/', async (c) => {
     // 2. 都道府県 (prefecture) - 空文字NG
     // 3. 業種 (industry_major) - 空文字NG
     // 4. 従業員数 (employee_count) - 数値 > 0
+    // フィールド別エラー形式で返却
     // ========================================
-    const validationErrors: string[] = [];
+    const fieldErrors: Record<string, string> = {};
     
     // 会社名チェック
     if (!body.name || (typeof body.name === 'string' && !body.name.trim())) {
-      validationErrors.push('会社名は必須です');
+      fieldErrors.name = '会社名は必須です';
     }
     
     // 都道府県チェック
     if (!body.prefecture || (typeof body.prefecture === 'string' && !body.prefecture.trim())) {
-      validationErrors.push('都道府県は必須です');
+      fieldErrors.prefecture = '都道府県は必須です';
     }
     
     // 業種チェック
     if (!body.industry_major || (typeof body.industry_major === 'string' && !body.industry_major.trim())) {
-      validationErrors.push('業種は必須です');
+      fieldErrors.industry_major = '業種は必須です';
     }
     
     // 従業員数チェック（凍結仕様: 数値 > 0 が必須）
     if (body.employee_count === undefined || body.employee_count === null) {
-      validationErrors.push('従業員数は必須です');
-    } else if (typeof body.employee_count !== 'number' || body.employee_count <= 0) {
-      validationErrors.push('従業員数は1以上の数値を入力してください');
+      fieldErrors.employee_count = '従業員数は必須です';
+    } else {
+      // 文字列で来た場合は数値に変換を試みる
+      const count = typeof body.employee_count === 'string' 
+        ? parseInt(body.employee_count, 10) 
+        : body.employee_count;
+      
+      if (typeof count !== 'number' || isNaN(count) || count <= 0) {
+        fieldErrors.employee_count = '従業員数は1以上の数値で入力してください';
+      } else {
+        // 有効な数値に変換
+        body.employee_count = count;
+      }
     }
     
-    if (validationErrors.length > 0) {
+    // 資本金チェック（任意項目だが、設定時は0以上）
+    if (body.capital !== undefined && body.capital !== null) {
+      const capital = typeof body.capital === 'string'
+        ? parseInt(body.capital, 10)
+        : body.capital;
+      
+      if (typeof capital !== 'number' || isNaN(capital) || capital < 0) {
+        fieldErrors.capital = '資本金は0以上の数値で入力してください';
+      } else {
+        body.capital = capital;
+      }
+    }
+    
+    // 年商チェック（任意項目だが、設定時は0以上）
+    if (body.annual_revenue !== undefined && body.annual_revenue !== null) {
+      const revenue = typeof body.annual_revenue === 'string'
+        ? parseInt(body.annual_revenue, 10)
+        : body.annual_revenue;
+      
+      if (typeof revenue !== 'number' || isNaN(revenue) || revenue < 0) {
+        fieldErrors.annual_revenue = '年商は0以上の数値で入力してください';
+      } else {
+        body.annual_revenue = revenue;
+      }
+    }
+    
+    // フィールド別エラーがあれば返却
+    if (Object.keys(fieldErrors).length > 0) {
       return c.json<ApiResponse<null>>({
         success: false,
         error: {
           code: 'VALIDATION_ERROR',
-          message: validationErrors.join('、'),
-          details: validationErrors,
+          message: 'Validation failed',
+          fields: fieldErrors,
         },
       }, 400);
     }
@@ -429,6 +467,87 @@ companies.put('/:company_id', requireCompanyAccess(), async (c) => {
     }
     
     const body = await c.req.json<Partial<CompanyCreateInput>>();
+    
+    // ========================================
+    // 凍結仕様v1: PUT バリデーション
+    // 必須項目が更新される場合、空文字/無効値を許可しない
+    // フィールド別エラーを返却
+    // ========================================
+    const fieldErrors: Record<string, string> = {};
+    
+    // 会社名チェック（更新時に空にしようとした場合はエラー）
+    if (body.name !== undefined) {
+      if (typeof body.name !== 'string' || !body.name.trim()) {
+        fieldErrors.name = '会社名は空にできません';
+      }
+    }
+    
+    // 都道府県チェック
+    if (body.prefecture !== undefined) {
+      if (typeof body.prefecture !== 'string' || !body.prefecture.trim()) {
+        fieldErrors.prefecture = '都道府県は空にできません';
+      }
+    }
+    
+    // 業種チェック
+    if (body.industry_major !== undefined) {
+      if (typeof body.industry_major !== 'string' || !body.industry_major.trim()) {
+        fieldErrors.industry_major = '業種は空にできません';
+      }
+    }
+    
+    // 従業員数チェック（凍結仕様: 数値 > 0 必須）
+    if (body.employee_count !== undefined) {
+      // 文字列で来た場合は数値に変換を試みる
+      const count = typeof body.employee_count === 'string' 
+        ? parseInt(body.employee_count, 10) 
+        : body.employee_count;
+      
+      if (typeof count !== 'number' || isNaN(count) || count <= 0) {
+        fieldErrors.employee_count = '従業員数は1以上の数値で入力してください';
+      } else {
+        // 有効な数値に変換
+        body.employee_count = count;
+      }
+    }
+    
+    // 資本金チェック（任意項目だが、設定時は0以上）
+    if (body.capital !== undefined && body.capital !== null) {
+      const capital = typeof body.capital === 'string'
+        ? parseInt(body.capital, 10)
+        : body.capital;
+      
+      if (typeof capital !== 'number' || isNaN(capital) || capital < 0) {
+        fieldErrors.capital = '資本金は0以上の数値で入力してください';
+      } else {
+        body.capital = capital;
+      }
+    }
+    
+    // 年商チェック（任意項目だが、設定時は0以上）
+    if (body.annual_revenue !== undefined && body.annual_revenue !== null) {
+      const revenue = typeof body.annual_revenue === 'string'
+        ? parseInt(body.annual_revenue, 10)
+        : body.annual_revenue;
+      
+      if (typeof revenue !== 'number' || isNaN(revenue) || revenue < 0) {
+        fieldErrors.annual_revenue = '年商は0以上の数値で入力してください';
+      } else {
+        body.annual_revenue = revenue;
+      }
+    }
+    
+    // フィールド別エラーがあれば返却
+    if (Object.keys(fieldErrors).length > 0) {
+      return c.json<ApiResponse<null>>({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Validation failed',
+          fields: fieldErrors,
+        },
+      }, 400);
+    }
     
     // 更新するフィールドを構築
     const updates: string[] = [];

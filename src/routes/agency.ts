@@ -1270,6 +1270,91 @@ agencyRoutes.post('/submissions/:id/approve', async (c) => {
     }, 500);
   }
   
+  // ========================================
+  // 凍結仕様v1: intake承認時のバリデーション
+  // 必須4項目は必ず有効値である必要がある
+  // ========================================
+  
+  // payloadから必要な値を取得（キー名揺れに対応）
+  const nameValue = payload.name || payload.companyName;
+  const prefectureValue = payload.prefecture;
+  const industryValue = payload.industry || payload.industry_major;
+  const employeeValue = payload.employee_count || payload.employeeCount;
+  
+  // 必須項目バリデーション（フィールド別エラー）
+  const fieldErrors: Record<string, string> = {};
+  
+  // 会社名チェック
+  if (nameValue !== undefined && (typeof nameValue !== 'string' || !nameValue.trim())) {
+    fieldErrors.name = '会社名は空にできません';
+  }
+  
+  // 都道府県チェック
+  if (prefectureValue !== undefined && (typeof prefectureValue !== 'string' || !prefectureValue.trim())) {
+    fieldErrors.prefecture = '都道府県は空にできません';
+  }
+  
+  // 業種チェック
+  if (industryValue !== undefined && (typeof industryValue !== 'string' || !industryValue.trim())) {
+    fieldErrors.industry_major = '業種は空にできません';
+  }
+  
+  // 従業員数チェック（凍結仕様: 数値 > 0 必須）
+  if (employeeValue !== undefined) {
+    const count = typeof employeeValue === 'string' 
+      ? parseInt(employeeValue, 10) 
+      : employeeValue;
+    
+    if (typeof count !== 'number' || isNaN(count) || count <= 0) {
+      fieldErrors.employee_count = '従業員数は1以上の数値で入力してください';
+    } else {
+      // 正規化された値をpayloadに設定
+      payload.employee_count = count;
+      payload.employeeCount = count;
+    }
+  }
+  
+  // 資本金チェック（任意だが設定時は0以上）
+  const capitalValue = payload.capital;
+  if (capitalValue !== undefined && capitalValue !== null) {
+    const capital = typeof capitalValue === 'string'
+      ? parseInt(capitalValue, 10)
+      : capitalValue;
+    
+    if (typeof capital !== 'number' || isNaN(capital) || capital < 0) {
+      fieldErrors.capital = '資本金は0以上の数値で入力してください';
+    } else {
+      payload.capital = capital;
+    }
+  }
+  
+  // 年商チェック（任意だが設定時は0以上）
+  const revenueValue = payload.annual_revenue || payload.annualRevenue;
+  if (revenueValue !== undefined && revenueValue !== null) {
+    const revenue = typeof revenueValue === 'string'
+      ? parseInt(revenueValue, 10)
+      : revenueValue;
+    
+    if (typeof revenue !== 'number' || isNaN(revenue) || revenue < 0) {
+      fieldErrors.annual_revenue = '年商は0以上の数値で入力してください';
+    } else {
+      payload.annual_revenue = revenue;
+      payload.annualRevenue = revenue;
+    }
+  }
+  
+  // バリデーションエラーがあれば承認を拒否
+  if (Object.keys(fieldErrors).length > 0) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: 'VALIDATION_ERROR',
+        message: '入力データに問題があります。修正してから再度承認してください',
+        fields: fieldErrors,
+      },
+    }, 400);
+  }
+  
   // 会社情報を更新（companiesテーブル）
   if (Object.keys(payload).length > 0) {
     const updateFields: string[] = [];
