@@ -389,4 +389,219 @@ export function extractPdfLinks(html: string, baseUrl: string): string[] {
   return links;
 }
 
+// =============================================================================
+// P3-1B: PDF から required_forms（様式名 + 記載項目）を抽出
+// =============================================================================
+
+export interface RequiredForm {
+  name: string;           // 様式名 例: "様式第1号", "別紙1"
+  form_id?: string;       // 様式ID（あれば）
+  fields: string[];       // 記載項目 例: ["企業概要", "事業計画", "経費明細"]
+  source_page?: number;   // 抽出元ページ番号
+  notes?: string;         // 注記
+}
+
+/**
+ * テキストから required_forms（様式名 + 記載項目）を抽出
+ * 
+ * P3-1B 仕様:
+ * - 様式名パターン: 様式第○号, 様式○, 別紙○, 第○号様式 等
+ * - 記載項目パターン: ○○欄, ○○を記入, ○○について記載 等
+ * - 抽出できない場合は空配列を返す
+ */
+export function extractRequiredForms(text: string): RequiredForm[] {
+  const forms: RequiredForm[] = [];
+  
+  if (!text || text.length < 50) {
+    return forms;
+  }
+  
+  // 様式名パターン
+  const formPatterns = [
+    /(?:様式[第]?[\s]*([0-9０-９一二三四五六七八九十]+)[号]?(?:[-－]([0-9０-９]+))?)/gi,
+    /(?:別紙[\s]*([0-9０-９一二三四五六七八九十]+))/gi,
+    /(?:第[\s]*([0-9０-９一二三四五六七八九十]+)[号]?[\s]*様式)/gi,
+    /(?:申請書[\s]*(?:様式)?)/gi,
+    /(?:計画書[\s]*(?:様式)?)/gi,
+    /(?:報告書[\s]*(?:様式)?)/gi,
+  ];
+  
+  const seenFormNames = new Set<string>();
+  
+  for (const pattern of formPatterns) {
+    let match;
+    while ((match = pattern.exec(text)) !== null) {
+      let formName = match[0].trim();
+      
+      // 正規化
+      formName = formName
+        .replace(/[\s　]+/g, '')
+        .replace(/[０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xFF10 + 0x30)); // 全角→半角
+      
+      if (seenFormNames.has(formName)) continue;
+      seenFormNames.add(formName);
+      
+      // 周辺テキストから記載項目を抽出
+      const contextStart = Math.max(0, match.index - 500);
+      const contextEnd = Math.min(text.length, match.index + 500);
+      const context = text.substring(contextStart, contextEnd);
+      
+      const fields = extractFieldsFromContext(context);
+      
+      forms.push({
+        name: formName,
+        form_id: formName,
+        fields,
+        notes: fields.length > 0 ? undefined : '記載項目の自動抽出に失敗。公式様式を確認してください。',
+      });
+    }
+  }
+  
+  return forms;
+}
+
+/**
+ * コンテキストから記載項目を抽出
+ */
+function extractFieldsFromContext(context: string): string[] {
+  const fields: string[] = [];
+  
+  // 記載項目パターン
+  const fieldPatterns = [
+    /(?:([^\s\n]{2,20})[\s]*(?:欄|を記入|について記載|の概要|の内容|の計画))/gi,
+    /(?:【([^\s【】]{2,20})】)/gi,
+    /(?:^[\s]*[0-9０-９一二三四五六七八九十]+[\.．)）][\s]*([^\n]{2,30}))/gim,
+    /(?:・[\s]*([^\n]{2,30}))/gi,
+  ];
+  
+  const seenFields = new Set<string>();
+  
+  for (const pattern of fieldPatterns) {
+    let match;
+    while ((match = pattern.exec(context)) !== null) {
+      const field = (match[1] || match[0]).trim();
+      
+      // フィルタリング
+      if (field.length < 2 || field.length > 30) continue;
+      if (/[0-9０-９]{4,}/.test(field)) continue; // 電話番号等を除外
+      if (/^(http|www|\.pdf|\.docx?)/.test(field)) continue; // URL等を除外
+      if (seenFields.has(field)) continue;
+      
+      seenFields.add(field);
+      fields.push(field);
+      
+      // 最大10項目
+      if (fields.length >= 10) break;
+    }
+    if (fields.length >= 10) break;
+  }
+  
+  return fields;
+}
+
+/**
+ * detail_json に required_forms をマージ
+ * 既存の required_forms がある場合は上書きしない（手動データ優先）
+ */
+export function mergeRequiredForms(
+  existingJson: Record<string, any>,
+  extractedForms: RequiredForm[]
+): Record<string, any> {
+  const result = { ...existingJson };
+  
+  // 既存の required_forms があれば手動データ優先でスキップ
+  if (result.required_forms && Array.isArray(result.required_forms) && result.required_forms.length > 0) {
+    // 既存データが "手動" フラグを持つか、fields が充実していれば上書きしない
+    const hasManualData = result.required_forms.some((f: any) => 
+      f.fields && f.fields.length > 2 || f.manual === true
+    );
+    if (hasManualData) {
+      return result;
+    }
+  }
+  
+  if (extractedForms.length > 0) {
+    result.required_forms = extractedForms;
+    result.required_forms_extracted_at = new Date().toISOString();
+    result.required_forms_source = 'auto';
+  }
+  
+  return result;
+}
+
+/**
+ * WALL_CHAT_READY 判定 v2（凍結仕様）
+ * 
+ * 必須5項目すべてが揃えば true:
+ * 1. overview または description（20文字以上）
+ * 2. application_requirements（非空）
+ * 3. eligible_expenses（非空）
+ * 4. required_documents（非空）
+ * 5. deadline または acceptance_end_datetime
+ */
+export function isWallChatReady(detailJson: Record<string, any>): {
+  ready: boolean;
+  missing: string[];
+  score: number;
+  maxScore: number;
+} {
+  const missing: string[] = [];
+  let score = 0;
+  const maxScore = 5;
+  
+  // 1. overview or description
+  const hasOverview = detailJson.overview && detailJson.overview.length >= 20;
+  const hasDescription = detailJson.description && detailJson.description.length >= 20;
+  if (hasOverview || hasDescription) {
+    score++;
+  } else {
+    missing.push('overview/description');
+  }
+  
+  // 2. application_requirements
+  const hasAppReq = Array.isArray(detailJson.application_requirements)
+    ? detailJson.application_requirements.length > 0
+    : detailJson.application_requirements && String(detailJson.application_requirements).length > 0;
+  if (hasAppReq) {
+    score++;
+  } else {
+    missing.push('application_requirements');
+  }
+  
+  // 3. eligible_expenses
+  const hasExpenses = Array.isArray(detailJson.eligible_expenses)
+    ? detailJson.eligible_expenses.length > 0
+    : detailJson.eligible_expenses && String(detailJson.eligible_expenses).length > 0;
+  if (hasExpenses) {
+    score++;
+  } else {
+    missing.push('eligible_expenses');
+  }
+  
+  // 4. required_documents
+  const hasDocs = Array.isArray(detailJson.required_documents)
+    ? detailJson.required_documents.length > 0
+    : detailJson.required_documents && String(detailJson.required_documents).length > 0;
+  if (hasDocs) {
+    score++;
+  } else {
+    missing.push('required_documents');
+  }
+  
+  // 5. deadline
+  const hasDeadline = detailJson.deadline || detailJson.acceptance_end_datetime;
+  if (hasDeadline) {
+    score++;
+  } else {
+    missing.push('deadline');
+  }
+  
+  return {
+    ready: score === maxScore,
+    missing,
+    score,
+    maxScore,
+  };
+}
+
 export default FirecrawlClient;

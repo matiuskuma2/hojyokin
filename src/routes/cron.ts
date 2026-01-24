@@ -1723,4 +1723,523 @@ function checkEmployeeMatch(count: number, condition: string): boolean {
   return true; // 判定できない場合はマッチとみなす
 }
 
+/**
+ * TOKYOはたらくネット 助成金スクレイピング
+ * 
+ * POST /api/cron/scrape-tokyo-hataraku
+ * 
+ * P3-1B: 東京3ソース目（discover フェーズ）
+ * URL: https://www.hataraku.metro.tokyo.lg.jp/
+ * 
+ * P2-0 安全ゲート適用:
+ * - CRON_SECRET必須（403）
+ * - cron_runs テーブルに実行履歴を記録
+ * - 冪等性保証（dedupe_key + ON CONFLICT）
+ * - 差分検知（新規/更新/スキップを区別）
+ * - 失敗はerrors_jsonに記録（握りつぶしNG）
+ */
+cron.post('/scrape-tokyo-hataraku', async (c) => {
+  const db = c.env.DB;
+  
+  // P2-0: CRON_SECRET 検証
+  const authResult = verifyCronSecret(c);
+  if (!authResult.valid) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: authResult.error!.code,
+        message: authResult.error!.message,
+      },
+    }, authResult.error!.status);
+  }
+  
+  // feed_sourcesでenabled確認
+  const sourceResult = await db.prepare(`
+    SELECT is_active FROM feed_sources WHERE id = 'src-tokyo-hataraku'
+  `).first<{ is_active: number }>();
+  
+  if (!sourceResult || sourceResult.is_active !== 1) {
+    return c.json<ApiResponse<{ message: string }>>({
+      success: true,
+      data: {
+        message: 'src-tokyo-hataraku is disabled in feed_sources. Set is_active=1 to enable.',
+      },
+    });
+  }
+  
+  // P2-0: 実行ログ開始
+  let runId: string | null = null;
+  try {
+    runId = await startCronRun(db, 'scrape-tokyo-hataraku', 'cron');
+  } catch (logErr) {
+    console.warn('[Tokyo-Hataraku] Failed to start cron_run log:', logErr);
+  }
+  
+  // P2-2: 差分検知用カウンター
+  let itemsNew = 0;
+  let itemsUpdated = 0;
+  let itemsSkipped = 0;
+  
+  try {
+    const BASE_URL = 'https://www.hataraku.metro.tokyo.lg.jp';
+    const LIST_URLS = [
+      `${BASE_URL}/shien/`,  // 支援一覧
+      `${BASE_URL}/haken/`,  // 派遣・請負
+    ];
+    
+    console.log(`[Tokyo-Hataraku] Starting scrape`);
+    
+    const results: any[] = [];
+    const errors: string[] = [];
+    const seenUrls = new Set<string>();
+    
+    for (const listUrl of LIST_URLS) {
+      try {
+        console.log(`[Tokyo-Hataraku] Fetching list: ${listUrl}`);
+        const listResult = await simpleScrape(listUrl);
+        
+        if (!listResult.success || !listResult.html) {
+          errors.push(`${listUrl}: ${listResult.error || 'Failed to fetch'}`);
+          continue;
+        }
+        
+        const html = listResult.html;
+        
+        // 助成金・奨励金リンクを抽出
+        // パターン: 助成|奨励|補助|支援 を含むページへのリンク
+        const linkPattern = /href="([^"]*(?:josei|shien|hojo|shoreikin|jyosei)[^"]*\.html?)"/gi;
+        let linkMatch;
+        
+        while ((linkMatch = linkPattern.exec(html)) !== null) {
+          const path = linkMatch[1];
+          let fullUrl: string;
+          
+          if (path.startsWith('http')) {
+            fullUrl = path;
+          } else if (path.startsWith('/')) {
+            fullUrl = `${BASE_URL}${path}`;
+          } else {
+            fullUrl = `${listUrl}${path}`;
+          }
+          
+          // 同じドメインのみ対象
+          if (!fullUrl.includes('hataraku.metro.tokyo.lg.jp')) continue;
+          if (seenUrls.has(fullUrl)) continue;
+          
+          seenUrls.add(fullUrl);
+        }
+        
+        // 追加パターン: 一般的な助成金リンク
+        const generalPattern = /<a[^>]*href="([^"]+)"[^>]*>[^<]*(?:助成|奨励|補助|支援金)[^<]*<\/a>/gi;
+        while ((linkMatch = generalPattern.exec(html)) !== null) {
+          const path = linkMatch[1];
+          let fullUrl: string;
+          
+          if (path.startsWith('http')) {
+            fullUrl = path;
+          } else if (path.startsWith('/')) {
+            fullUrl = `${BASE_URL}${path}`;
+          } else {
+            fullUrl = `${listUrl}${path}`;
+          }
+          
+          if (!fullUrl.includes('hataraku.metro.tokyo.lg.jp')) continue;
+          if (seenUrls.has(fullUrl)) continue;
+          
+          seenUrls.add(fullUrl);
+        }
+        
+        await new Promise(resolve => setTimeout(resolve, 300));
+        
+      } catch (listErr) {
+        errors.push(`List ${listUrl}: ${listErr instanceof Error ? listErr.message : String(listErr)}`);
+      }
+    }
+    
+    console.log(`[Tokyo-Hataraku] Found ${seenUrls.size} unique links`);
+    
+    // 各詳細ページを取得（最大20件）
+    const MAX_PILOT = 20;
+    const detailUrls = Array.from(seenUrls).slice(0, MAX_PILOT);
+    
+    for (const detailUrl of detailUrls) {
+      try {
+        console.log(`[Tokyo-Hataraku] Fetching: ${detailUrl}`);
+        
+        const detailResult = await simpleScrape(detailUrl);
+        if (!detailResult.success || !detailResult.html) {
+          errors.push(`${detailUrl}: ${detailResult.error || 'No HTML'}`);
+          continue;
+        }
+        
+        const detailHtml = detailResult.html;
+        
+        // タイトル抽出
+        const titleMatch = detailHtml.match(/<h1[^>]*>([^<]+)<\/h1>/i) ||
+                          detailHtml.match(/<title>([^<]+)<\/title>/i);
+        let title = titleMatch ? titleMatch[1].trim().replace(/\s+/g, ' ') : '';
+        title = title.replace(/\|.*$/, '').replace(/｜.*$/, '').trim();
+        
+        if (!title || title.length < 5) {
+          errors.push(`${detailUrl}: No valid title found`);
+          continue;
+        }
+        
+        // 締切抽出
+        const deadlineMatch = detailHtml.match(/(?:申請期限|締切|期限)[：:\s]*([0-9]{4}年[0-9]{1,2}月[0-9]{1,2}日)/i) ||
+                             detailHtml.match(/令和[0-9]+年[0-9]{1,2}月[0-9]{1,2}日/);
+        const deadlineText = deadlineMatch ? deadlineMatch[0] : null;
+        
+        // PDF抽出
+        const pdfUrls = extractPdfLinks(detailHtml, detailUrl);
+        
+        // コンテンツハッシュ計算
+        const contentHash = await calculateContentHash(detailHtml);
+        
+        // ID生成
+        const urlHash = contentHash.slice(0, 8);
+        const id = `tokyo-hataraku-${urlHash}`;
+        const dedupeKey = `tokyo-hataraku:${urlHash}`;
+        
+        const subsidyData = {
+          id,
+          dedupeKey,
+          title,
+          source: 'tokyo-hataraku',
+          sourceUrl: BASE_URL,
+          detailUrl,
+          deadline: deadlineText,
+          issuerName: 'TOKYOはたらくネット（東京都産業労働局）',
+          prefectureCode: '13',
+          targetAreas: ['東京都'],
+          pdfUrls,
+          contentHash,
+          extractedAt: new Date().toISOString(),
+        };
+        
+        results.push(subsidyData);
+        
+        await new Promise(resolve => setTimeout(resolve, 500));
+        
+      } catch (err) {
+        errors.push(`${detailUrl}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    
+    console.log(`[Tokyo-Hataraku] Extracted ${results.length} subsidies, ${errors.length} errors`);
+    
+    // DBに保存
+    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+    let insertedCount = 0;
+    let feedInsertedCount = 0;
+    
+    for (const subsidy of results) {
+      try {
+        // subsidy_cache に保存
+        await db.prepare(`
+          INSERT OR REPLACE INTO subsidy_cache 
+          (id, source, title, subsidy_max_limit, subsidy_rate,
+           target_area_search, target_industry, target_number_of_employees,
+           acceptance_start_datetime, acceptance_end_datetime, request_reception_display_flag,
+           detail_json, cached_at, expires_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?)
+        `).bind(
+          subsidy.id,
+          subsidy.source,
+          subsidy.title,
+          null,
+          null,
+          '東京都',
+          null,
+          null,
+          null,
+          subsidy.deadline,
+          1, // discover段階ではとりあえず受付中扱い
+          JSON.stringify({
+            detailUrl: subsidy.detailUrl,
+            issuerName: subsidy.issuerName,
+            pdfUrls: subsidy.pdfUrls,
+            contentHash: subsidy.contentHash,
+            extractedAt: subsidy.extractedAt,
+          }),
+          expiresAt
+        ).run();
+        
+        insertedCount++;
+        
+        // subsidy_feed_items にも保存
+        try {
+          const existing = await db.prepare(`
+            SELECT content_hash FROM subsidy_feed_items WHERE dedupe_key = ?
+          `).bind(subsidy.dedupeKey).first<{ content_hash: string }>();
+          
+          if (existing) {
+            if (existing.content_hash === subsidy.contentHash) {
+              await db.prepare(`
+                UPDATE subsidy_feed_items SET last_seen_at = datetime('now') WHERE dedupe_key = ?
+              `).bind(subsidy.dedupeKey).run();
+              itemsSkipped++;
+            } else {
+              await db.prepare(`
+                UPDATE subsidy_feed_items SET
+                  title = ?,
+                  content_hash = ?,
+                  is_new = 0,
+                  last_seen_at = datetime('now'),
+                  updated_at = datetime('now')
+                WHERE dedupe_key = ?
+              `).bind(subsidy.title, subsidy.contentHash, subsidy.dedupeKey).run();
+              itemsUpdated++;
+              feedInsertedCount++;
+            }
+          } else {
+            const safeId = subsidy.dedupeKey.replace(':', '-');
+            await db.prepare(`
+              INSERT INTO subsidy_feed_items 
+              (id, dedupe_key, source_id, source_type, title, summary, url, detail_url,
+               pdf_urls, issuer_name, prefecture_code, target_area_codes,
+               subsidy_amount_max, subsidy_rate_text, status, raw_json, content_hash,
+               is_new, first_seen_at, last_seen_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, datetime('now'), datetime('now'))
+            `).bind(
+              safeId,
+              subsidy.dedupeKey,
+              'src-tokyo-hataraku',
+              'prefecture',
+              subsidy.title,
+              null,
+              subsidy.detailUrl,
+              subsidy.detailUrl,
+              JSON.stringify(subsidy.pdfUrls),
+              subsidy.issuerName,
+              subsidy.prefectureCode,
+              JSON.stringify(['13']),
+              null,
+              null,
+              'unknown',
+              JSON.stringify(subsidy),
+              subsidy.contentHash
+            ).run();
+            itemsNew++;
+            feedInsertedCount++;
+          }
+        } catch (feedErr) {
+          console.warn(`[Tokyo-Hataraku] Feed insert warning: ${feedErr}`);
+        }
+        
+      } catch (dbErr) {
+        errors.push(`DB insert ${subsidy.id}: ${dbErr instanceof Error ? dbErr.message : String(dbErr)}`);
+      }
+    }
+    
+    console.log(`[Tokyo-Hataraku] Inserted ${insertedCount} to cache, ${feedInsertedCount} to feed_items`);
+    console.log(`[Tokyo-Hataraku] New: ${itemsNew}, Updated: ${itemsUpdated}, Skipped: ${itemsSkipped}`);
+    
+    // P2-0: 実行ログ完了
+    if (runId) {
+      try {
+        await finishCronRun(db, runId, errors.length > 0 ? 'partial' : 'success', {
+          items_processed: results.length,
+          items_inserted: itemsNew,
+          items_updated: itemsUpdated,
+          items_skipped: itemsSkipped,
+          error_count: errors.length,
+          errors: errors,
+          metadata: {
+            links_found: seenUrls.size,
+            cache_inserted: insertedCount,
+            feed_inserted: feedInsertedCount,
+          },
+        });
+      } catch (logErr) {
+        console.warn('[Tokyo-Hataraku] Failed to finish cron_run log:', logErr);
+      }
+    }
+    
+    return c.json<ApiResponse<{
+      message: string;
+      links_found: number;
+      details_fetched: number;
+      inserted: number;
+      items_new: number;
+      items_updated: number;
+      items_skipped: number;
+      results: any[];
+      errors: string[];
+      timestamp: string;
+      run_id?: string;
+    }>>({
+      success: true,
+      data: {
+        message: 'Tokyo-Hataraku scrape completed',
+        links_found: seenUrls.size,
+        details_fetched: results.length,
+        inserted: insertedCount,
+        items_new: itemsNew,
+        items_updated: itemsUpdated,
+        items_skipped: itemsSkipped,
+        results,
+        errors,
+        timestamp: new Date().toISOString(),
+        run_id: runId ?? undefined,
+      },
+    });
+    
+  } catch (error) {
+    console.error('[Tokyo-Hataraku] Scrape error:', error);
+    
+    if (runId) {
+      try {
+        await finishCronRun(db, runId, 'failed', {
+          error_count: 1,
+          errors: [error instanceof Error ? error.message : String(error)],
+        });
+      } catch (logErr) {
+        console.warn('[Tokyo-Hataraku] Failed to finish cron_run log:', logErr);
+      }
+    }
+    
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: 'INTERNAL_ERROR',
+        message: `Scrape failed: ${error instanceof Error ? error.message : String(error)}`,
+      },
+    }, 500);
+  }
+});
+
+/**
+ * 全東京ソース一括実行
+ * 
+ * POST /api/cron/scrape-tokyo-all
+ * 
+ * P3-1B: tokyo-shigoto + tokyo-kosha + tokyo-hataraku を順次実行
+ */
+cron.post('/scrape-tokyo-all', async (c) => {
+  const db = c.env.DB;
+  
+  // P2-0: CRON_SECRET 検証
+  const authResult = verifyCronSecret(c);
+  if (!authResult.valid) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: authResult.error!.code,
+        message: authResult.error!.message,
+      },
+    }, authResult.error!.status);
+  }
+  
+  // P2-0: 実行ログ開始
+  let runId: string | null = null;
+  try {
+    runId = await startCronRun(db, 'scrape-tokyo-all', 'cron');
+  } catch (logErr) {
+    console.warn('[Tokyo-All] Failed to start cron_run log:', logErr);
+  }
+  
+  const results: any[] = [];
+  const errors: string[] = [];
+  let totalNew = 0;
+  let totalUpdated = 0;
+  let totalSkipped = 0;
+  
+  // 各ソースを順次実行
+  const sources = ['tokyo-shigoto', 'tokyo-kosha', 'tokyo-hataraku'];
+  const baseUrl = `http://localhost:3000/api/cron`;
+  const cronSecret = (c.env as any).CRON_SECRET;
+  
+  for (const source of sources) {
+    try {
+      console.log(`[Tokyo-All] Running: ${source}`);
+      
+      const response = await fetch(`${baseUrl}/scrape-${source}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Cron-Secret': cronSecret,
+        },
+      });
+      
+      const result = await response.json() as any;
+      
+      if (result.success) {
+        results.push({
+          source,
+          status: 'success',
+          items_new: result.data?.items_new ?? 0,
+          items_updated: result.data?.items_updated ?? 0,
+          items_skipped: result.data?.items_skipped ?? 0,
+        });
+        totalNew += result.data?.items_new ?? 0;
+        totalUpdated += result.data?.items_updated ?? 0;
+        totalSkipped += result.data?.items_skipped ?? 0;
+      } else {
+        results.push({
+          source,
+          status: 'failed',
+          error: result.error?.message ?? 'Unknown error',
+        });
+        errors.push(`${source}: ${result.error?.message ?? 'Unknown error'}`);
+      }
+      
+      // 各ソース間で1秒待機
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      results.push({
+        source,
+        status: 'error',
+        error: errMsg,
+      });
+      errors.push(`${source}: ${errMsg}`);
+    }
+  }
+  
+  // P2-0: 実行ログ完了
+  if (runId) {
+    try {
+      await finishCronRun(db, runId, errors.length > 0 ? 'partial' : 'success', {
+        items_processed: sources.length,
+        items_inserted: totalNew,
+        items_updated: totalUpdated,
+        items_skipped: totalSkipped,
+        error_count: errors.length,
+        errors: errors,
+        metadata: {
+          sources_run: sources,
+          results,
+        },
+      });
+    } catch (logErr) {
+      console.warn('[Tokyo-All] Failed to finish cron_run log:', logErr);
+    }
+  }
+  
+  return c.json<ApiResponse<{
+    message: string;
+    total_new: number;
+    total_updated: number;
+    total_skipped: number;
+    results: any[];
+    errors: string[];
+    timestamp: string;
+    run_id?: string;
+  }>>({
+    success: true,
+    data: {
+      message: 'Tokyo all sources scrape completed',
+      total_new: totalNew,
+      total_updated: totalUpdated,
+      total_skipped: totalSkipped,
+      results,
+      errors,
+      timestamp: new Date().toISOString(),
+      run_id: runId ?? undefined,
+    },
+  });
+});
+
 export default cron;
