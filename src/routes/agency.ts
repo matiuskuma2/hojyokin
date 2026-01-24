@@ -2181,7 +2181,7 @@ agencyRoutes.get('/dashboard-v2', async (c) => {
                COALESCE(published_at, first_seen_at) as published_at, 
                first_seen_at as detected_at, 
                CASE 
-                 WHEN is_new = 1 THEN 'new'
+                 WHEN first_seen_at > datetime('now', '-7 days') THEN 'new'
                  WHEN status = 'closed' THEN 'closing'
                  ELSE 'info'
                END as event_type, 
@@ -2190,13 +2190,13 @@ agencyRoutes.get('/dashboard-v2', async (c) => {
                issuer_name,
                subsidy_amount_max,
                subsidy_rate_text,
-               status
+               status,
+               CASE WHEN prefecture_code IN (${placeholders}) THEN 1 ELSE 0 END as is_client_area
         FROM subsidy_feed_items
-        WHERE source_type IN ('prefecture', 'government')
+        WHERE source_type IN ('prefecture')
         AND (prefecture_code IN (${placeholders}) OR prefecture_code IS NULL)
         ORDER BY 
           CASE WHEN prefecture_code IN (${placeholders}) THEN 0 ELSE 1 END,
-          is_new DESC,
           first_seen_at DESC
         LIMIT ?
       `).bind(...prefCodes, ...prefCodes, newsLimit * 2).all();
@@ -2207,7 +2207,7 @@ agencyRoutes.get('/dashboard-v2', async (c) => {
                COALESCE(published_at, first_seen_at) as published_at, 
                first_seen_at as detected_at, 
                CASE 
-                 WHEN is_new = 1 THEN 'new'
+                 WHEN first_seen_at > datetime('now', '-7 days') THEN 'new'
                  WHEN status = 'closed' THEN 'closing'
                  ELSE 'info'
                END as event_type,
@@ -2216,10 +2216,11 @@ agencyRoutes.get('/dashboard-v2', async (c) => {
                issuer_name,
                subsidy_amount_max,
                subsidy_rate_text,
-               status
+               status,
+               0 as is_client_area
         FROM subsidy_feed_items
-        WHERE source_type IN ('prefecture', 'government')
-        ORDER BY is_new DESC, first_seen_at DESC
+        WHERE source_type IN ('prefecture')
+        ORDER BY first_seen_at DESC
         LIMIT ?
       `).bind(newsLimit * 2).all();
     }
