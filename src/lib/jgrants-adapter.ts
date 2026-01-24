@@ -47,6 +47,16 @@ export interface AdapterDetailResponse extends JGrantsDetailResult {
   wall_chat_ready: boolean;
   /** 壁打ちに不足している項目 */
   wall_chat_missing: string[];
+  /** P3-2C: detail_json（様式情報含む） */
+  detail_json?: Record<string, any> | null;
+  /** P3-2C: 必要様式（required_forms） */
+  required_forms?: Array<{
+    form_id: string;
+    name: string;
+    fields: Array<{ name: string; description?: string; required?: boolean }>;
+    source_page?: string;
+    notes?: string;
+  }>;
 }
 
 /**
@@ -133,12 +143,29 @@ export class JGrantsAdapter {
       const jsonStr = detailJsonStr || JSON.stringify(detail);
       const searchable = checkSearchableFromJson(jsonStr);
       const wallChatResult = checkWallChatReadyFromJson(jsonStr);
+      
+      // P3-2C: detail_jsonからrequired_formsを取得
+      let detailJsonObj: Record<string, any> | null = null;
+      let requiredForms: AdapterDetailResponse['required_forms'] = undefined;
+      if (detailJsonStr) {
+        try {
+          detailJsonObj = JSON.parse(detailJsonStr);
+          if (detailJsonObj?.required_forms && Array.isArray(detailJsonObj.required_forms)) {
+            requiredForms = detailJsonObj.required_forms;
+          }
+        } catch {
+          // パースエラーは無視
+        }
+      }
+      
       return {
         ...detail,
         source,
         detail_ready: searchable,
         wall_chat_ready: wallChatResult.ready,
         wall_chat_missing: wallChatResult.missing,
+        detail_json: detailJsonObj,
+        required_forms: requiredForms,
       };
     };
     

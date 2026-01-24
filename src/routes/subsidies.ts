@@ -253,6 +253,8 @@ subsidies.get('/:subsidy_id', async (c) => {
       detail_ready: boolean;
       wall_chat_ready: boolean;
       wall_chat_missing: string[];
+      detail_json?: Record<string, any> | null;
+      required_forms?: typeof detailResponse.required_forms;
     }>>({
       success: true,
       data: {
@@ -263,6 +265,8 @@ subsidies.get('/:subsidy_id', async (c) => {
         detail_ready: detailResponse.detail_ready, // P0-2-1: SEARCHABLE条件判定
         wall_chat_ready: detailResponse.wall_chat_ready ?? false, // WALL_CHAT_READY判定
         wall_chat_missing: detailResponse.wall_chat_missing || [], // 不足要素リスト
+        detail_json: detailResponse.detail_json, // P3-2C: 様式情報含む詳細JSON
+        required_forms: detailResponse.required_forms, // P3-2C: 必要様式
       },
     });
   } catch (error) {

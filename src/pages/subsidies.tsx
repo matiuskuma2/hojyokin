@@ -2151,7 +2151,8 @@ subsidyPages.get('/subsidies/:id', (c) => {
           // 要件・必要書類・様式も取得
           loadEligibility();
           loadDocuments();
-          loadForms(res.data.subsidy);
+          // P3-2C: res.data全体を渡す（required_formsはres.data直下にある）
+          loadForms(res.data);
           
         } catch (e) {
           console.error('Load detail error:', e);
@@ -2437,21 +2438,38 @@ subsidyPages.get('/subsidies/:id', (c) => {
       }
       
       // 様式情報表示（P3-SCORE1: required_forms）
-      function loadForms(subsidyData) {
+      // P3-2C: APIレスポンス全体を受け取り、required_formsを取得
+      function loadForms(responseData) {
         try {
-          // detail_jsonからrequired_formsを取得
+          // P3-2C: required_formsを優先順位で取得
+          // 1. res.data.required_forms (APIレスポンス直下)
+          // 2. res.data.detail_json.required_forms (detail_json内)
+          // 3. res.data.subsidy.required_forms (補助金オブジェクト内)
           let forms = [];
-          if (subsidyData.required_forms) {
-            forms = subsidyData.required_forms;
-          } else if (subsidyData.detail_json) {
+          
+          // 1. APIレスポンス直下のrequired_forms
+          if (responseData.required_forms && Array.isArray(responseData.required_forms)) {
+            forms = responseData.required_forms;
+            console.log('[P3-2C] Found required_forms in responseData:', forms.length);
+          }
+          // 2. detail_json内のrequired_forms
+          else if (responseData.detail_json) {
             try {
-              const detail = typeof subsidyData.detail_json === 'string' 
-                ? JSON.parse(subsidyData.detail_json) 
-                : subsidyData.detail_json;
-              forms = detail.required_forms || [];
+              const detail = typeof responseData.detail_json === 'string' 
+                ? JSON.parse(responseData.detail_json) 
+                : responseData.detail_json;
+              if (detail.required_forms && Array.isArray(detail.required_forms)) {
+                forms = detail.required_forms;
+                console.log('[P3-2C] Found required_forms in detail_json:', forms.length);
+              }
             } catch (e) {
               console.warn('Failed to parse detail_json for forms:', e);
             }
+          }
+          // 3. subsidyオブジェクト内（フォールバック）
+          else if (responseData.subsidy?.required_forms) {
+            forms = responseData.subsidy.required_forms;
+            console.log('[P3-2C] Found required_forms in subsidy:', forms.length);
           }
           
           if (forms.length > 0) {
