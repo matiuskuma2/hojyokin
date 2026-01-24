@@ -6,7 +6,55 @@
 - **Version**: 1.7.0
 - **Goal**: 企業情報を登録するだけで、最適な補助金・助成金を自動でマッチング＆申請書ドラフト作成
 
-### 🎉 最新アップデート (v1.9.0) - P2 安全ゲート + Cron定期化
+### 🎉 最新アップデート (v2.0.0) - P3-1B 東京3ソース + JGrants壁打ち基盤
+
+**P3-1Bフェーズ完了（2026-01-24）:**
+
+| 項目 | 状態 | 詳細 |
+|------|------|------|
+| WALL_CHAT_READY | ✅ **31件** | tokyo-kosha 22 + jgrants 5 + tokyo-shigoto 4 |
+| 東京3ソース | ✅ | tokyo-shigoto, tokyo-kosha, tokyo-hataraku (all enabled) |
+| feed_sources | ✅ | src-tokyo-* 3件すべて is_active=1 |
+| required_forms抽出 | ✅ | extractRequiredForms() + mergeRequiredForms() |
+| isWallChatReady() | ✅ | 5項目判定関数（凍結仕様v2） |
+| cron_runs監査 | ✅ | items_processed/inserted/updated/skipped記録 |
+
+**WALL_CHAT_READY 内訳:**
+| ソース | 件数 | WALL_CHAT_READY |
+|--------|------|-----------------|
+| tokyo-kosha | 23 | 22 |
+| jgrants | 2,894 | 5 |
+| tokyo-shigoto | 13 | 4 |
+| manual | 8 | 0 |
+| **合計** | **2,938** | **31** |
+
+**JGrants主要5制度（WALL_CHAT_READY化済み）:**
+1. 小規模事業者持続化補助金＜災害支援枠＞
+2. 小規模事業者持続化補助金＜共同・協業型＞
+3. 事業再構築補助金（共同申請_リース会社）
+4. 省力化等の大規模成長投資補助金（令和７年度補正）
+5. 小規模事業者持続化補助金＜創業型＞
+
+**Cronエンドポイント（cron-job.org等から呼び出し）:**
+```bash
+# 東京しごと財団
+POST https://hojyokin.pages.dev/api/cron/scrape-tokyo-shigoto
+Header: X-Cron-Secret: {CRON_SECRET}
+
+# 東京都中小企業振興公社
+POST https://hojyokin.pages.dev/api/cron/scrape-tokyo-kosha
+Header: X-Cron-Secret: {CRON_SECRET}
+
+# TOKYOはたらくネット
+POST https://hojyokin.pages.dev/api/cron/scrape-tokyo-hataraku
+Header: X-Cron-Secret: {CRON_SECRET}
+```
+
+**推奨Cronスケジュール:** 毎日 06:00 JST
+
+---
+
+### 過去アップデート (v1.9.0) - P2 安全ゲート + Cron定期化
 
 **P2フェーズ完了（2026-01-23）:**
 
@@ -23,8 +71,6 @@
 # 1回目: items_new=13, items_skipped=0
 # 2回目: items_new=0, items_skipped=13 (完全冪等)
 ```
-
-**推奨Cronスケジュール:** 毎日 06:00 JST
 
 **凍結ドキュメント:** `docs/FEED_PIPELINE_SPEC.md`
 
