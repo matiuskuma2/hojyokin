@@ -6,34 +6,42 @@
 - **Version**: 1.7.0
 - **Goal**: 企業情報を登録するだけで、最適な補助金・助成金を自動でマッチング＆申請書ドラフト作成
 
-### 🎉 最新アップデート (v2.0.0) - P3-1B 東京3ソース + JGrants壁打ち基盤
+### 🎉 最新アップデート (v2.1.0) - P3-2C/D required_forms + 主要5制度完了
 
-**P3-1Bフェーズ完了（2026-01-24）:**
+**P3-2C/Dフェーズ完了（2026-01-24）:**
 
 | 項目 | 状態 | 詳細 |
 |------|------|------|
-| WALL_CHAT_READY | ✅ **36件** | tokyo-kosha 23 + tokyo-shigoto 8 + jgrants 5 |
-| 東京3ソース | ✅ | tokyo-shigoto, tokyo-kosha, tokyo-hataraku (all enabled) |
-| feed_sources | ✅ | src-tokyo-* 3件すべて is_active=1 |
-| required_forms抽出 | ✅ | extractRequiredForms() + mergeRequiredForms() |
-| isWallChatReady() | ✅ | 5項目判定関数（凍結仕様v2） |
-| cron_runs監査 | ✅ | items_processed/inserted/updated/skipped記録 |
+| WALL_CHAT_READY | ✅ **43件** | tokyo-kosha 23 + tokyo-shigoto 12 + jgrants 5 + manual 3 |
+| P3-2C required_forms | ✅ | 2制度×forms≥2×fields≥3 合格（8制度で達成） |
+| P3-2D 主要5制度 | ✅ | IT導入/ものづくり/持続化/省力化/再構築すべて壁打ち可能 |
+| Workers Cron | ✅ | hojyokin-cron-feed（D1直書き、毎日06:00 JST） |
+| 二重計上防止 | ✅ | dedupe_key UNIQUE + content_hash冪等性 |
 
 **WALL_CHAT_READY 内訳:**
-| ソース | 件数 | WALL_CHAT_READY |
-|--------|------|-----------------|
-| tokyo-kosha | 23 | **23** (100%) |
-| tokyo-shigoto | 13 | **8** (62%) |
-| jgrants | 2,894 | **5** (主要5制度) |
-| manual | 8 | 0 |
-| **合計** | **2,938** | **36** |
+| ソース | 件数 | WALL_CHAT_READY | 率 |
+|--------|------|-----------------|-----|
+| tokyo-kosha | 23 | **23** | 100% |
+| tokyo-shigoto | 28 | **12** | 42.9% |
+| jgrants | 2,894 | **5** | 0.2% |
+| manual | 8 | **3** | 37.5% |
+| **合計** | **2,953** | **43** | - |
 
-**JGrants主要5制度（WALL_CHAT_READY化済み）:**
+**主要5制度（P3-2D WALL_CHAT_READY化済み）:**
+| # | 制度 | ID | required_forms |
+|---|------|----|----|
+| 1 | IT導入補助金2025 | REAL-001 | 2 |
+| 2 | ものづくり補助金 | REAL-002 | 3 |
+| 3 | 持続化補助金（一般型） | REAL-003 | 3 |
+| 4 | 省力化投資補助金 | a0WJ200000CDWerMAH | 2 |
+| 5 | 事業再構築補助金 | a0W5h00000UaiqSEAR | 3 |
+
+**JGrants追加5制度（WALL_CHAT_READY）:**
 1. 小規模事業者持続化補助金＜災害支援枠＞
 2. 小規模事業者持続化補助金＜共同・協業型＞
-3. 事業再構築補助金（共同申請_リース会社）
+3. 小規模事業者持続化補助金＜創業型＞
 4. 省力化等の大規模成長投資補助金（令和７年度補正）
-5. 小規模事業者持続化補助金＜創業型＞
+5. 事業再構築補助金（共同申請）
 
 **Cronエンドポイント（cron-job.org等から呼び出し）:**
 ```bash
