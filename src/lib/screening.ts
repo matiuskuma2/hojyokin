@@ -460,7 +460,14 @@ export function performBatchScreening(
 }
 
 /**
- * スクリーニング結果をステータスでソート
+ * スクリーニング結果をソート
+ * 
+ * P3-SCORE1 凍結ソート順:
+ * 1. wall_chat_ready DESC (壁打ち可能が上位)
+ * 2. evaluation.status (PROCEED > CAUTION > DO_NOT_PROCEED)
+ * 3. score DESC
+ * 4. acceptance_end_datetime ASC (締切が近い順)
+ * 5. subsidy.id ASC (タイブレーク固定)
  */
 export function sortByStatus(results: MatchResult[]): MatchResult[] {
   const statusOrder: Record<EvaluationStatus, number> = {
@@ -470,9 +477,26 @@ export function sortByStatus(results: MatchResult[]): MatchResult[] {
   };
   
   return [...results].sort((a, b) => {
+    // 1. wall_chat_ready DESC (true=0, false/undefined=1)
+    const aWallChat = (a.subsidy as any).wall_chat_ready === true ? 0 : 1;
+    const bWallChat = (b.subsidy as any).wall_chat_ready === true ? 0 : 1;
+    if (aWallChat !== bWallChat) return aWallChat - bWallChat;
+    
+    // 2. status
     const statusDiff = statusOrder[a.evaluation.status] - statusOrder[b.evaluation.status];
     if (statusDiff !== 0) return statusDiff;
-    return b.evaluation.score - a.evaluation.score;
+    
+    // 3. score DESC
+    const scoreDiff = b.evaluation.score - a.evaluation.score;
+    if (scoreDiff !== 0) return scoreDiff;
+    
+    // 4. deadline ASC (近い方が上)
+    const aDeadline = a.subsidy.acceptance_end_datetime || '9999-12-31';
+    const bDeadline = b.subsidy.acceptance_end_datetime || '9999-12-31';
+    if (aDeadline !== bDeadline) return aDeadline.localeCompare(bDeadline);
+    
+    // 5. id ASC (タイブレーク固定)
+    return a.subsidy.id.localeCompare(b.subsidy.id);
   });
 }
 

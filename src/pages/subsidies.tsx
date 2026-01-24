@@ -1845,6 +1845,10 @@ subsidyPages.get('/subsidies/:id', (c) => {
                     class="tab-btn px-6 py-3 border-b-2 border-transparent text-gray-500 hover:text-gray-700">
               <i class="fas fa-file-alt mr-1"></i>必要書類
             </button>
+            <button onclick="switchTab('forms')" data-tab="forms"
+                    class="tab-btn px-6 py-3 border-b-2 border-transparent text-gray-500 hover:text-gray-700">
+              <i class="fas fa-file-signature mr-1"></i>様式
+            </button>
             <button onclick="switchTab('evaluation')" data-tab="evaluation"
                     class="tab-btn px-6 py-3 border-b-2 border-transparent text-gray-500 hover:text-gray-700">
               <i class="fas fa-chart-bar mr-1"></i>マッチング結果
@@ -2038,6 +2042,18 @@ subsidyPages.get('/subsidies/:id', (c) => {
             </div>
           </div>
           
+          <!-- 様式タブ（P3-SCORE1: required_forms表示） -->
+          <div id="tab-forms" class="tab-content hidden">
+            <div class="mb-4">
+              <h3 class="text-lg font-semibold mb-2">申請様式と記載項目</h3>
+              <p class="text-sm text-gray-600">各様式で必要な記載項目の一覧です。壁打ちチャットで詳細を確認できます。</p>
+            </div>
+            
+            <div id="forms-list" class="space-y-4">
+              <p class="text-gray-500">様式情報を読み込み中...</p>
+            </div>
+          </div>
+          
           <!-- マッチング結果タブ -->
           <div id="tab-evaluation" class="tab-content hidden">
             <div id="evaluation-content">
@@ -2132,9 +2148,10 @@ subsidyPages.get('/subsidies/:id', (c) => {
           subsidyData = res.data;
           renderDetail(res.data);
           
-          // 要件・必要書類も取得
+          // 要件・必要書類・様式も取得
           loadEligibility();
           loadDocuments();
+          loadForms(res.data.subsidy);
           
         } catch (e) {
           console.error('Load detail error:', e);
@@ -2417,6 +2434,73 @@ subsidyPages.get('/subsidies/:id', (c) => {
         }
         // 両方のデータ読み込みが完了したら警告をチェック
         checkAndShowDataWarning();
+      }
+      
+      // 様式情報表示（P3-SCORE1: required_forms）
+      function loadForms(subsidyData) {
+        try {
+          // detail_jsonからrequired_formsを取得
+          let forms = [];
+          if (subsidyData.required_forms) {
+            forms = subsidyData.required_forms;
+          } else if (subsidyData.detail_json) {
+            try {
+              const detail = typeof subsidyData.detail_json === 'string' 
+                ? JSON.parse(subsidyData.detail_json) 
+                : subsidyData.detail_json;
+              forms = detail.required_forms || [];
+            } catch (e) {
+              console.warn('Failed to parse detail_json for forms:', e);
+            }
+          }
+          
+          if (forms.length > 0) {
+            const html = forms.map((form, idx) => \`
+              <div class="bg-gray-50 border border-gray-200 rounded-lg p-4">
+                <div class="flex items-start justify-between mb-2">
+                  <h4 class="font-semibold text-gray-800">
+                    <i class="fas fa-file-alt text-green-600 mr-2"></i>
+                    \${escapeHtml(form.name || '様式' + (idx + 1))}
+                  </h4>
+                  \${form.form_id ? \`<span class="text-xs bg-gray-200 text-gray-600 px-2 py-1 rounded">\${escapeHtml(form.form_id)}</span>\` : ''}
+                </div>
+                
+                \${form.notes ? \`
+                  <p class="text-sm text-gray-600 mb-3">
+                    <i class="fas fa-info-circle text-blue-500 mr-1"></i>
+                    \${escapeHtml(form.notes)}
+                  </p>
+                \` : ''}
+                
+                <div class="mt-2">
+                  <p class="text-xs text-gray-500 mb-2">記載項目:</p>
+                  <ul class="grid grid-cols-1 md:grid-cols-2 gap-2">
+                    \${(form.fields || []).map(field => \`
+                      <li class="flex items-center text-sm text-gray-700">
+                        <i class="fas fa-check-circle text-green-500 mr-2 text-xs"></i>
+                        \${escapeHtml(field)}
+                      </li>
+                    \`).join('')}
+                  </ul>
+                </div>
+              </div>
+            \`).join('');
+            
+            document.getElementById('forms-list').innerHTML = html;
+          } else {
+            document.getElementById('forms-list').innerHTML = \`
+              <div class="text-center py-8 text-gray-500">
+                <i class="fas fa-file-signature text-4xl mb-3 text-gray-300"></i>
+                <p>様式情報がまだ登録されていません。</p>
+                <p class="text-sm mt-2">壁打ちチャットで申請書類の詳細を確認できます。</p>
+              </div>
+            \`;
+          }
+        } catch (e) {
+          console.error('Load forms error:', e);
+          document.getElementById('forms-list').innerHTML = 
+            '<p class="text-red-500">様式情報の読み込みに失敗しました。</p>';
+        }
       }
       
       // 要件取り込みジョブ開始
