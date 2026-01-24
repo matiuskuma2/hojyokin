@@ -136,13 +136,29 @@ source_type IN ('platform','support_info','prefecture','municipal','ministry','o
 
 ---
 
-### P1-2: 顧客所在地連動NEWS優先 🔴 未着手
+### P1-2: 顧客所在地連動NEWS優先 ✅ 完了
 
-**仕様**:
-- 顧客（agency_clients → companies.prefecture）の所在地を取得
-- `prefecture_code` 一致のNEWSを上位表示
+**実装内容（2026-01-24）**:
 
-**実装箇所**: `/api/agency/dashboard-v2` または `public-news`
+1. **顧客所在地の取得**:
+   - `agency_clients` → `companies.prefecture` で都道府県コード一覧を取得
+   - prefCodes 配列に格納
+
+2. **NEWSソート優先度**:
+   - `CASE WHEN prefecture_code IN (prefCodes) THEN 0 ELSE 1 END` で顧客エリアを最優先
+   - その後 `first_seen_at DESC` で新しいものを上位に
+
+3. **UI表示**:
+   - `is_client_area = 1` の場合、「⭐ 顧客エリア」バッジを表示
+   - 緑色 `bg-emerald-100 text-emerald-700` スタイル
+
+4. **is_new カラムの代替**:
+   - 0101マイグレーションで削除されたため
+   - `first_seen_at > datetime('now', '-7 days')` で「新着」判定
+
+**対応エンドポイント**:
+- `/api/agency/dashboard-v2`: 顧客所在地連動実装済み
+- `/api/agency/public-news`: prefectureフィルタ対応済み（クエリパラメータ）
 
 ---
 
@@ -159,8 +175,8 @@ source_type IN ('platform','support_info','prefecture','municipal','ministry','o
 1. ~~**P0-2**: POST/PUTバリデーション強化~~ ✅ 完了
 2. ~~**P0-3**: リンク管理の状態遷移確認~~ ✅ 実装確認済み
 3. **P0-1**: ナビゲーション破綻テスト（軽微） → 次回実施
-4. **P1-2**: 顧客所在地連動NEWS → 次回着手
-5. **P1-3**: おすすめサジェスト
+4. ~~**P1-2**: 顧客所在地連動NEWS~~ ✅ 完了
+5. **P1-3**: おすすめサジェスト → 次回着手
 
 ---
 
