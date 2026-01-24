@@ -251,6 +251,8 @@ subsidies.get('/:subsidy_id', async (c) => {
       evaluation: typeof evaluation;
       source: string;
       detail_ready: boolean;
+      wall_chat_ready: boolean;
+      wall_chat_missing: string[];
     }>>({
       success: true,
       data: {
@@ -258,7 +260,9 @@ subsidies.get('/:subsidy_id', async (c) => {
         attachments,
         evaluation,
         source,
-        detail_ready: detailResponse.detail_ready, // P0-2-1: 壁打ち成立判定
+        detail_ready: detailResponse.detail_ready, // P0-2-1: SEARCHABLE条件判定
+        wall_chat_ready: detailResponse.wall_chat_ready ?? false, // WALL_CHAT_READY判定
+        wall_chat_missing: detailResponse.wall_chat_missing || [], // 不足要素リスト
       },
     });
   } catch (error) {

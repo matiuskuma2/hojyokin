@@ -3661,14 +3661,14 @@ agencyPages.get('/agency/search', (c) => {
                        class="bg-emerald-600 text-white px-4 py-2 rounded-md hover:bg-emerald-700 text-sm text-center">
                       <i class="fas fa-arrow-right mr-1"></i>詳細を見る
                     </a>
-                    \${(e.status !== 'NO' && e.status !== 'DO_NOT_PROCEED' && s.detail_ready !== false) ? \`
+                    \${(e.status !== 'NO' && e.status !== 'DO_NOT_PROCEED' && s.wall_chat_ready !== false) ? \`
                       <a href="/chat?subsidy_id=\${s.id}&company_id=\${document.getElementById('client-select').value}&from=agency&back=/agency/search" 
                          class="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700 text-sm text-center">
                         <i class="fas fa-comments mr-1"></i>壁打ち
                       </a>
-                    \` : (s.detail_ready === false ? \`
-                      <span class="text-xs text-gray-400 text-center px-2">
-                        <i class="fas fa-info-circle mr-1"></i>詳細情報準備中
+                    \` : (s.wall_chat_ready === false ? \`
+                      <span class="text-xs text-gray-400 text-center px-2" title="\${(s.wall_chat_missing || []).join(', ')}">
+                        <i class="fas fa-clock mr-1"></i>壁打ち準備中
                       </span>
                     \` : '')}
                   </div>

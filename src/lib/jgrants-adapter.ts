@@ -12,6 +12,7 @@ import type { Env } from '../types';
 import type { JGrantsSearchResult, JGrantsDetailResult } from '../types';
 import { JGrantsClient, JGrantsError } from './jgrants';
 import { MOCK_SUBSIDIES, getMockSubsidyDetail } from './mock-subsidies';
+import { checkSearchableFromJson, checkWallChatReadyFromJson, type WallChatReadyResult } from './wall-chat-ready';
 
 export type JGrantsMode = 'live' | 'mock' | 'cached-only';
 
@@ -42,6 +43,10 @@ export interface AdapterDetailResponse extends JGrantsDetailResult {
   source: 'live' | 'mock' | 'cache';
   /** P0-2-1: 壁打ち成立に必要な情報があるか（SEARCHABLE条件） */
   detail_ready: boolean;
+  /** WALL_CHAT_READY: 壁打ちが完全に成立するか（様式×記載項目含む） */
+  wall_chat_ready: boolean;
+  /** 壁打ちに不足している項目 */
+  wall_chat_missing: string[];
 }
 
 /**
@@ -116,33 +121,43 @@ export class JGrantsAdapter {
   /**
    * 補助金詳細取得
    * P0-2-1: detail_ready フラグを返す（壁打ち成立判定）
+   * WALL_CHAT_READY: 様式×記載項目を含む完全判定
    */
   async getDetail(id: string): Promise<AdapterDetailResponse> {
     // 1. キャッシュを先に確認
     const cachedRow = await this.getDetailFromCacheRaw(id);
     const cached = cachedRow ? this.parseDetailRow(cachedRow) : null;
     
-    // detail_ready判定用のヘルパー
-    const checkReady = (detail: JGrantsDetailResult): boolean => {
-      return this.isSearchable(JSON.stringify(detail));
+    // 判定用のヘルパー
+    const buildResponse = (detail: JGrantsDetailResult, source: 'live' | 'mock' | 'cache', detailJsonStr?: string | null): AdapterDetailResponse => {
+      const jsonStr = detailJsonStr || JSON.stringify(detail);
+      const searchable = checkSearchableFromJson(jsonStr);
+      const wallChatResult = checkWallChatReadyFromJson(jsonStr);
+      return {
+        ...detail,
+        source,
+        detail_ready: searchable,
+        wall_chat_ready: wallChatResult.ready,
+        wall_chat_missing: wallChatResult.missing,
+      };
     };
     
     switch (this.mode) {
       case 'mock':
         const mockDetail = getMockSubsidyDetail(id);
         if (mockDetail) {
-          return { ...mockDetail, source: 'mock', detail_ready: checkReady(mockDetail) };
+          return buildResponse(mockDetail, 'mock');
         }
         throw new JGrantsError(`Mock subsidy not found: ${id}`, 404);
       
       case 'cached-only':
         if (cached) {
-          return { ...cached, source: 'cache', detail_ready: cachedRow ? this.isSearchable(cachedRow.detail_json as string) : false };
+          return buildResponse(cached, 'cache', cachedRow?.detail_json as string);
         }
         // モックをチェック
         const mockFallback = getMockSubsidyDetail(id);
         if (mockFallback) {
-          return { ...mockFallback, source: 'mock', detail_ready: checkReady(mockFallback) };
+          return buildResponse(mockFallback, 'mock');
         }
         throw new JGrantsError(`Subsidy not found: ${id}`, 404);
       
@@ -151,16 +166,16 @@ export class JGrantsAdapter {
           const liveDetail = await this.client.getDetail(id);
           // 成功したらキャッシュに保存
           await this.saveDetailToCache(id, liveDetail);
-          return { ...liveDetail, source: 'live', detail_ready: checkReady(liveDetail) };
+          return buildResponse(liveDetail, 'live');
         } catch (error) {
           console.error('JGrants API error, falling back to cache:', error);
           if (cached) {
-            return { ...cached, source: 'cache', detail_ready: cachedRow ? this.isSearchable(cachedRow.detail_json as string) : false };
+            return buildResponse(cached, 'cache', cachedRow?.detail_json as string);
           }
           // モックをチェック
           const mockFallback2 = getMockSubsidyDetail(id);
           if (mockFallback2) {
-            return { ...mockFallback2, source: 'mock', detail_ready: checkReady(mockFallback2) };
+            return buildResponse(mockFallback2, 'mock');
           }
           throw error;
         }
@@ -274,58 +289,7 @@ export class JGrantsAdapter {
     };
   }
 
-  /**
-   * 壁打ち成立に必要な情報があるかチェック（SEARCHABLE条件）
-   * 凍結仕様: detail_json に以下のうち2つ以上があればSEARCHABLE
-   * - overview または description
-   * - eligible_expenses または eligibility（配列/文字列で1件以上）
-   * - requirements または application_requirements
-   * - documents または required_documents または pdfUrls
-   * - official_links.top または related_url または detailUrl
-   */
-  private isSearchable(detailJson: string | null): boolean {
-    if (!detailJson || detailJson === '{}' || detailJson.length <= 2) {
-      return false;
-    }
-    
-    try {
-      const detail = JSON.parse(detailJson);
-      let score = 0;
-      
-      // 1. overview または description
-      if (detail.overview || detail.description) score++;
-      
-      // 2. eligible_expenses または eligibility（配列/文字列で1件以上）
-      const hasExpenses = 
-        (Array.isArray(detail.eligible_expenses) && detail.eligible_expenses.length > 0) ||
-        (typeof detail.eligible_expenses === 'string' && detail.eligible_expenses.length > 0) ||
-        (typeof detail.eligibility === 'string' && detail.eligibility.length > 0);
-      if (hasExpenses) score++;
-      
-      // 3. requirements または application_requirements
-      if (detail.requirements || detail.application_requirements) score++;
-      
-      // 4. documents または required_documents または pdfUrls
-      const hasDocs = 
-        detail.documents || 
-        detail.required_documents ||
-        (Array.isArray(detail.pdfUrls) && detail.pdfUrls.length > 0) ||
-        (Array.isArray(detail.attachments) && detail.attachments.length > 0);
-      if (hasDocs) score++;
-      
-      // 5. official_links.top または related_url または detailUrl
-      const hasUrl = 
-        (detail.official_links && detail.official_links.top) || 
-        detail.related_url ||
-        detail.detailUrl;
-      if (hasUrl) score++;
-      
-      // 2つ以上でSEARCHABLE
-      return score >= 2;
-    } catch (e) {
-      return false;
-    }
-  }
+  // isSearchable は wall-chat-ready.ts の checkSearchableFromJson に移行済み
 
   /**
    * D1キャッシュから検索
@@ -382,7 +346,7 @@ export class JGrantsAdapter {
       const filteredRows = includeUnready 
         ? (result.results || [])
         : (result.results || []).filter(row => 
-            this.isSearchable(row.detail_json as string | null)
+            checkSearchableFromJson(row.detail_json as string | null)
           );
       
       // ページネーション適用
@@ -390,10 +354,14 @@ export class JGrantsAdapter {
       const limit = params.limit || 20;
       const paginatedRows = filteredRows.slice(offset, offset + limit);
       
-      // 各補助金にdetail_readyフラグを付与
+      // 各補助金にdetail_ready, wall_chat_readyフラグを付与
       const subsidies = paginatedRows.map(row => {
         const subsidy = this.rowToSubsidy(row);
-        (subsidy as any).detail_ready = this.isSearchable(row.detail_json as string | null);
+        const detailJsonStr = row.detail_json as string | null;
+        const wallChatResult = checkWallChatReadyFromJson(detailJsonStr);
+        (subsidy as any).detail_ready = checkSearchableFromJson(detailJsonStr);
+        (subsidy as any).wall_chat_ready = wallChatResult.ready;
+        (subsidy as any).wall_chat_missing = wallChatResult.missing;
         return subsidy;
       });
       

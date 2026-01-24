@@ -91,6 +91,11 @@ export interface Subsidy {
   detail_json: string | null;
   cached_at: string;
   expires_at: string;
+  // P0-2-1: 品質ゲートフラグ
+  detail_ready?: boolean; // SEARCHABLE条件を満たすか
+  // WALL_CHAT_READY: 壁打ち可能判定
+  wall_chat_ready?: boolean;
+  wall_chat_missing?: string[];
 }
 
 // 評価結果
