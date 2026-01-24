@@ -1337,6 +1337,13 @@ cron.post('/generate-suggestions', async (c) => {
     
     for (const client of clients) {
       try {
+        // 凍結推奨: 旧キャッシュを消し込み（過去の補助金が表示され続ける事故を防止）
+        // 新しい上位3件を生成する前に、この顧客の古いsuggestionを全て削除
+        await db.prepare(`
+          DELETE FROM agency_suggestions_cache 
+          WHERE agency_id = ? AND company_id = ?
+        `).bind(client.agency_id, client.company_id).run();
+        
         const scored: any[] = [];
         
         for (const subsidy of subsidies) {
@@ -1616,20 +1623,34 @@ cron.post('/generate-suggestions', async (c) => {
 /**
  * 凍結: 配列を string[] に正規化
  * - 配列以外 → []
- * - object要素 → JSON.stringify
+ * - object要素 → reason/text/message/description を優先、なければ stringify
+ * - 100文字で切る（UX上の可読性）
  * - null/undefined → []
  */
 function ensureStringArray(arr: any): string[] {
   if (!Array.isArray(arr)) return [];
+  const MAX_LENGTH = 100;
   return arr.map((item: any) => {
-    if (typeof item === 'string') return item;
-    if (item === null || item === undefined) return '';
-    // objectや配列は文字列化（[object Object]防止）
-    try {
-      return typeof item === 'object' ? JSON.stringify(item) : String(item);
-    } catch {
-      return '[変換エラー]';
+    if (typeof item === 'string') {
+      return item.length > MAX_LENGTH ? item.slice(0, MAX_LENGTH) + '…' : item;
     }
+    if (item === null || item === undefined) return '';
+    // objectは可読性の高いフィールドを優先
+    if (typeof item === 'object') {
+      const readable = item.reason || item.text || item.message || item.description || item.name;
+      if (readable && typeof readable === 'string') {
+        return readable.length > MAX_LENGTH ? readable.slice(0, MAX_LENGTH) + '…' : readable;
+      }
+      // フォールバック: stringify（ただし長さ制限）
+      try {
+        const json = JSON.stringify(item);
+        return json.length > MAX_LENGTH ? json.slice(0, MAX_LENGTH) + '…' : json;
+      } catch {
+        return '[変換エラー]';
+      }
+    }
+    const str = String(item);
+    return str.length > MAX_LENGTH ? str.slice(0, MAX_LENGTH) + '…' : str;
   }).filter((s: string) => s.length > 0);
 }
 
