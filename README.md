@@ -12,7 +12,7 @@
 
 | 項目 | 状態 | 詳細 |
 |------|------|------|
-| WALL_CHAT_READY | ✅ **31件** | tokyo-kosha 22 + jgrants 5 + tokyo-shigoto 4 |
+| WALL_CHAT_READY | ✅ **36件** | tokyo-kosha 23 + tokyo-shigoto 8 + jgrants 5 |
 | 東京3ソース | ✅ | tokyo-shigoto, tokyo-kosha, tokyo-hataraku (all enabled) |
 | feed_sources | ✅ | src-tokyo-* 3件すべて is_active=1 |
 | required_forms抽出 | ✅ | extractRequiredForms() + mergeRequiredForms() |
@@ -22,11 +22,11 @@
 **WALL_CHAT_READY 内訳:**
 | ソース | 件数 | WALL_CHAT_READY |
 |--------|------|-----------------|
-| tokyo-kosha | 23 | 22 |
-| jgrants | 2,894 | 5 |
-| tokyo-shigoto | 13 | 4 |
+| tokyo-kosha | 23 | **23** (100%) |
+| tokyo-shigoto | 13 | **8** (62%) |
+| jgrants | 2,894 | **5** (主要5制度) |
 | manual | 8 | 0 |
-| **合計** | **2,938** | **31** |
+| **合計** | **2,938** | **36** |
 
 **JGrants主要5制度（WALL_CHAT_READY化済み）:**
 1. 小規模事業者持続化補助金＜災害支援枠＞
