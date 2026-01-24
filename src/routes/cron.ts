@@ -44,8 +44,9 @@ async function startCronRun(
   triggeredBy: 'cron' | 'manual' | 'api' = 'cron'
 ): Promise<string> {
   const runId = generateUUID();
+  // Note: 本番DBのカラム名は run_id
   await db.prepare(`
-    INSERT INTO cron_runs (id, job_type, status, triggered_by)
+    INSERT INTO cron_runs (run_id, job_type, status, triggered_by)
     VALUES (?, ?, 'running', ?)
   `).bind(runId, jobType, triggeredBy).run();
   return runId;
@@ -68,6 +69,7 @@ async function finishCronRun(
     metadata?: Record<string, any>;
   }
 ): Promise<void> {
+  // Note: 本番DBのカラム名は run_id
   await db.prepare(`
     UPDATE cron_runs SET
       status = ?,
@@ -79,7 +81,7 @@ async function finishCronRun(
       error_count = ?,
       errors_json = ?,
       metadata_json = ?
-    WHERE id = ?
+    WHERE run_id = ?
   `).bind(
     status,
     stats.items_processed ?? 0,
@@ -1233,5 +1235,443 @@ cron.get('/health', async (c) => {
     },
   });
 });
+
+/**
+ * P1-3-1: Suggestion生成ジョブ
+ * 
+ * POST /api/cron/generate-suggestions
+ * 
+ * 凍結仕様 v1:
+ * - 入力: agency_clients × subsidy_cache
+ * - 出力: agency_suggestions_cache に上位3件/顧客をキャッシュ
+ * - スコアリング:
+ *   - 地域一致 +40、全国 +20
+ *   - 業種一致 +25、全業種 +10
+ *   - 従業員条件マッチ +25、不一致 -30
+ *   - 締切14日以内 -10、7日以内 -20
+ *   - 受付中フラグが外なら score = 0
+ * - ステータス判定: 80以上 PROCEED, 50〜79 CAUTION, 0〜49 NO
+ * - BLOCKED顧客は除外（事故防止）
+ */
+cron.post('/generate-suggestions', async (c) => {
+  const db = c.env.DB;
+  
+  // P2-0: CRON_SECRET 検証
+  const authResult = verifyCronSecret(c);
+  if (!authResult.valid) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: authResult.error!.code,
+        message: authResult.error!.message,
+      },
+    }, authResult.error!.status);
+  }
+  
+  // P2-0: 実行ログ開始
+  let runId: string | null = null;
+  try {
+    runId = await startCronRun(db, 'generate-suggestions', 'cron');
+  } catch (logErr) {
+    console.warn('[Suggestions] Failed to start cron_run log:', logErr);
+  }
+  
+  let itemsNew = 0;
+  let itemsUpdated = 0;
+  let itemsSkipped = 0;
+  const errors: string[] = [];
+  
+  try {
+    // 1. 全Agencyの顧客を取得（BLOCKEDを除外）
+    // employee_countはcompaniesテーブルに直接存在
+    const clientsResult = await db.prepare(`
+      SELECT 
+        ac.id as client_id,
+        ac.agency_id,
+        ac.company_id,
+        ac.status,
+        c.name as company_name,
+        c.prefecture,
+        c.industry_major,
+        c.employee_count,
+        c.employee_band
+      FROM agency_clients ac
+      JOIN companies c ON ac.company_id = c.id
+      WHERE ac.status != 'blocked'
+        AND c.employee_count > 0
+    `).all();
+    
+    const clients = (clientsResult.results || []) as any[];
+    console.log(`[Suggestions] Processing ${clients.length} eligible clients`);
+    
+    if (clients.length === 0) {
+      if (runId) {
+        await finishCronRun(db, runId, 'success', {
+          items_processed: 0,
+          metadata: { message: 'No eligible clients found' },
+        });
+      }
+      return c.json<ApiResponse<{ message: string }>>({
+        success: true,
+        data: { message: 'No eligible clients to process' },
+      });
+    }
+    
+    // 2. 補助金データを取得（スコアリング用）
+    const subsidiesResult = await db.prepare(`
+      SELECT 
+        id,
+        title,
+        target_area_search,
+        target_industry,
+        target_number_of_employees,
+        acceptance_end_datetime,
+        request_reception_display_flag,
+        subsidy_max_limit,
+        subsidy_rate
+      FROM subsidy_cache
+      ORDER BY cached_at DESC
+      LIMIT 500
+    `).all();
+    
+    const subsidies = (subsidiesResult.results || []) as any[];
+    console.log(`[Suggestions] Found ${subsidies.length} subsidies to score`);
+    
+    // 3. 各顧客に対してスコアリング
+    const today = new Date();
+    
+    for (const client of clients) {
+      try {
+        const scored: any[] = [];
+        
+        for (const subsidy of subsidies) {
+          let score = 0;
+          const matchReasons: string[] = [];
+          const riskFlags: string[] = [];
+          
+          // 受付中フラグ確認
+          const isAccepting = subsidy.request_reception_display_flag === 1;
+          if (!isAccepting) {
+            // 受付終了でもスコア計算は行うが、上位になりにくくする
+            score = 0;
+            riskFlags.push('現在受付停止中');
+          } else {
+            // 地域マッチング
+            const targetArea = (subsidy.target_area_search || '').toLowerCase();
+            const clientPref = normalizePrefecture(client.prefecture || '');
+            
+            if (targetArea.includes('全国') || targetArea === '' || targetArea === 'null') {
+              score += 20;
+              matchReasons.push('全国対象の補助金');
+            } else if (clientPref && targetArea.includes(clientPref)) {
+              score += 40;
+              matchReasons.push(`${clientPref}対象の補助金`);
+            } else {
+              riskFlags.push('対象地域外の可能性');
+            }
+            
+            // 業種マッチング
+            const targetIndustry = (subsidy.target_industry || '').toLowerCase();
+            const clientIndustry = (client.industry_major || '').toLowerCase();
+            
+            if (targetIndustry === '' || targetIndustry === 'null' || targetIndustry.includes('全業種')) {
+              score += 10;
+              matchReasons.push('業種制限なし');
+            } else if (clientIndustry && targetIndustry.includes(clientIndustry)) {
+              score += 25;
+              matchReasons.push(`${client.industry_major}向け補助金`);
+            } else if (clientIndustry) {
+              riskFlags.push('業種条件の確認が必要');
+            }
+            
+            // 従業員数マッチング
+            const employeeCount = parseEmployeeCount(client.employee_count);
+            const targetEmployees = subsidy.target_number_of_employees || '';
+            
+            if (targetEmployees === '' || targetEmployees === 'null') {
+              score += 15;
+              matchReasons.push('従業員数制限なし');
+            } else if (employeeCount > 0 && checkEmployeeMatch(employeeCount, targetEmployees)) {
+              score += 25;
+              matchReasons.push('従業員数条件に適合');
+            } else if (employeeCount > 0) {
+              score -= 30;
+              riskFlags.push('従業員数条件を確認してください');
+            }
+            
+            // 締切チェック
+            if (subsidy.acceptance_end_datetime && subsidy.acceptance_end_datetime !== 'null') {
+              try {
+                const deadline = new Date(subsidy.acceptance_end_datetime);
+                const daysUntil = Math.ceil((deadline.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+                
+                if (daysUntil <= 0) {
+                  score = 0;
+                  riskFlags.push('申請期限終了');
+                } else if (daysUntil <= 7) {
+                  score -= 20;
+                  riskFlags.push(`申請期限まで${daysUntil}日`);
+                } else if (daysUntil <= 14) {
+                  score -= 10;
+                  riskFlags.push(`申請期限まで${daysUntil}日`);
+                }
+              } catch (e) {
+                // 日付パースエラーは無視
+              }
+            }
+          }
+          
+          // スコアを0〜100に正規化
+          score = Math.max(0, Math.min(100, score));
+          
+          // ステータス判定
+          let status: 'PROCEED' | 'CAUTION' | 'NO';
+          if (score >= 80) {
+            status = 'PROCEED';
+          } else if (score >= 50) {
+            status = 'CAUTION';
+          } else {
+            status = 'NO';
+          }
+          
+          scored.push({
+            subsidyId: subsidy.id,
+            title: subsidy.title,
+            score,
+            status,
+            matchReasons,
+            riskFlags,
+            subsidyMaxLimit: subsidy.subsidy_max_limit,
+            subsidyRate: subsidy.subsidy_rate,
+            deadline: subsidy.acceptance_end_datetime,
+            isAccepting,
+          });
+        }
+        
+        // 上位3件を選択（スコア順、同点なら受付中優先）
+        scored.sort((a, b) => {
+          if (b.score !== a.score) return b.score - a.score;
+          if (b.isAccepting !== a.isAccepting) return b.isAccepting ? 1 : -1;
+          return 0;
+        });
+        
+        const top3 = scored.slice(0, 3);
+        
+        // 4. agency_suggestions_cache にUPSERT
+        for (let rank = 0; rank < top3.length; rank++) {
+          const item = top3[rank];
+          const suggestionId = generateUUID();
+          const dedupeKey = `${client.agency_id}:${client.company_id}:${item.subsidyId}`;
+          const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+          
+          // 既存確認
+          const existing = await db.prepare(`
+            SELECT id FROM agency_suggestions_cache WHERE dedupe_key = ?
+          `).bind(dedupeKey).first<{ id: string }>();
+          
+          const matchReasonsJson = JSON.stringify(item.matchReasons);
+          const riskFlagsJson = JSON.stringify(item.riskFlags);
+          
+          if (existing) {
+            // 更新
+            await db.prepare(`
+              UPDATE agency_suggestions_cache SET
+                rank = ?,
+                score = ?,
+                status = ?,
+                match_reasons_json = ?,
+                risk_flags_json = ?,
+                subsidy_title = ?,
+                subsidy_max_amount = ?,
+                subsidy_rate = ?,
+                deadline = ?,
+                expires_at = ?,
+                updated_at = datetime('now')
+              WHERE id = ?
+            `).bind(
+              rank + 1,
+              item.score,
+              item.status,
+              matchReasonsJson,
+              riskFlagsJson,
+              item.title,
+              item.subsidyMaxLimit,
+              item.subsidyRate,
+              item.deadline !== 'null' ? item.deadline : null,
+              expiresAt,
+              existing.id
+            ).run();
+            itemsUpdated++;
+          } else {
+            // 新規挿入
+            await db.prepare(`
+              INSERT INTO agency_suggestions_cache (
+                id, agency_id, company_id, subsidy_id, dedupe_key,
+                rank, score, status, match_reasons_json, risk_flags_json,
+                subsidy_title, subsidy_max_amount, subsidy_rate, deadline,
+                expires_at, created_at, updated_at
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+            `).bind(
+              suggestionId,
+              client.agency_id,
+              client.company_id,
+              item.subsidyId,
+              dedupeKey,
+              rank + 1,
+              item.score,
+              item.status,
+              matchReasonsJson,
+              riskFlagsJson,
+              item.title,
+              item.subsidyMaxLimit,
+              item.subsidyRate,
+              item.deadline !== 'null' ? item.deadline : null,
+              expiresAt
+            ).run();
+            itemsNew++;
+          }
+        }
+        
+      } catch (clientErr) {
+        errors.push(`Client ${client.company_id}: ${clientErr instanceof Error ? clientErr.message : String(clientErr)}`);
+      }
+    }
+    
+    console.log(`[Suggestions] Completed: new=${itemsNew}, updated=${itemsUpdated}, skipped=${itemsSkipped}, errors=${errors.length}`);
+    
+    // P2-0: 実行ログ完了
+    if (runId) {
+      try {
+        await finishCronRun(db, runId, errors.length > 0 ? 'partial' : 'success', {
+          items_processed: clients.length,
+          items_inserted: itemsNew,
+          items_updated: itemsUpdated,
+          items_skipped: itemsSkipped,
+          error_count: errors.length,
+          errors: errors,
+          metadata: {
+            subsidies_count: subsidies.length,
+          },
+        });
+      } catch (logErr) {
+        console.warn('[Suggestions] Failed to finish cron_run log:', logErr);
+      }
+    }
+    
+    return c.json<ApiResponse<{
+      message: string;
+      clients_processed: number;
+      items_new: number;
+      items_updated: number;
+      items_skipped: number;
+      errors: string[];
+      timestamp: string;
+      run_id?: string;
+    }>>({
+      success: true,
+      data: {
+        message: 'Suggestions generated successfully',
+        clients_processed: clients.length,
+        items_new: itemsNew,
+        items_updated: itemsUpdated,
+        items_skipped: itemsSkipped,
+        errors,
+        timestamp: new Date().toISOString(),
+        run_id: runId ?? undefined,
+      },
+    });
+    
+  } catch (error) {
+    console.error('[Suggestions] Generation error:', error);
+    
+    if (runId) {
+      try {
+        await finishCronRun(db, runId, 'failed', {
+          error_count: 1,
+          errors: [error instanceof Error ? error.message : String(error)],
+        });
+      } catch (logErr) {
+        console.warn('[Suggestions] Failed to finish cron_run log:', logErr);
+      }
+    }
+    
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: 'INTERNAL_ERROR',
+        message: `Generation failed: ${error instanceof Error ? error.message : String(error)}`,
+      },
+    }, 500);
+  }
+});
+
+/**
+ * 都道府県名を正規化（コード/漢字名どちらでも対応）
+ */
+function normalizePrefecture(input: string): string {
+  const prefMap: Record<string, string> = {
+    '13': '東京', '東京都': '東京', '東京': '東京',
+    '14': '神奈川', '神奈川県': '神奈川', '神奈川': '神奈川',
+    '11': '埼玉', '埼玉県': '埼玉', '埼玉': '埼玉',
+    '12': '千葉', '千葉県': '千葉', '千葉': '千葉',
+    '27': '大阪', '大阪府': '大阪', '大阪': '大阪',
+    '23': '愛知', '愛知県': '愛知', '愛知': '愛知',
+    '40': '福岡', '福岡県': '福岡', '福岡': '福岡',
+    '01': '北海道', '北海道': '北海道',
+  };
+  return prefMap[input] || input.replace(/[都道府県]$/, '');
+}
+
+/**
+ * 従業員数を数値にパース
+ */
+function parseEmployeeCount(input: string | number | null): number {
+  if (typeof input === 'number') return input;
+  if (!input || input === 'null' || input === '') return 0;
+  
+  // "1-5", "6-20" のような範囲表記の場合、中間値を返す
+  const rangeMatch = input.match(/(\d+)\s*[-〜~]\s*(\d+)/);
+  if (rangeMatch) {
+    const min = parseInt(rangeMatch[1]);
+    const max = parseInt(rangeMatch[2]);
+    return Math.floor((min + max) / 2);
+  }
+  
+  // "300人以上" のような表記
+  const overMatch = input.match(/(\d+)[人名]?以上/);
+  if (overMatch) {
+    return parseInt(overMatch[1]);
+  }
+  
+  // 単純な数値
+  const num = parseInt(input.replace(/[^0-9]/g, ''));
+  return isNaN(num) ? 0 : num;
+}
+
+/**
+ * 従業員数条件にマッチするか判定
+ */
+function checkEmployeeMatch(count: number, condition: string): boolean {
+  if (!condition || condition === 'null') return true;
+  
+  // "中小企業" などの曖昧な条件は true
+  if (condition.includes('中小') || condition.includes('小規模')) {
+    return count <= 300;
+  }
+  
+  // "300人以下" のような条件
+  const underMatch = condition.match(/(\d+)[人名]?以下/);
+  if (underMatch) {
+    return count <= parseInt(underMatch[1]);
+  }
+  
+  // "50人以上" のような条件
+  const overMatch = condition.match(/(\d+)[人名]?以上/);
+  if (overMatch) {
+    return count >= parseInt(overMatch[1]);
+  }
+  
+  return true; // 判定できない場合はマッチとみなす
+}
 
 export default cron;

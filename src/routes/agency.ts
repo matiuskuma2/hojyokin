@@ -2262,33 +2262,42 @@ agencyRoutes.get('/dashboard-v2', async (c) => {
   }
   
   // ===== 3. 顧客おすすめ（suggestions） =====
-  // キャッシュから取得（なければ空、堅牢化）
+  // 凍結仕様v1: agency_suggestions_cache から取得
+  // P1-3-1: 新テーブルスキーマに合わせて修正
   let suggestions: any = { results: [] };
   try {
     suggestions = await db.prepare(`
       SELECT 
-        asc.agency_client_id,
+        asc.id,
+        asc.agency_id,
         asc.company_id,
-        ac.client_name,
-        c.name as company_name,
-        c.prefecture,
         asc.subsidy_id,
         asc.status,
         asc.score,
-        asc.match_reasons_json,
-        asc.risk_flags_json,
+        asc.rank,
+        asc.match_reasons_json as match_reasons,
+        asc.risk_flags_json as risk_flags,
         asc.subsidy_title,
-        asc.subsidy_deadline,
-        asc.subsidy_max_limit,
-        asc.deadline_days,
-        asc.rank_in_client
+        asc.subsidy_max_amount as subsidy_max_limit,
+        asc.subsidy_rate,
+        asc.deadline as acceptance_end_datetime,
+        c.name as company_name,
+        c.prefecture as company_prefecture,
+        c.industry_major as company_industry,
+        ac.id as agency_client_id,
+        ac.client_name,
+        CASE 
+          WHEN asc.deadline IS NOT NULL AND asc.deadline != 'null'
+          THEN julianday(asc.deadline) - julianday('now')
+          ELSE NULL 
+        END as deadline_days
       FROM agency_suggestions_cache asc
-      JOIN agency_clients ac ON asc.agency_client_id = ac.id
+      JOIN agency_clients ac ON asc.company_id = ac.company_id AND ac.agency_id = asc.agency_id
       JOIN companies c ON asc.company_id = c.id
       WHERE asc.agency_id = ?
-      AND asc.rank_in_client <= 3
+      AND asc.rank <= 3
       AND (asc.expires_at IS NULL OR asc.expires_at > datetime('now'))
-      ORDER BY ac.client_name, asc.rank_in_client
+      ORDER BY ac.client_name, asc.rank
       LIMIT 30
     `).bind(agencyId).all();
   } catch (e) {
@@ -2488,23 +2497,23 @@ agencyRoutes.get('/dashboard-v2', async (c) => {
         })),
       },
       
-      // 顧客おすすめ（凍結: reasons/risksはstring[]）
+      // 顧客おすすめ（凍結仕様v1: reasons/risksはstring[]）
       suggestions: (suggestions.results || []).map((s: any) => ({
         agency_client_id: s.agency_client_id,
         company_id: s.company_id,
-        client_name: s.client_name,
+        client_name: s.client_name || s.company_name,
         company_name: s.company_name,
-        prefecture: s.prefecture,
+        prefecture: s.company_prefecture,
         subsidy_id: s.subsidy_id,
         status: s.status,
         score: s.score,
-        match_reasons: safeParseJSON(s.match_reasons_json, []),
-        risk_flags: safeParseJSON(s.risk_flags_json, []),
+        match_reasons: safeParseJSON(s.match_reasons, []),
+        risk_flags: safeParseJSON(s.risk_flags, []),
         subsidy_title: s.subsidy_title,
-        subsidy_deadline: s.subsidy_deadline,
+        subsidy_deadline: s.acceptance_end_datetime,
         subsidy_max_limit: s.subsidy_max_limit,
-        deadline_days: s.deadline_days,
-        rank: s.rank_in_client,
+        deadline_days: s.deadline_days ? Math.floor(s.deadline_days) : null,
+        rank: s.rank,
       })),
       
       // 未処理タスク
@@ -2557,5 +2566,322 @@ function safeParseJSON(str: string | null | undefined, fallback: any[] = []): an
     return fallback;
   }
 }
+
+// =====================================================
+// P1-3: おすすめサジェスト生成API（凍結仕様v1）
+// =====================================================
+
+/**
+ * POST /api/agency/suggestions/generate - サジェスト生成
+ * 凍結仕様v1: ルールベーススコアリングで顧客ごとに上位3件を生成
+ * 
+ * スコアリングルール:
+ * - 地域一致: +40（都道府県一致）/ +20（全国）
+ * - 業種一致: +25（明確一致）/ +10（全業種系）
+ * - 従業員条件: +25（条件合致）/ -30（不一致）
+ * - 締切: 14日以内 -10, 7日以内 -20
+ * - 受付外: NO（スコア0）
+ * 
+ * ステータス判定:
+ * - 80以上: PROCEED
+ * - 50〜79: CAUTION
+ * - 0〜49: NO
+ */
+agencyRoutes.post('/suggestions/generate', async (c) => {
+  const db = c.env.DB;
+  const user = getCurrentUser(c);
+  
+  const agencyInfo = await getUserAgency(db, user.id);
+  if (!agencyInfo) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'NOT_AGENCY', message: 'Agency account required' },
+    }, 403);
+  }
+  
+  const agencyId = agencyInfo.agency.id;
+  const now = new Date().toISOString();
+  
+  // 1. 顧客一覧を取得（BLOCKED以外 = completeness必須項目が揃っている）
+  const clientsResult = await db.prepare(`
+    SELECT 
+      ac.id as client_id,
+      ac.company_id,
+      c.name as company_name,
+      c.prefecture,
+      c.industry_major,
+      c.employee_count
+    FROM agency_clients ac
+    JOIN companies c ON ac.company_id = c.id
+    WHERE ac.agency_id = ?
+    AND c.name IS NOT NULL AND c.name != ''
+    AND c.prefecture IS NOT NULL AND c.prefecture != ''
+    AND c.industry_major IS NOT NULL AND c.industry_major != ''
+    AND c.employee_count IS NOT NULL AND c.employee_count != '' AND c.employee_count != '0' AND c.employee_count != 0
+  `).bind(agencyId).all();
+  
+  const clients = clientsResult.results || [];
+  
+  if (clients.length === 0) {
+    return c.json<ApiResponse<any>>({
+      success: true,
+      data: {
+        message: 'No eligible clients found (all clients have incomplete required fields)',
+        clients_processed: 0,
+        suggestions_generated: 0,
+      },
+    });
+  }
+  
+  // 2. 受付中の補助金を取得
+  const subsidiesResult = await db.prepare(`
+    SELECT 
+      id,
+      title,
+      subsidy_max_limit,
+      subsidy_rate,
+      target_area_search,
+      target_industry,
+      target_number_of_employees,
+      acceptance_end_datetime
+    FROM subsidy_cache
+    WHERE request_reception_display_flag = 1
+    AND (expires_at IS NULL OR expires_at > datetime('now'))
+    ORDER BY acceptance_end_datetime ASC
+    LIMIT 500
+  `).all();
+  
+  const subsidies = subsidiesResult.results || [];
+  
+  if (subsidies.length === 0) {
+    return c.json<ApiResponse<any>>({
+      success: true,
+      data: {
+        message: 'No accepting subsidies found',
+        clients_processed: clients.length,
+        suggestions_generated: 0,
+      },
+    });
+  }
+  
+  // 3. 各顧客に対してスコアリング
+  const allSuggestions: any[] = [];
+  const prefectureMap: Record<string, string> = {
+    '北海道': '01', '青森県': '02', '岩手県': '03', '宮城県': '04', '秋田県': '05',
+    '山形県': '06', '福島県': '07', '茨城県': '08', '栃木県': '09', '群馬県': '10',
+    '埼玉県': '11', '千葉県': '12', '東京都': '13', '神奈川県': '14', '新潟県': '15',
+    '富山県': '16', '石川県': '17', '福井県': '18', '山梨県': '19', '長野県': '20',
+    '岐阜県': '21', '静岡県': '22', '愛知県': '23', '三重県': '24', '滋賀県': '25',
+    '京都府': '26', '大阪府': '27', '兵庫県': '28', '奈良県': '29', '和歌山県': '30',
+    '鳥取県': '31', '島根県': '32', '岡山県': '33', '広島県': '34', '山口県': '35',
+    '徳島県': '36', '香川県': '37', '愛媛県': '38', '高知県': '39', '福岡県': '40',
+    '佐賀県': '41', '長崎県': '42', '熊本県': '43', '大分県': '44', '宮崎県': '45',
+    '鹿児島県': '46', '沖縄県': '47',
+  };
+  
+  for (const client of clients as any[]) {
+    const clientPrefecture = client.prefecture || '';
+    const clientPrefCode = prefectureMap[clientPrefecture] || clientPrefecture;
+    const clientIndustry = (client.industry_major || '').toLowerCase();
+    
+    // 従業員数の正規化（文字列 "1-5" → 数値 3）
+    let clientEmployeeCount = 0;
+    const empStr = String(client.employee_count || '0');
+    if (/^\d+$/.test(empStr)) {
+      clientEmployeeCount = parseInt(empStr, 10);
+    } else if (empStr.includes('-')) {
+      const parts = empStr.split('-');
+      clientEmployeeCount = Math.floor((parseInt(parts[0], 10) + parseInt(parts[1], 10)) / 2);
+    } else if (empStr.includes('+') || empStr.includes('以上')) {
+      clientEmployeeCount = 500; // 大企業扱い
+    }
+    
+    const scoredSubsidies: any[] = [];
+    
+    for (const subsidy of subsidies as any[]) {
+      let score = 0;
+      const matchReasons: string[] = [];
+      const riskFlags: string[] = [];
+      const scoreBreakdown: Record<string, number> = {};
+      
+      // 地域スコア
+      const targetArea = (subsidy.target_area_search || '').toLowerCase();
+      if (targetArea.includes('全国') || targetArea === '') {
+        score += 20;
+        scoreBreakdown.area = 20;
+        matchReasons.push('全国対象');
+      } else if (targetArea.includes(clientPrefecture) || targetArea.includes(clientPrefCode)) {
+        score += 40;
+        scoreBreakdown.area = 40;
+        matchReasons.push(`${clientPrefecture}が対象地域`);
+      } else {
+        scoreBreakdown.area = 0;
+        riskFlags.push('対象地域外の可能性');
+      }
+      
+      // 業種スコア
+      const targetIndustry = (subsidy.target_industry || '').toLowerCase();
+      if (targetIndustry.includes('全業種') || targetIndustry.includes('全て') || targetIndustry === '') {
+        score += 10;
+        scoreBreakdown.industry = 10;
+        matchReasons.push('全業種対象');
+      } else if (targetIndustry.includes(clientIndustry) || clientIndustry.includes(targetIndustry.slice(0, 3))) {
+        score += 25;
+        scoreBreakdown.industry = 25;
+        matchReasons.push(`${client.industry_major}が対象業種`);
+      } else {
+        scoreBreakdown.industry = 0;
+        riskFlags.push('対象業種の確認が必要');
+      }
+      
+      // 従業員数スコア
+      const targetEmployee = (subsidy.target_number_of_employees || '').toLowerCase();
+      if (targetEmployee === '' || targetEmployee.includes('制限なし') || targetEmployee.includes('全規模')) {
+        score += 25;
+        scoreBreakdown.employee = 25;
+        matchReasons.push('従業員数制限なし');
+      } else if (clientEmployeeCount > 0) {
+        // 簡易判定：中小企業（300人以下）向けかどうか
+        const isSmallTarget = targetEmployee.includes('中小') || targetEmployee.includes('小規模') || 
+                              targetEmployee.includes('300人以下') || targetEmployee.includes('50人以下');
+        const isClientSmall = clientEmployeeCount <= 300;
+        
+        if (isSmallTarget && isClientSmall) {
+          score += 25;
+          scoreBreakdown.employee = 25;
+          matchReasons.push('中小企業向け');
+        } else if (!isSmallTarget) {
+          score += 15;
+          scoreBreakdown.employee = 15;
+        } else {
+          score -= 30;
+          scoreBreakdown.employee = -30;
+          riskFlags.push('従業員数条件を満たさない可能性');
+        }
+      } else {
+        scoreBreakdown.employee = 0;
+      }
+      
+      // 締切スコア
+      if (subsidy.acceptance_end_datetime) {
+        const deadline = new Date(subsidy.acceptance_end_datetime);
+        const daysLeft = Math.ceil((deadline.getTime() - Date.now()) / (1000 * 60 * 60 * 24));
+        
+        if (daysLeft <= 7) {
+          score -= 20;
+          scoreBreakdown.deadline = -20;
+          riskFlags.push(`締切まであと${daysLeft}日`);
+        } else if (daysLeft <= 14) {
+          score -= 10;
+          scoreBreakdown.deadline = -10;
+          riskFlags.push(`締切まであと${daysLeft}日`);
+        } else {
+          scoreBreakdown.deadline = 0;
+        }
+      }
+      
+      // スコアを0〜100に正規化
+      score = Math.max(0, Math.min(100, score));
+      
+      // ステータス判定
+      let status: 'PROCEED' | 'CAUTION' | 'NO' = 'NO';
+      if (score >= 80) {
+        status = 'PROCEED';
+      } else if (score >= 50) {
+        status = 'CAUTION';
+      }
+      
+      scoredSubsidies.push({
+        subsidy_id: subsidy.id,
+        score,
+        status,
+        match_reasons: matchReasons,
+        risk_flags: riskFlags,
+        score_breakdown: scoreBreakdown,
+        subsidy_title: subsidy.title,
+        subsidy_max_limit: subsidy.subsidy_max_limit,
+        subsidy_rate: subsidy.subsidy_rate,
+        acceptance_end_datetime: subsidy.acceptance_end_datetime,
+      });
+    }
+    
+    // スコア順でソートし、上位3件を取得
+    scoredSubsidies.sort((a, b) => b.score - a.score);
+    const top3 = scoredSubsidies.slice(0, 3);
+    
+    // ランク付けしてallSuggestionsに追加
+    top3.forEach((suggestion, index) => {
+      allSuggestions.push({
+        agency_id: agencyId,
+        company_id: client.company_id,
+        company_name: client.company_name,
+        company_prefecture: client.prefecture,
+        company_industry: client.industry_major,
+        company_employee_count: clientEmployeeCount,
+        rank: index + 1,
+        ...suggestion,
+      });
+    });
+  }
+  
+  // 4. キャッシュテーブルをUPSERT
+  // まず既存データを削除
+  await db.prepare('DELETE FROM agency_suggestions_cache WHERE agency_id = ?').bind(agencyId).run();
+  
+  // 新しいデータを挿入
+  let insertCount = 0;
+  for (const suggestion of allSuggestions) {
+    const id = crypto.randomUUID();
+    const dedupeKey = `${agencyId}:${suggestion.company_id}:${suggestion.subsidy_id}`;
+    
+    try {
+      await db.prepare(`
+        INSERT INTO agency_suggestions_cache (
+          id, agency_id, company_id, subsidy_id, dedupe_key,
+          score, status, rank,
+          match_reasons, risk_flags,
+          subsidy_title, subsidy_max_limit, subsidy_rate, acceptance_end_datetime,
+          company_name, company_prefecture, company_industry, company_employee_count,
+          score_breakdown, generated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).bind(
+        id,
+        agencyId,
+        suggestion.company_id,
+        suggestion.subsidy_id,
+        dedupeKey,
+        suggestion.score,
+        suggestion.status,
+        suggestion.rank,
+        JSON.stringify(suggestion.match_reasons),
+        JSON.stringify(suggestion.risk_flags),
+        suggestion.subsidy_title,
+        suggestion.subsidy_max_limit,
+        suggestion.subsidy_rate,
+        suggestion.acceptance_end_datetime,
+        suggestion.company_name,
+        suggestion.company_prefecture,
+        suggestion.company_industry,
+        suggestion.company_employee_count,
+        JSON.stringify(suggestion.score_breakdown),
+        now
+      ).run();
+      insertCount++;
+    } catch (e) {
+      console.error('[suggestions/generate] Insert error:', e);
+    }
+  }
+  
+  return c.json<ApiResponse<any>>({
+    success: true,
+    data: {
+      message: 'Suggestions generated successfully',
+      clients_processed: clients.length,
+      subsidies_evaluated: subsidies.length,
+      suggestions_generated: insertCount,
+      generated_at: now,
+    },
+  });
+});
 
 export { agencyRoutes };
