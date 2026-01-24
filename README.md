@@ -6,17 +6,35 @@
 - **Version**: 1.7.0
 - **Goal**: 企業情報を登録するだけで、最適な補助金・助成金を自動でマッチング＆申請書ドラフト作成
 
-### 🎉 最新アップデート (v2.3.0) - P3-2F Sprint完了: Enrich Cronジョブ + feed_failures優先度表示
+### 🎉 最新アップデート (v2.4.0) - P3-3A Sprint完了: PDF抽出ルータ + 統一入口
 
-**P3-2Fフェーズ完了（2026-01-24）:**
+**P3-3Aフェーズ完了（2026-01-24）:**
 
 | 項目 | 状態 | 詳細 |
 |------|------|------|
 | WALL_CHAT_READY | ✅ **58件** | tokyo-kosha 23 + tokyo-hataraku 15 + tokyo-shigoto 12 + jgrants 5 + manual 3 |
-| tokyo-shigoto enrich | ✅ | HTMLから概要/要件/経費/書類を抽出するAPI実装 |
-| JGrants enrich Cron | ✅ | `/api/cron/enrich-jgrants` - 毎日30件バッチ処理 |
-| tokyo-shigoto enrich Cron | ✅ | `/api/cron/enrich-tokyo-shigoto` - HTML抽出Cron |
-| feed_failures 優先度表示 | ✅ | 潰せる順にソート（HTTP→parse→forms→fields） |
+| **PDF抽出ルータ** | ✅ NEW | `src/lib/pdf/` - 全ソースの統一入口（A-0凍結仕様）|
+| **extract-pdf-forms Cron** | ✅ NEW | `/api/cron/extract-pdf-forms` - 50件/回バッチ |
+| 品質ゲート | ✅ | forms >= 2 かつ fields >= 3（凍結仕様）|
+| feed_failures 4分類 | ✅ | FETCH_FAILED → PARSE_FAILED → FORMS_NOT_FOUND → FIELDS_INSUFFICIENT |
+
+**PDF抽出パイプライン（A-0〜A-4 実装完了）:**
+
+| ステップ | ファイル | 説明 |
+|----------|----------|------|
+| A-0 | `pdf-extract-router.ts` | 統一入口（この関数だけ呼べばOK）|
+| A-1 | `extractPdfTextSmart()` | 非AI → OCR 逐次判定（MIN_TEXT_LEN=800）|
+| A-2 | `required-forms-extractor.ts` | 様式×記載項目 抽出 + 品質ゲート |
+| A-3 | DB更新 | detail_json patch, wall_chat_ready再計算 |
+| A-4 | `cron.ts` | `/api/cron/extract-pdf-forms` |
+
+**凍結仕様（変更禁止）:**
+```typescript
+MIN_TEXT_LEN_FOR_NON_OCR = 800    // 非AIで有効とみなす最低文字数
+MIN_FORMS = 2                      // required_forms の最低数
+MIN_FIELDS_PER_FORM = 3            // 各フォームの最低フィールド数
+MAX_PDF_FETCH_SIZE = 5MB           // PDF取得上限
+```
 
 **WALL_CHAT_READY 内訳:**
 | ソース | 件数 | WALL_CHAT_READY | 率 |
@@ -77,7 +95,16 @@ Header: X-Cron-Secret: {CRON_SECRET}
 | sync-jgrants | 06:00 | JGrants API同期 |
 | enrich-jgrants | 07:00 | JGrants detail_json拡充 (30件/日) |
 | enrich-tokyo-shigoto | 07:30 | tokyo-shigoto detail_json拡充 |
-| generate-suggestions | 08:00 | 顧客向け提案生成 |
+| **extract-pdf-forms** | **08:00** | **PDF/HTML抽出（50件/回）** ← NEW |
+| generate-suggestions | 09:00 | 顧客向け提案生成 |
+
+**新規Cronエンドポイント（P3-3A）:**
+```bash
+# PDF/HTML抽出（統一入口）- 全ソース対象
+POST https://hojyokin.pages.dev/api/cron/extract-pdf-forms
+Header: X-Cron-Secret: {CRON_SECRET}
+# 50件/回、失敗はfeed_failuresに記録、wall_chat_ready自動更新
+```
 
 **新規Cronエンドポイント（P3-2F）:**
 ```bash

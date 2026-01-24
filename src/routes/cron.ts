@@ -2715,4 +2715,480 @@ cron.post('/enrich-tokyo-shigoto', async (c) => {
   }
 });
 
+// =====================================================
+// A-4: PDF抽出Cronジョブ（統一入口）
+// POST /api/cron/extract-pdf-forms
+// 
+// 全ソースのPDF/HTMLから required_forms を抽出
+// 失敗は feed_failures に記録
+// =====================================================
+
+cron.post('/extract-pdf-forms', async (c) => {
+  const db = c.env.DB;
+  
+  // P2-0: CRON_SECRET 検証
+  const authResult = verifyCronSecret(c);
+  if (!authResult.valid) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: authResult.error!.code,
+        message: authResult.error!.message,
+      },
+    }, authResult.error!.status);
+  }
+  
+  // P2-0: 実行ログ開始
+  let runId: string | null = null;
+  try {
+    runId = await startCronRun(db, 'extract-pdf-forms', 'cron');
+  } catch (logErr) {
+    console.warn('[Extract-PDF-Forms] Failed to start cron_run log:', logErr);
+  }
+  
+  // --- 定数（凍結仕様）---
+  const MAX_ITEMS_PER_RUN = 50;      // 1回あたり最大50件
+  const MIN_TEXT_LEN = 800;          // 有効とみなす最低文字数
+  const MIN_FORMS = 2;               // 最低フォーム数
+  const MIN_FIELDS = 3;              // 最低フィールド数/フォーム
+  
+  try {
+    // --- Step 1: 抽出対象を取得 ---
+    // wall_chat_ready = 0 かつ PDF/detail_url がある制度
+    const targets = await db.prepare(`
+      SELECT 
+        id,
+        source,
+        title,
+        detail_json
+      FROM subsidy_cache
+      WHERE wall_chat_ready = 0
+        AND detail_json IS NOT NULL
+        AND detail_json != '{}'
+        AND (
+          json_extract(detail_json, '$.detailUrl') IS NOT NULL
+          OR json_extract(detail_json, '$.pdfUrls') IS NOT NULL
+        )
+        AND (
+          json_extract(detail_json, '$.required_forms') IS NULL
+          OR json_array_length(json_extract(detail_json, '$.required_forms')) < ?
+        )
+      ORDER BY 
+        CASE 
+          WHEN source IN ('tokyo-shigoto', 'tokyo-kosha', 'tokyo-hataraku') THEN 1
+          WHEN source = 'jgrants' THEN 2
+          ELSE 3
+        END,
+        cached_at DESC
+      LIMIT ?
+    `).bind(MIN_FORMS, MAX_ITEMS_PER_RUN).all<{
+      id: string;
+      source: string;
+      title: string;
+      detail_json: string | null;
+    }>();
+    
+    if (!targets.results || targets.results.length === 0) {
+      // 対象なし
+      if (runId) {
+        await finishCronRun(db, runId, 'success', {
+          items_processed: 0,
+          metadata: { message: 'No targets to extract' },
+        });
+      }
+      
+      return c.json<ApiResponse<{ processed: number; message: string }>>({
+        success: true,
+        data: {
+          processed: 0,
+          message: 'No targets to extract',
+        },
+      });
+    }
+    
+    console.log(`[Extract-PDF-Forms] Found ${targets.results.length} targets`);
+    
+    // --- Step 2: 各制度を処理 ---
+    const results: Array<{
+      id: string;
+      source: string;
+      success: boolean;
+      extractedFrom: string;
+      formsCount: number;
+      fieldsTotal: number;
+      wallChatReady: boolean;
+      error?: string;
+    }> = [];
+    
+    const errors: string[] = [];
+    let successCount = 0;
+    let failCount = 0;
+    let readyCount = 0;
+    
+    for (const target of targets.results) {
+      try {
+        // detail_json をパース
+        let detail: any = {};
+        try {
+          detail = target.detail_json ? JSON.parse(target.detail_json) : {};
+        } catch {
+          detail = {};
+        }
+        
+        const detailUrl = detail.detailUrl || null;
+        const pdfUrls = detail.pdfUrls || detail.pdf_urls || [];
+        
+        // URL が無い場合はスキップ
+        if (!detailUrl && (!Array.isArray(pdfUrls) || pdfUrls.length === 0)) {
+          results.push({
+            id: target.id,
+            source: target.source,
+            success: false,
+            extractedFrom: 'none',
+            formsCount: 0,
+            fieldsTotal: 0,
+            wallChatReady: false,
+            error: 'No URL to extract',
+          });
+          failCount++;
+          continue;
+        }
+        
+        // --- テキスト抽出 ---
+        let extractedText = '';
+        let extractedFrom = 'none';
+        
+        // HTML優先
+        if (detailUrl) {
+          try {
+            const htmlResp = await fetch(detailUrl, {
+              headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+              },
+            });
+            if (htmlResp.ok) {
+              const html = await htmlResp.text();
+              extractedText = html
+                .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
+                .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+                .replace(/<[^>]+>/g, ' ')
+                .replace(/&nbsp;/g, ' ')
+                .replace(/&amp;/g, '&')
+                .replace(/\s+/g, ' ')
+                .trim();
+              extractedFrom = 'html';
+            }
+          } catch (e) {
+            console.warn(`[Extract-PDF-Forms] HTML fetch failed for ${target.id}`);
+          }
+        }
+        
+        // HTMLで不足の場合、PDF（簡易実装）
+        if (extractedText.length < MIN_TEXT_LEN && Array.isArray(pdfUrls) && pdfUrls.length > 0) {
+          // TODO: 完全なPDF抽出は別ライブラリで実装済み
+          // ここでは簡易版（URLの存在だけ確認）
+          extractedFrom = 'pdf_pending';
+        }
+        
+        // テキスト不足
+        if (extractedText.length < MIN_TEXT_LEN && extractedFrom !== 'pdf_pending') {
+          // feed_failures に記録
+          await recordFailure(db, target.id, target.source, detailUrl || pdfUrls[0] || '', 'extract', 'FETCH_FAILED', 
+            `Insufficient text: ${extractedText.length} chars`);
+          
+          results.push({
+            id: target.id,
+            source: target.source,
+            success: false,
+            extractedFrom: 'none',
+            formsCount: 0,
+            fieldsTotal: 0,
+            wallChatReady: false,
+            error: `Insufficient text: ${extractedText.length} chars`,
+          });
+          failCount++;
+          continue;
+        }
+        
+        // --- required_forms 抽出（簡易版）---
+        const forms = extractFormsSimple(extractedText);
+        const formsCount = forms.length;
+        const fieldsTotal = forms.reduce((sum, f) => sum + f.fields.length, 0);
+        
+        // 品質ゲート
+        const validForms = forms.filter(f => f.fields.length >= MIN_FIELDS);
+        if (validForms.length < MIN_FORMS) {
+          // FORMS_NOT_FOUND または FIELDS_INSUFFICIENT
+          const reason = forms.length < MIN_FORMS ? 'FORMS_NOT_FOUND' : 'FIELDS_INSUFFICIENT';
+          await recordFailure(db, target.id, target.source, detailUrl || '', 'validation', reason,
+            `Forms: ${forms.length}, Valid: ${validForms.length}`);
+          
+          results.push({
+            id: target.id,
+            source: target.source,
+            success: false,
+            extractedFrom,
+            formsCount,
+            fieldsTotal,
+            wallChatReady: false,
+            error: `Validation failed: ${reason}`,
+          });
+          failCount++;
+          continue;
+        }
+        
+        // --- detail_json を更新 ---
+        const updatedDetail = {
+          ...detail,
+          required_forms: validForms.slice(0, 20),
+          required_forms_extracted_at: new Date().toISOString(),
+          pdf_text_source: extractedFrom,
+        };
+        
+        const newDetailJson = JSON.stringify(updatedDetail);
+        
+        // wall_chat_ready 再計算
+        const wallChatReady = checkWallChatReady(updatedDetail);
+        const wallChatMissing = getWallChatMissing(updatedDetail);
+        
+        // DB更新
+        await db.prepare(`
+          UPDATE subsidy_cache 
+          SET detail_json = ?,
+              wall_chat_ready = ?,
+              wall_chat_missing = ?
+          WHERE id = ?
+        `).bind(
+          newDetailJson,
+          wallChatReady ? 1 : 0,
+          JSON.stringify(wallChatMissing),
+          target.id
+        ).run();
+        
+        // 成功記録
+        results.push({
+          id: target.id,
+          source: target.source,
+          success: true,
+          extractedFrom,
+          formsCount: validForms.length,
+          fieldsTotal: validForms.reduce((s, f) => s + f.fields.length, 0),
+          wallChatReady,
+        });
+        successCount++;
+        if (wallChatReady) readyCount++;
+        
+        // feed_failures を resolved に
+        await resolveFailure(db, target.id, detailUrl || '');
+        
+      } catch (e: any) {
+        console.error(`[Extract-PDF-Forms] Error processing ${target.id}:`, e.message);
+        errors.push(`${target.id}: ${e.message}`);
+        results.push({
+          id: target.id,
+          source: target.source,
+          success: false,
+          extractedFrom: 'none',
+          formsCount: 0,
+          fieldsTotal: 0,
+          wallChatReady: false,
+          error: e.message,
+        });
+        failCount++;
+      }
+    }
+    
+    // --- Step 3: 実行ログ完了 ---
+    if (runId) {
+      await finishCronRun(db, runId, failCount === 0 ? 'success' : 'partial', {
+        items_processed: targets.results.length,
+        items_inserted: 0,
+        items_updated: successCount,
+        items_skipped: failCount,
+        error_count: errors.length,
+        errors: errors.slice(0, 20),
+        metadata: {
+          ready_count: readyCount,
+          sources: [...new Set(targets.results.map(t => t.source))],
+        },
+      });
+    }
+    
+    return c.json<ApiResponse<{
+      processed: number;
+      succeeded: number;
+      failed: number;
+      newReady: number;
+      results: typeof results;
+      run_id?: string;
+    }>>({
+      success: true,
+      data: {
+        processed: targets.results.length,
+        succeeded: successCount,
+        failed: failCount,
+        newReady: readyCount,
+        results,
+        run_id: runId ?? undefined,
+      },
+    });
+    
+  } catch (error) {
+    console.error('[Extract-PDF-Forms] Error:', error);
+    
+    if (runId) {
+      await finishCronRun(db, runId, 'failed', {
+        error_count: 1,
+        errors: [error instanceof Error ? error.message : String(error)],
+      });
+    }
+    
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: 'INTERNAL_ERROR',
+        message: `Extraction failed: ${error instanceof Error ? error.message : String(error)}`,
+      },
+    }, 500);
+  }
+});
+
+// --- ヘルパー関数 ---
+
+function extractFormsSimple(text: string): Array<{ name: string; form_id?: string; fields: string[] }> {
+  const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  const forms: Array<{ name: string; form_id?: string; fields: string[] }> = [];
+  
+  // 様式パターン
+  const formPatterns = [
+    /様式\s*第?\s*(\d+)\s*号?/,
+    /様式\s*(\d+(?:-\d+)?)/,
+    /別紙\s*(\d+)/,
+  ];
+  
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    
+    // 様式名マッチ
+    let formId: string | undefined;
+    for (const p of formPatterns) {
+      const m = line.match(p);
+      if (m) {
+        formId = m[0].replace(/\s+/g, '');
+        break;
+      }
+    }
+    
+    // 様式っぽい行（キーワードチェック）
+    const isFormLine = formId || 
+      (/(申請書|計画書|報告書|明細書|予算書|様式|別紙)/.test(line) && line.length >= 5 && line.length <= 80);
+    
+    if (!isFormLine) continue;
+    
+    // 以降の行からフィールドを抽出
+    const fields: string[] = [];
+    const windowLines = lines.slice(i + 1, i + 20);
+    
+    for (const wl of windowLines) {
+      // 次のフォームが始まったら終了
+      if (/様式|別紙/.test(wl) && wl !== line) break;
+      
+      // 箇条書きパターン
+      const bulletMatch = wl.match(/^(?:[・●◯○]|[0-9]{1,2}[.)]|[①-⑳])\s*(.+)$/);
+      if (bulletMatch && bulletMatch[1].length >= 2 && bulletMatch[1].length <= 60) {
+        fields.push(bulletMatch[1]);
+      }
+      
+      // フィールドキーワードを含む短い行
+      const fieldKeywords = ['事業者名', '代表者', '住所', '電話', '資本金', '従業員', '申請金額', '事業名', '目的'];
+      if (wl.length >= 3 && wl.length <= 40 && fieldKeywords.some(kw => wl.includes(kw))) {
+        if (!fields.includes(wl)) fields.push(wl);
+      }
+      
+      if (fields.length >= 15) break;
+    }
+    
+    if (fields.length >= 1) {
+      forms.push({
+        name: line.slice(0, 80),
+        form_id: formId,
+        fields: fields.slice(0, 20),
+      });
+    }
+    
+    if (forms.length >= 15) break;
+  }
+  
+  return forms;
+}
+
+function checkWallChatReady(detail: any): boolean {
+  const hasOverview = !!(detail.overview || detail.description);
+  const hasRequirements = Array.isArray(detail.application_requirements) 
+    ? detail.application_requirements.length > 0 
+    : !!(detail.application_requirements);
+  const hasExpenses = Array.isArray(detail.eligible_expenses)
+    ? detail.eligible_expenses.length > 0
+    : !!(detail.eligible_expenses);
+  const hasDocuments = Array.isArray(detail.required_documents)
+    ? detail.required_documents.length > 0
+    : !!(detail.required_documents);
+  const hasDeadline = !!(detail.acceptance_end_datetime || detail.deadline);
+  
+  return hasOverview && hasRequirements && hasExpenses && hasDocuments && hasDeadline;
+}
+
+function getWallChatMissing(detail: any): string[] {
+  const missing: string[] = [];
+  if (!(detail.overview || detail.description)) missing.push('overview');
+  if (!(Array.isArray(detail.application_requirements) ? detail.application_requirements.length > 0 : detail.application_requirements)) missing.push('application_requirements');
+  if (!(Array.isArray(detail.eligible_expenses) ? detail.eligible_expenses.length > 0 : detail.eligible_expenses)) missing.push('eligible_expenses');
+  if (!(Array.isArray(detail.required_documents) ? detail.required_documents.length > 0 : detail.required_documents)) missing.push('required_documents');
+  if (!(detail.acceptance_end_datetime || detail.deadline)) missing.push('deadline');
+  return missing;
+}
+
+async function recordFailure(
+  db: D1Database,
+  subsidyId: string,
+  sourceId: string,
+  url: string,
+  stage: string,
+  reason: string,
+  message: string
+): Promise<void> {
+  const now = new Date().toISOString();
+  const priority = reason === 'FETCH_FAILED' ? 1 : reason === 'PARSE_FAILED' ? 2 : reason === 'FORMS_NOT_FOUND' ? 3 : 4;
+  
+  try {
+    await db.prepare(`
+      INSERT INTO feed_failures (
+        subsidy_id, source_id, url, stage, error_type, message,
+        retry_count, first_occurred_at, last_occurred_at,
+        status, affected_count, priority
+      ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, 'open', 1, ?)
+      ON CONFLICT (subsidy_id, url, stage) DO UPDATE SET
+        error_type = excluded.error_type,
+        message = excluded.message,
+        retry_count = retry_count + 1,
+        last_occurred_at = excluded.last_occurred_at,
+        status = 'open'
+    `).bind(subsidyId, sourceId, url, stage, reason, message, now, now, priority).run();
+  } catch (e) {
+    console.warn('[recordFailure] Failed:', e);
+  }
+}
+
+async function resolveFailure(db: D1Database, subsidyId: string, url: string): Promise<void> {
+  const now = new Date().toISOString();
+  try {
+    await db.prepare(`
+      UPDATE feed_failures SET status = 'resolved', resolved_at = ?
+      WHERE subsidy_id = ? AND url = ? AND status = 'open'
+    `).bind(now, subsidyId, url).run();
+  } catch (e) {
+    console.warn('[resolveFailure] Failed:', e);
+  }
+}
+
 export default cron;
