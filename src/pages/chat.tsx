@@ -255,6 +255,23 @@ chatPages.get('/chat', (c) => {
     var subsidyId = params.get('subsidy_id');
     var companyId = params.get('company_id');
     var existingSessionId = params.get('session_id'); // ドラフト画面からの戻りをサポート
+    var fromContext = params.get('from');
+    var backUrl = params.get('back');
+    
+    // P0-1凍結: fromパラメータに応じて戻りリンクを動的に変更
+    if (fromContext === 'agency' && backUrl) {
+      // ヘッダーの戻るリンク
+      var backArrow = document.querySelector('nav a[href="/subsidies"]');
+      if (backArrow) {
+        backArrow.href = backUrl;
+      }
+      // エラー時の戻るリンク
+      var errorBackLink = document.querySelector('#precheck-ng a[href="/subsidies"]');
+      if (errorBackLink) {
+        errorBackLink.href = backUrl;
+        errorBackLink.textContent = '士業ダッシュボードへ戻る';
+      }
+    }
     
     // ⚠️ session_id がある場合はセッション復元モード、それ以外は新規作成モード
     var isResumeMode = !!existingSessionId;

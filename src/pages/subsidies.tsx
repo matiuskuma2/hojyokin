@@ -2077,8 +2077,25 @@ subsidyPages.get('/subsidies/:id', (c) => {
     
     <script>
       const subsidyId = '${subsidyId}';
-      const companyId = new URLSearchParams(window.location.search).get('company_id');
+      const urlParams = new URLSearchParams(window.location.search);
+      const companyId = urlParams.get('company_id');
+      const fromContext = urlParams.get('from');
+      const backUrl = urlParams.get('back');
       let subsidyData = null;
+      
+      // P0-1凍結: fromパラメータに応じてパンくずリストを動的に変更
+      (function updateBreadcrumb() {
+        const breadcrumbNav = document.querySelector('nav.mb-4.text-sm ol');
+        if (breadcrumbNav && fromContext === 'agency' && backUrl) {
+          const firstLi = breadcrumbNav.querySelector('li:first-child a');
+          if (firstLi) {
+            firstLi.href = backUrl;
+            firstLi.textContent = '士業ダッシュボードへ戻る';
+            firstLi.classList.remove('hover:text-green-600');
+            firstLi.classList.add('hover:text-emerald-600');
+          }
+        }
+      })();
       
       // タブ切り替え
       function switchTab(tabName) {

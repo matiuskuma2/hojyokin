@@ -733,7 +733,7 @@ agencyPages.get('/agency', (c) => {
               '<span class="inline-flex items-center px-2 py-0.5 bg-green-50 text-green-700 rounded text-xs"><i class="fas fa-check text-xs mr-1"></i>' + escapeHtml(r) + '</span>'
             ).join(' ');
             
-            return '<a href="/subsidies/' + (s.subsidy_id || '') + '?company_id=' + (client.company_id || '') + '" ' +
+            return '<a href="/subsidies/' + (s.subsidy_id || '') + '?company_id=' + (client.company_id || '') + '&from=agency&back=/agency" ' +
               'class="block p-3 border rounded-lg hover:border-emerald-300 hover:bg-emerald-50/30 transition tap-target">' +
               '<div class="flex items-start justify-between gap-2">' +
                 '<div class="flex-1 min-w-0">' +
@@ -3625,8 +3625,8 @@ agencyPages.get('/agency/search', (c) => {
                     </div>
                     
                     <h3 class="text-lg font-semibold text-gray-800 mb-2">
-                      <a href="/subsidies/\${s.id}?company_id=\${document.getElementById('client-select').value}" 
-                         class="hover:text-emerald-600 hover:underline" target="_blank">
+                      <a href="/subsidies/\${s.id}?company_id=\${document.getElementById('client-select').value}&from=agency&back=/agency/search" 
+                         class="hover:text-emerald-600 hover:underline">
                         \${s.title || s.name || '補助金名未設定'}
                       </a>
                     </h3>
@@ -3657,13 +3657,13 @@ agencyPages.get('/agency/search', (c) => {
                   </div>
                   
                   <div class="ml-4 flex flex-col space-y-2">
-                    <a href="/subsidies/\${s.id}?company_id=\${document.getElementById('client-select').value}" 
-                       class="bg-emerald-600 text-white px-4 py-2 rounded-md hover:bg-emerald-700 text-sm text-center" target="_blank">
+                    <a href="/subsidies/\${s.id}?company_id=\${document.getElementById('client-select').value}&from=agency&back=/agency/search" 
+                       class="bg-emerald-600 text-white px-4 py-2 rounded-md hover:bg-emerald-700 text-sm text-center">
                       <i class="fas fa-arrow-right mr-1"></i>詳細を見る
                     </a>
                     \${e.status !== 'NO' && e.status !== 'DO_NOT_PROCEED' ? \`
-                      <a href="/chat?subsidy_id=\${s.id}&company_id=\${document.getElementById('client-select').value}" 
-                         class="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700 text-sm text-center" target="_blank">
+                      <a href="/chat?subsidy_id=\${s.id}&company_id=\${document.getElementById('client-select').value}&from=agency&back=/agency/search" 
+                         class="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700 text-sm text-center">
                         <i class="fas fa-comments mr-1"></i>壁打ち
                       </a>
                     \` : ''}
