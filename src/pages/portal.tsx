@@ -166,25 +166,18 @@ portalPages.get('/intake', (c) => {
             </div>
           </div>
           
-          <!-- 事業情報 -->
+          <!-- 事業情報（凍結仕様v1: 業種・従業員数は必須） -->
           <div class="border-b pb-4">
             <h3 class="text-lg font-semibold mb-4"><i class="fas fa-briefcase mr-2 text-emerald-600"></i>事業情報</h3>
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
-                <label class="block text-sm font-medium text-gray-700 mb-1">業種</label>
-                <input type="text" name="industry" placeholder="例: 製造業、IT、飲食業" class="form-input w-full border rounded-lg px-3 py-2">
+                <label class="block text-sm font-medium text-gray-700 mb-1">業種 <span class="text-red-500">*</span></label>
+                <input type="text" name="industry" required placeholder="例: 製造業、IT、飲食業" class="form-input w-full border rounded-lg px-3 py-2">
               </div>
               <div>
-                <label class="block text-sm font-medium text-gray-700 mb-1">従業員数</label>
-                <select name="employee_count" class="form-input w-full border rounded-lg px-3 py-2">
-                  <option value="">選択してください</option>
-                  <option value="1-5">1〜5人</option>
-                  <option value="6-20">6〜20人</option>
-                  <option value="21-50">21〜50人</option>
-                  <option value="51-100">51〜100人</option>
-                  <option value="101-300">101〜300人</option>
-                  <option value="301+">301人以上</option>
-                </select>
+                <label class="block text-sm font-medium text-gray-700 mb-1">従業員数 <span class="text-red-500">*</span></label>
+                <input type="number" name="employee_count" required min="1" placeholder="例: 10" class="form-input w-full border rounded-lg px-3 py-2">
+                <p class="text-xs text-gray-500 mt-1">正確な人数を半角数字で入力してください</p>
               </div>
               <div>
                 <label class="block text-sm font-medium text-gray-700 mb-1">資本金</label>
@@ -304,6 +297,24 @@ portalPages.get('/intake', (c) => {
         formData.forEach((value, key) => {
           if (value) payload[key] = value;
         });
+        
+        // 凍結仕様v1: 数値フィールドを変換
+        if (payload.employee_count) {
+          payload.employee_count = parseInt(payload.employee_count, 10);
+          if (isNaN(payload.employee_count) || payload.employee_count <= 0) {
+            alert('従業員数は1以上の数値で入力してください');
+            return;
+          }
+        }
+        if (payload.capital) {
+          // 「1000万円」などの文字を数値に変換試行
+          const capitalNum = parseInt(String(payload.capital).replace(/[^0-9]/g, ''), 10);
+          if (!isNaN(capitalNum)) payload.capital = capitalNum;
+        }
+        if (payload.annual_revenue) {
+          const revenueNum = parseInt(String(payload.annual_revenue).replace(/[^0-9]/g, ''), 10);
+          if (!isNaN(revenueNum)) payload.annual_revenue = revenueNum;
+        }
         
         try {
           const res = await fetch('/api/portal/intake?code=' + code, {
