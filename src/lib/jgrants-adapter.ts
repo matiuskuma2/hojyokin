@@ -231,13 +231,71 @@ export class JGrantsAdapter {
   }
 
   /**
+   * 壁打ち成立に必要な情報があるかチェック（SEARCHABLE条件）
+   * 凍結仕様: detail_json に以下のうち2つ以上があればSEARCHABLE
+   * - overview または description
+   * - eligible_expenses または eligibility（配列/文字列で1件以上）
+   * - requirements または application_requirements
+   * - documents または required_documents または pdfUrls
+   * - official_links.top または related_url または detailUrl
+   */
+  private isSearchable(detailJson: string | null): boolean {
+    if (!detailJson || detailJson === '{}' || detailJson.length <= 2) {
+      return false;
+    }
+    
+    try {
+      const detail = JSON.parse(detailJson);
+      let score = 0;
+      
+      // 1. overview または description
+      if (detail.overview || detail.description) score++;
+      
+      // 2. eligible_expenses または eligibility（配列/文字列で1件以上）
+      const hasExpenses = 
+        (Array.isArray(detail.eligible_expenses) && detail.eligible_expenses.length > 0) ||
+        (typeof detail.eligible_expenses === 'string' && detail.eligible_expenses.length > 0) ||
+        (typeof detail.eligibility === 'string' && detail.eligibility.length > 0);
+      if (hasExpenses) score++;
+      
+      // 3. requirements または application_requirements
+      if (detail.requirements || detail.application_requirements) score++;
+      
+      // 4. documents または required_documents または pdfUrls
+      const hasDocs = 
+        detail.documents || 
+        detail.required_documents ||
+        (Array.isArray(detail.pdfUrls) && detail.pdfUrls.length > 0) ||
+        (Array.isArray(detail.attachments) && detail.attachments.length > 0);
+      if (hasDocs) score++;
+      
+      // 5. official_links.top または related_url または detailUrl
+      const hasUrl = 
+        (detail.official_links && detail.official_links.top) || 
+        detail.related_url ||
+        detail.detailUrl;
+      if (hasUrl) score++;
+      
+      // 2つ以上でSEARCHABLE
+      return score >= 2;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  /**
    * D1キャッシュから検索
+   * 凍結仕様: SEARCHABLE条件を満たす補助金のみ返す（壁打ち成立を保証）
    */
   private async searchFromCache(params: AdapterSearchParams): Promise<Omit<AdapterSearchResponse, 'source'>> {
     try {
+      // SEARCHABLE条件: detail_jsonが充実しているもののみ
+      // SQLレベルでは基本的なフィルタ、詳細チェックはJS側で行う
       let query = `
         SELECT * FROM subsidy_cache 
         WHERE expires_at > datetime('now')
+          AND detail_json IS NOT NULL
+          AND LENGTH(detail_json) > 10
       `;
       const bindings: any[] = [];
       
@@ -264,18 +322,29 @@ export class JGrantsAdapter {
         query += ` ORDER BY cached_at DESC`;
       }
       
-      // ページネーション
+      // 多めに取得してJS側でフィルタ（SEARCHABLE条件の詳細チェック用）
+      const fetchLimit = Math.max((params.limit || 20) * 3, 100);
       query += ` LIMIT ? OFFSET ?`;
-      bindings.push(params.limit || 20, params.offset || 0);
+      bindings.push(fetchLimit, 0); // offsetは後でJS側で適用
       
       const result = await this.db.prepare(query).bind(...bindings).all();
       
-      const subsidies = (result.results || []).map(row => this.rowToSubsidy(row));
+      // SEARCHABLE条件でフィルタ
+      const searchableRows = (result.results || []).filter(row => 
+        this.isSearchable(row.detail_json as string | null)
+      );
+      
+      // ページネーション適用
+      const offset = params.offset || 0;
+      const limit = params.limit || 20;
+      const paginatedRows = searchableRows.slice(offset, offset + limit);
+      
+      const subsidies = paginatedRows.map(row => this.rowToSubsidy(row));
       
       return {
         subsidies,
-        total_count: subsidies.length, // 簡易版（本来はCOUNT(*)が必要）
-        has_more: subsidies.length >= (params.limit || 20),
+        total_count: searchableRows.length,
+        has_more: offset + limit < searchableRows.length,
       };
     } catch (error) {
       console.error('Cache search error:', error);

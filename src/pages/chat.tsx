@@ -265,6 +265,12 @@ chatPages.get('/chat', (c) => {
       if (backArrow) {
         backArrow.href = backUrl;
       }
+      // ダッシュボードリンク
+      var dashboardBtn = document.querySelector('button[onclick*="/dashboard"]');
+      if (dashboardBtn) {
+        dashboardBtn.setAttribute('onclick', "location.href='/agency'");
+        dashboardBtn.innerHTML = '<i class="fas fa-building mr-1"></i>士業ダッシュボード';
+      }
       // エラー時の戻るリンク
       var errorBackLink = document.querySelector('#precheck-ng a[href="/subsidies"]');
       if (errorBackLink) {
@@ -279,7 +285,8 @@ chatPages.get('/chat', (c) => {
     // session_id がない場合のみ subsidy_id と company_id を必須とする
     if (!isResumeMode && (!subsidyId || !companyId)) {
       alert('補助金または会社が指定されていません');
-      window.location.href = '/subsidies';
+      // P0-1凍結: 士業からのアクセス時は士業ダッシュボードへ戻る
+      window.location.href = (fromContext === 'agency' && backUrl) ? backUrl : '/subsidies';
     }
     
     var sessionId = existingSessionId || null;
