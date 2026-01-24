@@ -2960,4 +2960,312 @@ adminDashboard.post('/extract-forms', async (c) => {
   }
 });
 
+// ============================================================
+// JGrants 詳細取得＆更新（P3-2E: WALL_CHAT_READY拡大）
+// ============================================================
+
+/**
+ * POST /api/admin-ops/jgrants/enrich-detail
+ * 
+ * JGrants APIから制度詳細を取得してdetail_jsonを更新
+ * これによりWALL_CHAT_READYを拡大する
+ */
+adminDashboard.post('/jgrants/enrich-detail', async (c) => {
+  const user = getCurrentUser(c);
+  if (user?.role !== 'super_admin') {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'FORBIDDEN', message: 'Super admin only' },
+    }, 403);
+  }
+
+  const db = c.env.DB;
+  
+  try {
+    const body = await c.req.json();
+    const { subsidy_ids, limit = 10 } = body as { subsidy_ids?: string[]; limit?: number };
+
+    // 対象制度を取得
+    let targetQuery: string;
+    let targetBindings: any[];
+
+    if (subsidy_ids && subsidy_ids.length > 0) {
+      // 指定されたIDのみ
+      const placeholders = subsidy_ids.map(() => '?').join(',');
+      targetQuery = `
+        SELECT id, title, detail_json
+        FROM subsidy_cache
+        WHERE source = 'jgrants'
+          AND id IN (${placeholders})
+        LIMIT ?
+      `;
+      targetBindings = [...subsidy_ids, limit];
+    } else {
+      // 主要制度を自動選定（deadline近い、主要キーワード含む）
+      targetQuery = `
+        SELECT id, title, detail_json
+        FROM subsidy_cache
+        WHERE source = 'jgrants'
+          AND wall_chat_ready = 0
+          AND (detail_json IS NULL OR detail_json = '{}' OR LENGTH(detail_json) < 100)
+          AND (acceptance_end_datetime IS NULL OR acceptance_end_datetime > datetime('now'))
+          AND (
+            title LIKE '%ものづくり%' OR
+            title LIKE '%省力化%' OR
+            title LIKE '%持続化%' OR
+            title LIKE '%再構築%' OR
+            title LIKE '%創業%' OR
+            title LIKE '%DX%' OR
+            title LIKE '%デジタル%' OR
+            title LIKE '%IT導入%' OR
+            title LIKE '%補助金%'
+          )
+        ORDER BY acceptance_end_datetime ASC NULLS LAST
+        LIMIT ?
+      `;
+      targetBindings = [limit];
+    }
+
+    const targets = await db.prepare(targetQuery).bind(...targetBindings).all<{
+      id: string;
+      title: string;
+      detail_json: string | null;
+    }>();
+
+    if (!targets.results || targets.results.length === 0) {
+      return c.json<ApiResponse<{ message: string }>>({
+        success: true,
+        data: { message: 'No targets found' },
+      });
+    }
+
+    const results: Array<{
+      id: string;
+      title: string;
+      status: 'enriched' | 'skipped' | 'failed';
+      fields_added?: number;
+      error?: string;
+    }> = [];
+
+    // HTMLタグを除去するヘルパー関数
+    const stripHtml = (html: string): string => {
+      return html
+        .replace(/<br\s*\/?>/gi, '\n')
+        .replace(/<\/p>/gi, '\n')
+        .replace(/<[^>]+>/g, '')
+        .replace(/&nbsp;/g, ' ')
+        .replace(/&amp;/g, '&')
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+    };
+
+    // HTMLからセクションを抽出するヘルパー関数
+    const extractSections = (html: string): Record<string, string> => {
+      const sections: Record<string, string> = {};
+      const sectionPatterns = [
+        { key: 'overview', pattern: /■目的・概要[^■]*?<\/p>\s*<p>([^■]+?)(?=<p><strong|$)/is },
+        { key: 'requirements', pattern: /■応募資格[^■]*?<\/p>\s*<p>([^■]+?)(?=<p><strong|$)/is },
+        { key: 'expenses', pattern: /■対象経費[^■]*?<\/p>\s*<p>([^■]+?)(?=<p><strong|$)/is },
+        { key: 'contact', pattern: /■問合せ先[^■]*?<\/p>\s*<p>([^■]+?)(?=<p><strong|$)/is },
+        { key: 'url', pattern: /■参照URL[^■]*?href="([^"]+)"/is },
+      ];
+      
+      for (const { key, pattern } of sectionPatterns) {
+        const match = html.match(pattern);
+        if (match && match[1]) {
+          sections[key] = stripHtml(match[1]);
+        }
+      }
+      
+      return sections;
+    };
+
+    for (const target of targets.results) {
+      try {
+        // JGrants APIから直接詳細取得
+        const apiUrl = `https://api.jgrants-portal.go.jp/exp/v1/public/subsidies/id/${target.id}`;
+        const response = await fetch(apiUrl, {
+          headers: { 'Accept': 'application/json' },
+        });
+        
+        if (!response.ok) {
+          results.push({ 
+            id: target.id, 
+            title: target.title, 
+            status: 'failed',
+            error: `API error: ${response.status}`,
+          });
+          continue;
+        }
+        
+        const data = await response.json() as any;
+        const subsidy = data.result?.[0] || data.subsidy || data;
+        
+        if (!subsidy) {
+          results.push({ id: target.id, title: target.title, status: 'skipped' });
+          continue;
+        }
+
+        // detail_jsonを構築
+        const detailJson: Record<string, any> = {};
+        let fieldsAdded = 0;
+
+        // HTMLのdetailフィールドからセクション抽出
+        if (subsidy.detail) {
+          const sections = extractSections(subsidy.detail);
+          
+          if (sections.overview) {
+            detailJson.overview = sections.overview;
+            detailJson.description = sections.overview;
+            fieldsAdded++;
+          }
+          
+          if (sections.requirements) {
+            detailJson.application_requirements = sections.requirements
+              .split(/[\n・•]/)
+              .map((s: string) => s.trim())
+              .filter(Boolean);
+            fieldsAdded++;
+          }
+          
+          if (sections.expenses) {
+            detailJson.eligible_expenses = sections.expenses
+              .split(/[\n・•]/)
+              .map((s: string) => s.trim())
+              .filter(Boolean);
+            fieldsAdded++;
+          }
+          
+          if (sections.contact) {
+            detailJson.contact_info = sections.contact;
+          }
+          
+          if (sections.url) {
+            detailJson.related_url = sections.url;
+          }
+        }
+
+        // outline_of_grant（概要）をフォールバック
+        if (!detailJson.overview && subsidy.outline_of_grant) {
+          detailJson.overview = stripHtml(subsidy.outline_of_grant);
+          detailJson.description = detailJson.overview;
+          fieldsAdded++;
+        }
+
+        // 締切
+        if (subsidy.acceptance_end_datetime) {
+          detailJson.acceptance_end_datetime = subsidy.acceptance_end_datetime;
+          fieldsAdded++;
+        }
+
+        // 補助上限
+        if (subsidy.subsidy_max_limit) {
+          detailJson.subsidy_max_limit = subsidy.subsidy_max_limit;
+        }
+
+        // 補助率
+        if (subsidy.subsidy_rate) {
+          detailJson.subsidy_rate = subsidy.subsidy_rate;
+        }
+
+        // 公式URL
+        if (subsidy.front_subsidy_detail_page_url) {
+          detailJson.related_url = subsidy.front_subsidy_detail_page_url;
+        }
+
+        // 申請書フォーム（添付ファイル）
+        if (subsidy.application_form && Array.isArray(subsidy.application_form)) {
+          detailJson.attachments = subsidy.application_form.map((f: any) => ({
+            name: f.name || f.title || 'Document',
+            url: f.url || f.link,
+          }));
+          detailJson.pdf_urls = subsidy.application_form
+            .filter((f: any) => f.url?.endsWith('.pdf') || f.link?.endsWith('.pdf'))
+            .map((f: any) => f.url || f.link);
+        }
+
+        // 必要書類（application_formから推測）
+        if (!detailJson.required_documents && detailJson.attachments) {
+          detailJson.required_documents = detailJson.attachments
+            .map((a: any) => a.name)
+            .filter(Boolean);
+          if (detailJson.required_documents.length > 0) {
+            fieldsAdded++;
+          }
+        }
+
+        // DB更新
+        const now = new Date().toISOString();
+        const existingJson = target.detail_json && target.detail_json !== '{}' 
+          ? JSON.parse(target.detail_json) 
+          : {};
+        
+        const mergedJson = { ...existingJson, ...detailJson, enriched_at: now };
+        
+        await db.prepare(`
+          UPDATE subsidy_cache SET
+            detail_json = ?,
+            updated_at = ?
+          WHERE id = ?
+        `).bind(JSON.stringify(mergedJson), now, target.id).run();
+
+        // WALL_CHAT_READY フラグ更新
+        const { checkWallChatReadyFromJson } = await import('../lib/wall-chat-ready');
+        const readyResult = checkWallChatReadyFromJson(JSON.stringify(mergedJson));
+        
+        if (readyResult.ready) {
+          await db.prepare(`
+            UPDATE subsidy_cache SET wall_chat_ready = 1 WHERE id = ?
+          `).bind(target.id).run();
+        }
+
+        results.push({
+          id: target.id,
+          title: target.title,
+          status: fieldsAdded > 0 ? 'enriched' : 'skipped',
+          fields_added: fieldsAdded,
+        });
+
+      } catch (err) {
+        results.push({
+          id: target.id,
+          title: target.title,
+          status: 'failed',
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
+    const enrichedCount = results.filter(r => r.status === 'enriched').length;
+    const failedCount = results.filter(r => r.status === 'failed').length;
+
+    return c.json<ApiResponse<{
+      processed: number;
+      enriched: number;
+      failed: number;
+      results: typeof results;
+    }>>({
+      success: true,
+      data: {
+        processed: results.length,
+        enriched: enrichedCount,
+        failed: failedCount,
+        results,
+      },
+    });
+
+  } catch (error) {
+    console.error('Enrich JGrants detail error:', error);
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: 'ENRICH_ERROR',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      },
+    }, 500);
+  }
+});
+
 export default adminDashboard;
