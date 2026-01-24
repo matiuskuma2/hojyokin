@@ -25,6 +25,8 @@ export interface AdapterSearchParams {
   target_area_search?: string;
   target_industry?: string;
   target_number_of_employees?: string;
+  /** P0-2-1: 未整備（SEARCHABLE条件を満たさない）も含める（super_admin debug用） */
+  includeUnready?: boolean;
 }
 
 export interface AdapterSearchResponse {
@@ -32,10 +34,14 @@ export interface AdapterSearchResponse {
   total_count: number;
   has_more: boolean;
   source: 'live' | 'mock' | 'cache';
+  /** P0-2-1: 品質ゲート（searchable-only / debug:all） */
+  gate?: 'searchable-only' | 'debug:all';
 }
 
 export interface AdapterDetailResponse extends JGrantsDetailResult {
   source: 'live' | 'mock' | 'cache';
+  /** P0-2-1: 壁打ち成立に必要な情報があるか（SEARCHABLE条件） */
+  detail_ready: boolean;
 }
 
 /**
@@ -109,27 +115,34 @@ export class JGrantsAdapter {
 
   /**
    * 補助金詳細取得
+   * P0-2-1: detail_ready フラグを返す（壁打ち成立判定）
    */
   async getDetail(id: string): Promise<AdapterDetailResponse> {
     // 1. キャッシュを先に確認
-    const cached = await this.getDetailFromCache(id);
+    const cachedRow = await this.getDetailFromCacheRaw(id);
+    const cached = cachedRow ? this.parseDetailRow(cachedRow) : null;
+    
+    // detail_ready判定用のヘルパー
+    const checkReady = (detail: JGrantsDetailResult): boolean => {
+      return this.isSearchable(JSON.stringify(detail));
+    };
     
     switch (this.mode) {
       case 'mock':
         const mockDetail = getMockSubsidyDetail(id);
         if (mockDetail) {
-          return { ...mockDetail, source: 'mock' };
+          return { ...mockDetail, source: 'mock', detail_ready: checkReady(mockDetail) };
         }
         throw new JGrantsError(`Mock subsidy not found: ${id}`, 404);
       
       case 'cached-only':
         if (cached) {
-          return { ...cached, source: 'cache' };
+          return { ...cached, source: 'cache', detail_ready: cachedRow ? this.isSearchable(cachedRow.detail_json as string) : false };
         }
         // モックをチェック
         const mockFallback = getMockSubsidyDetail(id);
         if (mockFallback) {
-          return { ...mockFallback, source: 'mock' };
+          return { ...mockFallback, source: 'mock', detail_ready: checkReady(mockFallback) };
         }
         throw new JGrantsError(`Subsidy not found: ${id}`, 404);
       
@@ -138,16 +151,16 @@ export class JGrantsAdapter {
           const liveDetail = await this.client.getDetail(id);
           // 成功したらキャッシュに保存
           await this.saveDetailToCache(id, liveDetail);
-          return { ...liveDetail, source: 'live' };
+          return { ...liveDetail, source: 'live', detail_ready: checkReady(liveDetail) };
         } catch (error) {
           console.error('JGrants API error, falling back to cache:', error);
           if (cached) {
-            return { ...cached, source: 'cache' };
+            return { ...cached, source: 'cache', detail_ready: cachedRow ? this.isSearchable(cachedRow.detail_json as string) : false };
           }
           // モックをチェック
           const mockFallback2 = getMockSubsidyDetail(id);
           if (mockFallback2) {
-            return { ...mockFallback2, source: 'mock' };
+            return { ...mockFallback2, source: 'mock', detail_ready: checkReady(mockFallback2) };
           }
           throw error;
         }
@@ -155,6 +168,37 @@ export class JGrantsAdapter {
       default:
         throw new JGrantsError(`Subsidy not found: ${id}`, 404);
     }
+  }
+  
+  /**
+   * D1キャッシュから生行データ取得（detail_ready判定用）
+   */
+  private async getDetailFromCacheRaw(id: string): Promise<any | null> {
+    try {
+      const row = await this.db
+        .prepare(`SELECT * FROM subsidy_cache WHERE id = ? AND expires_at > datetime('now')`)
+        .bind(id)
+        .first();
+      return row || null;
+    } catch (error) {
+      console.error('Cache detail raw error:', error);
+      return null;
+    }
+  }
+  
+  /**
+   * 生行データをJGrantsDetailResultにパース
+   */
+  private parseDetailRow(row: any): JGrantsDetailResult | null {
+    if (!row) return null;
+    if (row.detail_json) {
+      try {
+        return JSON.parse(row.detail_json as string);
+      } catch {
+        return this.rowToSubsidy(row) as JGrantsDetailResult;
+      }
+    }
+    return this.rowToSubsidy(row) as JGrantsDetailResult;
   }
 
   /**
@@ -286,18 +330,23 @@ export class JGrantsAdapter {
   /**
    * D1キャッシュから検索
    * 凍結仕様: SEARCHABLE条件を満たす補助金のみ返す（壁打ち成立を保証）
+   * P0-2-1: includeUnready=true の場合は未整備も含める（super_admin debug用）
    */
-  private async searchFromCache(params: AdapterSearchParams): Promise<Omit<AdapterSearchResponse, 'source'>> {
+  private async searchFromCache(params: AdapterSearchParams): Promise<Omit<AdapterSearchResponse, 'source' | 'gate'> & { gate: 'searchable-only' | 'debug:all' }> {
     try {
-      // SEARCHABLE条件: detail_jsonが充実しているもののみ
-      // SQLレベルでは基本的なフィルタ、詳細チェックはJS側で行う
+      const includeUnready = params.includeUnready === true;
+      
+      // SQLレベルでは基本的なフィルタ
       let query = `
         SELECT * FROM subsidy_cache 
         WHERE expires_at > datetime('now')
-          AND detail_json IS NOT NULL
-          AND LENGTH(detail_json) > 10
       `;
       const bindings: any[] = [];
+      
+      // 未整備を含めない場合はdetail_jsonの存在チェック
+      if (!includeUnready) {
+        query += ` AND detail_json IS NOT NULL AND LENGTH(detail_json) > 10`;
+      }
       
       if (params.target_area_search) {
         query += ` AND (target_area_search IS NULL OR target_area_search = '全国' OR target_area_search LIKE ?)`;
@@ -329,53 +378,38 @@ export class JGrantsAdapter {
       
       const result = await this.db.prepare(query).bind(...bindings).all();
       
-      // SEARCHABLE条件でフィルタ
-      const searchableRows = (result.results || []).filter(row => 
-        this.isSearchable(row.detail_json as string | null)
-      );
+      // SEARCHABLE条件でフィルタ（includeUnready時はスキップ）
+      const filteredRows = includeUnready 
+        ? (result.results || [])
+        : (result.results || []).filter(row => 
+            this.isSearchable(row.detail_json as string | null)
+          );
       
       // ページネーション適用
       const offset = params.offset || 0;
       const limit = params.limit || 20;
-      const paginatedRows = searchableRows.slice(offset, offset + limit);
+      const paginatedRows = filteredRows.slice(offset, offset + limit);
       
-      const subsidies = paginatedRows.map(row => this.rowToSubsidy(row));
+      // 各補助金にdetail_readyフラグを付与
+      const subsidies = paginatedRows.map(row => {
+        const subsidy = this.rowToSubsidy(row);
+        (subsidy as any).detail_ready = this.isSearchable(row.detail_json as string | null);
+        return subsidy;
+      });
       
       return {
         subsidies,
-        total_count: searchableRows.length,
-        has_more: offset + limit < searchableRows.length,
+        total_count: filteredRows.length,
+        has_more: offset + limit < filteredRows.length,
+        gate: includeUnready ? 'debug:all' : 'searchable-only',
       };
     } catch (error) {
       console.error('Cache search error:', error);
-      return { subsidies: [], total_count: 0, has_more: false };
+      return { subsidies: [], total_count: 0, has_more: false, gate: 'searchable-only' };
     }
   }
 
-  /**
-   * D1キャッシュから詳細取得
-   */
-  private async getDetailFromCache(id: string): Promise<JGrantsDetailResult | null> {
-    try {
-      const row = await this.db
-        .prepare(`SELECT * FROM subsidy_cache WHERE id = ? AND expires_at > datetime('now')`)
-        .bind(id)
-        .first();
-      
-      if (!row) return null;
-      
-      // detail_json があればパースして返す
-      if (row.detail_json) {
-        return JSON.parse(row.detail_json as string);
-      }
-      
-      // なければ基本情報のみ
-      return this.rowToSubsidy(row) as JGrantsDetailResult;
-    } catch (error) {
-      console.error('Cache detail error:', error);
-      return null;
-    }
-  }
+  // getDetailFromCache は getDetailFromCacheRaw + parseDetailRow に置き換え済み（P0-2-1）
 
   /**
    * キャッシュに保存

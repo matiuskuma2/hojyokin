@@ -44,6 +44,11 @@ subsidies.get('/search', requireCompanyAccess(), async (c) => {
     const limit = Math.min(parseInt(c.req.query('limit') || '20', 10), 500);
     const offset = parseInt(c.req.query('offset') || '0', 10);
     
+    // P0-2-1: debug パラメータ（super_adminのみ有効）
+    const debug = c.req.query('debug') === '1';
+    const user = getCurrentUser(c);
+    const allowUnready = (user?.role === 'super_admin') && debug;
+    
     if (!companyId) {
       return c.json<ApiResponse<null>>({
         success: false,
@@ -74,7 +79,7 @@ subsidies.get('/search', requireCompanyAccess(), async (c) => {
     const adapter = createJGrantsAdapter(c.env);
     const mode = getJGrantsMode(c.env);
     
-    console.log(`JGrants Adapter mode: ${mode}`);
+    console.log(`JGrants Adapter mode: ${mode}, allowUnready: ${allowUnready}`);
     
     const searchResponse = await adapter.search({
       keyword,
@@ -84,6 +89,7 @@ subsidies.get('/search', requireCompanyAccess(), async (c) => {
       offset,
       sort,
       order,
+      includeUnready: allowUnready, // P0-2-1: super_admin debug時のみ未整備も含める
     });
     
     const jgrantsResults = searchResponse.subsidies;
@@ -97,7 +103,7 @@ subsidies.get('/search', requireCompanyAccess(), async (c) => {
     const sortedResults = sortByStatus(matchResults);
     
     // === usage_events に検索イベントを必ず記録 ===
-    const user = getCurrentUser(c);
+    // user は上で既に取得済み（P0-2-1 debug用）
     const eventId = uuidv4();
     try {
       await db.prepare(`
@@ -157,6 +163,7 @@ subsidies.get('/search', requireCompanyAccess(), async (c) => {
         limit,
         has_more: offset + limit < totalCount,
         source, // データソース（live / mock / cache）
+        gate: searchResponse.gate || 'searchable-only', // P0-2-1: 品質ゲート
       },
     });
   } catch (error) {
@@ -243,6 +250,7 @@ subsidies.get('/:subsidy_id', async (c) => {
       attachments: typeof attachments;
       evaluation: typeof evaluation;
       source: string;
+      detail_ready: boolean;
     }>>({
       success: true,
       data: {
@@ -250,6 +258,7 @@ subsidies.get('/:subsidy_id', async (c) => {
         attachments,
         evaluation,
         source,
+        detail_ready: detailResponse.detail_ready, // P0-2-1: 壁打ち成立判定
       },
     });
   } catch (error) {

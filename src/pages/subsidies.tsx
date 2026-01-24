@@ -1192,12 +1192,16 @@ subsidyPages.get('/subsidies', (c) => {
                        class="bg-green-600 text-white px-4 py-2 rounded-md hover:bg-green-700 text-sm text-center tap-target">
                       <i class="fas fa-arrow-right mr-1"></i>詳細を見る
                     </a>
-                    \${e.status !== 'NO' && e.status !== 'DO_NOT_PROCEED' ? \`
+                    \${(e.status !== 'NO' && e.status !== 'DO_NOT_PROCEED' && s.detail_ready !== false) ? \`
                       <a href="/chat?subsidy_id=\${subsidyId}&company_id=\${companyId}" 
                          class="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700 text-sm text-center tap-target">
                         <i class="fas fa-comments mr-1"></i>壁打ち
                       </a>
-                    \` : ''}
+                    \` : (s.detail_ready === false ? \`
+                      <span class="text-xs text-gray-400 text-center px-2">
+                        <i class="fas fa-info-circle mr-1"></i>詳細情報準備中
+                      </span>
+                    \` : '')}
                   </div>
                 </div>
               </div>
