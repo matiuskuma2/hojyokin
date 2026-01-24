@@ -1276,10 +1276,14 @@ cron.post('/generate-suggestions', async (c) => {
     console.warn('[Suggestions] Failed to start cron_run log:', logErr);
   }
   
+  // 凍結: 統計カウンター（finally で必ず cron_runs を閉じるため外に出す）
   let itemsNew = 0;
   let itemsUpdated = 0;
   let itemsSkipped = 0;
+  let clientsProcessed = 0;
+  let subsidiesCount = 0;
   const errors: string[] = [];
+  let finalStatus: 'success' | 'failed' | 'partial' = 'success';
   
   try {
     // 1. 全Agencyの顧客を取得（BLOCKEDを除外）
@@ -1302,21 +1306,11 @@ cron.post('/generate-suggestions', async (c) => {
     `).all();
     
     const clients = (clientsResult.results || []) as any[];
+    clientsProcessed = clients.length;
     console.log(`[Suggestions] Processing ${clients.length} eligible clients`);
     
-    if (clients.length === 0) {
-      if (runId) {
-        await finishCronRun(db, runId, 'success', {
-          items_processed: 0,
-          metadata: { message: 'No eligible clients found' },
-        });
-      }
-      return c.json<ApiResponse<{ message: string }>>({
-        success: true,
-        data: { message: 'No eligible clients to process' },
-      });
-    }
-    
+    // 凍結: 0件でも success、後続処理をスキップして finally へ
+    if (clients.length > 0) {
     // 2. 補助金データを取得（スコアリング用）
     const subsidiesResult = await db.prepare(`
       SELECT 
@@ -1335,6 +1329,7 @@ cron.post('/generate-suggestions', async (c) => {
     `).all();
     
     const subsidies = (subsidiesResult.results || []) as any[];
+    subsidiesCount = subsidies.length;
     console.log(`[Suggestions] Found ${subsidies.length} subsidies to score`);
     
     // 3. 各顧客に対してスコアリング
@@ -1448,11 +1443,19 @@ cron.post('/generate-suggestions', async (c) => {
           });
         }
         
-        // 上位3件を選択（スコア順、同点なら受付中優先）
+        // 凍結: 上位3件を選択（決定的ソート＝同じ入力なら同じ結果）
+        // ORDER BY: score DESC, isAccepting DESC, deadline ASC (早い順), subsidyId ASC
         scored.sort((a, b) => {
+          // 1. スコア降順
           if (b.score !== a.score) return b.score - a.score;
+          // 2. 受付中優先
           if (b.isAccepting !== a.isAccepting) return b.isAccepting ? 1 : -1;
-          return 0;
+          // 3. 締切が早い順（NULLは後ろ）
+          const aDeadline = a.deadline && a.deadline !== 'null' ? a.deadline : 'z';
+          const bDeadline = b.deadline && b.deadline !== 'null' ? b.deadline : 'z';
+          if (aDeadline !== bDeadline) return aDeadline.localeCompare(bDeadline);
+          // 4. subsidy_id 昇順（最終タイブレーク）
+          return a.subsidyId.localeCompare(b.subsidyId);
         });
         
         const top3 = scored.slice(0, 3);
@@ -1469,8 +1472,12 @@ cron.post('/generate-suggestions', async (c) => {
             SELECT id FROM agency_suggestions_cache WHERE dedupe_key = ?
           `).bind(dedupeKey).first<{ id: string }>();
           
-          const matchReasonsJson = JSON.stringify(item.matchReasons);
-          const riskFlagsJson = JSON.stringify(item.riskFlags);
+          // 凍結: match_reasons/risk_flags は必ず string[] として保存
+          // 配列以外や object 配列は許可しない
+          const safeMatchReasons = ensureStringArray(item.matchReasons);
+          const safeRiskFlags = ensureStringArray(item.riskFlags);
+          const matchReasonsJson = JSON.stringify(safeMatchReasons);
+          const riskFlagsJson = JSON.stringify(safeRiskFlags);
           
           if (existing) {
             // 更新
@@ -1538,72 +1545,93 @@ cron.post('/generate-suggestions', async (c) => {
     }
     
     console.log(`[Suggestions] Completed: new=${itemsNew}, updated=${itemsUpdated}, skipped=${itemsSkipped}, errors=${errors.length}`);
+    } // end if (clients.length > 0)
     
-    // P2-0: 実行ログ完了
+    // 凍結: エラーがあれば partial、なければ success
+    finalStatus = errors.length > 0 ? 'partial' : 'success';
+    
+  } catch (error) {
+    console.error('[Suggestions] Generation error:', error);
+    finalStatus = 'failed';
+    errors.push(error instanceof Error ? error.message : String(error));
+  } finally {
+    // 凍結: 必ず cron_runs を閉じる（running のまま残さない）
     if (runId) {
       try {
-        await finishCronRun(db, runId, errors.length > 0 ? 'partial' : 'success', {
-          items_processed: clients.length,
+        await finishCronRun(db, runId, finalStatus, {
+          items_processed: clientsProcessed,
           items_inserted: itemsNew,
           items_updated: itemsUpdated,
           items_skipped: itemsSkipped,
           error_count: errors.length,
-          errors: errors,
+          errors: errors.slice(0, 100), // 最大100件
           metadata: {
-            subsidies_count: subsidies.length,
+            subsidies_count: subsidiesCount,
+            final_status: finalStatus,
           },
         });
       } catch (logErr) {
-        console.warn('[Suggestions] Failed to finish cron_run log:', logErr);
+        console.error('[Suggestions] CRITICAL: Failed to finish cron_run log:', logErr);
       }
     }
-    
-    return c.json<ApiResponse<{
-      message: string;
-      clients_processed: number;
-      items_new: number;
-      items_updated: number;
-      items_skipped: number;
-      errors: string[];
-      timestamp: string;
-      run_id?: string;
-    }>>({
-      success: true,
-      data: {
-        message: 'Suggestions generated successfully',
-        clients_processed: clients.length,
-        items_new: itemsNew,
-        items_updated: itemsUpdated,
-        items_skipped: itemsSkipped,
-        errors,
-        timestamp: new Date().toISOString(),
-        run_id: runId ?? undefined,
-      },
-    });
-    
-  } catch (error) {
-    console.error('[Suggestions] Generation error:', error);
-    
-    if (runId) {
-      try {
-        await finishCronRun(db, runId, 'failed', {
-          error_count: 1,
-          errors: [error instanceof Error ? error.message : String(error)],
-        });
-      } catch (logErr) {
-        console.warn('[Suggestions] Failed to finish cron_run log:', logErr);
-      }
-    }
-    
+  }
+  
+  // 凍結: レスポンスは finally の後で返す
+  if (finalStatus === 'failed') {
     return c.json<ApiResponse<null>>({
       success: false,
       error: {
         code: 'INTERNAL_ERROR',
-        message: `Generation failed: ${error instanceof Error ? error.message : String(error)}`,
+        message: `Generation failed: ${errors[0] || 'Unknown error'}`,
       },
     }, 500);
   }
+  
+  return c.json<ApiResponse<{
+    message: string;
+    clients_processed: number;
+    items_new: number;
+    items_updated: number;
+    items_skipped: number;
+    errors: string[];
+    timestamp: string;
+    run_id?: string;
+  }>>({
+    success: true,
+    data: {
+      message: clientsProcessed === 0 
+        ? 'No eligible clients to process' 
+        : 'Suggestions generated successfully',
+      clients_processed: clientsProcessed,
+      items_new: itemsNew,
+      items_updated: itemsUpdated,
+      items_skipped: itemsSkipped,
+      errors,
+      timestamp: new Date().toISOString(),
+      run_id: runId ?? undefined,
+    },
+  });
 });
+
+/**
+ * 凍結: 配列を string[] に正規化
+ * - 配列以外 → []
+ * - object要素 → JSON.stringify
+ * - null/undefined → []
+ */
+function ensureStringArray(arr: any): string[] {
+  if (!Array.isArray(arr)) return [];
+  return arr.map((item: any) => {
+    if (typeof item === 'string') return item;
+    if (item === null || item === undefined) return '';
+    // objectや配列は文字列化（[object Object]防止）
+    try {
+      return typeof item === 'object' ? JSON.stringify(item) : String(item);
+    } catch {
+      return '[変換エラー]';
+    }
+  }).filter((s: string) => s.length > 0);
+}
 
 /**
  * 都道府県名を正規化（コード/漢字名どちらでも対応）
