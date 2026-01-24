@@ -2716,15 +2716,22 @@ cron.post('/enrich-tokyo-shigoto', async (c) => {
 });
 
 // =====================================================
-// A-4: PDF抽出Cronジョブ（統一入口）
+// A-4: PDF抽出Cronジョブ（統一入口）- 完成版
 // POST /api/cron/extract-pdf-forms
 // 
-// 全ソースのPDF/HTMLから required_forms を抽出
-// 失敗は feed_failures に記録
+// ハイブリッド構成:
+// 1. HTML抽出（最優先・最安）
+// 2. Firecrawl（テキスト埋め込みPDF用）
+// 3. Google Vision OCR（画像PDF用・最後の手段）
+// 
+// 失敗は feed_failures に記録、メトリクスを cron_runs に保存
 // =====================================================
+
+import { extractAndUpdateSubsidy, type ExtractSource } from '../lib/pdf/pdf-extract-router';
 
 cron.post('/extract-pdf-forms', async (c) => {
   const db = c.env.DB;
+  const env = c.env;
   
   // P2-0: CRON_SECRET 検証
   const authResult = verifyCronSecret(c);
@@ -2748,13 +2755,15 @@ cron.post('/extract-pdf-forms', async (c) => {
   
   // --- 定数（凍結仕様）---
   const MAX_ITEMS_PER_RUN = 50;      // 1回あたり最大50件
-  const MIN_TEXT_LEN = 800;          // 有効とみなす最低文字数
   const MIN_FORMS = 2;               // 最低フォーム数
-  const MIN_FIELDS = 3;              // 最低フィールド数/フォーム
+  
+  // 環境変数チェック
+  const hasFirecrawl = !!env.FIRECRAWL_API_KEY;
+  const hasVision = !!env.GOOGLE_CLOUD_API_KEY;
+  console.log(`[Extract-PDF-Forms] API Keys: Firecrawl=${hasFirecrawl}, Vision=${hasVision}`);
   
   try {
     // --- Step 1: 抽出対象を取得 ---
-    // wall_chat_ready = 0 かつ PDF/detail_url がある制度
     const targets = await db.prepare(`
       SELECT 
         id,
@@ -2789,7 +2798,6 @@ cron.post('/extract-pdf-forms', async (c) => {
     }>();
     
     if (!targets.results || targets.results.length === 0) {
-      // 対象なし
       if (runId) {
         await finishCronRun(db, runId, 'success', {
           items_processed: 0,
@@ -2808,7 +2816,7 @@ cron.post('/extract-pdf-forms', async (c) => {
     
     console.log(`[Extract-PDF-Forms] Found ${targets.results.length} targets`);
     
-    // --- Step 2: 各制度を処理 ---
+    // --- Step 2: 各制度を処理（統一入口経由）---
     const results: Array<{
       id: string;
       source: string;
@@ -2824,6 +2832,18 @@ cron.post('/extract-pdf-forms', async (c) => {
     let successCount = 0;
     let failCount = 0;
     let readyCount = 0;
+    
+    // メトリクス集計
+    const totalMetrics = {
+      htmlAttempted: 0,
+      htmlSuccess: 0,
+      firecrawlAttempted: 0,
+      firecrawlSuccess: 0,
+      visionAttempted: 0,
+      visionSuccess: 0,
+      visionPagesTotal: 0,
+      dedupeSkipped: 0,
+    };
     
     for (const target of targets.results) {
       try {
@@ -2854,132 +2874,85 @@ cron.post('/extract-pdf-forms', async (c) => {
           continue;
         }
         
-        // --- テキスト抽出 ---
-        let extractedText = '';
-        let extractedFrom = 'none';
-        
-        // HTML優先
-        if (detailUrl) {
-          try {
-            const htmlResp = await fetch(detailUrl, {
-              headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-              },
-            });
-            if (htmlResp.ok) {
-              const html = await htmlResp.text();
-              extractedText = html
-                .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
-                .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
-                .replace(/<[^>]+>/g, ' ')
-                .replace(/&nbsp;/g, ' ')
-                .replace(/&amp;/g, '&')
-                .replace(/\s+/g, ' ')
-                .trim();
-              extractedFrom = 'html';
-            }
-          } catch (e) {
-            console.warn(`[Extract-PDF-Forms] HTML fetch failed for ${target.id}`);
-          }
-        }
-        
-        // HTMLで不足の場合、PDF（簡易実装）
-        if (extractedText.length < MIN_TEXT_LEN && Array.isArray(pdfUrls) && pdfUrls.length > 0) {
-          // TODO: 完全なPDF抽出は別ライブラリで実装済み
-          // ここでは簡易版（URLの存在だけ確認）
-          extractedFrom = 'pdf_pending';
-        }
-        
-        // テキスト不足
-        if (extractedText.length < MIN_TEXT_LEN && extractedFrom !== 'pdf_pending') {
-          // feed_failures に記録
-          await recordFailure(db, target.id, target.source, detailUrl || pdfUrls[0] || '', 'extract', 'FETCH_FAILED', 
-            `Insufficient text: ${extractedText.length} chars`);
-          
-          results.push({
-            id: target.id,
-            source: target.source,
-            success: false,
-            extractedFrom: 'none',
-            formsCount: 0,
-            fieldsTotal: 0,
-            wallChatReady: false,
-            error: `Insufficient text: ${extractedText.length} chars`,
-          });
-          failCount++;
-          continue;
-        }
-        
-        // --- required_forms 抽出（簡易版）---
-        const forms = extractFormsSimple(extractedText);
-        const formsCount = forms.length;
-        const fieldsTotal = forms.reduce((sum, f) => sum + f.fields.length, 0);
-        
-        // 品質ゲート
-        const validForms = forms.filter(f => f.fields.length >= MIN_FIELDS);
-        if (validForms.length < MIN_FORMS) {
-          // FORMS_NOT_FOUND または FIELDS_INSUFFICIENT
-          const reason = forms.length < MIN_FORMS ? 'FORMS_NOT_FOUND' : 'FIELDS_INSUFFICIENT';
-          await recordFailure(db, target.id, target.source, detailUrl || '', 'validation', reason,
-            `Forms: ${forms.length}, Valid: ${validForms.length}`);
-          
-          results.push({
-            id: target.id,
-            source: target.source,
-            success: false,
-            extractedFrom,
-            formsCount,
-            fieldsTotal,
-            wallChatReady: false,
-            error: `Validation failed: ${reason}`,
-          });
-          failCount++;
-          continue;
-        }
-        
-        // --- detail_json を更新 ---
-        const updatedDetail = {
-          ...detail,
-          required_forms: validForms.slice(0, 20),
-          required_forms_extracted_at: new Date().toISOString(),
-          pdf_text_source: extractedFrom,
+        // --- 統一入口で抽出実行 ---
+        const extractSource: ExtractSource = {
+          subsidyId: target.id,
+          source: target.source,
+          title: target.title,
+          detailUrl,
+          pdfUrls: Array.isArray(pdfUrls) ? pdfUrls : [],
+          existingDetailJson: target.detail_json,
         };
         
-        const newDetailJson = JSON.stringify(updatedDetail);
-        
-        // wall_chat_ready 再計算
-        const wallChatReady = checkWallChatReady(updatedDetail);
-        const wallChatMissing = getWallChatMissing(updatedDetail);
-        
-        // DB更新
-        await db.prepare(`
-          UPDATE subsidy_cache 
-          SET detail_json = ?,
-              wall_chat_ready = ?,
-              wall_chat_missing = ?
-          WHERE id = ?
-        `).bind(
-          newDetailJson,
-          wallChatReady ? 1 : 0,
-          JSON.stringify(wallChatMissing),
-          target.id
-        ).run();
-        
-        // 成功記録
-        results.push({
-          id: target.id,
-          source: target.source,
-          success: true,
-          extractedFrom,
-          formsCount: validForms.length,
-          fieldsTotal: validForms.reduce((s, f) => s + f.fields.length, 0),
-          wallChatReady,
+        const extractResult = await extractAndUpdateSubsidy(extractSource, {
+          FIRECRAWL_API_KEY: env.FIRECRAWL_API_KEY,
+          GOOGLE_CLOUD_API_KEY: env.GOOGLE_CLOUD_API_KEY,
         });
-        successCount++;
-        if (wallChatReady) readyCount++;
         
-        // feed_failures を resolved に
-        await resolveFailure(db, target.id, detailUrl || '');
+        // メトリクス集計
+        if (extractResult.metrics.htmlAttempted) totalMetrics.htmlAttempted++;
+        if (extractResult.metrics.htmlSuccess) totalMetrics.htmlSuccess++;
+        if (extractResult.metrics.firecrawlAttempted) totalMetrics.firecrawlAttempted++;
+        if (extractResult.metrics.firecrawlSuccess) totalMetrics.firecrawlSuccess++;
+        if (extractResult.metrics.visionAttempted) totalMetrics.visionAttempted++;
+        if (extractResult.metrics.visionSuccess) totalMetrics.visionSuccess++;
+        totalMetrics.visionPagesTotal += extractResult.metrics.visionPagesProcessed;
+        
+        if (extractResult.success) {
+          // DB更新
+          await db.prepare(`
+            UPDATE subsidy_cache 
+            SET detail_json = ?,
+                wall_chat_ready = ?,
+                wall_chat_missing = ?
+            WHERE id = ?
+          `).bind(
+            extractResult.newDetailJson,
+            extractResult.wallChatReady ? 1 : 0,
+            JSON.stringify(extractResult.wallChatMissing),
+            target.id
+          ).run();
+          
+          results.push({
+            id: target.id,
+            source: target.source,
+            success: true,
+            extractedFrom: extractResult.extractedFrom,
+            formsCount: extractResult.formsCount,
+            fieldsTotal: extractResult.fieldsTotal,
+            wallChatReady: extractResult.wallChatReady,
+          });
+          successCount++;
+          if (extractResult.wallChatReady) readyCount++;
+          
+          // feed_failures を resolved に
+          await resolveFailure(db, target.id, detailUrl || '');
+        } else {
+          // 失敗記録
+          if (extractResult.failureReason) {
+            await recordFailure(
+              db, 
+              target.id, 
+              target.source, 
+              detailUrl || (pdfUrls[0] || ''), 
+              'extract', 
+              extractResult.failureReason,
+              extractResult.failureMessage || 'Unknown error'
+            );
+          }
+          
+          results.push({
+            id: target.id,
+            source: target.source,
+            success: false,
+            extractedFrom: extractResult.extractedFrom,
+            formsCount: extractResult.formsCount,
+            fieldsTotal: extractResult.fieldsTotal,
+            wallChatReady: false,
+            error: extractResult.failureMessage,
+          });
+          failCount++;
+        }
         
       } catch (e: any) {
         console.error(`[Extract-PDF-Forms] Error processing ${target.id}:`, e.message);
@@ -2998,7 +2971,7 @@ cron.post('/extract-pdf-forms', async (c) => {
       }
     }
     
-    // --- Step 3: 実行ログ完了 ---
+    // --- Step 3: 実行ログ完了（メトリクス含む）---
     if (runId) {
       await finishCronRun(db, runId, failCount === 0 ? 'success' : 'partial', {
         items_processed: targets.results.length,
@@ -3010,6 +2983,12 @@ cron.post('/extract-pdf-forms', async (c) => {
         metadata: {
           ready_count: readyCount,
           sources: [...new Set(targets.results.map(t => t.source))],
+          // 計測メトリクス
+          metrics: totalMetrics,
+          api_keys_configured: {
+            firecrawl: hasFirecrawl,
+            vision: hasVision,
+          },
         },
       });
     }
@@ -3019,6 +2998,7 @@ cron.post('/extract-pdf-forms', async (c) => {
       succeeded: number;
       failed: number;
       newReady: number;
+      metrics: typeof totalMetrics;
       results: typeof results;
       run_id?: string;
     }>>({
@@ -3028,6 +3008,7 @@ cron.post('/extract-pdf-forms', async (c) => {
         succeeded: successCount,
         failed: failCount,
         newReady: readyCount,
+        metrics: totalMetrics,
         results,
         run_id: runId ?? undefined,
       },

@@ -5,11 +5,16 @@
  * この関数経由で行う。Cron/手動/APIどこから呼んでもここを通る。
  * 
  * フロー:
- * 1. detailUrl からHTML本文を取得（優先）
- * 2. HTMLで不足の場合、pdfUrls からテキスト抽出
- * 3. 抽出結果を detail_json にマージ
- * 4. wall_chat_ready を再計算
- * 5. 失敗/不足は feed_failures に記録
+ * 1. detailUrl からHTML本文を取得（優先・最安）
+ * 2. HTMLで不足の場合、Firecrawl でPDFテキスト抽出（非AI）
+ * 3. Firecrawlで不足の場合、Google Vision OCR（画像PDF用）
+ * 4. 抽出結果を detail_json にマージ
+ * 5. wall_chat_ready を再計算
+ * 6. 失敗/不足は feed_failures に記録
+ * 
+ * ハイブリッド構成:
+ * - Firecrawl: テキスト埋め込みPDF用（高速・安価）
+ * - Google Vision: 画像PDF（スキャン）用（高精度OCR）
  */
 
 import { extractDetailFromPdfText, mergeDetailJson } from '../pdf-extractor';
@@ -20,13 +25,15 @@ import {
   validateFormsResult, 
   type FormsValidationResult 
 } from './required-forms-extractor';
-import { recordPdfFailure, type PdfFailureReason } from './pdf-failures';
+import { recordPdfFailure, type PdfFailureReason, type PdfFailureStage } from './pdf-failures';
 
 // --- 定数（凍結仕様）---
 export const MIN_TEXT_LEN_FOR_NON_OCR = 800;    // 非AIで有効とみなす最低文字数
 export const MIN_FORMS = 2;                      // required_forms の最低数
 export const MIN_FIELDS_PER_FORM = 3;            // 各フォームの最低フィールド数
 export const MAX_PDF_FETCH_SIZE = 5 * 1024 * 1024; // 5MB 上限
+export const FIRECRAWL_TIMEOUT_MS = 30000;       // Firecrawl タイムアウト
+export const VISION_MAX_PAGES = 5;               // Vision OCR 最大ページ数
 
 // --- 型定義 ---
 export type ExtractSource = {
@@ -41,7 +48,7 @@ export type ExtractSource = {
 export type ExtractResult = {
   subsidyId: string;
   success: boolean;
-  extractedFrom: 'html' | 'pdf_native' | 'pdf_ocr' | 'none';
+  extractedFrom: 'html' | 'firecrawl' | 'vision_ocr' | 'pdf_native' | 'none';
   formsCount: number;
   fieldsTotal: number;
   newDetailJson: string;
@@ -49,7 +56,26 @@ export type ExtractResult = {
   wallChatMissing: string[];
   failureReason?: PdfFailureReason;
   failureMessage?: string;
-  pdfHash?: string;
+  contentHash?: string;
+  // メトリクス（計測用）
+  metrics: ExtractMetrics;
+};
+
+export type ExtractMetrics = {
+  htmlAttempted: boolean;
+  htmlSuccess: boolean;
+  firecrawlAttempted: boolean;
+  firecrawlSuccess: boolean;
+  visionAttempted: boolean;
+  visionSuccess: boolean;
+  visionPagesProcessed: number;
+  textLengthExtracted: number;
+  processingTimeMs: number;
+};
+
+export type ExtractEnv = {
+  FIRECRAWL_API_KEY?: string;
+  GOOGLE_CLOUD_API_KEY?: string;
 };
 
 // --- メイン関数（A-0: 唯一の入り口）---
@@ -58,11 +84,29 @@ export type ExtractResult = {
  * 
  * 1つの補助金に対してPDF/HTML抽出を実行し、結果を返す。
  * DB更新は呼び出し元が行う（この関数はDB依存しない純粋関数）。
+ * 
+ * @param input - 抽出対象の情報
+ * @param env - 環境変数（FIRECRAWL_API_KEY, GOOGLE_CLOUD_API_KEY）
  */
 export async function extractAndUpdateSubsidy(
-  input: ExtractSource
+  input: ExtractSource,
+  env?: ExtractEnv
 ): Promise<ExtractResult> {
+  const startTime = Date.now();
   const { subsidyId, source, title, detailUrl, pdfUrls, existingDetailJson } = input;
+  
+  // メトリクス初期化
+  const metrics: ExtractMetrics = {
+    htmlAttempted: false,
+    htmlSuccess: false,
+    firecrawlAttempted: false,
+    firecrawlSuccess: false,
+    visionAttempted: false,
+    visionSuccess: false,
+    visionPagesProcessed: 0,
+    textLengthExtracted: 0,
+    processingTimeMs: 0,
+  };
   
   // 既存の detail_json をパース
   let existingDetail: DetailJSON = {};
@@ -76,46 +120,92 @@ export async function extractAndUpdateSubsidy(
   let extractedFrom: ExtractResult['extractedFrom'] = 'none';
   let failureReason: PdfFailureReason | undefined;
   let failureMessage: string | undefined;
-  let pdfHash: string | undefined;
+  let contentHash: string | undefined;
 
-  // --- Step 1: detailUrl からHTML取得 ---
+  // ========================================
+  // Step 1: detailUrl からHTML取得（最優先・最安）
+  // ========================================
   if (detailUrl) {
+    metrics.htmlAttempted = true;
     try {
       const htmlText = await fetchHtmlAsText(detailUrl);
       if (htmlText.length >= MIN_TEXT_LEN_FOR_NON_OCR) {
         extractedText = htmlText;
         extractedFrom = 'html';
+        contentHash = simpleHash(htmlText);
+        metrics.htmlSuccess = true;
+        console.log(`[extractAndUpdateSubsidy] HTML success for ${subsidyId}: ${htmlText.length} chars`);
+      } else {
+        console.log(`[extractAndUpdateSubsidy] HTML insufficient for ${subsidyId}: ${htmlText.length} chars`);
       }
     } catch (e: any) {
-      // HTMLフェッチ失敗は記録するが、PDF fallback を試す
       console.warn(`[extractAndUpdateSubsidy] HTML fetch failed for ${subsidyId}: ${e.message}`);
     }
   }
 
-  // --- Step 2: HTMLで不足の場合、PDF抽出 ---
-  if (extractedText.length < MIN_TEXT_LEN_FOR_NON_OCR && pdfUrls && pdfUrls.length > 0) {
-    for (const pdfUrl of pdfUrls.slice(0, 5)) { // 最大5件
+  // ========================================
+  // Step 2: HTMLで不足の場合、Firecrawl でPDF抽出（非AI）
+  // ========================================
+  if (extractedText.length < MIN_TEXT_LEN_FOR_NON_OCR && pdfUrls && pdfUrls.length > 0 && env?.FIRECRAWL_API_KEY) {
+    for (const pdfUrl of pdfUrls.slice(0, 3)) { // 最大3件
+      metrics.firecrawlAttempted = true;
       try {
-        const pdfResult = await extractPdfTextSmart(pdfUrl);
-        if (pdfResult.text.length >= MIN_TEXT_LEN_FOR_NON_OCR) {
-          extractedText = pdfResult.text;
-          extractedFrom = pdfResult.usedOcr ? 'pdf_ocr' : 'pdf_native';
-          pdfHash = pdfResult.hash;
+        const firecrawlResult = await extractWithFirecrawl(pdfUrl, env.FIRECRAWL_API_KEY);
+        if (firecrawlResult.text.length >= MIN_TEXT_LEN_FOR_NON_OCR) {
+          extractedText = firecrawlResult.text;
+          extractedFrom = 'firecrawl';
+          contentHash = firecrawlResult.hash;
+          metrics.firecrawlSuccess = true;
+          console.log(`[extractAndUpdateSubsidy] Firecrawl success for ${subsidyId}: ${firecrawlResult.text.length} chars`);
           break;
+        } else {
+          console.log(`[extractAndUpdateSubsidy] Firecrawl insufficient for ${subsidyId}: ${firecrawlResult.text.length} chars`);
         }
       } catch (e: any) {
-        console.warn(`[extractAndUpdateSubsidy] PDF extract failed for ${pdfUrl}: ${e.message}`);
+        console.warn(`[extractAndUpdateSubsidy] Firecrawl failed for ${pdfUrl}: ${e.message}`);
       }
     }
   }
 
-  // --- Step 3: テキスト不足の場合 → 失敗記録 ---
+  // ========================================
+  // Step 3: Firecrawlで不足の場合、Google Vision OCR（画像PDF用）
+  // ========================================
+  if (extractedText.length < MIN_TEXT_LEN_FOR_NON_OCR && pdfUrls && pdfUrls.length > 0 && env?.GOOGLE_CLOUD_API_KEY) {
+    for (const pdfUrl of pdfUrls.slice(0, 2)) { // OCRは高コストなので最大2件
+      metrics.visionAttempted = true;
+      try {
+        const visionResult = await extractWithGoogleVision(pdfUrl, env.GOOGLE_CLOUD_API_KEY);
+        metrics.visionPagesProcessed += visionResult.pagesProcessed;
+        
+        if (visionResult.text.length >= MIN_TEXT_LEN_FOR_NON_OCR) {
+          extractedText = visionResult.text;
+          extractedFrom = 'vision_ocr';
+          contentHash = visionResult.hash;
+          metrics.visionSuccess = true;
+          console.log(`[extractAndUpdateSubsidy] Vision OCR success for ${subsidyId}: ${visionResult.text.length} chars, ${visionResult.pagesProcessed} pages`);
+          break;
+        } else {
+          console.log(`[extractAndUpdateSubsidy] Vision OCR insufficient for ${subsidyId}: ${visionResult.text.length} chars`);
+        }
+      } catch (e: any) {
+        console.warn(`[extractAndUpdateSubsidy] Vision OCR failed for ${pdfUrl}: ${e.message}`);
+      }
+    }
+  }
+
+  // ========================================
+  // Step 4: テキスト不足の場合 → 失敗記録
+  // ========================================
+  metrics.textLengthExtracted = extractedText.length;
+  
   if (extractedText.length < MIN_TEXT_LEN_FOR_NON_OCR) {
     failureReason = 'FETCH_FAILED';
-    failureMessage = `Insufficient text extracted (${extractedText.length} chars, min ${MIN_TEXT_LEN_FOR_NON_OCR})`;
+    failureMessage = `Insufficient text extracted (${extractedText.length} chars, min ${MIN_TEXT_LEN_FOR_NON_OCR}). ` +
+      `Attempted: HTML=${metrics.htmlAttempted}, Firecrawl=${metrics.firecrawlAttempted}, Vision=${metrics.visionAttempted}`;
     
     // 既存データでwall_chat_ready判定
     const readyResult = checkWallChatReadyFromJson(existingDetailJson || '{}');
+    metrics.processingTimeMs = Date.now() - startTime;
     
     return {
       subsidyId,
@@ -128,13 +218,18 @@ export async function extractAndUpdateSubsidy(
       wallChatMissing: readyResult.missing,
       failureReason,
       failureMessage,
+      metrics,
     };
   }
 
-  // --- Step 4: テキストから detail データ抽出 ---
+  // ========================================
+  // Step 5: テキストから detail データ抽出
+  // ========================================
   const extractedDetail = extractDetailFromPdfText(extractedText);
   
-  // --- Step 5: required_forms 抽出 + 品質ゲート ---
+  // ========================================
+  // Step 6: required_forms 抽出 + 品質ゲート
+  // ========================================
   const formsResult = extractRequiredFormsFromText(extractedText);
   const formsValidation = validateFormsResult(formsResult, MIN_FORMS, MIN_FIELDS_PER_FORM);
   
@@ -144,7 +239,9 @@ export async function extractAndUpdateSubsidy(
     failureMessage = formsValidation.message;
   }
 
-  // --- Step 6: detail_json にマージ ---
+  // ========================================
+  // Step 7: detail_json にマージ
+  // ========================================
   let mergedDetail = mergeDetailJson(existingDetail, extractedDetail);
   
   // required_forms を追加（品質ゲート通過時のみ上書き）
@@ -157,23 +254,27 @@ export async function extractAndUpdateSubsidy(
     };
   }
   
-  // pdfHash を記録
-  if (pdfHash) {
-    mergedDetail.pdf_hashes = [
-      ...(mergedDetail.pdf_hashes || []),
-      pdfHash
-    ].slice(-10); // 最新10件のみ保持
+  // contentHash を記録
+  if (contentHash) {
+    mergedDetail.content_hashes = [
+      ...(mergedDetail.content_hashes || []),
+      { hash: contentHash, source: extractedFrom, at: new Date().toISOString() }
+    ].slice(-5); // 最新5件のみ保持
   }
 
   const newDetailJson = JSON.stringify(mergedDetail);
 
-  // --- Step 7: wall_chat_ready 再計算 ---
+  // ========================================
+  // Step 8: wall_chat_ready 再計算
+  // ========================================
   const readyResult = isWallChatReady(mergedDetail);
 
   // フォーム数カウント
   const forms = Array.isArray(mergedDetail.required_forms) ? mergedDetail.required_forms : [];
   const formsCount = forms.length;
   const fieldsTotal = forms.reduce((sum, f) => sum + (f?.fields?.length || 0), 0);
+
+  metrics.processingTimeMs = Date.now() - startTime;
 
   return {
     subsidyId,
@@ -186,111 +287,179 @@ export async function extractAndUpdateSubsidy(
     wallChatMissing: readyResult.missing,
     failureReason,
     failureMessage,
-    pdfHash,
+    contentHash,
+    metrics,
   };
 }
 
-// --- A-1: extractPdfTextSmart (非AI → OCR 逐次判定) ---
-type PdfExtractResult = {
+// ========================================
+// Firecrawl API（テキスト埋め込みPDF用）
+// ========================================
+type FirecrawlResult = {
   text: string;
-  usedOcr: boolean;
   hash: string;
 };
 
-/**
- * PDFからテキストを抽出（非AI優先、必要時のみOCR）
- * 
- * 判定基準:
- * 1. まずネイティブテキスト抽出を試行
- * 2. MIN_TEXT_LEN_FOR_NON_OCR 未満ならOCRフォールバック
- * 3. 両方失敗なら例外をthrow
- */
-async function extractPdfTextSmart(pdfUrl: string): Promise<PdfExtractResult> {
-  // Step 1: PDFをfetch
-  const response = await fetch(pdfUrl, {
+async function extractWithFirecrawl(pdfUrl: string, apiKey: string): Promise<FirecrawlResult> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), FIRECRAWL_TIMEOUT_MS);
+  
+  try {
+    const response = await fetch('https://api.firecrawl.dev/v1/scrape', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        url: pdfUrl,
+        formats: ['markdown'],
+        onlyMainContent: true,
+        waitFor: 2000,
+      }),
+      signal: controller.signal,
+    });
+    
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Firecrawl API error: ${response.status} - ${errorText.slice(0, 200)}`);
+    }
+    
+    const result = await response.json() as {
+      success: boolean;
+      data?: {
+        markdown?: string;
+        html?: string;
+      };
+    };
+    
+    if (!result.success || !result.data?.markdown) {
+      throw new Error('Firecrawl returned no data');
+    }
+    
+    const text = result.data.markdown;
+    const hash = simpleHash(text);
+    
+    return { text, hash };
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+// ========================================
+// Google Vision API（画像PDF用OCR）
+// ========================================
+type VisionResult = {
+  text: string;
+  hash: string;
+  pagesProcessed: number;
+};
+
+async function extractWithGoogleVision(pdfUrl: string, apiKey: string): Promise<VisionResult> {
+  // Step 1: PDFをダウンロード
+  const pdfResponse = await fetch(pdfUrl, {
     headers: {
       'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-      'Accept': 'application/pdf,*/*',
     },
   });
-
-  if (!response.ok) {
-    throw new Error(`PDF fetch failed: ${response.status} ${response.statusText}`);
-  }
-
-  const contentLength = response.headers.get('content-length');
-  if (contentLength && parseInt(contentLength) > MAX_PDF_FETCH_SIZE) {
-    throw new Error(`PDF too large: ${contentLength} bytes (max ${MAX_PDF_FETCH_SIZE})`);
-  }
-
-  const arrayBuffer = await response.arrayBuffer();
-  const hash = simpleHash(new Uint8Array(arrayBuffer).slice(0, 1024).toString());
-
-  // Step 2: ネイティブテキスト抽出（PDF.js は使えないので、簡易パース）
-  const nativeText = extractTextFromPdfBuffer(arrayBuffer);
   
-  if (nativeText.length >= MIN_TEXT_LEN_FOR_NON_OCR) {
-    return {
-      text: nativeText,
-      usedOcr: false,
-      hash,
-    };
+  if (!pdfResponse.ok) {
+    throw new Error(`PDF fetch failed: ${pdfResponse.status}`);
   }
-
-  // Step 3: OCRフォールバック（Cloudflare Workersでは外部APIが必要）
-  // 現在はOCR非対応として、ネイティブテキストを返す
-  // TODO: OCR API (Google Vision, AWS Textract, etc.) を統合
-  console.warn(`[extractPdfTextSmart] Native text insufficient (${nativeText.length} chars), OCR not implemented`);
+  
+  const contentLength = pdfResponse.headers.get('content-length');
+  if (contentLength && parseInt(contentLength) > MAX_PDF_FETCH_SIZE) {
+    throw new Error(`PDF too large: ${contentLength} bytes`);
+  }
+  
+  const pdfBuffer = await pdfResponse.arrayBuffer();
+  const pdfBase64 = arrayBufferToBase64(pdfBuffer);
+  
+  // Step 2: Google Vision API でOCR
+  // Note: Vision API は PDF を直接サポートしている
+  const visionResponse = await fetch(
+    `https://vision.googleapis.com/v1/files:asyncBatchAnnotate?key=${apiKey}`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        requests: [{
+          inputConfig: {
+            content: pdfBase64,
+            mimeType: 'application/pdf',
+          },
+          features: [{
+            type: 'DOCUMENT_TEXT_DETECTION',
+            maxResults: 1,
+          }],
+          outputConfig: {
+            gcsDestination: {
+              uri: '', // 非同期の場合はGCSが必要、ここでは同期APIを使う
+            },
+          },
+        }],
+      }),
+    }
+  );
+  
+  // 同期APIを使う（小さいPDF向け）
+  const syncVisionResponse = await fetch(
+    `https://vision.googleapis.com/v1/images:annotate?key=${apiKey}`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        requests: [{
+          image: {
+            content: pdfBase64,
+          },
+          features: [{
+            type: 'DOCUMENT_TEXT_DETECTION',
+          }],
+        }],
+      }),
+    }
+  );
+  
+  if (!syncVisionResponse.ok) {
+    const errorText = await syncVisionResponse.text();
+    throw new Error(`Vision API error: ${syncVisionResponse.status} - ${errorText.slice(0, 200)}`);
+  }
+  
+  const visionResult = await syncVisionResponse.json() as {
+    responses?: Array<{
+      fullTextAnnotation?: {
+        text?: string;
+        pages?: Array<any>;
+      };
+      error?: {
+        message?: string;
+      };
+    }>;
+  };
+  
+  if (visionResult.responses?.[0]?.error) {
+    throw new Error(`Vision API error: ${visionResult.responses[0].error.message}`);
+  }
+  
+  const fullText = visionResult.responses?.[0]?.fullTextAnnotation?.text || '';
+  const pagesCount = visionResult.responses?.[0]?.fullTextAnnotation?.pages?.length || 1;
+  const hash = simpleHash(fullText);
   
   return {
-    text: nativeText,
-    usedOcr: false,
+    text: fullText,
     hash,
+    pagesProcessed: pagesCount,
   };
 }
 
-/**
- * PDFバッファからテキストを抽出（簡易版）
- * 
- * Cloudflare Workersでは完全なPDF.js は使えないため、
- * ストリームテキストを直接抽出する簡易実装。
- */
-function extractTextFromPdfBuffer(buffer: ArrayBuffer): string {
-  const bytes = new Uint8Array(buffer);
-  const decoder = new TextDecoder('utf-8', { fatal: false });
-  const rawText = decoder.decode(bytes);
-  
-  // PDF内のテキストストリームを抽出（BT...ET ブロック）
-  const textParts: string[] = [];
-  
-  // 方法1: stream/endstream 内のテキストを抽出
-  const streamMatches = rawText.matchAll(/stream\r?\n([\s\S]*?)\r?\nendstream/g);
-  for (const match of streamMatches) {
-    const content = match[1];
-    // テキストっぽい部分を抽出
-    const tjMatches = content.matchAll(/\[(.*?)\]\s*TJ|\((.*?)\)\s*Tj/g);
-    for (const tj of tjMatches) {
-      const text = (tj[1] || tj[2] || '')
-        .replace(/\\(\d{3})/g, (_, oct) => String.fromCharCode(parseInt(oct, 8)))
-        .replace(/\\\(/g, '(')
-        .replace(/\\\)/g, ')')
-        .replace(/\\\\/g, '\\');
-      if (text.trim()) textParts.push(text);
-    }
-  }
-  
-  // 方法2: 可読文字の連続を抽出（フォールバック）
-  if (textParts.length === 0) {
-    const japaneseAndAscii = rawText.match(/[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF\uFF00-\uFFEFa-zA-Z0-9\s,.、。・！？「」『』（）()【】\-ー]+/g);
-    if (japaneseAndAscii) {
-      textParts.push(...japaneseAndAscii.filter(s => s.length >= 4));
-    }
-  }
-
-  return textParts.join(' ').replace(/\s+/g, ' ').trim();
-}
-
-// --- HTML抽出 ---
+// ========================================
+// HTML抽出（最優先・最安）
+// ========================================
 async function fetchHtmlAsText(url: string): Promise<string> {
   const response = await fetch(url, {
     headers: {
@@ -307,32 +476,27 @@ async function fetchHtmlAsText(url: string): Promise<string> {
   return stripHtmlToText(html);
 }
 
-/**
- * HTMLからテキストを抽出
- */
 function stripHtmlToText(html: string): string {
   return html
-    // script, style, nav, footer, header などを除去
     .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
     .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
     .replace(/<nav[^>]*>[\s\S]*?<\/nav>/gi, '')
     .replace(/<footer[^>]*>[\s\S]*?<\/footer>/gi, '')
     .replace(/<header[^>]*>[\s\S]*?<\/header>/gi, '')
-    // タグを除去
     .replace(/<[^>]+>/g, ' ')
-    // HTML entities をデコード
     .replace(/&nbsp;/g, ' ')
     .replace(/&amp;/g, '&')
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
     .replace(/&quot;/g, '"')
     .replace(/&#(\d+);/g, (_, d) => String.fromCharCode(Number(d)))
-    // 空白を正規化
     .replace(/\s+/g, ' ')
     .trim();
 }
 
-// --- ユーティリティ ---
+// ========================================
+// ユーティリティ
+// ========================================
 function simpleHash(s: string): string {
   let hash = 0;
   for (let i = 0; i < s.length; i++) {
@@ -343,9 +507,20 @@ function simpleHash(s: string): string {
   return Math.abs(hash).toString(16).padStart(8, '0');
 }
 
-// --- バッチ処理用 ---
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  for (let i = 0; i < bytes.byteLength; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+}
+
+// ========================================
+// バッチ処理用
+// ========================================
 export type BatchExtractOptions = {
-  env: { DB: D1Database };
+  env: ExtractEnv & { DB: D1Database };
   sources: ExtractSource[];
   maxConcurrency?: number;
   onProgress?: (processed: number, total: number) => void;
@@ -362,12 +537,21 @@ export type BatchExtractResult = {
     reason: PdfFailureReason;
     message: string;
   }>;
+  // 集計メトリクス
+  totalMetrics: {
+    htmlAttempted: number;
+    htmlSuccess: number;
+    firecrawlAttempted: number;
+    firecrawlSuccess: number;
+    visionAttempted: number;
+    visionSuccess: number;
+    visionPagesTotal: number;
+    totalProcessingTimeMs: number;
+  };
 };
 
 /**
  * バッチでPDF抽出を実行
- * 
- * Cron ジョブから呼び出される想定。
  */
 export async function batchExtractPdfForms(
   options: BatchExtractOptions
@@ -377,6 +561,17 @@ export async function batchExtractPdfForms(
   const results: ExtractResult[] = [];
   const failures: BatchExtractResult['failures'] = [];
   let wallChatReadyCount = 0;
+  
+  const totalMetrics = {
+    htmlAttempted: 0,
+    htmlSuccess: 0,
+    firecrawlAttempted: 0,
+    firecrawlSuccess: 0,
+    visionAttempted: 0,
+    visionSuccess: 0,
+    visionPagesTotal: 0,
+    totalProcessingTimeMs: 0,
+  };
   
   // 並列処理（concurrency制限）
   const batches: ExtractSource[][] = [];
@@ -389,7 +584,7 @@ export async function batchExtractPdfForms(
     const batchResults = await Promise.all(
       batch.map(async (source) => {
         try {
-          const result = await extractAndUpdateSubsidy(source);
+          const result = await extractAndUpdateSubsidy(source, env);
           return result;
         } catch (e: any) {
           return {
@@ -403,6 +598,17 @@ export async function batchExtractPdfForms(
             wallChatMissing: [],
             failureReason: 'FETCH_FAILED' as PdfFailureReason,
             failureMessage: e.message,
+            metrics: {
+              htmlAttempted: false,
+              htmlSuccess: false,
+              firecrawlAttempted: false,
+              firecrawlSuccess: false,
+              visionAttempted: false,
+              visionSuccess: false,
+              visionPagesProcessed: 0,
+              textLengthExtracted: 0,
+              processingTimeMs: 0,
+            },
           };
         }
       })
@@ -419,6 +625,16 @@ export async function batchExtractPdfForms(
           message: result.failureMessage || 'Unknown error',
         });
       }
+      
+      // メトリクス集計
+      if (result.metrics.htmlAttempted) totalMetrics.htmlAttempted++;
+      if (result.metrics.htmlSuccess) totalMetrics.htmlSuccess++;
+      if (result.metrics.firecrawlAttempted) totalMetrics.firecrawlAttempted++;
+      if (result.metrics.firecrawlSuccess) totalMetrics.firecrawlSuccess++;
+      if (result.metrics.visionAttempted) totalMetrics.visionAttempted++;
+      if (result.metrics.visionSuccess) totalMetrics.visionSuccess++;
+      totalMetrics.visionPagesTotal += result.metrics.visionPagesProcessed;
+      totalMetrics.totalProcessingTimeMs += result.metrics.processingTimeMs;
     }
     
     processed += batch.length;
@@ -432,5 +648,6 @@ export async function batchExtractPdfForms(
     wallChatReadyCount,
     results,
     failures,
+    totalMetrics,
   };
 }

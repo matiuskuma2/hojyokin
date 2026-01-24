@@ -6,27 +6,71 @@
 - **Version**: 1.7.0
 - **Goal**: 企業情報を登録するだけで、最適な補助金・助成金を自動でマッチング＆申請書ドラフト作成
 
-### 🎉 最新アップデート (v2.4.0) - P3-3A Sprint完了: PDF抽出ルータ + 統一入口
+### 🎉 最新アップデート (v2.5.0) - P3-3B Sprint完了: PDF抽出ハイブリッド（Firecrawl + Vision）
 
-**P3-3Aフェーズ完了（2026-01-24）:**
+**P3-3Bフェーズ完了（2026-01-24）:**
 
 | 項目 | 状態 | 詳細 |
 |------|------|------|
 | WALL_CHAT_READY | ✅ **58件** | tokyo-kosha 23 + tokyo-hataraku 15 + tokyo-shigoto 12 + jgrants 5 + manual 3 |
-| **PDF抽出ルータ** | ✅ NEW | `src/lib/pdf/` - 全ソースの統一入口（A-0凍結仕様）|
-| **extract-pdf-forms Cron** | ✅ NEW | `/api/cron/extract-pdf-forms` - 50件/回バッチ |
+| **PDF抽出ハイブリッド** | ✅ NEW | HTML → Firecrawl → Vision OCR の3段階フォールバック |
+| **メトリクス計測** | ✅ NEW | html_ok/firecrawl_ok/vision_ok/pages をcron_runsに記録 |
+| **extract-pdf-forms Cron** | ✅ | `/api/cron/extract-pdf-forms` - 50件/回バッチ |
 | 品質ゲート | ✅ | forms >= 2 かつ fields >= 3（凍結仕様）|
-| feed_failures 4分類 | ✅ | FETCH_FAILED → PARSE_FAILED → FORMS_NOT_FOUND → FIELDS_INSUFFICIENT |
 
-**PDF抽出パイプライン（A-0〜A-4 実装完了）:**
+**PDF抽出パイプライン（ハイブリッド構成）:**
 
-| ステップ | ファイル | 説明 |
-|----------|----------|------|
-| A-0 | `pdf-extract-router.ts` | 統一入口（この関数だけ呼べばOK）|
-| A-1 | `extractPdfTextSmart()` | 非AI → OCR 逐次判定（MIN_TEXT_LEN=800）|
-| A-2 | `required-forms-extractor.ts` | 様式×記載項目 抽出 + 品質ゲート |
-| A-3 | DB更新 | detail_json patch, wall_chat_ready再計算 |
-| A-4 | `cron.ts` | `/api/cron/extract-pdf-forms` |
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  extractAndUpdateSubsidy() - 統一入口（A-0凍結）                │
+├─────────────────────────────────────────────────────────────────┤
+│  Step 1: HTML抽出（最優先・最安）                               │
+│    └─ detailUrl → fetch → stripHtmlToText                      │
+│    └─ 成功条件: textLen >= 800                                  │
+├─────────────────────────────────────────────────────────────────┤
+│  Step 2: Firecrawl（テキスト埋め込みPDF用）                     │
+│    └─ FIRECRAWL_API_KEY 必須                                    │
+│    └─ pdfUrls → Firecrawl API → markdown                        │
+├─────────────────────────────────────────────────────────────────┤
+│  Step 3: Google Vision OCR（画像PDF用・最後の手段）             │
+│    └─ GOOGLE_CLOUD_API_KEY 必須                                 │
+│    └─ PDFダウンロード → Base64 → Vision API                     │
+│    └─ 高コストなので最大2ファイルまで                           │
+├─────────────────────────────────────────────────────────────────┤
+│  Step 4: required_forms抽出 + 品質ゲート                        │
+│    └─ forms >= 2, fields >= 3                                   │
+│    └─ 失敗は feed_failures に記録                               │
+├─────────────────────────────────────────────────────────────────┤
+│  Step 5: detail_json更新 + wall_chat_ready再計算                │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**必要な環境変数:**
+```bash
+# wrangler secret put で設定
+FIRECRAWL_API_KEY=fc-xxx     # テキスト埋め込みPDF用
+GOOGLE_CLOUD_API_KEY=AIza... # 画像PDF（スキャン）用（任意）
+CRON_SECRET=xxx              # Cron認証用
+```
+
+**メトリクス（cron_runs.metadata_json に記録）:**
+```json
+{
+  "metrics": {
+    "htmlAttempted": 50,
+    "htmlSuccess": 35,
+    "firecrawlAttempted": 15,
+    "firecrawlSuccess": 10,
+    "visionAttempted": 5,
+    "visionSuccess": 3,
+    "visionPagesTotal": 12
+  },
+  "api_keys_configured": {
+    "firecrawl": true,
+    "vision": true
+  }
+}
+```
 
 **凍結仕様（変更禁止）:**
 ```typescript
@@ -34,6 +78,8 @@ MIN_TEXT_LEN_FOR_NON_OCR = 800    // 非AIで有効とみなす最低文字数
 MIN_FORMS = 2                      // required_forms の最低数
 MIN_FIELDS_PER_FORM = 3            // 各フォームの最低フィールド数
 MAX_PDF_FETCH_SIZE = 5MB           // PDF取得上限
+FIRECRAWL_TIMEOUT_MS = 30000       // Firecrawl タイムアウト
+VISION_MAX_PAGES = 5               // Vision OCR 最大ページ数
 ```
 
 **WALL_CHAT_READY 内訳:**
