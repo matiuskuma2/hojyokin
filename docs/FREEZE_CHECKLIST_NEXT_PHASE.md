@@ -77,7 +77,7 @@
 
 ---
 
-### P0-3: Agencyリンク管理の意味を凍結 ✅ 実装確認済み
+### P0-3: Agencyリンク管理の意味を凍結 ✅ E2E確認済み
 
 **目的**: 「リンク管理が何のためにあるか不明」という状態を解消
 
@@ -86,7 +86,14 @@
 - 状態遷移: 発行 → 未使用 → 提出 → 承認/却下 → （承認後はcompany/profile反映）
 - 承認済みの会社は `/agency/clients/:id` で必ず見れる
 
-**実装確認（2026-01-24）**:
+**E2E確認（2026-01-24）**:
+
+**本番データでの確認**:
+- [x] access_links: 複数のintakeリンクが存在（short_code: VJFpKBcX 等）
+- [x] intake_submissions: approved状態のデータが存在（reviewed_at設定済み）
+- [x] 状態遷移: submitted → approved が正常に動作
+
+**実装確認**:
 
 **P0-3-1: リンク管理に「発行したリンクが必ず出る」**
 - [x] GET /api/agency/links: access_links一覧取得実装済み
