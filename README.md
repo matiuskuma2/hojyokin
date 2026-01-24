@@ -6,26 +6,27 @@
 - **Version**: 1.7.0
 - **Goal**: 企業情報を登録するだけで、最適な補助金・助成金を自動でマッチング＆申請書ドラフト作成
 
-### 🎉 最新アップデート (v2.1.0) - P3-2C/D required_forms + 主要5制度完了
+### 🎉 最新アップデート (v2.2.0) - P3-2E Sprint完了: tokyo-hataraku + feed_failures UI + JGrants enrich API
 
-**P3-2C/Dフェーズ完了（2026-01-24）:**
+**P3-2Eフェーズ完了（2026-01-24）:**
 
 | 項目 | 状態 | 詳細 |
 |------|------|------|
-| WALL_CHAT_READY | ✅ **43件** | tokyo-kosha 23 + tokyo-shigoto 12 + jgrants 5 + manual 3 |
-| P3-2C required_forms | ✅ | 2制度×forms≥2×fields≥3 合格（8制度で達成） |
-| P3-2D 主要5制度 | ✅ | IT導入/ものづくり/持続化/省力化/再構築すべて壁打ち可能 |
-| Workers Cron | ✅ | hojyokin-cron-feed（D1直書き、毎日06:00 JST） |
-| 二重計上防止 | ✅ | dedupe_key UNIQUE + content_hash冪等性 |
+| WALL_CHAT_READY | ✅ **58件** | tokyo-kosha 23 + tokyo-hataraku 15 + tokyo-shigoto 12 + jgrants 5 + manual 3 |
+| tokyo-hataraku | ✅ **+15件** | 新規スクレイパー実装、100% WALL_CHAT_READY |
+| feed_failures UI | ✅ | 4分類表示（HTTP/parse/validation/timeout）+ 分類別集計 |
+| JGrants enrich API | ✅ | `/api/admin-ops/jgrants/enrich-detail` - detail_json自動取得 |
+| Workers Cron | ✅ | 東京3ソース全て稼働（shigoto/kosha/hataraku） |
 
 **WALL_CHAT_READY 内訳:**
 | ソース | 件数 | WALL_CHAT_READY | 率 |
 |--------|------|-----------------|-----|
-| tokyo-kosha | 23 | **23** | 100% |
+| tokyo-kosha | 23 | **23** | 100% ✅ |
+| tokyo-hataraku | 15 | **15** | 100% ✅ (NEW!) |
 | tokyo-shigoto | 28 | **12** | 42.9% |
 | jgrants | 2,894 | **5** | 0.2% |
 | manual | 8 | **3** | 37.5% |
-| **合計** | **2,953** | **43** | - |
+| **合計** | **2,968** | **58** | - |
 
 **主要5制度（P3-2D WALL_CHAT_READY化済み）:**
 | # | 制度 | ID | required_forms |
@@ -43,6 +44,17 @@
 4. 省力化等の大規模成長投資補助金（令和７年度補正）
 5. 事業再構築補助金（共同申請）
 
+**新規API（P3-2E）:**
+```bash
+# JGrants制度の詳細取得＆WALL_CHAT_READY化（super_admin専用）
+POST https://hojyokin.pages.dev/api/admin-ops/jgrants/enrich-detail
+Header: Authorization: Bearer {TOKEN}
+Body: {"limit": 20}  # または {"subsidy_ids": ["a0WJ..."]}
+
+# feed_failures取得（管理者用）
+GET https://hojyokin.pages.dev/api/admin-ops/feed-failures?status=open&limit=20
+```
+
 **Cronエンドポイント（cron-job.org等から呼び出し）:**
 ```bash
 # 東京しごと財団
@@ -59,6 +71,14 @@ Header: X-Cron-Secret: {CRON_SECRET}
 ```
 
 **推奨Cronスケジュール:** 毎日 06:00 JST
+
+**feed_failures 分類（凍結仕様）:**
+| 分類 | stage | error_type | 説明 |
+|------|-------|------------|------|
+| FETCH失敗 | discover | HTTP/timeout | 404/403/timeout等 |
+| PARSE失敗 | pdf | parse | PDF破損/暗号化/文字化け |
+| FORMS未検出 | extract | validation | 様式抽出失敗 |
+| FIELDS不足 | detail | validation | fields < 3 |
 
 ---
 
@@ -608,6 +628,8 @@ Private
 
 ## 🔄 更新履歴
 
+- **2026-01-24 (v2.2.0)**: P3-2E Sprint完了 - tokyo-hataraku +15件、feed_failures UI 4分類、JGrants enrich-detail API
+- **2026-01-24 (v2.1.0)**: P3-2C/D完了 - required_forms自動生成、主要5制度WALL_CHAT_READY化
 - **2026-01-23 (v1.8.0)**: 士業ダッシュボード v2（情報の泉型）- NEWSフィード5カテゴリ、顧客おすすめAIサジェスト、未処理タスク、KPI
 - **2026-01-23 (v1.7.0)**: Phase B-1 完了 - JGrants API直接連携、subsidy_cache 67件投入、apiCall修正、requireCompanyAccess修正
 - **2026-01-23 (v1.6.0)**: Phase B 開始 - 手動実データ8件投入、JGRANTS_MODE cached-only切替
