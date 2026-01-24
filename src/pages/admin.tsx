@@ -1500,6 +1500,33 @@ adminPages.get('/admin/ops', (c) => {
         <!-- feed_failures（未解決エラー） -->
         <div>
           <h3 class="text-sm font-medium text-gray-700 mb-2">未解決エラー（feed_failures）</h3>
+          
+          <!-- 4分類サマリー -->
+          <div id="failures-summary" class="grid grid-cols-4 gap-2 mb-3">
+            <div class="bg-red-50 rounded p-2 text-center">
+              <p class="text-lg font-bold text-red-600" id="failures-fetch">-</p>
+              <p class="text-xs text-red-500">FETCH失敗</p>
+            </div>
+            <div class="bg-orange-50 rounded p-2 text-center">
+              <p class="text-lg font-bold text-orange-600" id="failures-parse">-</p>
+              <p class="text-xs text-orange-500">PARSE失敗</p>
+            </div>
+            <div class="bg-yellow-50 rounded p-2 text-center">
+              <p class="text-lg font-bold text-yellow-600" id="failures-forms">-</p>
+              <p class="text-xs text-yellow-500">FORMS未検出</p>
+            </div>
+            <div class="bg-blue-50 rounded p-2 text-center">
+              <p class="text-lg font-bold text-blue-600" id="failures-fields">-</p>
+              <p class="text-xs text-blue-500">FIELDS不足</p>
+            </div>
+          </div>
+          
+          <!-- ソース別サマリー -->
+          <div id="failures-by-source" class="mb-3 text-xs text-gray-500">
+            ソース別: 読み込み中...
+          </div>
+          
+          <!-- 詳細リスト -->
           <div id="feed-failures-list" class="overflow-x-auto max-h-48">
             <div class="text-gray-400 text-sm p-2 loading">読み込み中...</div>
           </div>
@@ -2146,29 +2173,85 @@ adminPages.get('/admin/ops', (c) => {
 
       async function loadFeedFailures() {
         try {
-          const data = await api('/api/admin-ops/feed-failures?status=open&limit=20');
+          const data = await api('/api/admin-ops/feed-failures?status=open&limit=50');
           if (!data.success) {
             console.error('Feed failures API error:', data.error);
             return;
           }
 
+          const failures = data.data?.failures || [];
+          
+          // 4分類カウント（凍結）
+          const counts = {
+            fetch: 0,    // FETCH_FAILED (HTTP_ERROR, timeout, etc.)
+            parse: 0,    // PARSE_FAILED (PDF破損, 文字化け)
+            forms: 0,    // FORMS_NOT_FOUND
+            fields: 0,   // FIELDS_INSUFFICIENT
+          };
+          
+          // ソース別カウント
+          const bySource = {};
+          
+          failures.forEach(f => {
+            // 分類
+            const errorType = (f.error_type || '').toLowerCase();
+            const stage = (f.stage || '').toLowerCase();
+            
+            if (errorType.includes('http') || errorType.includes('timeout') || errorType.includes('fetch')) {
+              counts.fetch++;
+            } else if (errorType.includes('parse') || stage === 'pdf') {
+              counts.parse++;
+            } else if (errorType.includes('forms_not_found') || (f.error_message || '').includes('forms')) {
+              counts.forms++;
+            } else if (errorType.includes('fields') || (f.error_message || '').includes('fields')) {
+              counts.fields++;
+            } else {
+              counts.fetch++; // デフォルトはfetch
+            }
+            
+            // ソース別
+            const src = f.source_id || 'unknown';
+            bySource[src] = (bySource[src] || 0) + 1;
+          });
+          
+          // 4分類サマリー更新
+          document.getElementById('failures-fetch').textContent = counts.fetch;
+          document.getElementById('failures-parse').textContent = counts.parse;
+          document.getElementById('failures-forms').textContent = counts.forms;
+          document.getElementById('failures-fields').textContent = counts.fields;
+          
+          // ソース別サマリー更新
+          const bySourceEl = document.getElementById('failures-by-source');
+          if (bySourceEl) {
+            const sourceStr = Object.entries(bySource)
+              .map(([k, v]) => k.replace('src-', '') + ': ' + v)
+              .join(', ');
+            bySourceEl.textContent = sourceStr || '未解決エラーなし';
+          }
+
           const listEl = document.getElementById('feed-failures-list');
-          if (listEl && data.data && data.data.failures && data.data.failures.length > 0) {
+          if (listEl && failures.length > 0) {
             listEl.innerHTML = '<table class="w-full text-sm">' +
               '<thead class="bg-gray-50"><tr>' +
               '<th class="px-2 py-1 text-left">ソース</th>' +
               '<th class="px-2 py-1 text-left">ステージ</th>' +
+              '<th class="px-2 py-1 text-left">分類</th>' +
               '<th class="px-2 py-1 text-left">エラー</th>' +
               '<th class="px-2 py-1 text-left">発生日時</th>' +
               '</tr></thead><tbody>' +
-              data.data.failures.map(f => 
-                '<tr class="border-t hover:bg-red-50">' +
-                '<td class="px-2 py-1 text-xs">' + f.source_id + '</td>' +
-                '<td class="px-2 py-1 text-xs">' + f.stage + '</td>' +
-                '<td class="px-2 py-1 text-xs text-red-600 max-w-xs truncate" title="' + (f.error_message || '').replace(/"/g, '&quot;') + '">' + (f.error_message || '').slice(0, 50) + '</td>' +
-                '<td class="px-2 py-1 text-xs text-gray-500">' + new Date(f.occurred_at).toLocaleString('ja-JP') + '</td>' +
-                '</tr>'
-              ).join('') +
+              failures.slice(0, 20).map(f => {
+                const errorType = (f.error_type || '').toLowerCase();
+                const typeClass = errorType.includes('http') ? 'text-red-600' :
+                                  errorType.includes('parse') ? 'text-orange-600' :
+                                  errorType.includes('forms') ? 'text-yellow-600' : 'text-blue-600';
+                return '<tr class="border-t hover:bg-red-50">' +
+                  '<td class="px-2 py-1 text-xs">' + (f.source_id || '').replace('src-', '') + '</td>' +
+                  '<td class="px-2 py-1 text-xs">' + (f.stage || '') + '</td>' +
+                  '<td class="px-2 py-1 text-xs ' + typeClass + '">' + (f.error_type || '') + '</td>' +
+                  '<td class="px-2 py-1 text-xs text-red-600 max-w-xs truncate" title="' + (f.error_message || '').replace(/"/g, '&quot;') + '">' + (f.error_message || '').slice(0, 40) + '</td>' +
+                  '<td class="px-2 py-1 text-xs text-gray-500">' + new Date(f.occurred_at).toLocaleString('ja-JP') + '</td>' +
+                  '</tr>';
+              }).join('') +
               '</tbody></table>';
           } else if (listEl) {
             listEl.innerHTML = '<p class="text-green-600 text-sm p-2"><i class="fas fa-check-circle mr-1"></i>未解決エラーはありません</p>';
