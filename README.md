@@ -6,25 +6,25 @@
 - **Version**: 1.7.0
 - **Goal**: 企業情報を登録するだけで、最適な補助金・助成金を自動でマッチング＆申請書ドラフト作成
 
-### 🎉 最新アップデート (v2.2.0) - P3-2E Sprint完了: tokyo-hataraku + feed_failures UI + JGrants enrich API
+### 🎉 最新アップデート (v2.3.0) - P3-2F Sprint完了: Enrich Cronジョブ + feed_failures優先度表示
 
-**P3-2Eフェーズ完了（2026-01-24）:**
+**P3-2Fフェーズ完了（2026-01-24）:**
 
 | 項目 | 状態 | 詳細 |
 |------|------|------|
 | WALL_CHAT_READY | ✅ **58件** | tokyo-kosha 23 + tokyo-hataraku 15 + tokyo-shigoto 12 + jgrants 5 + manual 3 |
-| tokyo-hataraku | ✅ **+15件** | 新規スクレイパー実装、100% WALL_CHAT_READY |
-| feed_failures UI | ✅ | 4分類表示（HTTP/parse/validation/timeout）+ 分類別集計 |
-| JGrants enrich API | ✅ | `/api/admin-ops/jgrants/enrich-detail` - detail_json自動取得 |
-| Workers Cron | ✅ | 東京3ソース全て稼働（shigoto/kosha/hataraku） |
+| tokyo-shigoto enrich | ✅ | HTMLから概要/要件/経費/書類を抽出するAPI実装 |
+| JGrants enrich Cron | ✅ | `/api/cron/enrich-jgrants` - 毎日30件バッチ処理 |
+| tokyo-shigoto enrich Cron | ✅ | `/api/cron/enrich-tokyo-shigoto` - HTML抽出Cron |
+| feed_failures 優先度表示 | ✅ | 潰せる順にソート（HTTP→parse→forms→fields） |
 
 **WALL_CHAT_READY 内訳:**
 | ソース | 件数 | WALL_CHAT_READY | 率 |
 |--------|------|-----------------|-----|
 | tokyo-kosha | 23 | **23** | 100% ✅ |
-| tokyo-hataraku | 15 | **15** | 100% ✅ (NEW!) |
-| tokyo-shigoto | 28 | **12** | 42.9% |
-| jgrants | 2,894 | **5** | 0.2% |
+| tokyo-hataraku | 15 | **15** | 100% ✅ |
+| tokyo-shigoto | 28 | **12** | 42.9% (enrich対象) |
+| jgrants | 2,894 | **5** | 0.2% (enrich Cron稼働) |
 | manual | 8 | **3** | 37.5% |
 | **合計** | **2,968** | **58** | - |
 
@@ -70,7 +70,25 @@ POST https://hojyokin.pages.dev/api/cron/scrape-tokyo-hataraku
 Header: X-Cron-Secret: {CRON_SECRET}
 ```
 
-**推奨Cronスケジュール:** 毎日 06:00 JST
+**推奨Cronスケジュール:**
+| ジョブ | 時刻 (JST) | 説明 |
+|--------|------------|------|
+| scrape-tokyo-* | 06:00 | 東京3ソース (shigoto/kosha/hataraku) |
+| sync-jgrants | 06:00 | JGrants API同期 |
+| enrich-jgrants | 07:00 | JGrants detail_json拡充 (30件/日) |
+| enrich-tokyo-shigoto | 07:30 | tokyo-shigoto detail_json拡充 |
+| generate-suggestions | 08:00 | 顧客向け提案生成 |
+
+**新規Cronエンドポイント（P3-2F）:**
+```bash
+# JGrants detail_json拡充（毎日30件バッチ）
+POST https://hojyokin.pages.dev/api/cron/enrich-jgrants
+Header: X-Cron-Secret: {CRON_SECRET}
+
+# tokyo-shigoto detail_json拡充
+POST https://hojyokin.pages.dev/api/cron/enrich-tokyo-shigoto
+Header: X-Cron-Secret: {CRON_SECRET}
+```
 
 **feed_failures 分類（凍結仕様）:**
 | 分類 | stage | error_type | 説明 |

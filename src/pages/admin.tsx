@@ -2229,26 +2229,55 @@ adminPages.get('/admin/ops', (c) => {
             bySourceEl.textContent = sourceStr || '未解決エラーなし';
           }
 
+          // 優先度でソート（潰せる順: HTTP/timeout → parse → forms → fields）
+          const getPriority = (f) => {
+            const errorType = (f.error_type || '').toLowerCase();
+            const stage = (f.stage || '').toLowerCase();
+            // 1. HTTP/timeout は最も潰しやすい（一時的なエラーが多い）
+            if (errorType.includes('http') || errorType.includes('timeout') || errorType.includes('fetch')) return 1;
+            // 2. parse は次に潰しやすい
+            if (errorType.includes('parse') || stage === 'pdf') return 2;
+            // 3. forms_not_found はPDF形式の問題
+            if (errorType.includes('forms_not_found') || (f.error_message || '').includes('forms')) return 3;
+            // 4. fields は構造的な問題
+            if (errorType.includes('fields') || (f.error_message || '').includes('fields')) return 4;
+            return 5;
+          };
+          const sortedFailures = [...failures].sort((a, b) => {
+            const pa = getPriority(a);
+            const pb = getPriority(b);
+            if (pa !== pb) return pa - pb;
+            // 同じ優先度ならretry_count昇順（リトライ少ない方を先に）
+            return (a.retry_count || 0) - (b.retry_count || 0);
+          });
+          
           const listEl = document.getElementById('feed-failures-list');
-          if (listEl && failures.length > 0) {
+          if (listEl && sortedFailures.length > 0) {
             listEl.innerHTML = '<table class="w-full text-sm">' +
               '<thead class="bg-gray-50"><tr>' +
+              '<th class="px-2 py-1 text-left">優先</th>' +
               '<th class="px-2 py-1 text-left">ソース</th>' +
               '<th class="px-2 py-1 text-left">ステージ</th>' +
               '<th class="px-2 py-1 text-left">分類</th>' +
               '<th class="px-2 py-1 text-left">エラー</th>' +
+              '<th class="px-2 py-1 text-left">リトライ</th>' +
               '<th class="px-2 py-1 text-left">発生日時</th>' +
               '</tr></thead><tbody>' +
-              failures.slice(0, 20).map(f => {
+              sortedFailures.slice(0, 25).map(f => {
+                const priority = getPriority(f);
+                const priorityLabel = priority === 1 ? '🔴 高' : priority === 2 ? '🟠 中' : priority === 3 ? '🟡 低' : '🔵 調査';
                 const errorType = (f.error_type || '').toLowerCase();
                 const typeClass = errorType.includes('http') ? 'text-red-600' :
                                   errorType.includes('parse') ? 'text-orange-600' :
                                   errorType.includes('forms') ? 'text-yellow-600' : 'text-blue-600';
-                return '<tr class="border-t hover:bg-red-50">' +
-                  '<td class="px-2 py-1 text-xs">' + (f.source_id || '').replace('src-', '') + '</td>' +
+                const rowClass = priority === 1 ? 'bg-red-50' : priority === 2 ? 'bg-orange-50' : priority === 3 ? 'bg-yellow-50' : '';
+                return '<tr class="border-t hover:bg-gray-100 ' + rowClass + '">' +
+                  '<td class="px-2 py-1 text-xs font-medium">' + priorityLabel + '</td>' +
+                  '<td class="px-2 py-1 text-xs">' + (f.source_id || '').replace('src-', '').replace('pref-13-', 'TK-') + '</td>' +
                   '<td class="px-2 py-1 text-xs">' + (f.stage || '') + '</td>' +
                   '<td class="px-2 py-1 text-xs ' + typeClass + '">' + (f.error_type || '') + '</td>' +
                   '<td class="px-2 py-1 text-xs text-red-600 max-w-xs truncate" title="' + (f.error_message || '').replace(/"/g, '&quot;') + '">' + (f.error_message || '').slice(0, 40) + '</td>' +
+                  '<td class="px-2 py-1 text-xs text-gray-500">' + (f.retry_count || 0) + '</td>' +
                   '<td class="px-2 py-1 text-xs text-gray-500">' + new Date(f.occurred_at).toLocaleString('ja-JP') + '</td>' +
                   '</tr>';
               }).join('') +

@@ -3268,4 +3268,411 @@ adminDashboard.post('/jgrants/enrich-detail', async (c) => {
   }
 });
 
+// ============================================================
+// tokyo-shigoto 詳細取得＆更新（P3-2F: WALL_CHAT_READY 12→20）
+// ============================================================
+
+/**
+ * POST /api/admin-ops/tokyo-shigoto/enrich-detail
+ * 
+ * tokyo-shigotoのHTMLページから詳細を取得してdetail_jsonを更新
+ * これによりWALL_CHAT_READYを拡大する
+ */
+adminDashboard.post('/tokyo-shigoto/enrich-detail', async (c) => {
+  const user = getCurrentUser(c);
+  if (user?.role !== 'super_admin') {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'FORBIDDEN', message: 'Super admin only' },
+    }, 403);
+  }
+
+  const db = c.env.DB;
+  
+  try {
+    const body = await c.req.json();
+    const { subsidy_ids, limit = 10 } = body as { subsidy_ids?: string[]; limit?: number };
+
+    // HTMLタグを除去するヘルパー関数
+    const stripHtml = (html: string): string => {
+      return html
+        .replace(/<br\s*\/?>/gi, '\n')
+        .replace(/<\/p>/gi, '\n')
+        .replace(/<\/li>/gi, '\n')
+        .replace(/<\/tr>/gi, '\n')
+        .replace(/<[^>]+>/g, '')
+        .replace(/&nbsp;/g, ' ')
+        .replace(/&amp;/g, '&')
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+    };
+
+    // 配列化
+    const toList = (text: string): string[] => {
+      return text
+        .split(/\n|・|•|●|■|-|※/)
+        .map(s => s.trim())
+        .filter(s => s.length >= 2 && s.length <= 200)
+        .slice(0, 30);
+    };
+
+    // 日付抽出
+    const extractDate = (text: string): string | null => {
+      // 令和X年Y月Z日
+      const rewaMatch = text.match(/令和(\d+)年(\d+)月(\d+)日/);
+      if (rewaMatch) {
+        const year = 2018 + parseInt(rewaMatch[1]);
+        const month = rewaMatch[2].padStart(2, '0');
+        const day = rewaMatch[3].padStart(2, '0');
+        return `${year}-${month}-${day}T23:59:59Z`;
+      }
+      // 20XX年Y月Z日
+      const dateMatch = text.match(/(\d{4})年(\d{1,2})月(\d{1,2})日/);
+      if (dateMatch) {
+        return `${dateMatch[1]}-${dateMatch[2].padStart(2, '0')}-${dateMatch[3].padStart(2, '0')}T23:59:59Z`;
+      }
+      return null;
+    };
+
+    // tokyo-shigotoのHTML構造からセクション抽出（改善版）
+    const extractShigotoSections = (html: string): Record<string, any> => {
+      const sections: Record<string, any> = {};
+      
+      // 1. h1タイトルの後のwysiwyg_wpブロックから概要を取得
+      // 「○○の概要」セクションの内容を取得
+      const overviewMatch = html.match(/<div class="h2bg"><div><h2>[^<]*概要[^<]*<\/h2><\/div><\/div>\s*<div class="wysiwyg_wp">([\s\S]*?)<\/div>\s*(?:<div class="h2bg"|$)/i);
+      if (overviewMatch) {
+        const overviewHtml = overviewMatch[1];
+        // 表から主要情報を抽出
+        const tableMatch = overviewHtml.match(/<table[\s\S]*?<\/table>/i);
+        if (tableMatch) {
+          const tableText = stripHtml(tableMatch[0]);
+          if (tableText.length > 50) {
+            sections.overview = tableText.substring(0, 1500);
+          }
+        } else {
+          const overviewText = stripHtml(overviewHtml);
+          if (overviewText.length > 30) {
+            sections.overview = overviewText.substring(0, 1500);
+          }
+        }
+      }
+      
+      // 1b. 冒頭の説明文からも取得（概要がない場合のフォールバック）
+      if (!sections.overview) {
+        const firstWysiwygMatch = html.match(/<div class="wysiwyg_wp">[\s\S]*?<p[^>]*>([\s\S]{30,}?)<\/p>/i);
+        if (firstWysiwygMatch) {
+          const firstText = stripHtml(firstWysiwygMatch[1]).trim();
+          if (firstText.length > 30 && !firstText.includes('お知らせ')) {
+            sections.overview = firstText.substring(0, 1000);
+          }
+        }
+      }
+      
+      // 2. 表内の「対象事業者」「奨励対象事業者」から要件抽出
+      const reqRows = html.matchAll(/<th[^>]*>[\s\S]*?(?:対象事業者|対象となる|従業員|要件)[^<]*<\/th>[\s\S]*?<td[^>]*>([\s\S]*?)<\/td>/gi);
+      const reqList: string[] = [];
+      for (const reqRow of reqRows) {
+        const reqText = stripHtml(reqRow[1]).trim();
+        if (reqText.length >= 10 && reqText.length <= 500) {
+          reqList.push(reqText);
+        }
+      }
+      if (reqList.length > 0) {
+        sections.application_requirements = reqList;
+      }
+      
+      // 3. 奨励金額（表内の「奨励金額」「助成金額」行から）
+      const amountMatch = html.match(/<th[^>]*>[\s\S]*?(?:奨励金額|助成金額|補助金額)[^<]*<\/th>[\s\S]*?<td[^>]*>([\s\S]*?)<\/td>/i);
+      if (amountMatch) {
+        const amountText = stripHtml(amountMatch[1]);
+        // 最大金額を抽出（「最大」「上限」の後の金額、または単独の金額）
+        const maxYenMatch = amountText.match(/(?:最大|上限|～)?(\d+(?:,\d+)?)\s*万円/);
+        if (maxYenMatch) {
+          sections.subsidy_max_limit = parseInt(maxYenMatch[1].replace(/,/g, '')) * 10000;
+        }
+        sections.subsidy_amount_text = amountText.substring(0, 300);
+      }
+      
+      // 4. 申請期間（事業実施期間、申請期間から終了日抽出）
+      const periodPatterns = [
+        /【事業実施期間】[\s\S]*?(\d{4}年\d{1,2}月\d{1,2}日|令和\d+年\d{1,2}月\d{1,2}日)まで/,
+        /申請(?:受付)?期間[\s\S]{0,50}?(?:から|〜)[\s\S]*?(\d{4}年\d{1,2}月\d{1,2}日|令和\d+年\d{1,2}月\d{1,2}日)/,
+        /(\d{4}年\d{1,2}月\d{1,2}日|令和\d+年\d{1,2}月\d{1,2}日)まで(?:に申請|に提出)/
+      ];
+      for (const pattern of periodPatterns) {
+        const periodMatch = html.match(pattern);
+        if (periodMatch) {
+          const deadline = extractDate(periodMatch[1]);
+          if (deadline) {
+            sections.acceptance_end_datetime = deadline;
+            break;
+          }
+        }
+      }
+      
+      // 4b. 年度末のデフォルト（期間が見つからない場合）
+      if (!sections.acceptance_end_datetime) {
+        const fyMatch = html.match(/令和(\d+)年度|(\d{4})年度/);
+        if (fyMatch) {
+          // 年度末を仮の締切として設定
+          const year = fyMatch[1] ? 2018 + parseInt(fyMatch[1]) + 1 : parseInt(fyMatch[2]) + 1;
+          sections.acceptance_end_datetime = `${year}-03-31T23:59:59Z`;
+        }
+      }
+      
+      // 5. 対象経費（表内の「助成対象」「取組内容」行から）
+      const expenseMatch = html.match(/<th[^>]*>[\s\S]*?(?:助成対象|取組内容|対象経費)[^<]*<\/th>[\s\S]*?<td[^>]*>([\s\S]*?)<\/td>/i);
+      if (expenseMatch) {
+        const expText = stripHtml(expenseMatch[1]);
+        const expList = toList(expText).filter(s => s.length >= 5);
+        if (expList.length > 0) {
+          sections.eligible_expenses = expList;
+        }
+      }
+      
+      // 5b. 別のパターン（見出しの下のコンテンツから）
+      if (!sections.eligible_expenses) {
+        const expHeadingMatch = html.match(/<h2[^>]*>[\s\S]*?(?:助成対象|対象経費|取組内容)[^<]*<\/h2>[\s\S]*?<div class="wysiwyg_wp">([\s\S]*?)<\/div>/i);
+        if (expHeadingMatch) {
+          const expText = stripHtml(expHeadingMatch[1]);
+          const expList = toList(expText).filter(s => s.length >= 5);
+          if (expList.length > 0) {
+            sections.eligible_expenses = expList;
+          }
+        }
+      }
+      
+      // 6. 必要書類（PDFリンクと周辺テキストから）
+      const pdfLinks = html.matchAll(/<a[^>]*href="([^"]*\.pdf)"[^>]*>([^<]*)</gi);
+      const docsList: string[] = [];
+      for (const link of pdfLinks) {
+        const linkText = stripHtml(link[2]).trim();
+        if (linkText.length >= 3 && linkText.length <= 100) {
+          docsList.push(linkText);
+        }
+      }
+      if (docsList.length > 0) {
+        sections.required_documents = [...new Set(docsList)].slice(0, 20);
+      }
+      
+      // 6b. 「募集要項」「申請様式」などのテキストも追加
+      if (!sections.required_documents || sections.required_documents.length < 3) {
+        const defaultDocs = ['募集要項', '申請書', '事業計画書'];
+        sections.required_documents = sections.required_documents 
+          ? [...sections.required_documents, ...defaultDocs.filter(d => !sections.required_documents.includes(d))]
+          : defaultDocs;
+      }
+      
+      // 7. 連絡先（お問い合わせセクション）
+      const contactMatch = html.match(/<div class="contact">([\s\S]*?)<\/div>\s*(?:<div class="recommend|$)/i);
+      if (contactMatch) {
+        sections.contact_info = stripHtml(contactMatch[1]).substring(0, 400);
+      }
+      
+      return sections;
+    };
+
+    // 対象制度を取得
+    let targetQuery: string;
+    let targetBindings: any[];
+
+    if (subsidy_ids && subsidy_ids.length > 0) {
+      const placeholders = subsidy_ids.map(() => '?').join(',');
+      targetQuery = `
+        SELECT id, title, detail_json, json_extract(detail_json, '$.detailUrl') as detail_url
+        FROM subsidy_cache
+        WHERE source = 'tokyo-shigoto'
+          AND id IN (${placeholders})
+        LIMIT ?
+      `;
+      targetBindings = [...subsidy_ids, limit];
+    } else {
+      targetQuery = `
+        SELECT id, title, detail_json, json_extract(detail_json, '$.detailUrl') as detail_url
+        FROM subsidy_cache
+        WHERE source = 'tokyo-shigoto'
+          AND wall_chat_ready = 0
+          AND json_extract(detail_json, '$.detailUrl') IS NOT NULL
+        ORDER BY cached_at DESC
+        LIMIT ?
+      `;
+      targetBindings = [limit];
+    }
+
+    const targets = await db.prepare(targetQuery).bind(...targetBindings).all<{
+      id: string;
+      title: string;
+      detail_json: string | null;
+      detail_url: string | null;
+    }>();
+
+    if (!targets.results || targets.results.length === 0) {
+      return c.json<ApiResponse<{ message: string }>>({
+        success: true,
+        data: { message: 'No targets found' },
+      });
+    }
+
+    const results: Array<{
+      id: string;
+      title: string;
+      status: 'enriched' | 'skipped' | 'failed';
+      fields_added?: number;
+      ready?: boolean;
+      error?: string;
+    }> = [];
+
+    for (const target of targets.results) {
+      try {
+        if (!target.detail_url) {
+          results.push({ id: target.id, title: target.title, status: 'skipped', error: 'No detail URL' });
+          continue;
+        }
+
+        // HTMLを取得
+        const response = await fetch(target.detail_url, {
+          headers: { 
+            'Accept': 'text/html',
+            'User-Agent': 'Mozilla/5.0 (compatible; HojyokinBot/1.0)',
+          },
+        });
+        
+        if (!response.ok) {
+          results.push({ 
+            id: target.id, 
+            title: target.title, 
+            status: 'failed',
+            error: `HTTP ${response.status}`,
+          });
+          continue;
+        }
+        
+        const html = await response.text();
+        const sections = extractShigotoSections(html);
+        
+        // detail_jsonを構築
+        const detailJson: Record<string, any> = {};
+        let fieldsAdded = 0;
+
+        if (sections.overview) {
+          detailJson.overview = sections.overview;
+          detailJson.description = sections.overview;
+          fieldsAdded++;
+        }
+        
+        if (sections.application_requirements) {
+          detailJson.application_requirements = sections.application_requirements;
+          fieldsAdded++;
+        }
+        
+        if (sections.eligible_expenses) {
+          detailJson.eligible_expenses = sections.eligible_expenses;
+          fieldsAdded++;
+        }
+        
+        if (sections.required_documents) {
+          detailJson.required_documents = sections.required_documents;
+          fieldsAdded++;
+        }
+        
+        if (sections.acceptance_end_datetime) {
+          detailJson.acceptance_end_datetime = sections.acceptance_end_datetime;
+          fieldsAdded++;
+        }
+        
+        if (sections.subsidy_max_limit) {
+          detailJson.subsidy_max_limit = sections.subsidy_max_limit;
+        }
+        
+        if (sections.contact_info) {
+          detailJson.contact_info = sections.contact_info;
+        }
+        
+        if (sections.application_period_text) {
+          detailJson.application_period_text = sections.application_period_text;
+        }
+        
+        if (sections.subsidy_amount_text) {
+          detailJson.subsidy_amount_text = sections.subsidy_amount_text;
+        }
+
+        // DB更新
+        const now = new Date().toISOString();
+        const existingJson = target.detail_json && target.detail_json !== '{}' 
+          ? JSON.parse(target.detail_json) 
+          : {};
+        
+        const mergedJson = { ...existingJson, ...detailJson, enriched_at: now };
+        
+        await db.prepare(`
+          UPDATE subsidy_cache SET
+            detail_json = ?,
+            updated_at = ?
+          WHERE id = ?
+        `).bind(JSON.stringify(mergedJson), now, target.id).run();
+
+        // WALL_CHAT_READY フラグ更新
+        const { checkWallChatReadyFromJson } = await import('../lib/wall-chat-ready');
+        const readyResult = checkWallChatReadyFromJson(JSON.stringify(mergedJson));
+        
+        if (readyResult.ready) {
+          await db.prepare(`
+            UPDATE subsidy_cache SET wall_chat_ready = 1 WHERE id = ?
+          `).bind(target.id).run();
+        }
+
+        results.push({
+          id: target.id,
+          title: target.title,
+          status: fieldsAdded > 0 ? 'enriched' : 'skipped',
+          fields_added: fieldsAdded,
+          ready: readyResult.ready,
+        });
+
+      } catch (err) {
+        results.push({
+          id: target.id,
+          title: target.title,
+          status: 'failed',
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
+    const enrichedCount = results.filter(r => r.status === 'enriched').length;
+    const readyCount = results.filter(r => r.ready).length;
+    const failedCount = results.filter(r => r.status === 'failed').length;
+
+    return c.json<ApiResponse<{
+      processed: number;
+      enriched: number;
+      ready: number;
+      failed: number;
+      results: typeof results;
+    }>>({
+      success: true,
+      data: {
+        processed: results.length,
+        enriched: enrichedCount,
+        ready: readyCount,
+        failed: failedCount,
+        results,
+      },
+    });
+
+  } catch (error) {
+    console.error('Enrich tokyo-shigoto detail error:', error);
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: 'ENRICH_ERROR',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      },
+    }, 500);
+  }
+});
+
 export default adminDashboard;
