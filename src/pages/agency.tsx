@@ -65,6 +65,7 @@ const agencyLayout = (title: string, content: string, activeTab: string = '') =>
       }
       
       // グローバルAPI呼び出しヘルパー（head で定義）
+      // 凍結仕様v1: window.api と window.apiCall を両方定義（User版との統一）
       window.apiCall = async function(endpoint, options) {
         options = options || {};
         
@@ -119,6 +120,9 @@ const agencyLayout = (title: string, content: string, activeTab: string = '') =>
       // ユーザー情報をグローバルに保存
       window.currentUser = user;
       window.currentToken = token;
+      
+      // 凍結仕様v1: User版との統一のため window.api も定義（alias）
+      window.api = window.apiCall;
     })();
   </script>
 </head>
@@ -1006,9 +1010,9 @@ agencyPages.get('/agency/clients', (c) => {
       }
       
       function searchForClient(companyId) {
-        // 補助金検索画面へ（company_idをセット）
+        // 凍結仕様v1: Agency内で完結（/subsidiesに飛ばない）
         localStorage.setItem('selectedCompanyId', companyId);
-        window.location.href = '/subsidies';
+        window.location.href = '/agency/search?company_id=' + encodeURIComponent(companyId);
       }
       
       async function issueLink(companyId, type) {
@@ -3270,9 +3274,21 @@ agencyPages.get('/agency/search', (c) => {
               }
             });
             
-            // 最初の顧客を自動選択
-            select.value = clients[0].company_id;
-            await checkClientCompleteness(clients[0].company_id);
+            // 凍結仕様v1: URLパラメータまたはlocalStorageから顧客を自動選択
+            const urlParams = new URLSearchParams(window.location.search);
+            const urlCompanyId = urlParams.get('company_id');
+            const storedCompanyId = localStorage.getItem('selectedCompanyId');
+            const targetCompanyId = urlCompanyId || storedCompanyId || clients[0].company_id;
+            
+            // 使用後はlocalStorageをクリア
+            if (storedCompanyId) {
+              localStorage.removeItem('selectedCompanyId');
+            }
+            
+            // 指定されたcompany_idが顧客リストにあるか確認
+            const targetClient = clients.find(c => c.company_id === targetCompanyId);
+            select.value = targetClient ? targetCompanyId : clients[0].company_id;
+            await checkClientCompleteness(select.value);
             
           } else {
             showNoClientAlert();
