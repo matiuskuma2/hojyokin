@@ -2475,12 +2475,18 @@ subsidyPages.get('/subsidies/:id', (c) => {
                 <div class="mt-2">
                   <p class="text-xs text-gray-500 mb-2">記載項目:</p>
                   <ul class="grid grid-cols-1 md:grid-cols-2 gap-2">
-                    \${(form.fields || []).map(field => \`
-                      <li class="flex items-center text-sm text-gray-700">
-                        <i class="fas fa-check-circle text-green-500 mr-2 text-xs"></i>
-                        \${escapeHtml(field)}
-                      </li>
-                    \`).join('')}
+                    \${(form.fields || []).map(field => {
+                      // P3-2C: fields は { name, description?, required? } または文字列の配列
+                      const fieldName = typeof field === 'string' ? field : (field.name || '');
+                      const isRequired = typeof field === 'object' ? (field.required !== false) : true;
+                      const desc = typeof field === 'object' ? (field.description || '') : '';
+                      return \`
+                        <li class="flex items-start text-sm text-gray-700" title="\${escapeHtml(desc)}">
+                          <i class="fas \${isRequired ? 'fa-asterisk text-red-400' : 'fa-circle text-gray-300'} mr-2 text-xs mt-1"></i>
+                          <span>\${escapeHtml(fieldName)}\${!isRequired ? ' <span class="text-gray-400">(任意)</span>' : ''}</span>
+                        </li>
+                      \`;
+                    }).join('')}
                   </ul>
                 </div>
               </div>

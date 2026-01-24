@@ -2727,4 +2727,237 @@ adminDashboard.get('/wall-chat-status', async (c) => {
   }
 });
 
+/**
+ * POST /api/admin-ops/extract-forms
+ * 
+ * P3-2C: PDF抽出テスト用API（1件ずつ手動実行）
+ * super_admin限定
+ */
+adminDashboard.post('/extract-forms', async (c) => {
+  const db = c.env.DB;
+  const user = getCurrentUser(c);
+  
+  // super_admin限定
+  if (user.role !== 'super_admin') {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: 'FORBIDDEN',
+        message: 'Super admin access required',
+      },
+    }, 403);
+  }
+
+  try {
+    const body = await c.req.json<{ subsidy_id?: string; limit?: number }>();
+    const limit = Math.min(body.limit || 3, 5); // 最大5件
+
+    // 抽出対象を取得
+    let targets;
+    if (body.subsidy_id) {
+      targets = await db.prepare(`
+        SELECT 
+          id,
+          source,
+          title,
+          detail_json,
+          json_extract(detail_json, '$.pdfUrls') AS pdf_urls,
+          json_extract(detail_json, '$.required_forms') AS existing_forms,
+          json_extract(detail_json, '$.pdfHashes') AS pdf_hashes
+        FROM subsidy_cache
+        WHERE id = ?
+      `).bind(body.subsidy_id).all();
+    } else {
+      targets = await db.prepare(`
+        SELECT 
+          id,
+          source,
+          title,
+          detail_json,
+          json_extract(detail_json, '$.pdfUrls') AS pdf_urls,
+          json_extract(detail_json, '$.required_forms') AS existing_forms,
+          json_extract(detail_json, '$.pdfHashes') AS pdf_hashes
+        FROM subsidy_cache
+        WHERE
+          json_extract(detail_json, '$.pdfUrls') IS NOT NULL
+          AND json_array_length(json_extract(detail_json, '$.pdfUrls')) > 0
+          AND (
+            json_extract(detail_json, '$.required_forms') IS NULL
+            OR json_array_length(json_extract(detail_json, '$.required_forms')) = 0
+          )
+          AND source IN ('tokyo-kosha', 'tokyo-shigoto', 'tokyo-hataraku')
+        ORDER BY cached_at DESC
+        LIMIT ?
+      `).bind(limit).all();
+    }
+
+    const results: Array<{
+      id: string;
+      title: string;
+      pdf_count: number;
+      forms_extracted: number;
+      errors: string[];
+    }> = [];
+
+    for (const target of (targets.results || []) as any[]) {
+      const pdfUrls: string[] = target.pdf_urls ? JSON.parse(target.pdf_urls) : [];
+      const detailJson = target.detail_json ? JSON.parse(target.detail_json) : {};
+      const detailUrl = detailJson.detailUrl || '';
+      
+      // 簡易的にHTMLページからテキストを取得して様式抽出
+      const forms: Array<{ name: string; fields: string[] }> = [];
+      const errors: string[] = [];
+
+      // まずdetailUrlからHTML抽出を試みる
+      const urlsToTry = detailUrl ? [detailUrl, ...pdfUrls] : pdfUrls;
+
+      if (urlsToTry.length === 0) {
+        results.push({
+          id: target.id,
+          title: target.title,
+          pdf_count: 0,
+          forms_extracted: 0,
+          errors: ['No URLs to extract from'],
+        });
+        continue;
+      }
+
+      for (const url of urlsToTry) {
+        try {
+          // URLを取得
+          const response = await fetch(url, {
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (compatible; HojyokinBot/1.0)',
+              'Accept': 'text/html, application/pdf, */*',
+            },
+          });
+
+          if (!response.ok) {
+            errors.push(`HTTP ${response.status} for ${url}`);
+            continue;
+          }
+
+          const contentType = response.headers.get('content-type') || '';
+          let text = '';
+
+          if (contentType.includes('html') || url.endsWith('.html')) {
+            const html = await response.text();
+            text = html.replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ');
+          } else if (contentType.includes('pdf')) {
+            // PDFバイナリは簡易抽出を試みる
+            errors.push(`PDF binary: ${url} (limited extraction)`);
+            continue;
+          } else {
+            text = await response.text();
+          }
+
+          // 様式名を抽出
+          const formPatterns = [
+            /様式[第]?[\s]*([0-9０-９一二三四五六七八九十]+)[号]?(?:[-－]([0-9０-９]+))?/gi,
+            /別紙[\s]*([0-9０-９一二三四五六七八九十]+)/gi,
+            /(申請書|事業計画書|収支予算書|経費明細書|交付申請書|実績報告書)/gi,
+          ];
+
+          // 記載項目パターン
+          const fieldPatterns = [
+            /([^\s\n]{2,20})[\s]*(?:欄|を記入|について記載)/gi,
+            /【([^\s【】]{2,20})】/gi,
+          ];
+
+          const seenForms = new Set<string>();
+          for (const pattern of formPatterns) {
+            pattern.lastIndex = 0;
+            let match;
+            while ((match = pattern.exec(text)) !== null) {
+              const formName = match[0].trim().replace(/\s+/g, '');
+              if (!seenForms.has(formName) && formName.length >= 3) {
+                seenForms.add(formName);
+                
+                // 周辺テキストから項目を抽出
+                const contextStart = Math.max(0, match.index - 300);
+                const contextEnd = Math.min(text.length, match.index + 500);
+                const context = text.substring(contextStart, contextEnd);
+                
+                const fields: string[] = [];
+                for (const fieldPattern of fieldPatterns) {
+                  fieldPattern.lastIndex = 0;
+                  let fieldMatch;
+                  while ((fieldMatch = fieldPattern.exec(context)) !== null && fields.length < 10) {
+                    const field = (fieldMatch[1] || fieldMatch[0]).trim();
+                    if (field.length >= 2 && field.length <= 30 && !fields.includes(field)) {
+                      fields.push(field);
+                    }
+                  }
+                }
+                
+                forms.push({ name: formName, fields });
+              }
+            }
+          }
+
+          // 最初のURLで見つかったら終了
+          if (forms.length > 0) break;
+
+        } catch (err) {
+          errors.push(`Error: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+
+      // DB更新（forms が見つかった場合）
+      if (forms.length > 0) {
+        const now = new Date().toISOString();
+        const formsJson = JSON.stringify(forms.map((f, i) => ({
+          form_id: `form-${i + 1}`,
+          name: f.name,
+          fields: f.fields.map(name => ({ name, required: true })),
+          source_page: pdfUrls[0],
+        })));
+
+        await db.prepare(`
+          UPDATE subsidy_cache SET
+            detail_json = json_patch(
+              COALESCE(detail_json, '{}'),
+              json_object(
+                'required_forms', json(?),
+                'required_forms_extracted_at', ?
+              )
+            )
+          WHERE id = ?
+        `).bind(formsJson, now, target.id).run();
+      }
+
+      results.push({
+        id: target.id,
+        title: target.title,
+        pdf_count: urlsToTry.length,
+        forms_extracted: forms.length,
+        errors,
+      });
+    }
+
+    return c.json<ApiResponse<{
+      processed: number;
+      total_forms: number;
+      results: typeof results;
+    }>>({
+      success: true,
+      data: {
+        processed: results.length,
+        total_forms: results.reduce((sum, r) => sum + r.forms_extracted, 0),
+        results,
+      },
+    });
+
+  } catch (error) {
+    console.error('Extract forms error:', error);
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: 'EXTRACT_FORMS_ERROR',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      },
+    }, 500);
+  }
+});
+
 export default adminDashboard;
