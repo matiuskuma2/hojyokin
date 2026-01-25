@@ -4,14 +4,15 @@ export interface Env {
   CRON_SECRET: string;
 }
 
-const SHARD_COUNT = 16;
+// ★ v3.5.2: 64分割で偏り対策
+const SHARD_COUNT = 64;
 
 // 1回のenqueueでやりすぎない（D1/CPU安全）
 const ASSIGN_SHARD_BATCH = 800;     // shard_key未設定を毎回少しずつ埋める
 const ENQUEUE_PER_TYPE = 800;       // job_typeごと投入上限（必要なら後で増やす）
 
-// 1回のconsumeでやりすぎない（Pages側も30秒制限）
-const CONSUME_SHARD_BATCH_RUNS = 1; // 1回のscheduledで消化するshard数（まず1で安定）
+// ★ v3.5.2: 1回で2shard消化（対角shardを同時に処理して偏り解消）
+const CONSUME_SHARD_BATCH_RUNS = 2; // 1回のscheduledで消化するshard数
 
 // ★ 優先度設定（締切ベース）
 // 基本優先度: extract_forms=50, enrich_shigoto=60, enrich_jgrants=70
@@ -45,10 +46,16 @@ function shardKey16(id: string): number {
   return crc32(id) % SHARD_COUNT;
 }
 
-// shard巡回（5分ごとに1 shard）: UTCの分を使う
+// ★ v3.5.2: shard巡回（5分ごとに1 shard, 64分割）: UTCの分を使う
 function currentShardBy5Min(d: Date = new Date()): number {
   const totalMin = d.getUTCHours() * 60 + d.getUTCMinutes();
   return Math.floor(totalMin / 5) % SHARD_COUNT;
+}
+
+// ★ v3.5.2: 対角shard（偏り対策: 反対側のshardを同時に処理）
+function oppositeShardBy5Min(d: Date = new Date()): number {
+  const primary = currentShardBy5Min(d);
+  return (primary + Math.floor(SHARD_COUNT / 2)) % SHARD_COUNT;
 }
 
 /**
@@ -223,8 +230,9 @@ async function enqueueToD1(env: Env) {
 export default {
   /**
    * scheduled: 5分ごと
-   *  - shard を1つ消化（Pages consumeを呼ぶ）
+   *  - ★ v3.5.2: shard を2つ消化（対角shardで偏り対策）
    *  - 00:00 UTC のときだけ D1直 enqueue
+   *  - 毎日04:00 UTCにcleanup-queueも実行
    */
   async scheduled(_event: ScheduledEvent, env: Env, ctx: ExecutionContext) {
     const now = new Date();
@@ -233,16 +241,22 @@ export default {
     if (now.getUTCHours() === 0 && now.getUTCMinutes() < 5) {
       ctx.waitUntil(enqueueToD1(env));
     }
+    
+    // ★ v3.5.2: 04:00 UTC に cleanup-queue を実行（doneローテーション）
+    if (now.getUTCHours() === 4 && now.getUTCMinutes() < 5) {
+      ctx.waitUntil(postToPages('/api/cron/cleanup-queue', env));
+    }
 
-    // shard消化（1 shardだけ）
-    const shard = currentShardBy5Min(now);
+    // ★ v3.5.2: shard消化（2 shardを同時に処理）
+    const shardA = currentShardBy5Min(now);
+    const shardB = oppositeShardBy5Min(now);
 
+    // 2つのshardを並列消化
     ctx.waitUntil(
-      (async () => {
-        const res = await postToPages(`/api/cron/consume-extractions?shard=${shard}`, env);
-        // res bodyはログに出しすぎない（重いので）
-        return res;
-      })()
+      Promise.all([
+        postToPages(`/api/cron/consume-extractions?shard=${shardA}`, env),
+        postToPages(`/api/cron/consume-extractions?shard=${shardB}`, env),
+      ])
     );
   },
 

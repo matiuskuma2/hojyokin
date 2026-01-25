@@ -3722,4 +3722,159 @@ cron.post('/consume-extractions', async (c) => {
   });
 });
 
+/**
+ * extraction_queue のdoneローテーション（DB肥大対策）
+ * 
+ * POST /api/cron/cleanup-queue
+ * 
+ * v3.5.2: DB肥大で止まるのを防ぐ
+ * - done は7日で削除
+ * - failed は残す（調査用）
+ * - 監査は cron_runs / extraction_logs / feed_failures に残るのでOK
+ * 
+ * 推奨Cronスケジュール: 毎日 04:00 UTC (日本時間13:00)
+ */
+cron.post('/cleanup-queue', async (c) => {
+  const db = c.env.DB;
+  
+  // P2-0: CRON_SECRET 検証
+  const authResult = verifyCronSecret(c);
+  if (!authResult.valid) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: authResult.error!.code,
+        message: authResult.error!.message,
+      },
+    }, authResult.error!.status);
+  }
+  
+  // P2-0: 実行ログ開始
+  let runId: string | null = null;
+  try {
+    runId = await startCronRun(db, 'cleanup-queue', 'cron');
+  } catch (logErr) {
+    console.warn('[Cleanup-Queue] Failed to start cron_run log:', logErr);
+  }
+  
+  try {
+    console.log('[Cleanup-Queue] Starting cleanup...');
+    
+    // 7日より古いdoneを削除
+    const RETENTION_DAYS = 7;
+    
+    // 削除前にカウント（参考情報）
+    const beforeCount = await db.prepare(`
+      SELECT 
+        COUNT(*) as total,
+        SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) as done,
+        SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed,
+        SUM(CASE WHEN status = 'queued' THEN 1 ELSE 0 END) as queued,
+        SUM(CASE WHEN status = 'leased' THEN 1 ELSE 0 END) as leased
+      FROM extraction_queue
+    `).first<{
+      total: number;
+      done: number;
+      failed: number;
+      queued: number;
+      leased: number;
+    }>();
+    
+    // 削除対象をカウント
+    const toDelete = await db.prepare(`
+      SELECT COUNT(*) as cnt FROM extraction_queue
+      WHERE status = 'done'
+        AND updated_at < datetime('now', '-${RETENTION_DAYS} days')
+    `).first<{ cnt: number }>();
+    
+    // 削除実行
+    const result = await db.prepare(`
+      DELETE FROM extraction_queue
+      WHERE status = 'done'
+        AND updated_at < datetime('now', '-${RETENTION_DAYS} days')
+    `).run();
+    
+    const deletedCount = result.meta?.changes || 0;
+    
+    // 削除後にカウント
+    const afterCount = await db.prepare(`
+      SELECT 
+        COUNT(*) as total,
+        SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) as done,
+        SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed,
+        SUM(CASE WHEN status = 'queued' THEN 1 ELSE 0 END) as queued,
+        SUM(CASE WHEN status = 'leased' THEN 1 ELSE 0 END) as leased
+      FROM extraction_queue
+    `).first<{
+      total: number;
+      done: number;
+      failed: number;
+      queued: number;
+      leased: number;
+    }>();
+    
+    console.log(`[Cleanup-Queue] Deleted ${deletedCount} done records (older than ${RETENTION_DAYS} days)`);
+    
+    // P2-0: 実行ログ完了
+    if (runId) {
+      try {
+        await finishCronRun(db, runId, 'success', {
+          items_processed: toDelete?.cnt || 0,
+          items_inserted: deletedCount,
+          metadata: {
+            retention_days: RETENTION_DAYS,
+            before: beforeCount,
+            after: afterCount,
+          },
+        });
+      } catch (logErr) {
+        console.warn('[Cleanup-Queue] Failed to finish cron_run log:', logErr);
+      }
+    }
+    
+    return c.json<ApiResponse<{
+      message: string;
+      deleted_count: number;
+      retention_days: number;
+      before: typeof beforeCount;
+      after: typeof afterCount;
+      timestamp: string;
+      run_id?: string;
+    }>>({
+      success: true,
+      data: {
+        message: `Cleanup completed: ${deletedCount} done records deleted`,
+        deleted_count: deletedCount,
+        retention_days: RETENTION_DAYS,
+        before: beforeCount!,
+        after: afterCount!,
+        timestamp: new Date().toISOString(),
+        run_id: runId ?? undefined,
+      },
+    });
+    
+  } catch (error) {
+    console.error('[Cleanup-Queue] Error:', error);
+    
+    if (runId) {
+      try {
+        await finishCronRun(db, runId, 'failed', {
+          error_count: 1,
+          errors: [error instanceof Error ? error.message : String(error)],
+        });
+      } catch (logErr) {
+        console.warn('[Cleanup-Queue] Failed to finish cron_run log:', logErr);
+      }
+    }
+    
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: 'INTERNAL_ERROR',
+        message: `Cleanup failed: ${error instanceof Error ? error.message : String(error)}`,
+      },
+    }, 500);
+  }
+});
+
 export default cron;
