@@ -6,16 +6,17 @@
  * 【責務】
  * - Cloudflare Workers Cron Trigger で起動される
  * - Pages API の /api/cron/* を順番に叩くだけ
+ * - 順序保証: sync → promote の順で await 実行
  *
  * 【絶対にやらないこと】
  * - DB操作
  * - Firecrawl / PDF / OCR
  * - ループで大量処理
- * - 条件分岐による判断
+ * - ビジネスロジック判断
  *
  * 【拡張ルール】
- * - fetch を1本追加するだけ
- * - 既存の fetch は触らない
+ * - postCron を1本追加するだけ
+ * - 既存の postCron は触らない
  *
  * ⚠️ 凍結注意
  *
@@ -34,30 +35,27 @@ export interface Env {
   CRON_SECRET: string;
 }
 
-async function callCron(
-  env: Env,
-  path: string,
-  ctx: ExecutionContext
-) {
+/**
+ * Pages API を叩く（await で順序保証）
+ * 失敗時は throw でログが残る
+ */
+async function postCron(env: Env, path: string): Promise<string> {
   const url = `${env.PAGES_BASE_URL}${path}`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'X-Cron-Secret': env.CRON_SECRET,
+      'Content-Type': 'application/json',
+    },
+  });
+  const text = await res.text();
 
-  ctx.waitUntil(
-    fetch(url, {
-      method: 'POST',
-      headers: {
-        'X-Cron-Secret': env.CRON_SECRET,
-        'Content-Type': 'application/json',
-      },
-    }).then(async (res) => {
-      if (!res.ok) {
-        console.error(`[cron-feed] FAILED ${path}`, await res.text());
-      } else {
-        console.log(`[cron-feed] OK ${path}`);
-      }
-    }).catch((err) => {
-      console.error(`[cron-feed] ERROR ${path}`, err);
-    })
-  );
+  if (!res.ok) {
+    console.error(`[cron-feed] FAILED ${path} status=${res.status} body=${text.slice(0, 500)}`);
+    throw new Error(`cron failed: ${path} ${res.status}`);
+  }
+  console.log(`[cron-feed] OK ${path}`);
+  return text;
 }
 
 export default {
@@ -65,34 +63,35 @@ export default {
    * Cron Trigger Entry
    * 
    * スケジュール: 毎日 06:00 JST (21:00 UTC)
+   * 
+   * 順序保証:
+   * 1. sync-jnet21 (成功するまで待つ)
+   * 2. promote-jnet21 (sync成功後にのみ実行)
    */
   async scheduled(
-    event: ScheduledEvent,
+    _event: ScheduledEvent,
     env: Env,
-    ctx: ExecutionContext
+    _ctx: ExecutionContext
   ) {
     console.log('[cron-feed] start', new Date().toISOString());
 
     /**
      * ===============================
-     * Feed / Discover
+     * 1) Feed / Discover
      * ===============================
      */
 
     // J-Net21 RSS → discovery_items (stage=raw)
-    callCron(env, '/api/cron/sync-jnet21', ctx);
+    await postCron(env, '/api/cron/sync-jnet21');
 
     /**
      * ===============================
-     * Promote
+     * 2) Promote（sync成功後にのみ実行）
      * ===============================
      */
 
     // discovery_items → subsidy_cache（品質判定後）
-    // sync の後に実行されるよう、少し遅延を入れる
-    setTimeout(() => {
-      callCron(env, '/api/cron/promote-jnet21', ctx);
-    }, 60000); // 1分後
+    await postCron(env, '/api/cron/promote-jnet21');
 
     /**
      * ===============================
@@ -100,28 +99,21 @@ export default {
      * ===============================
      *
      * 例：
-     * callCron(env, '/api/cron/sync-pref-tokyo', ctx);
-     * callCron(env, '/api/cron/sync-pref-osaka', ctx);
+     * await postCron(env, '/api/cron/sync-pref-tokyo');
+     * await postCron(env, '/api/cron/sync-pref-osaka');
      */
 
-    console.log('[cron-feed] scheduled dispatched');
+    console.log('[cron-feed] done');
   },
 
   /**
-   * HTTP handler - 手動実行・ステータス確認用
+   * HTTP handler - ヘルスチェック用
    */
-  async fetch(req: Request, env: Env): Promise<Response> {
-    const url = new URL(req.url);
-
-    // Health check
-    if (url.pathname === '/health') {
-      return Response.json({
-        status: 'ok',
-        worker: 'hojyokin-cron-feed',
-        timestamp: new Date().toISOString(),
-      });
-    }
-
-    return Response.json({ status: 'ok', worker: 'hojyokin-cron-feed' });
+  async fetch(_req: Request, _env: Env): Promise<Response> {
+    return Response.json({
+      status: 'ok',
+      worker: 'hojyokin-cron-feed',
+      timestamp: new Date().toISOString(),
+    });
   },
 };
