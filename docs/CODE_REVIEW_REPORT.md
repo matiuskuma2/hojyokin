@@ -840,12 +840,95 @@ npx wrangler d1 execute subsidy-matching-production --local --file=migrations/de
 
 | サービス | URL | バージョン | 状態 |
 |----------|-----|------------|------|
-| Cloudflare Pages | https://hojyokin.pages.dev | v3.7.1 | ✅ デプロイ済み |
-| Latest Deploy | https://5bfd9c94.hojyokin.pages.dev | v3.7.1 | ✅ 確認済み |
+| Cloudflare Pages | https://hojyokin.pages.dev | v3.7.2 | ✅ デプロイ済み |
+| Latest Deploy | https://d43e649f.hojyokin.pages.dev | v3.7.2 | ✅ 確認済み |
 | Workers Cron | https://hojyokin-queue-cron.sekiyadubai.workers.dev | v3.7 | ✅ 稼働中 |
-| GitHub | https://github.com/matiuskuma2/hojyokin | 65b70a4 | ✅ push済み |
+| GitHub | https://github.com/matiuskuma2/hojyokin | e5ac6ed | ✅ push済み |
 
-### 15.4 残存タスク（P1以降）
+---
+
+## 16. v3.7.2 Critical バグ修正（2026-01-25）
+
+### 16.1 発見・修正した Critical バグ
+
+#### バグ1: recordFailure スコープ問題
+
+**問題**: sync-jnet21 の catch ブロック内で `dedupeKey` を参照していたが、`dedupeKey` は try ブロック内で宣言されているため、catch から参照すると **ReferenceError** で落ちる。
+
+```typescript
+// ❌ 修正前（ReferenceError で落ちる）
+} catch (itemErr) {
+  const failureId = `jnet21-${dedupeKey.replace(...)}`;  // dedupeKey は try 内で宣言
+  await recordFailure(...);
+}
+
+// ✅ 修正後（item.link は for ループの変数でスコープ内）
+} catch (itemErr) {
+  const linkHash = await calculateContentHash(item.link).then(h => h.slice(0, 8));
+  const failureId = `jnet21-${linkHash}`;
+  try {
+    await recordFailure(...);
+  } catch (recordErr) {
+    console.warn('[J-Net21] Failed to record feed_failures:', recordErr);
+  }
+}
+```
+
+#### バグ2: error_type CHECK制約違反
+
+**問題**: `recordFailure()` で `reason` パラメータ（例: `'UPSERT_FAILED'`）をそのまま `error_type` に入れていたが、`feed_failures.error_type` は CHECK制約で以下のみ許容:
+- `'HTTP'`, `'timeout'`, `'parse'`, `'db'`, `'validation'`, `'unknown'`
+
+**修正**: reason → error_type マッピングを追加
+
+```typescript
+const errorTypeMap: Record<string, string> = {
+  'FETCH_FAILED': 'HTTP',
+  'PARSE_FAILED': 'parse',
+  'FORMS_NOT_FOUND': 'validation',
+  'UPSERT_FAILED': 'db',
+  'DB_ERROR': 'db',
+  'TIMEOUT': 'timeout',
+};
+const errorType = errorTypeMap[reason] || 'unknown';
+```
+
+#### バグ3: カラム名不一致
+
+**問題**: `recordFailure()` のSQL文が `message`, `first_occurred_at`, `last_occurred_at` を参照していたが、本番スキーマのカラム名は異なる。
+
+| コード（修正前） | 本番スキーマ |
+|------------------|--------------|
+| `message` | `error_message` |
+| `first_occurred_at` | `occurred_at` |
+| `last_occurred_at` | `last_retry_at` |
+
+### 16.2 確認コマンド（本番スキーマ検証）
+
+```bash
+# feed_failures スキーマ確認
+npx wrangler d1 execute subsidy-matching-production --remote \
+  --command "PRAGMA table_info(feed_failures);"
+
+# error_type CHECK制約確認（マイグレーションファイル参照）
+cat migrations/0104_feed_failures.sql | grep -A1 "error_type"
+```
+
+### 16.3 TODO コメント追加
+
+```typescript
+// cron.ts:3813 付近
+// TODO: 要確認（P2）
+// 正規表現パースはXML仕様変更で壊れる。軽量XMLパーサへ置換検討。
+// 特殊文字（&amp;, &lt;等）がエスケープされたまま格納される可能性あり。
+
+// cron.ts:3976 付近
+// TODO: 要確認（P1）
+// subsidy_cache直投入は設計負債。discovery_items + promoteジョブに移行予定。
+// 現状: 最初の50件のみ同期（軽量化）。全件が必要な場合は上限撤廃。
+```
+
+### 16.4 残存タスク（P1以降）
 
 | 優先度 | 項目 | 状態 | 備考 |
 |--------|------|------|------|
@@ -857,4 +940,4 @@ npx wrangler d1 execute subsidy-matching-production --local --file=migrations/de
 ---
 
 *レポート生成日時: 2026-01-25*
-*最終更新: v3.7.1 P0修正完了*
+*最終更新: v3.7.2 Critical バグ修正*
