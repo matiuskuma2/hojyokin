@@ -70,8 +70,12 @@ subsidies.get('/search', requireCompanyAccess(), async (c) => {
     const acceptance = c.req.query('acceptance') === '1' ? 1 : 0;
     const sort = c.req.query('sort') as SubsidySearchParams['sort'] || 'acceptance_end_datetime';
     const order = c.req.query('order') as 'ASC' | 'DESC' || 'ASC';
-    const limit = Math.min(parseInt(c.req.query('limit') || '20', 10), 500);
-    const offset = parseInt(c.req.query('offset') || '0', 10);
+    
+    // P1-1: limit/offset の境界値チェック（負数・NaN対策）
+    const rawLimit = parseInt(c.req.query('limit') || '20', 10);
+    const limit = Number.isNaN(rawLimit) || rawLimit <= 0 ? 20 : Math.min(rawLimit, 500);
+    const rawOffset = parseInt(c.req.query('offset') || '0', 10);
+    const offset = Number.isNaN(rawOffset) || rawOffset < 0 ? 0 : rawOffset;
     
     // P0-2-1: debug パラメータ（super_adminのみ有効）
     const debug = c.req.query('debug') === '1';
@@ -402,9 +406,17 @@ subsidies.get('/:subsidy_id', async (c) => {
 subsidies.get('/evaluations/:company_id', requireCompanyAccess(), async (c) => {
   const db = c.env.DB;
   const companyId = c.req.param('company_id');
-  const status = c.req.query('status');
-  const limit = Math.min(parseInt(c.req.query('limit') || '50', 10), 100);
-  const offset = parseInt(c.req.query('offset') || '0', 10);
+  
+  // P0-3: status パラメータのバリデーション
+  const VALID_STATUSES = ['PROCEED', 'CAUTION', 'NO', 'DO_NOT_PROCEED'];
+  const rawStatus = c.req.query('status');
+  const status = rawStatus && VALID_STATUSES.includes(rawStatus) ? rawStatus : null;
+  
+  // P1-1: limit/offset の境界値チェック
+  const rawLimit = parseInt(c.req.query('limit') || '50', 10);
+  const limit = Number.isNaN(rawLimit) || rawLimit <= 0 ? 50 : Math.min(rawLimit, 100);
+  const rawOffset = parseInt(c.req.query('offset') || '0', 10);
+  const offset = Number.isNaN(rawOffset) || rawOffset < 0 ? 0 : rawOffset;
   
   try {
     let query = `

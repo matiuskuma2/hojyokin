@@ -304,9 +304,17 @@ function performPrecheck(
   }
   
   // 電子申請情報を取得 (v3)
+  // P1-5: JSON.parse の例外処理強化
   let electronicApplication: PrecheckResult['electronic_application'];
   try {
-    const detailJson = subsidy.detail_json ? JSON.parse(subsidy.detail_json) : {};
+    let detailJson: Record<string, any> = {};
+    if (subsidy.detail_json) {
+      try {
+        detailJson = JSON.parse(subsidy.detail_json);
+      } catch (parseErr) {
+        console.warn('[Precheck] Invalid detail_json format:', parseErr);
+      }
+    }
     if (detailJson.is_electronic_application) {
       electronicApplication = {
         is_electronic: true,
@@ -316,8 +324,8 @@ function performPrecheck(
                 `壁打ちでは申請前の準備をサポートしますが、実際の申請書類の作成は電子申請システム上で行ってください。`
       };
     }
-  } catch {
-    // detail_json パースエラーは無視
+  } catch (err) {
+    console.warn('[Precheck] Error processing electronic application:', err);
   }
   
   return {
@@ -736,9 +744,20 @@ chat.get('/sessions', async (c) => {
 // GET /api/chat/sessions/:id - セッション詳細
 // =====================================================
 
+// P2-3: UUID形式検証用正規表現
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 chat.get('/sessions/:id', async (c) => {
   const user = c.get('user')!;
   const sessionId = c.req.param('id');
+  
+  // P2-3: セッションID形式検証
+  if (!UUID_REGEX.test(sessionId)) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'VALIDATION_ERROR', message: 'Invalid session ID format' }
+    }, 400);
+  }
   
   try {
     const session = await c.env.DB.prepare(`
@@ -783,6 +802,14 @@ chat.get('/sessions/:id', async (c) => {
 chat.post('/sessions/:id/message', async (c) => {
   const user = c.get('user')!;
   const sessionId = c.req.param('id');
+  
+  // P2-3: セッションID形式検証
+  if (!UUID_REGEX.test(sessionId)) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'VALIDATION_ERROR', message: 'Invalid session ID format' }
+    }, 400);
+  }
   
   try {
     const { content } = await c.req.json();
@@ -855,7 +882,13 @@ chat.post('/sessions/:id/message', async (c) => {
     }
     
     // 次の質問を生成
-    const missingItems: MissingItem[] = JSON.parse(session.missing_items || '[]');
+    // P1-5: JSON.parse の例外処理
+    let missingItems: MissingItem[] = [];
+    try {
+      missingItems = JSON.parse(session.missing_items || '[]');
+    } catch (parseErr) {
+      console.warn('[Chat] Invalid missing_items format:', parseErr);
+    }
     
     // 回答済みの質問を除外
     const answeredFacts = await c.env.DB.prepare(`

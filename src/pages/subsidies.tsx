@@ -2378,11 +2378,11 @@ subsidyPages.get('/subsidies/:id', (c) => {
               return \`
                 <div class="p-3 bg-gray-50 rounded-lg">
                   <div class="flex items-center justify-between mb-2">
-                    <span class="font-medium text-gray-800">\${rule.category || '一般'}</span>
+                    <span class="font-medium text-gray-800">\${escapeHtml(rule.category || '一般')}</span>
                     \${typeLabel}
                   </div>
-                  <p class="text-sm text-gray-700">\${rule.rule_text}</p>
-                  \${rule.source_text ? \`<p class="text-xs text-gray-500 mt-1">出典: \${rule.source_text}</p>\` : ''}
+                  <p class="text-sm text-gray-700">\${escapeHtml(rule.rule_text || '')}</p>
+                  \${rule.source_text ? \`<p class="text-xs text-gray-500 mt-1">出典: \${escapeHtml(rule.source_text)}</p>\` : ''}
                 </div>
               \`;
             }).join('');
@@ -2417,9 +2417,9 @@ subsidyPages.get('/subsidies/:id', (c) => {
                 <div class="flex items-center justify-between p-3 border rounded-lg">
                   <div class="flex items-center">
                     \${levelIcon}
-                    <span class="ml-2 font-medium">\${doc.name || doc.doc_code}</span>
+                    <span class="ml-2 font-medium">\${escapeHtml(doc.name || doc.doc_code || '')}</span>
                   </div>
-                  <span class="text-xs text-gray-500">\${doc.required_level}</span>
+                  <span class="text-xs text-gray-500">\${escapeHtml(doc.required_level || '')}</span>
                 </div>
               \`;
             }).join('');
