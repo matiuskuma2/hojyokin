@@ -2898,6 +2898,42 @@ cron.post('/extract-pdf-forms', async (c) => {
         if (extractResult.metrics.visionSuccess) totalMetrics.visionSuccess++;
         totalMetrics.visionPagesTotal += extractResult.metrics.visionPagesProcessed;
         
+        // --- extraction_logs に記録 ---
+        try {
+          // OCRコスト概算（Google Vision: $1.50/1000ページ）
+          const ocrEstimatedCost = extractResult.metrics.visionPagesProcessed * 0.0015;
+          
+          await db.prepare(`
+            INSERT INTO extraction_logs (
+              subsidy_id, source, title, url, url_type, extraction_method,
+              success, text_length, forms_count, fields_count,
+              ocr_pages_processed, ocr_estimated_cost,
+              failure_reason, failure_message, content_hash,
+              cron_run_id, processing_time_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `).bind(
+            target.id,
+            target.source,
+            target.title,
+            detailUrl || (pdfUrls[0] || ''),
+            detailUrl ? 'html' : 'pdf',
+            extractResult.extractedFrom,
+            extractResult.success ? 1 : 0,
+            extractResult.metrics.textLengthExtracted,
+            extractResult.formsCount,
+            extractResult.fieldsTotal,
+            extractResult.metrics.visionPagesProcessed,
+            ocrEstimatedCost,
+            extractResult.failureReason || null,
+            extractResult.failureMessage || null,
+            extractResult.contentHash || null,
+            runId,
+            extractResult.metrics.processingTimeMs
+          ).run();
+        } catch (logErr) {
+          console.warn(`[Extract-PDF-Forms] Failed to log extraction for ${target.id}:`, logErr);
+        }
+        
         if (extractResult.success) {
           // DB更新
           await db.prepare(`

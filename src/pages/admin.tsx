@@ -1531,6 +1531,49 @@ adminPages.get('/admin/ops', (c) => {
             <div class="text-gray-400 text-sm p-2 loading">読み込み中...</div>
           </div>
         </div>
+        
+        <!-- ★★★ P3-3B: 抽出ログ（OCR実行履歴） ★★★ -->
+        <div class="mt-6">
+          <h3 class="text-sm font-medium text-gray-700 mb-2 flex items-center justify-between">
+            <span><i class="fas fa-file-pdf text-red-500 mr-1"></i>PDF/OCR 抽出ログ（直近50件）</span>
+            <button id="btn-refresh-extraction" onclick="loadExtractionLogs()" class="text-xs text-blue-600 hover:underline">
+              <i class="fas fa-sync-alt mr-1"></i>更新
+            </button>
+          </h3>
+          
+          <!-- 抽出メトリクスサマリー -->
+          <div id="extraction-metrics" class="grid grid-cols-6 gap-2 mb-3">
+            <div class="bg-green-50 rounded p-2 text-center">
+              <p class="text-lg font-bold text-green-600" id="extract-html-ok">-</p>
+              <p class="text-xs text-green-500">HTML成功</p>
+            </div>
+            <div class="bg-blue-50 rounded p-2 text-center">
+              <p class="text-lg font-bold text-blue-600" id="extract-firecrawl-ok">-</p>
+              <p class="text-xs text-blue-500">Firecrawl成功</p>
+            </div>
+            <div class="bg-purple-50 rounded p-2 text-center">
+              <p class="text-lg font-bold text-purple-600" id="extract-vision-ok">-</p>
+              <p class="text-xs text-purple-500">Vision成功</p>
+            </div>
+            <div class="bg-orange-50 rounded p-2 text-center">
+              <p class="text-lg font-bold text-orange-600" id="extract-vision-pages">-</p>
+              <p class="text-xs text-orange-500">OCRページ計</p>
+            </div>
+            <div class="bg-emerald-50 rounded p-2 text-center">
+              <p class="text-lg font-bold text-emerald-600" id="extract-forms-ok">-</p>
+              <p class="text-xs text-emerald-500">様式抽出成功</p>
+            </div>
+            <div class="bg-red-50 rounded p-2 text-center">
+              <p class="text-lg font-bold text-red-600" id="extract-failed">-</p>
+              <p class="text-xs text-red-500">失敗</p>
+            </div>
+          </div>
+          
+          <!-- 抽出ログテーブル -->
+          <div id="extraction-logs-list" class="overflow-x-auto max-h-64">
+            <div class="text-gray-400 text-sm p-2 loading">読み込み中...</div>
+          </div>
+        </div>
       </div>
 
       <!-- セクションA: サーバー側（10分） -->
@@ -2291,11 +2334,104 @@ adminPages.get('/admin/ops', (c) => {
         }
       }
 
-      // 初回読み込み時にCron状況も取得
+      // ★★★ P3-3B: 抽出ログ読み込み ★★★
+      async function loadExtractionLogs() {
+        try {
+          const data = await api('/api/admin-ops/extraction-logs?limit=50');
+          if (!data.success) {
+            console.error('Extraction logs API error:', data.error);
+            return;
+          }
+
+          const { logs, summary } = data.data || {};
+          const byMethod = summary?.by_method || [];
+          
+          // メトリクスサマリー更新（by_methodからカウント）
+          const getMethodStats = (method) => byMethod.find(m => m.extraction_method === method) || { total: 0, success_count: 0, total_pages: 0 };
+          const htmlStats = getMethodStats('html');
+          const firecrawlStats = getMethodStats('firecrawl');
+          const visionStats = getMethodStats('vision_ocr');
+          
+          const setMetric = (id, val) => {
+            const el = document.getElementById(id);
+            if (el) el.textContent = val || 0;
+          };
+          setMetric('extract-html-ok', htmlStats.success_count);
+          setMetric('extract-firecrawl-ok', firecrawlStats.success_count);
+          setMetric('extract-vision-ok', visionStats.success_count);
+          setMetric('extract-vision-pages', visionStats.total_pages);
+          
+          // 様式抽出成功数と失敗数を計算
+          const totalSuccess = byMethod.reduce((sum, m) => sum + (m.success_count || 0), 0);
+          const totalAll = byMethod.reduce((sum, m) => sum + (m.total || 0), 0);
+          setMetric('extract-forms-ok', totalSuccess);
+          setMetric('extract-failed', totalAll - totalSuccess);
+          
+          // ログテーブル更新
+          const listEl = document.getElementById('extraction-logs-list');
+          if (listEl && logs && logs.length > 0) {
+            listEl.innerHTML = '<table class="w-full text-xs">' +
+              '<thead class="bg-gray-50 sticky top-0"><tr>' +
+              '<th class="px-2 py-1 text-left">結果</th>' +
+              '<th class="px-2 py-1 text-left">方式</th>' +
+              '<th class="px-2 py-1 text-left">ソース</th>' +
+              '<th class="px-2 py-1 text-left">制度ID</th>' +
+              '<th class="px-2 py-1 text-right">様式数</th>' +
+              '<th class="px-2 py-1 text-right">項目計</th>' +
+              '<th class="px-2 py-1 text-left">URL</th>' +
+              '<th class="px-2 py-1 text-left">失敗理由</th>' +
+              '<th class="px-2 py-1 text-left">日時</th>' +
+              '</tr></thead><tbody>' +
+              logs.map(log => {
+                const isSuccess = log.success === 1;
+                const method = log.extraction_method || '-';
+                const methodClass = method === 'html' ? 'text-green-600' :
+                                    method === 'firecrawl' ? 'text-blue-600' :
+                                    method === 'vision_ocr' ? 'text-purple-600' : 'text-gray-400';
+                const rowClass = isSuccess ? 'hover:bg-gray-50' : 'bg-red-50 hover:bg-red-100';
+                const statusIcon = isSuccess ? '✅' : '❌';
+                const url = log.url || '';
+                const shortUrl = url.length > 30 ? url.slice(0, 30) + '...' : url;
+                return '<tr class="border-t ' + rowClass + '">' +
+                  '<td class="px-2 py-1">' + statusIcon + '</td>' +
+                  '<td class="px-2 py-1 font-medium ' + methodClass + '">' + method + '</td>' +
+                  '<td class="px-2 py-1">' + (log.source || '').replace('src-', '').slice(0, 15) + '</td>' +
+                  '<td class="px-2 py-1 font-mono text-xs">' + (log.subsidy_id || '').slice(0, 20) + '</td>' +
+                  '<td class="px-2 py-1 text-right text-emerald-600 font-medium">' + (log.forms_count || 0) + '</td>' +
+                  '<td class="px-2 py-1 text-right text-blue-600">' + (log.fields_count || 0) + '</td>' +
+                  '<td class="px-2 py-1 max-w-xs truncate" title="' + url.replace(/"/g, '&quot;') + '">' +
+                    (url ? '<a href="' + url + '" target="_blank" class="text-blue-500 hover:underline">' + shortUrl + '</a>' : '-') +
+                  '</td>' +
+                  '<td class="px-2 py-1 text-red-600 max-w-xs truncate" title="' + (log.failure_reason || '').replace(/"/g, '&quot;') + '">' + 
+                    (log.failure_reason || '-').slice(0, 20) + 
+                  '</td>' +
+                  '<td class="px-2 py-1 text-gray-500">' + new Date(log.created_at).toLocaleString('ja-JP') + '</td>' +
+                  '</tr>';
+              }).join('') +
+              '</tbody></table>';
+          } else if (listEl) {
+            listEl.innerHTML = '<p class="text-gray-400 text-sm p-2">抽出ログがありません（まだCronが実行されていないか、ログが空です）</p>';
+          }
+          listEl?.classList.remove('loading');
+        } catch (error) {
+          console.error('Extraction logs load error:', error);
+          const listEl = document.getElementById('extraction-logs-list');
+          if (listEl) {
+            listEl.innerHTML = '<p class="text-red-500 text-sm p-2">読み込みエラー: ' + error.message + '</p>';
+          }
+        }
+      }
+      window.loadExtractionLogs = loadExtractionLogs;
+
+      // 初回読み込み時にCron状況と抽出ログを取得
       (function initCronStatus() {
         setTimeout(function() {
           loadCronStatus().catch(function(err) {
             console.error('[OPS] Cron status load failed:', err);
+          });
+          // 抽出ログも同時に読み込み
+          loadExtractionLogs().catch(function(err) {
+            console.error('[OPS] Extraction logs load failed:', err);
           });
         }, 300);
       })();
