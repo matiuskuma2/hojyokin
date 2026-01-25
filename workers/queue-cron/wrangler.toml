@@ -1,0 +1,13 @@
+name = "hojyokin-queue-cron"
+main = "src/index.ts"
+compatibility_date = "2026-01-25"
+
+# 5分ごとに実行
+[triggers]
+crons = ["*/5 * * * *"]
+
+[vars]
+PAGES_BASE_URL = "https://hojyokin.pages.dev"
+
+# CRON_SECRET は secret で入れる
+# wrangler secret put CRON_SECRET

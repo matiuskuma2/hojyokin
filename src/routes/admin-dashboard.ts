@@ -4071,21 +4071,18 @@ adminDashboard.post('/extraction-queue/enqueue', async (c) => {
   const MAX_ENQUEUE_PER_TYPE = 500;
 
   try {
-    // shard_key を持たないレコードに割り当て
-    // CRC32の代わりに簡易ハッシュで0-15に振り分け
+    // shard_key を持たないレコードに割り当て（crc32 % 16）
+    const { shardKey16 } = await import('../lib/shard');
+    
     const unassigned = await db.prepare(`
       SELECT id FROM subsidy_cache WHERE shard_key IS NULL LIMIT 1000
     `).all<{ id: string }>();
 
     let shardAssigned = 0;
     for (const row of unassigned.results || []) {
-      // 簡易ハッシュ: 文字コードの合計 % 16
-      let hash = 0;
-      for (let i = 0; i < row.id.length; i++) {
-        hash = (hash + row.id.charCodeAt(i)) % 16;
-      }
+      const shard = shardKey16(row.id);
       await db.prepare(`UPDATE subsidy_cache SET shard_key = ? WHERE id = ?`)
-        .bind(hash, row.id).run();
+        .bind(shard, row.id).run();
       shardAssigned++;
     }
 
@@ -4316,8 +4313,181 @@ adminDashboard.post('/extraction-queue/consume', async (c) => {
           }
 
           results.push({ id: job.id, subsidy_id: job.subsidy_id, job_type: job.job_type, status: 'done' });
+        } else if (job.job_type === 'enrich_jgrants') {
+          // enrich_jgrants: JGrants API から詳細取得
+          const { checkWallChatReadyFromJson } = await import('../lib/wall-chat-ready');
+          
+          const subsidy = await db.prepare(`
+            SELECT id, title, detail_json
+            FROM subsidy_cache WHERE id = ? AND source = 'jgrants'
+          `).bind(job.subsidy_id).first<{
+            id: string;
+            title: string;
+            detail_json: string | null;
+          }>();
+
+          if (!subsidy) {
+            throw new Error('Subsidy not found');
+          }
+
+          const JGRANTS_DETAIL_API = 'https://api.jgrants-portal.go.jp/exp/v1/public/subsidies/id';
+          const response = await fetch(`${JGRANTS_DETAIL_API}/${subsidy.id}`, {
+            headers: { 'Accept': 'application/json' },
+          });
+
+          if (!response.ok) {
+            throw new Error(`JGrants API error: ${response.status}`);
+          }
+
+          const data = await response.json() as any;
+          const subsidyData = data.result?.[0] || data.result || data;
+
+          if (!subsidyData || !subsidyData.detail) {
+            throw new Error('No detail in JGrants response');
+          }
+
+          const detailJson: Record<string, any> = {};
+
+          // 概要
+          if (subsidyData.detail && subsidyData.detail.length > 20) {
+            detailJson.overview = subsidyData.detail
+              .replace(/<[^>]+>/g, ' ')
+              .replace(/&nbsp;/g, ' ')
+              .replace(/\s+/g, ' ')
+              .trim()
+              .substring(0, 2000);
+          }
+
+          // 申請要件
+          if (subsidyData.target_detail || subsidyData.outline_of_grant) {
+            const reqText = (subsidyData.target_detail || subsidyData.outline_of_grant || '')
+              .replace(/<[^>]+>/g, '\n')
+              .replace(/&nbsp;/g, ' ')
+              .trim();
+            detailJson.application_requirements = reqText.split('\n')
+              .map((s: string) => s.trim())
+              .filter((s: string) => s.length >= 5 && s.length <= 300)
+              .slice(0, 20);
+          }
+
+          // 対象経費
+          if (subsidyData.usage_detail) {
+            const expText = subsidyData.usage_detail
+              .replace(/<[^>]+>/g, '\n')
+              .replace(/&nbsp;/g, ' ')
+              .trim();
+            detailJson.eligible_expenses = expText.split('\n')
+              .map((s: string) => s.trim())
+              .filter((s: string) => s.length >= 5)
+              .slice(0, 20);
+          }
+
+          // 必要書類・PDF URL
+          if (subsidyData.application_form && Array.isArray(subsidyData.application_form)) {
+            detailJson.required_documents = subsidyData.application_form
+              .map((f: any) => f.name || f.title || f)
+              .filter((s: any) => typeof s === 'string' && s.length >= 2)
+              .slice(0, 20);
+            detailJson.pdf_urls = subsidyData.application_form
+              .filter((f: any) => f.url && f.url.endsWith('.pdf'))
+              .map((f: any) => f.url);
+          }
+
+          if (subsidyData.acceptance_end_datetime) {
+            detailJson.acceptance_end_datetime = subsidyData.acceptance_end_datetime;
+          }
+          if (subsidyData.subsidy_max_limit) {
+            detailJson.subsidy_max_limit = subsidyData.subsidy_max_limit;
+          }
+          if (subsidyData.subsidy_rate) {
+            detailJson.subsidy_rate = subsidyData.subsidy_rate;
+          }
+
+          // マージして保存
+          const existing = subsidy.detail_json ? JSON.parse(subsidy.detail_json) : {};
+          const merged = { ...existing, ...detailJson, enriched_at: new Date().toISOString() };
+
+          await db.prepare(`
+            UPDATE subsidy_cache SET detail_json = ?, updated_at = datetime('now') WHERE id = ?
+          `).bind(JSON.stringify(merged), subsidy.id).run();
+
+          // WALL_CHAT_READY 判定
+          const readyResult = checkWallChatReadyFromJson(JSON.stringify(merged));
+          if (readyResult.ready) {
+            await db.prepare(`UPDATE subsidy_cache SET wall_chat_ready = 1 WHERE id = ?`)
+              .bind(subsidy.id).run();
+          }
+
+          results.push({ id: job.id, subsidy_id: job.subsidy_id, job_type: job.job_type, status: 'done' });
+        } else if (job.job_type === 'enrich_shigoto') {
+          // enrich_shigoto: tokyo-shigoto の HTML から詳細取得
+          const { checkWallChatReadyFromJson } = await import('../lib/wall-chat-ready');
+
+          const subsidy = await db.prepare(`
+            SELECT id, title, detail_json, json_extract(detail_json, '$.detailUrl') as detail_url
+            FROM subsidy_cache WHERE id = ? AND source = 'tokyo-shigoto'
+          `).bind(job.subsidy_id).first<{
+            id: string;
+            title: string;
+            detail_json: string | null;
+            detail_url: string | null;
+          }>();
+
+          if (!subsidy || !subsidy.detail_url) {
+            throw new Error('Subsidy not found or no detail URL');
+          }
+
+          const response = await fetch(subsidy.detail_url, {
+            headers: {
+              'Accept': 'text/html',
+              'User-Agent': 'Mozilla/5.0 (compatible; HojyokinBot/1.0)',
+            },
+          });
+
+          if (!response.ok) {
+            throw new Error(`HTML fetch error: ${response.status}`);
+          }
+
+          const html = await response.text();
+          const detailJson: Record<string, any> = {};
+
+          // 表から概要抽出
+          const tableMatch = html.match(/<table[^>]*>([\s\S]*?)<\/table>/i);
+          if (tableMatch) {
+            const tableText = tableMatch[1]
+              .replace(/<[^>]+>/g, ' ')
+              .replace(/&nbsp;/g, ' ')
+              .replace(/\s+/g, ' ')
+              .trim();
+            if (tableText.length > 50) {
+              detailJson.overview = tableText.substring(0, 1500);
+            }
+          }
+
+          // 年度末をデフォルト締切
+          const now = new Date();
+          const fiscalYear = now.getMonth() >= 3 ? now.getFullYear() : now.getFullYear() - 1;
+          detailJson.acceptance_end_datetime = `${fiscalYear + 1}-03-31T23:59:59Z`;
+          detailJson.required_documents = ['募集要項', '申請書', '事業計画書'];
+
+          // マージして保存
+          const existing = subsidy.detail_json ? JSON.parse(subsidy.detail_json) : {};
+          const merged = { ...existing, ...detailJson, enriched_at: new Date().toISOString() };
+
+          await db.prepare(`
+            UPDATE subsidy_cache SET detail_json = ?, updated_at = datetime('now') WHERE id = ?
+          `).bind(JSON.stringify(merged), subsidy.id).run();
+
+          // WALL_CHAT_READY 判定
+          const readyResult = checkWallChatReadyFromJson(JSON.stringify(merged));
+          if (readyResult.ready) {
+            await db.prepare(`UPDATE subsidy_cache SET wall_chat_ready = 1 WHERE id = ?`)
+              .bind(subsidy.id).run();
+          }
+
+          results.push({ id: job.id, subsidy_id: job.subsidy_id, job_type: job.job_type, status: 'done' });
         } else {
-          // enrich_jgrants, enrich_shigoto は後で実装
+          // 未知の job_type
           results.push({ id: job.id, subsidy_id: job.subsidy_id, job_type: job.job_type, status: 'skipped' });
         }
 

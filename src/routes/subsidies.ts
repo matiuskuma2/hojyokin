@@ -19,6 +19,34 @@ const subsidies = new Hono<{ Bindings: Env; Variables: Variables }>();
 // 認証必須
 subsidies.use('/*', requireAuth);
 
+// ============================================================
+// キャッシュ設定（同接1000対応）
+// ============================================================
+const SEARCH_CACHE_TTL = 120; // 2分（検索結果キャッシュ）
+
+/**
+ * キャッシュキー生成
+ * company_id + filters + sort + page をハッシュ化
+ */
+function generateSearchCacheKey(params: {
+  companyId: string;
+  keyword?: string;
+  acceptance: number;
+  sort: string;
+  order: string;
+  limit: number;
+  offset: number;
+}): string {
+  const key = `search:${params.companyId}:${params.keyword || ''}:${params.acceptance}:${params.sort}:${params.order}:${params.limit}:${params.offset}`;
+  // 簡易ハッシュ（URLセーフ）
+  let hash = 0;
+  for (let i = 0; i < key.length; i++) {
+    hash = ((hash << 5) - hash) + key.charCodeAt(i);
+    hash = hash & hash;
+  }
+  return `subsidy-search-${Math.abs(hash).toString(36)}`;
+}
+
 /**
  * 補助金検索（企業情報とマッチング）
  * 
@@ -30,6 +58,7 @@ subsidies.use('/*', requireAuth);
  * - order: ソート順 (ASC, DESC)
  * - limit: 取得件数（デフォルト: 20、最大: 100）
  * - offset: オフセット
+ * - no_cache: キャッシュ無効（super_adminのみ）
  */
 subsidies.get('/search', requireCompanyAccess(), async (c) => {
   const db = c.env.DB;
@@ -46,8 +75,40 @@ subsidies.get('/search', requireCompanyAccess(), async (c) => {
     
     // P0-2-1: debug パラメータ（super_adminのみ有効）
     const debug = c.req.query('debug') === '1';
+    const noCache = c.req.query('no_cache') === '1';
     const user = getCurrentUser(c);
     const allowUnready = (user?.role === 'super_admin') && debug;
+    
+    // キャッシュチェック（同接1000対策）
+    if (!noCache && companyId) {
+      const cacheKey = generateSearchCacheKey({
+        companyId,
+        keyword: keyword || undefined,
+        acceptance,
+        sort,
+        order,
+        limit,
+        offset,
+      });
+      
+      // Cloudflare Cache API
+      const cache = caches.default;
+      const cacheUrl = new URL(`https://cache.internal/${cacheKey}`);
+      const cachedResponse = await cache.match(cacheUrl);
+      
+      if (cachedResponse) {
+        const cachedData = await cachedResponse.json();
+        console.log(`[Search] Cache HIT: ${cacheKey}`);
+        return c.json({
+          ...cachedData,
+          meta: {
+            ...cachedData.meta,
+            cached: true,
+            cached_at: cachedResponse.headers.get('x-cached-at'),
+          },
+        });
+      }
+    }
     
     if (!companyId) {
       return c.json<ApiResponse<null>>({
@@ -154,7 +215,7 @@ subsidies.get('/search', requireCompanyAccess(), async (c) => {
       await db.batch(evaluationStatements);
     }
     
-    return c.json<ApiResponse<MatchResult[]>>({
+    const responseData: ApiResponse<MatchResult[]> = {
       success: true,
       data: sortedResults,
       meta: {
@@ -165,7 +226,41 @@ subsidies.get('/search', requireCompanyAccess(), async (c) => {
         source, // データソース（live / mock / cache）
         gate: searchResponse.gate || 'searchable-only', // P0-2-1: 品質ゲート
       },
-    });
+    };
+    
+    // キャッシュに保存（同接1000対策）
+    if (!noCache && companyId && sortedResults.length > 0) {
+      try {
+        const cacheKey = generateSearchCacheKey({
+          companyId,
+          keyword: keyword || undefined,
+          acceptance,
+          sort,
+          order,
+          limit,
+          offset,
+        });
+        
+        const cache = caches.default;
+        const cacheUrl = new URL(`https://cache.internal/${cacheKey}`);
+        const now = new Date().toISOString();
+        
+        const cacheResponse = new Response(JSON.stringify(responseData), {
+          headers: {
+            'Content-Type': 'application/json',
+            'Cache-Control': `public, max-age=${SEARCH_CACHE_TTL}`,
+            'x-cached-at': now,
+          },
+        });
+        
+        c.executionCtx.waitUntil(cache.put(cacheUrl, cacheResponse));
+        console.log(`[Search] Cache SET: ${cacheKey}, TTL=${SEARCH_CACHE_TTL}s`);
+      } catch (cacheError) {
+        console.warn('[Search] Cache write failed:', cacheError);
+      }
+    }
+    
+    return c.json(responseData);
   } catch (error) {
     console.error('Search subsidies error:', error);
     
