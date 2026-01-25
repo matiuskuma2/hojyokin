@@ -120,9 +120,10 @@ CREATE INDEX IF NOT EXISTS idx_promote_log_created ON discovery_promote_log(crea
 -- =====================================================
 
 -- feed_sources に J-Net21 RSS を登録（未登録の場合のみ）
+-- 本番スキーマ: category, source_name, source_name_short, source_url, feed_url 等
 INSERT OR IGNORE INTO feed_sources (
-  id, source_type, name, name_short, base_url, rss_url,
-  geo_scope, data_format, update_frequency, priority, is_active,
+  id, category, source_name, source_name_short, source_url, feed_url,
+  scrape_frequency, priority, is_active,
   created_at, updated_at
 ) VALUES (
   'src-jnet21',
@@ -130,9 +131,7 @@ INSERT OR IGNORE INTO feed_sources (
   'J-Net21 支援情報ヘッドライン',
   'J-Net21',
   'https://j-net21.smrj.go.jp',
-  'https://j-net21.smrj.go.jp/headline/rss/shienjoho-rss.xml',
-  'national',
-  'rss',
+  'https://j-net21.smrj.go.jp/snavi/support/support.xml',
   'daily',
   80,
   1,
