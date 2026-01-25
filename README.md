@@ -3,19 +3,39 @@
 ## 📋 プロジェクト概要
 
 - **Name**: subsidy-matching (hojyokin)
-- **Version**: 3.3.0
+- **Version**: 3.4.0
 - **Goal**: 企業情報を登録するだけで、最適な補助金・助成金を自動でマッチング＆申請書ドラフト作成
 
-### 🎉 最新アップデート (v3.3.0) - Workers Cron + 検索キャッシュ + 実処理稼働
+### 🎉 最新アップデート (v3.4.0) - APIコスト会計凍結
+
+**v3.4.0 リリース（2026-01-25）:**
+
+| 項目 | 状態 | 詳細 |
+|------|------|------|
+| **api_cost_logs** | ✅ NEW | 実数コスト記録テーブル（Freeze-COST-0: 唯一の真実） |
+| **コストwrapper** | ✅ NEW | Firecrawl/Vision OCR の直 fetch 禁止、wrapper 経由必須 |
+| **super_admin集計API** | ✅ NEW | GET /api/admin-ops/cost/summary, /cost/logs |
+| **凍結仕様書** | ✅ NEW | docs/COST_ACCOUNTING_FREEZE_SPEC.md |
+
+**コスト会計凍結ルール（Freeze-COST-0〜4）:**
+| ルール | 内容 |
+|--------|------|
+| Freeze-COST-0 | api_cost_logs が唯一の真実、super_admin はこれのみ表示 |
+| Freeze-COST-1 | 推定値禁止、実数のみ集計・表示 |
+| Freeze-COST-2 | 外部API呼び出しは wrapper 経由必須 |
+| Freeze-COST-3 | 失敗時もコスト記録（credits消費は発生） |
+| Freeze-COST-4 | モデル名/単価は metadata_json に保持 |
+
+### 📋 v3.3.0 - Workers Cron + 検索キャッシュ + 実処理稼働
 
 **v3.3.0 リリース（2026-01-25）:**
 
 | 項目 | 状態 | 詳細 |
 |------|------|------|
-| **Workers Cron稼働** | ✅ NEW | 5分ごと自動消化（https://hojyokin-queue-cron.sekiyadubai.workers.dev） |
-| **検索APIキャッシュ** | ✅ NEW | Cache API 120秒TTL（同接1000対応） |
-| **enrich_jgrants/shigoto** | ✅ NEW | consume-extractionsでjob_type別実処理を実装 |
-| **shard_key crc32統一** | ✅ NEW | 偏り対策で分布を均等化 |
+| **Workers Cron稼働** | ✅ | 5分ごと自動消化（https://hojyokin-queue-cron.sekiyadubai.workers.dev） |
+| **検索APIキャッシュ** | ✅ | Cache API 120秒TTL（同接1000対応） |
+| **enrich_jgrants/shigoto** | ✅ | consume-extractionsでjob_type別実処理を実装 |
+| **shard_key crc32統一** | ✅ | 偏り対策で分布を均等化 |
 
 ### 📋 v3.2.0 - Shard/Queue化 + 電子申請対応 + Cooldownガード
 
