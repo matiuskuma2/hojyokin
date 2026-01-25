@@ -4353,34 +4353,45 @@ cron.post('/promote-jnet21', async (c) => {
         const subsidyId = item.id; // discovery_items.id をそのまま使用
         const shardKey = shardKey16(subsidyId);
         
-        // subsidy_cache へ UPSERT
+        // detail_json に追加情報を埋め込む（本番 subsidy_cache にないカラムの代替）
+        // 本番スキーマ: id, source, title, detail_json, cached_at, expires_at, shard_key, wall_chat_ready 等のみ
+        // description, detail_url, prefecture_code, content_hash, discovery_item_id は detail_json 内に格納
+        let rawData: Record<string, any> = {};
+        try {
+          rawData = item.raw_json ? JSON.parse(item.raw_json) : {};
+        } catch {
+          rawData = {};
+        }
+        
+        const detailJson = JSON.stringify({
+          ...rawData,
+          // 検索/表示に必要な追加フィールド
+          detailUrl: item.url,
+          description: item.summary || '',
+          prefecture_code: item.prefecture_code,
+          content_hash: item.content_hash,
+          discovery_item_id: item.id,
+          quality_score: item.quality_score,
+          source: 'jnet21',
+          promoted_at: now,
+        });
+        
+        // ★ 本番 subsidy_cache スキーマに100%一致する INSERT
+        // 存在するカラムのみ: id, source, title, detail_json, cached_at, expires_at, shard_key
         await db.prepare(`
           INSERT INTO subsidy_cache (
-            id, source, subsidy_id, title, description, prefecture_code,
-            detail_url, detail_json, content_hash, shard_key, discovery_item_id,
-            created_at, updated_at, expires_at
-          ) VALUES (?, 'jnet21', ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'), datetime('now', '+7 days'))
+            id, source, title, detail_json, cached_at, expires_at, shard_key
+          ) VALUES (?, 'jnet21', ?, ?, datetime('now'), datetime('now', '+7 days'), ?)
           ON CONFLICT(id) DO UPDATE SET
             title = excluded.title,
-            description = excluded.description,
-            prefecture_code = excluded.prefecture_code,
-            detail_url = excluded.detail_url,
             detail_json = excluded.detail_json,
-            content_hash = excluded.content_hash,
-            discovery_item_id = excluded.discovery_item_id,
-            updated_at = datetime('now'),
+            cached_at = datetime('now'),
             expires_at = datetime('now', '+7 days')
         `).bind(
           subsidyId,
-          subsidyId,
           item.title,
-          item.summary || '',
-          item.prefecture_code,
-          item.url,
-          item.raw_json || '{}',
-          item.content_hash,
-          shardKey,
-          item.id
+          detailJson,
+          shardKey
         ).run();
         
         // discovery_items を promoted に更新
