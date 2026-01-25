@@ -125,29 +125,55 @@ export async function extractAndUpdateSubsidy(
   // ========================================
   // Step 1: detailUrl からHTML取得（最優先・最安）
   // ========================================
+  let rawHtml = ''; // PDFリンク抽出用に生HTMLも保存
+  let discoveredPdfUrls: string[] = []; // HTMLから発見したPDFリンク
+  
   if (detailUrl) {
     metrics.htmlAttempted = true;
     try {
-      const htmlText = await fetchHtmlAsText(detailUrl);
-      if (htmlText.length >= MIN_TEXT_LEN_FOR_NON_OCR) {
-        extractedText = htmlText;
-        extractedFrom = 'html';
-        contentHash = simpleHash(htmlText);
-        metrics.htmlSuccess = true;
-        console.log(`[extractAndUpdateSubsidy] HTML success for ${subsidyId}: ${htmlText.length} chars`);
+      // 生HTMLを取得
+      const response = await fetch(detailUrl, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          'Accept': 'text/html,application/xhtml+xml',
+        },
+      });
+      
+      if (response.ok) {
+        rawHtml = await response.text();
+        const htmlText = stripHtmlToText(rawHtml);
+        
+        // HTMLからPDFリンクを抽出（pdfUrlsが空の場合に使用）
+        discoveredPdfUrls = extractPdfLinksFromHtml(rawHtml, detailUrl);
+        if (discoveredPdfUrls.length > 0) {
+          console.log(`[extractAndUpdateSubsidy] Discovered ${discoveredPdfUrls.length} PDF links from HTML for ${subsidyId}`);
+        }
+        
+        if (htmlText.length >= MIN_TEXT_LEN_FOR_NON_OCR) {
+          extractedText = htmlText;
+          extractedFrom = 'html';
+          contentHash = simpleHash(htmlText);
+          metrics.htmlSuccess = true;
+          console.log(`[extractAndUpdateSubsidy] HTML success for ${subsidyId}: ${htmlText.length} chars`);
+        } else {
+          console.log(`[extractAndUpdateSubsidy] HTML insufficient for ${subsidyId}: ${htmlText.length} chars`);
+        }
       } else {
-        console.log(`[extractAndUpdateSubsidy] HTML insufficient for ${subsidyId}: ${htmlText.length} chars`);
+        console.warn(`[extractAndUpdateSubsidy] HTML fetch failed for ${subsidyId}: ${response.status} ${response.statusText}`);
       }
     } catch (e: any) {
       console.warn(`[extractAndUpdateSubsidy] HTML fetch failed for ${subsidyId}: ${e.message}`);
     }
   }
+  
+  // pdfUrlsが空の場合、HTMLから発見したPDFリンクを使用
+  const effectivePdfUrls = (pdfUrls && pdfUrls.length > 0) ? pdfUrls : discoveredPdfUrls;
 
   // ========================================
   // Step 2: HTMLで不足の場合、Firecrawl でPDF抽出（非AI）
   // ========================================
-  if (extractedText.length < MIN_TEXT_LEN_FOR_NON_OCR && pdfUrls && pdfUrls.length > 0 && env?.FIRECRAWL_API_KEY) {
-    for (const pdfUrl of pdfUrls.slice(0, 3)) { // 最大3件
+  if (extractedText.length < MIN_TEXT_LEN_FOR_NON_OCR && effectivePdfUrls.length > 0 && env?.FIRECRAWL_API_KEY) {
+    for (const pdfUrl of effectivePdfUrls.slice(0, 3)) { // 最大3件
       metrics.firecrawlAttempted = true;
       try {
         const firecrawlResult = await extractWithFirecrawl(pdfUrl, env.FIRECRAWL_API_KEY);
@@ -170,8 +196,8 @@ export async function extractAndUpdateSubsidy(
   // ========================================
   // Step 3: Firecrawlで不足の場合、Google Vision OCR（画像PDF用）
   // ========================================
-  if (extractedText.length < MIN_TEXT_LEN_FOR_NON_OCR && pdfUrls && pdfUrls.length > 0 && env?.GOOGLE_CLOUD_API_KEY) {
-    for (const pdfUrl of pdfUrls.slice(0, 2)) { // OCRは高コストなので最大2件
+  if (extractedText.length < MIN_TEXT_LEN_FOR_NON_OCR && effectivePdfUrls.length > 0 && env?.GOOGLE_CLOUD_API_KEY) {
+    for (const pdfUrl of effectivePdfUrls.slice(0, 2)) { // OCRは高コストなので最大2件
       metrics.visionAttempted = true;
       try {
         const visionResult = await extractWithGoogleVision(pdfUrl, env.GOOGLE_CLOUD_API_KEY);
@@ -230,8 +256,67 @@ export async function extractAndUpdateSubsidy(
   // ========================================
   // Step 6: required_forms 抽出 + 品質ゲート
   // ========================================
-  const formsResult = extractRequiredFormsFromText(extractedText);
-  const formsValidation = validateFormsResult(formsResult, MIN_FORMS, MIN_FIELDS_PER_FORM);
+  let formsResult = extractRequiredFormsFromText(extractedText);
+  let formsValidation = validateFormsResult(formsResult, MIN_FORMS, MIN_FIELDS_PER_FORM);
+  
+  // ========================================
+  // Step 6.5: HTMLで様式が見つからない場合、PDFからも抽出を試みる
+  // （HTMLには概要、PDFには申請様式という構成が多いため）
+  // ========================================
+  if (!formsValidation.valid && extractedFrom === 'html' && effectivePdfUrls.length > 0) {
+    console.log(`[extractAndUpdateSubsidy] HTML forms insufficient for ${subsidyId}, trying PDF extraction from ${effectivePdfUrls.length} PDFs...`);
+    
+    // Firecrawl でPDF抽出を試みる
+    if (env?.FIRECRAWL_API_KEY) {
+      for (const pdfUrl of effectivePdfUrls.slice(0, 3)) {
+        metrics.firecrawlAttempted = true;
+        try {
+          const firecrawlResult = await extractWithFirecrawl(pdfUrl, env.FIRECRAWL_API_KEY);
+          if (firecrawlResult.text.length >= 200) { // 様式検出用は200文字でOK
+            const pdfFormsResult = extractRequiredFormsFromText(firecrawlResult.text);
+            const pdfFormsValidation = validateFormsResult(pdfFormsResult, MIN_FORMS, MIN_FIELDS_PER_FORM);
+            
+            if (pdfFormsValidation.valid) {
+              // PDFから様式を見つけた場合、結果をマージ
+              formsResult = pdfFormsResult;
+              formsValidation = pdfFormsValidation;
+              metrics.firecrawlSuccess = true;
+              console.log(`[extractAndUpdateSubsidy] Firecrawl forms success for ${subsidyId}: ${pdfFormsResult.length} forms from PDF`);
+              break;
+            }
+          }
+        } catch (e: any) {
+          console.warn(`[extractAndUpdateSubsidy] Firecrawl PDF forms extraction failed for ${pdfUrl}: ${e.message}`);
+        }
+      }
+    }
+    
+    // Vision OCR でPDF抽出を試みる（Firecrawlで見つからない場合）
+    if (!formsValidation.valid && env?.GOOGLE_CLOUD_API_KEY) {
+      for (const pdfUrl of effectivePdfUrls.slice(0, 2)) {
+        metrics.visionAttempted = true;
+        try {
+          const visionResult = await extractWithGoogleVision(pdfUrl, env.GOOGLE_CLOUD_API_KEY);
+          metrics.visionPagesProcessed += visionResult.pagesProcessed;
+          
+          if (visionResult.text.length >= 200) {
+            const pdfFormsResult = extractRequiredFormsFromText(visionResult.text);
+            const pdfFormsValidation = validateFormsResult(pdfFormsResult, MIN_FORMS, MIN_FIELDS_PER_FORM);
+            
+            if (pdfFormsValidation.valid) {
+              formsResult = pdfFormsResult;
+              formsValidation = pdfFormsValidation;
+              metrics.visionSuccess = true;
+              console.log(`[extractAndUpdateSubsidy] Vision OCR forms success for ${subsidyId}: ${pdfFormsResult.length} forms from PDF`);
+              break;
+            }
+          }
+        } catch (e: any) {
+          console.warn(`[extractAndUpdateSubsidy] Vision OCR PDF forms extraction failed for ${pdfUrl}: ${e.message}`);
+        }
+      }
+    }
+  }
   
   // フォーム抽出に失敗した場合の記録
   if (!formsValidation.valid) {
@@ -492,6 +577,81 @@ function stripHtmlToText(html: string): string {
     .replace(/&#(\d+);/g, (_, d) => String.fromCharCode(Number(d)))
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+/**
+ * HTMLからPDFリンクを抽出
+ * 申請様式/様式/募集要項などに関連するPDFを優先
+ */
+function extractPdfLinksFromHtml(html: string, baseUrl: string): string[] {
+  const pdfLinks: Array<{ url: string; priority: number }> = [];
+  
+  // PDFリンクのパターン
+  const linkPatterns = [
+    // href="xxx.pdf"
+    /href=["']([^"']+\.pdf)["']/gi,
+    // href="xxx.PDF"
+    /href=["']([^"']+\.PDF)["']/gi,
+  ];
+  
+  for (const pattern of linkPatterns) {
+    let match;
+    while ((match = pattern.exec(html)) !== null) {
+      let url = match[1];
+      
+      // 相対URLを絶対URLに変換
+      if (!url.startsWith('http')) {
+        try {
+          const base = new URL(baseUrl);
+          if (url.startsWith('/')) {
+            url = `${base.protocol}//${base.host}${url}`;
+          } else {
+            // 相対パス（同一ディレクトリ）
+            const pathParts = base.pathname.split('/');
+            pathParts.pop(); // ファイル名を削除
+            url = `${base.protocol}//${base.host}${pathParts.join('/')}/${url}`;
+          }
+        } catch {
+          continue;
+        }
+      }
+      
+      // 優先度を計算（申請様式に関連するものを優先）
+      let priority = 0;
+      const lowerUrl = url.toLowerCase();
+      const htmlContext = html.slice(Math.max(0, match.index - 200), match.index + 200);
+      
+      // ファイル名に申請/様式などが含まれる
+      if (/shinsei|youshiki|boshu|application|form/i.test(lowerUrl)) {
+        priority += 10;
+      }
+      
+      // 周囲のテキストに申請様式などが含まれる
+      if (/申請様式|様式|募集要項|提出書類|申請書|記入例|記載例/.test(htmlContext)) {
+        priority += 5;
+      }
+      
+      // チラシ/概要は後回し
+      if (/chirashi|gaiyou|leaflet|pamphlet/i.test(lowerUrl)) {
+        priority -= 5;
+      }
+      
+      pdfLinks.push({ url, priority });
+    }
+  }
+  
+  // 重複除去＆優先度でソート
+  const seen = new Set<string>();
+  const uniqueLinks = pdfLinks
+    .filter(p => {
+      if (seen.has(p.url)) return false;
+      seen.add(p.url);
+      return true;
+    })
+    .sort((a, b) => b.priority - a.priority)
+    .map(p => p.url);
+  
+  return uniqueLinks.slice(0, 10); // 最大10件
 }
 
 // ========================================
