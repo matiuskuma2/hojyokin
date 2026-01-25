@@ -4655,8 +4655,13 @@ adminDashboard.get('/cost/summary', async (c) => {
   }
   
   try {
-    const days = parseInt(c.req.query('days') || '7', 10);
-    const sinceDate = new Date(Date.now() - days * 86400000).toISOString();
+    // P1-1: days 範囲を 1〜90 に固定（SQLite負荷対策）
+    const rawDays = parseInt(c.req.query('days') || '7', 10);
+    const days = Math.max(1, Math.min(isNaN(rawDays) ? 7 : rawDays, 90));
+    
+    // P1-1: SQLite の datetime 関数を使用（ISO文字列比較を避ける）
+    // SQLite: datetime('now', '-N days') で期間指定
+    const daysParam = `-${days} days`;
     
     // 1. 総計
     const summary = await db.prepare(`
@@ -4667,8 +4672,8 @@ adminDashboard.get('/cost/summary', async (c) => {
         SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) as success_count,
         SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) as failure_count
       FROM api_cost_logs
-      WHERE created_at >= ?
-    `).bind(sinceDate).first<{
+      WHERE created_at >= datetime('now', ?)
+    `).bind(daysParam).first<{
       total_cost_usd: number;
       total_units: number;
       total_calls: number;
@@ -4685,10 +4690,10 @@ adminDashboard.get('/cost/summary', async (c) => {
         COUNT(*) as calls,
         SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) as success_count
       FROM api_cost_logs
-      WHERE created_at >= ?
+      WHERE created_at >= datetime('now', ?)
       GROUP BY service
       ORDER BY cost_usd DESC
-    `).bind(sinceDate).all<{
+    `).bind(daysParam).all<{
       service: string;
       cost_usd: number;
       units: number;
@@ -4704,17 +4709,17 @@ adminDashboard.get('/cost/summary', async (c) => {
         SUM(cost_usd) as cost_usd,
         COUNT(*) as calls
       FROM api_cost_logs
-      WHERE created_at >= ?
+      WHERE created_at >= datetime('now', ?)
       GROUP BY DATE(created_at), service
       ORDER BY date DESC, service
-    `).bind(sinceDate).all<{
+    `).bind(daysParam).all<{
       date: string;
       service: string;
       cost_usd: number;
       calls: number;
     }>();
     
-    // 4. コスト上位補助金（上位10件）
+    // 4. コスト上位補助金（上位10件、LIMIT固定で負荷上限）
     const topSubsidiesResult = await db.prepare(`
       SELECT 
         acl.subsidy_id,
@@ -4723,18 +4728,18 @@ adminDashboard.get('/cost/summary', async (c) => {
         COUNT(*) as calls
       FROM api_cost_logs acl
       LEFT JOIN subsidy_cache sc ON acl.subsidy_id = sc.id
-      WHERE acl.created_at >= ? AND acl.subsidy_id IS NOT NULL
+      WHERE acl.created_at >= datetime('now', ?) AND acl.subsidy_id IS NOT NULL
       GROUP BY acl.subsidy_id
       ORDER BY cost_usd DESC
       LIMIT 10
-    `).bind(sinceDate).all<{
+    `).bind(daysParam).all<{
       subsidy_id: string;
       title: string | null;
       cost_usd: number;
       calls: number;
     }>();
     
-    // 5. 直近のエラー（最新20件）
+    // 5. 直近のエラー（最新20件、LIMIT固定）
     const recentErrorsResult = await db.prepare(`
       SELECT 
         id,
@@ -4746,10 +4751,10 @@ adminDashboard.get('/cost/summary', async (c) => {
         cost_usd,
         created_at
       FROM api_cost_logs
-      WHERE success = 0 AND created_at >= ?
+      WHERE success = 0 AND created_at >= datetime('now', ?)
       ORDER BY created_at DESC
       LIMIT 20
-    `).bind(sinceDate).all<{
+    `).bind(daysParam).all<{
       id: number;
       service: string;
       action: string;
@@ -4779,7 +4784,7 @@ adminDashboard.get('/cost/summary', async (c) => {
     }>>({
       success: true,
       data: {
-        period: { days, since: sinceDate },
+        period: { days, since: `datetime('now', '${daysParam}')` },
         summary: summary || {
           total_cost_usd: 0,
           total_units: 0,

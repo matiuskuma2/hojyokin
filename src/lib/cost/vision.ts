@@ -139,8 +139,23 @@ export async function visionOcr(
     }
     
     text = visionResult.responses?.[0]?.fullTextAnnotation?.text || '';
-    pagesProcessed = visionResult.responses?.[0]?.fullTextAnnotation?.pages?.length || 1;
     hash = simpleHash(text);
+    
+    // P0-2: pages 取得ルール明示
+    // Vision API の pages 配列から実ページ数を取得
+    const pagesFromApi = visionResult.responses?.[0]?.fullTextAnnotation?.pages?.length;
+    if (pagesFromApi !== undefined && pagesFromApi > 0) {
+      pagesProcessed = pagesFromApi;
+    } else {
+      // ページ数が取得できない場合は 1 ページ固定（凍結ルール）
+      // Note: これは推定ではなく「不明時のルール」として明示的に 1 を使用
+      pagesProcessed = 1;
+      // 成功時でも pages 不明を記録（コスト追跡のため）
+      if (!errorCode) {
+        errorCode = 'PAGES_UNKNOWN';
+        errorMessage = 'Vision API did not return page count; using default 1 page (frozen rule)';
+      }
+    }
     success = true;
     
   } catch (e: any) {
@@ -148,11 +163,10 @@ export async function visionOcr(
       errorCode = 'UNKNOWN_ERROR';
       errorMessage = e.message;
     }
-  }
-  
-  // ページ数が取得できなかった場合は1ページとしてカウント（保守的見積もり）
-  if (pagesProcessed === 0) {
-    pagesProcessed = 1;
+    // エラー時も 1 ページとしてカウント（課金は発生しうる）
+    if (pagesProcessed === 0) {
+      pagesProcessed = 1;
+    }
   }
   
   const costUsd = calculateVisionCost(pagesProcessed);

@@ -197,12 +197,15 @@ export async function extractAndUpdateSubsidy(
       metrics.firecrawlSkippedByCooldown = true;
       console.log(`[extractAndUpdateSubsidy] Firecrawl skipped by cooldown for ${subsidyId}`);
     } else {
-      for (const pdfUrl of effectivePdfUrls.slice(0, 3)) { // 最大3件
-        metrics.firecrawlAttempted = true;
-        try {
-          // Freeze-COST-2: wrapper 経由（DBある場合のみコスト記録）
-          let firecrawlResult: { text: string; hash: string };
-          if (env.DB) {
+      // Freeze-COST-2: DB必須化（コスト記録なしの呼び出しは禁止）
+      if (!env.DB) {
+        console.error(`[extractAndUpdateSubsidy] Firecrawl call blocked: env.DB is required for cost logging (Freeze-COST-2)`);
+        metrics.firecrawlSkippedByCooldown = true; // 実質的にスキップ扱い
+      } else {
+        for (const pdfUrl of effectivePdfUrls.slice(0, 3)) { // 最大3件
+          metrics.firecrawlAttempted = true;
+          try {
+            // Freeze-COST-2: wrapper 経由必須
             const ctx: FirecrawlContext = {
               db: env.DB,
               apiKey: env.FIRECRAWL_API_KEY,
@@ -210,23 +213,20 @@ export async function extractAndUpdateSubsidy(
               sourceId: env.sourceId,
             };
             const wrapperResult = await firecrawlScrape(pdfUrl, ctx);
-            firecrawlResult = { text: wrapperResult.text, hash: wrapperResult.hash };
-          } else {
-            // DB なしの場合は旧フォールバック（コスト記録なし）
-            firecrawlResult = await extractWithFirecrawl(pdfUrl, env.FIRECRAWL_API_KEY);
+            const firecrawlResult = { text: wrapperResult.text, hash: wrapperResult.hash };
+              if (firecrawlResult.text.length >= MIN_TEXT_LEN_FOR_NON_OCR) {
+              extractedText = firecrawlResult.text;
+              extractedFrom = 'firecrawl';
+              contentHash = firecrawlResult.hash;
+              metrics.firecrawlSuccess = true;
+              console.log(`[extractAndUpdateSubsidy] Firecrawl success for ${subsidyId}: ${firecrawlResult.text.length} chars`);
+              break;
+            } else {
+              console.log(`[extractAndUpdateSubsidy] Firecrawl insufficient for ${subsidyId}: ${firecrawlResult.text.length} chars`);
+            }
+          } catch (e: any) {
+            console.warn(`[extractAndUpdateSubsidy] Firecrawl failed for ${pdfUrl}: ${e.message}`);
           }
-          if (firecrawlResult.text.length >= MIN_TEXT_LEN_FOR_NON_OCR) {
-            extractedText = firecrawlResult.text;
-            extractedFrom = 'firecrawl';
-            contentHash = firecrawlResult.hash;
-            metrics.firecrawlSuccess = true;
-            console.log(`[extractAndUpdateSubsidy] Firecrawl success for ${subsidyId}: ${firecrawlResult.text.length} chars`);
-            break;
-          } else {
-            console.log(`[extractAndUpdateSubsidy] Firecrawl insufficient for ${subsidyId}: ${firecrawlResult.text.length} chars`);
-          }
-        } catch (e: any) {
-          console.warn(`[extractAndUpdateSubsidy] Firecrawl failed for ${pdfUrl}: ${e.message}`);
         }
       }
     }
@@ -241,24 +241,22 @@ export async function extractAndUpdateSubsidy(
     if (!allowVision) {
       metrics.visionSkippedByCooldown = true;
       console.log(`[extractAndUpdateSubsidy] Vision OCR skipped by cooldown for ${subsidyId}`);
+    // Freeze-COST-2: DB必須化（コスト記録なしの呼び出しは禁止）
+    } else if (!env.DB) {
+      console.error(`[extractAndUpdateSubsidy] Vision OCR call blocked: env.DB is required for cost logging (Freeze-COST-2)`);
+      metrics.visionSkippedByCooldown = true; // 実質的にスキップ扱い
     } else {
       for (const pdfUrl of effectivePdfUrls.slice(0, 2)) { // OCRは高コストなので最大2件
         metrics.visionAttempted = true;
         try {
-          // Freeze-COST-2: wrapper 経由（DBある場合のみコスト記録）
-          let visionResult: { text: string; hash: string; pagesProcessed: number };
-          if (env.DB) {
-            const ctx: VisionContext = {
-              db: env.DB,
-              apiKey: env.GOOGLE_CLOUD_API_KEY,
-              subsidyId,
-              sourceId: env.sourceId,
-            };
-            visionResult = await visionOcr(pdfUrl, ctx);
-          } else {
-            // DB なしの場合は旧フォールバック（コスト記録なし）
-            visionResult = await extractWithGoogleVision(pdfUrl, env.GOOGLE_CLOUD_API_KEY);
-          }
+          // Freeze-COST-2: wrapper 経由必須
+          const ctx: VisionContext = {
+            db: env.DB,
+            apiKey: env.GOOGLE_CLOUD_API_KEY,
+            subsidyId,
+            sourceId: env.sourceId,
+          };
+          const visionResult = await visionOcr(pdfUrl, ctx);
           metrics.visionPagesProcessed += visionResult.pagesProcessed;
           
           if (visionResult.text.length >= MIN_TEXT_LEN_FOR_NON_OCR) {
@@ -330,14 +328,16 @@ export async function extractAndUpdateSubsidy(
   if (!formsValidation.valid && extractedFrom === 'html' && effectivePdfUrls.length > 0) {
     console.log(`[extractAndUpdateSubsidy] HTML forms insufficient for ${subsidyId}, trying PDF extraction from ${effectivePdfUrls.length} PDFs...`);
     
-    // Firecrawl でPDF抽出を試みる（cooldownチェック）
+    // Firecrawl でPDF抽出を試みる（cooldownチェック + DB必須）
     if (env?.FIRECRAWL_API_KEY && allowFirecrawl) {
-      for (const pdfUrl of effectivePdfUrls.slice(0, 3)) {
-        metrics.firecrawlAttempted = true;
-        try {
-          // Freeze-COST-2: wrapper 経由（DBある場合のみコスト記録）
-          let firecrawlResult: { text: string; hash: string };
-          if (env.DB) {
+      // Freeze-COST-2: DB必須化
+      if (!env.DB) {
+        console.error(`[extractAndUpdateSubsidy] Firecrawl forms call blocked: env.DB is required (Freeze-COST-2)`);
+      } else {
+        for (const pdfUrl of effectivePdfUrls.slice(0, 3)) {
+          metrics.firecrawlAttempted = true;
+          try {
+            // Freeze-COST-2: wrapper 経由必須
             const ctx: FirecrawlContext = {
               db: env.DB,
               apiKey: env.FIRECRAWL_API_KEY,
@@ -345,65 +345,63 @@ export async function extractAndUpdateSubsidy(
               sourceId: env.sourceId,
             };
             const wrapperResult = await firecrawlScrape(pdfUrl, ctx);
-            firecrawlResult = { text: wrapperResult.text, hash: wrapperResult.hash };
-          } else {
-            firecrawlResult = await extractWithFirecrawl(pdfUrl, env.FIRECRAWL_API_KEY);
-          }
-          if (firecrawlResult.text.length >= 200) { // 様式検出用は200文字でOK
-            const pdfFormsResult = extractRequiredFormsFromText(firecrawlResult.text);
-            const pdfFormsValidation = validateFormsResult(pdfFormsResult, MIN_FORMS, MIN_FIELDS_PER_FORM);
-            
-            if (pdfFormsValidation.valid) {
-              // PDFから様式を見つけた場合、結果をマージ
-              formsResult = pdfFormsResult;
-              formsValidation = pdfFormsValidation;
-              metrics.firecrawlSuccess = true;
-              console.log(`[extractAndUpdateSubsidy] Firecrawl forms success for ${subsidyId}: ${pdfFormsResult.length} forms from PDF`);
-              break;
+            const firecrawlResult = { text: wrapperResult.text, hash: wrapperResult.hash };
+            if (firecrawlResult.text.length >= 200) { // 様式検出用は200文字でOK
+              const pdfFormsResult = extractRequiredFormsFromText(firecrawlResult.text);
+              const pdfFormsValidation = validateFormsResult(pdfFormsResult, MIN_FORMS, MIN_FIELDS_PER_FORM);
+              
+              if (pdfFormsValidation.valid) {
+                // PDFから様式を見つけた場合、結果をマージ
+                formsResult = pdfFormsResult;
+                formsValidation = pdfFormsValidation;
+                metrics.firecrawlSuccess = true;
+                console.log(`[extractAndUpdateSubsidy] Firecrawl forms success for ${subsidyId}: ${pdfFormsResult.length} forms from PDF`);
+                break;
+              }
             }
+          } catch (e: any) {
+            console.warn(`[extractAndUpdateSubsidy] Firecrawl PDF forms extraction failed for ${pdfUrl}: ${e.message}`);
           }
-        } catch (e: any) {
-          console.warn(`[extractAndUpdateSubsidy] Firecrawl PDF forms extraction failed for ${pdfUrl}: ${e.message}`);
         }
       }
     } else if (env?.FIRECRAWL_API_KEY && !allowFirecrawl) {
       metrics.firecrawlSkippedByCooldown = true;
     }
     
-    // Vision OCR でPDF抽出を試みる（Firecrawlで見つからない場合、cooldownチェック）
+    // Vision OCR でPDF抽出を試みる（Firecrawlで見つからない場合、cooldownチェック + DB必須）
     if (!formsValidation.valid && env?.GOOGLE_CLOUD_API_KEY && allowVision) {
-      for (const pdfUrl of effectivePdfUrls.slice(0, 2)) {
-        metrics.visionAttempted = true;
-        try {
-          // Freeze-COST-2: wrapper 経由（DBある場合のみコスト記録）
-          let visionResult: { text: string; hash: string; pagesProcessed: number };
-          if (env.DB) {
+      // Freeze-COST-2: DB必須化
+      if (!env.DB) {
+        console.error(`[extractAndUpdateSubsidy] Vision OCR forms call blocked: env.DB is required (Freeze-COST-2)`);
+      } else {
+        for (const pdfUrl of effectivePdfUrls.slice(0, 2)) {
+          metrics.visionAttempted = true;
+          try {
+            // Freeze-COST-2: wrapper 経由必須
             const ctx: VisionContext = {
               db: env.DB,
               apiKey: env.GOOGLE_CLOUD_API_KEY,
               subsidyId,
               sourceId: env.sourceId,
             };
-            visionResult = await visionOcr(pdfUrl, ctx);
-          } else {
-            visionResult = await extractWithGoogleVision(pdfUrl, env.GOOGLE_CLOUD_API_KEY);
-          }
-          metrics.visionPagesProcessed += visionResult.pagesProcessed;
-          
-          if (visionResult.text.length >= 200) {
-            const pdfFormsResult = extractRequiredFormsFromText(visionResult.text);
-            const pdfFormsValidation = validateFormsResult(pdfFormsResult, MIN_FORMS, MIN_FIELDS_PER_FORM);
+            const visionResult = await visionOcr(pdfUrl, ctx);
+            metrics.visionPagesProcessed += visionResult.pagesProcessed;
             
-            if (pdfFormsValidation.valid) {
-              formsResult = pdfFormsResult;
-              formsValidation = pdfFormsValidation;
-              metrics.visionSuccess = true;
-              console.log(`[extractAndUpdateSubsidy] Vision OCR forms success for ${subsidyId}: ${pdfFormsResult.length} forms from PDF`);
-              break;
+            if (visionResult.text.length >= 200) {
+              const pdfFormsResult = extractRequiredFormsFromText(visionResult.text);
+              const pdfFormsValidation = validateFormsResult(pdfFormsResult, MIN_FORMS, MIN_FIELDS_PER_FORM);
+              
+              if (pdfFormsValidation.valid) {
+                formsResult = pdfFormsResult;
+                formsValidation = pdfFormsValidation;
+                metrics.visionSuccess = true;
+                console.log(`[extractAndUpdateSubsidy] Vision OCR forms success for ${subsidyId}: ${pdfFormsResult.length} forms from PDF`);
+                break;
+              }
             }
+          } catch (e: any) {
+            console.warn(`[extractAndUpdateSubsidy] Vision OCR PDF forms extraction failed for ${pdfUrl}: ${e.message}`);
           }
-        } catch (e: any) {
-          console.warn(`[extractAndUpdateSubsidy] Vision OCR PDF forms extraction failed for ${pdfUrl}: ${e.message}`);
         }
       }
     } else if (!formsValidation.valid && env?.GOOGLE_CLOUD_API_KEY && !allowVision) {

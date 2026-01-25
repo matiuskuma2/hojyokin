@@ -55,8 +55,6 @@ export async function firecrawlScrape(
   ctx: FirecrawlContext
 ): Promise<FirecrawlScrapeResult> {
   const { db, apiKey, subsidyId, sourceId, discoveryItemId } = ctx;
-  const credits = FIRECRAWL_RATES.CREDITS_PER_SCRAPE; // 1 credit per scrape
-  const costUsd = calculateFirecrawlCost(credits);
   
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), FIRECRAWL_TIMEOUT_MS);
@@ -67,6 +65,10 @@ export async function firecrawlScrape(
   let success = false;
   let text = '';
   let hash = '';
+  // P0-2: usage を API レスポンスから取得、取得できない場合は USAGE_MISSING
+  let credits = 0;
+  let usageFromApi = false;
+  let rawUsage: Record<string, unknown> | undefined;
   
   try {
     const response = await fetch(FIRECRAWL_API_URL, {
@@ -90,6 +92,8 @@ export async function firecrawlScrape(
       const errorText = await response.text();
       errorCode = response.status === 429 ? 'RATE_LIMITED' : 'API_ERROR';
       errorMessage = `Firecrawl API error: ${response.status} - ${errorText.slice(0, 200)}`;
+      // 失敗時も 1 credit 消費と仮定（Firecrawl の課金仕様）
+      credits = FIRECRAWL_RATES.CREDITS_PER_SCRAPE;
     } else {
       const result = await response.json() as {
         success: boolean;
@@ -97,15 +101,41 @@ export async function firecrawlScrape(
           markdown?: string;
           html?: string;
         };
+        // Firecrawl API v1 の usage フィールド（存在する場合）
+        usage?: {
+          credits?: number;
+          creditsUsed?: number;
+        };
       };
+      
+      // usage 情報を取得
+      rawUsage = result.usage as Record<string, unknown> | undefined;
+      if (result.usage?.credits !== undefined) {
+        credits = result.usage.credits;
+        usageFromApi = true;
+      } else if (result.usage?.creditsUsed !== undefined) {
+        credits = result.usage.creditsUsed;
+        usageFromApi = true;
+      }
       
       if (!result.success || !result.data?.markdown) {
         errorCode = 'NO_DATA';
         errorMessage = 'Firecrawl returned no data';
+        // データなしでも 1 credit 消費と仮定
+        if (!usageFromApi) {
+          credits = FIRECRAWL_RATES.CREDITS_PER_SCRAPE;
+        }
       } else {
         text = result.data.markdown;
         hash = simpleHash(text);
         success = true;
+        // 成功時に usage が取得できなかった場合は USAGE_MISSING として記録
+        if (!usageFromApi) {
+          credits = FIRECRAWL_RATES.CREDITS_PER_SCRAPE; // デフォルト 1 credit
+          errorCode = 'USAGE_MISSING';
+          errorMessage = 'Firecrawl API did not return usage information; using default 1 credit';
+          // Note: success は true のままだが、usage 不明を errorCode で記録
+        }
       }
     }
   } catch (e: any) {
@@ -116,9 +146,13 @@ export async function firecrawlScrape(
       errorCode = 'NETWORK_ERROR';
       errorMessage = e.message;
     }
+    // エラー時も 1 credit 消費と仮定
+    credits = FIRECRAWL_RATES.CREDITS_PER_SCRAPE;
   } finally {
     clearTimeout(timeoutId);
   }
+  
+  const costUsd = calculateFirecrawlCost(credits);
   
   // Freeze-COST-3: 失敗時もコスト記録（1 credit 消費は発生）
   await logFirecrawlCost(db, {

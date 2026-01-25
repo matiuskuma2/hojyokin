@@ -1,7 +1,7 @@
 # コスト会計凍結仕様 (Freeze-COST-0 〜 Freeze-COST-4)
 
 **作成日**: 2026-01-25  
-**最終更新**: 2026-01-25 v1  
+**最終更新**: 2026-01-25 v2  
 **ステータス**: 凍結
 
 ---
@@ -57,11 +57,12 @@ super_admin のコスト表示は api_cost_logs のみから集計
 - 実数コストの合計表示
 - サービス別・日別・補助金別の実数集計
 
-### Freeze-COST-2: Wrapper 経由必須
+### Freeze-COST-2: Wrapper 経由必須 + DB 必須化
 
 ```
 外部API呼び出しは必ず wrapper 経由
 直接 fetch は禁止
+env.DB なしでの呼び出しは拒否（エラー）
 ```
 
 **Wrapper ファイル**:
@@ -74,10 +75,17 @@ super_admin のコスト表示は api_cost_logs のみから集計
 // ❌ 禁止: 直接 fetch
 const response = await fetch('https://api.firecrawl.dev/v1/scrape', ...);
 
-// ✅ 必須: wrapper 経由
+// ❌ 禁止: DB なしでの wrapper 呼び出し（pdf-extract-router.ts で拒否）
+// env.DB が undefined の場合、Firecrawl/Vision は実行されない
+
+// ✅ 必須: wrapper 経由 + DB 必須
 import { firecrawlScrape } from '../cost';
-const result = await firecrawlScrape(url, { db, apiKey, subsidyId });
+const result = await firecrawlScrape(url, { db: env.DB, apiKey, subsidyId });
 ```
+
+**DB 必須化の実装箇所**:
+- `src/lib/pdf/pdf-extract-router.ts` の Step 2, 3, 6.5
+- `env.DB` が undefined の場合は `console.error` でログを残し、呼び出しをスキップ
 
 ### Freeze-COST-3: 失敗時もコスト記録
 
@@ -94,6 +102,16 @@ API呼び出しが失敗しても、消費したコストは記録する
 - `success = 0`
 - `error_code`, `error_message` を設定
 - `cost_usd` は消費見込み額
+
+**Firecrawl usage 取得ルール**:
+- API レスポンスに `usage.credits` または `usage.creditsUsed` がある場合はそれを使用
+- 取得できない場合は `error_code = 'USAGE_MISSING'` として記録し、デフォルト 1 credit を使用
+- 成功時でも usage 不明は記録される
+
+**Vision pages 取得ルール**:
+- API レスポンスの `fullTextAnnotation.pages.length` から取得
+- 取得できない場合は `error_code = 'PAGES_UNKNOWN'` として記録し、1 ページ固定
+- これは「推定」ではなく「不明時の凍結ルール」として明示的に 1 を使用
 
 ### Freeze-COST-4: モデル・単価は metadata_json に保持
 
@@ -191,7 +209,11 @@ CREATE TABLE api_cost_logs (
 コスト集計サマリー取得（super_admin 専用）
 
 **Query params**:
-- `days`: 集計日数（デフォルト: 7）
+- `days`: 集計日数（デフォルト: 7、範囲: 1〜90 に固定）
+
+**SQLite日時処理**:
+- ISO文字列比較ではなく `datetime('now', '-N days')` を使用
+- これにより SQLite の日時形式との不整合を回避
 
 **Response**:
 ```json
@@ -282,8 +304,15 @@ curl -H "Authorization: Bearer <token>" \
 
 ---
 
+## 関連ドキュメント（インデックス）
+
+**凍結ルールの入口**: [FROZEN_RULES_INDEX.md](./FROZEN_RULES_INDEX.md)
+
+---
+
 ## 変更履歴
 
 | 日付 | バージョン | 変更内容 |
 |------|-----------|----------|
 | 2026-01-25 | v1 | 初版作成 |
+| 2026-01-25 | v2 | P0修正: DB必須化、usage/pages取得ルール追加、days範囲固定 |
