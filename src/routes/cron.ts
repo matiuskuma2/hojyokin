@@ -3193,22 +3193,35 @@ async function recordFailure(
   message: string
 ): Promise<void> {
   const now = new Date().toISOString();
+  
+  // ★ v3.7.1: error_type を feed_failures CHECK制約に準拠
+  // 許容値: 'HTTP', 'timeout', 'parse', 'db', 'validation', 'unknown'
+  const errorTypeMap: Record<string, string> = {
+    'FETCH_FAILED': 'HTTP',
+    'PARSE_FAILED': 'parse',
+    'FORMS_NOT_FOUND': 'validation',
+    'UPSERT_FAILED': 'db',
+    'DB_ERROR': 'db',
+    'TIMEOUT': 'timeout',
+  };
+  const errorType = errorTypeMap[reason] || 'unknown';
+  
   const priority = reason === 'FETCH_FAILED' ? 1 : reason === 'PARSE_FAILED' ? 2 : reason === 'FORMS_NOT_FOUND' ? 3 : 4;
   
   try {
     await db.prepare(`
       INSERT INTO feed_failures (
-        subsidy_id, source_id, url, stage, error_type, message,
-        retry_count, first_occurred_at, last_occurred_at,
-        status, affected_count, priority
-      ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, 'open', 1, ?)
+        subsidy_id, source_id, url, stage, error_type, error_message,
+        retry_count, occurred_at, last_retry_at,
+        status
+      ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, 'open')
       ON CONFLICT (subsidy_id, url, stage) DO UPDATE SET
         error_type = excluded.error_type,
-        message = excluded.message,
+        error_message = excluded.error_message,
         retry_count = retry_count + 1,
-        last_occurred_at = excluded.last_occurred_at,
+        last_retry_at = excluded.last_retry_at,
         status = 'open'
-    `).bind(subsidyId, sourceId, url, stage, reason, message, now, now, priority).run();
+    `).bind(subsidyId, sourceId, url, stage, errorType, message.slice(0, 500), now, now).run();
   } catch (e) {
     console.warn('[recordFailure] Failed:', e);
   }
@@ -3936,17 +3949,23 @@ cron.post('/sync-jnet21', async (c) => {
         errors.push(`Item error (${item.link}): ${errMsg}`);
         console.warn(`[J-Net21] Item error:`, itemErr);
         
-        // ★ P0-1: feed_failures に記録（super_admin で可視化）
-        const failureId = `jnet21-${dedupeKey.replace('src-jnet21:', '')}`;
-        await recordFailure(
-          db,
-          failureId,
-          SOURCE_KEY,
-          item.link,
-          'discover',  // stage: discover（カタログ取得段階）
-          'UPSERT_FAILED',  // error_type
-          errMsg.slice(0, 500)
-        );
+        // ★ P0-1 v3.7.1: feed_failures に記録（super_admin で可視化）
+        // NOTE: item.link はcatchスコープでも参照可能（forループの変数）
+        const linkHash = await calculateContentHash(item.link).then(h => h.slice(0, 8));
+        const failureId = `jnet21-${linkHash}`;
+        try {
+          await recordFailure(
+            db,
+            failureId,
+            SOURCE_KEY,
+            item.link,
+            'db',  // stage: db（DB書き込み段階）
+            'UPSERT_FAILED',  // reason（recordFailure内でerror_type='db'に変換）
+            errMsg.slice(0, 500)
+          );
+        } catch (recordErr) {
+          console.warn('[J-Net21] Failed to record feed_failures:', recordErr);
+        }
       }
     }
     
