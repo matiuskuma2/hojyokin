@@ -121,6 +121,8 @@ async function enqueueToD1(env: Env) {
         json_extract(sc.detail_json, '$.detailUrl') IS NOT NULL
         OR (json_extract(sc.detail_json, '$.pdfUrls') IS NOT NULL AND json_array_length(json_extract(sc.detail_json, '$.pdfUrls')) > 0)
       )
+      -- ★ 締切が過去のものを除外（締切NULLは許可）
+      AND (sc.acceptance_end_datetime IS NULL OR sc.acceptance_end_datetime > datetime('now'))
       AND NOT EXISTS (
         SELECT 1 FROM extraction_queue eq
         WHERE eq.subsidy_id = sc.id AND eq.job_type = 'extract_forms' AND eq.status IN ('queued','leased')
@@ -158,6 +160,8 @@ async function enqueueToD1(env: Env) {
       AND sc.wall_chat_ready = 0
       AND sc.shard_key IS NOT NULL
       AND json_extract(sc.detail_json, '$.detailUrl') IS NOT NULL
+      -- ★ 締切が過去のものを除外（締切NULLは許可）
+      AND (sc.acceptance_end_datetime IS NULL OR sc.acceptance_end_datetime > datetime('now'))
       AND NOT EXISTS (
         SELECT 1 FROM extraction_queue eq
         WHERE eq.subsidy_id = sc.id AND eq.job_type = 'enrich_shigoto' AND eq.status IN ('queued','leased')
