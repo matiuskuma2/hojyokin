@@ -17,6 +17,7 @@
 import { Hono } from 'hono';
 import type { Env, Variables, ApiResponse } from '../types';
 import { simpleScrape, parseTokyoKoshaList, extractPdfLinks, calculateContentHash } from '../services/firecrawl';
+import { shardKey16, currentShardByHour } from '../lib/shard';
 
 const cron = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -3222,5 +3223,335 @@ async function resolveFailure(db: D1Database, subsidyId: string, url: string): P
     console.warn('[resolveFailure] Failed:', e);
   }
 }
+
+// =====================================================
+// キュー基盤（17,000件運用向け shard/queue）
+// =====================================================
+
+type EnqueueJobType = 'extract_forms' | 'enrich_jgrants' | 'enrich_shigoto';
+
+// job_type別に優先度（小さいほど先）
+const JOB_PRIORITY: Record<EnqueueJobType, number> = {
+  extract_forms: 50,     // 壁打ち成立の核
+  enrich_shigoto: 60,    // HTML埋め
+  enrich_jgrants: 70,    // 毎日少量で増やす
+};
+
+/**
+ * POST /api/cron/enqueue-extractions
+ * 
+ * extraction_queue にジョブを投入
+ * 1回で入れすぎない（MAX_ENQUEUE_PER_TYPE で制限）
+ */
+cron.post('/enqueue-extractions', async (c) => {
+  const db = c.env.DB;
+
+  const auth = verifyCronSecret(c);
+  if (!auth.valid) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: auth.error!,
+    }, auth.error!.status);
+  }
+
+  // 1回で入れすぎない
+  const MAX_ENQUEUE_PER_TYPE = 500;
+
+  const now = new Date().toISOString();
+
+  // 1) shard_key未付与の行に shard_key を付ける（増分でOK）
+  const candidates = await db.prepare(`
+    SELECT id FROM subsidy_cache
+    WHERE shard_key IS NULL
+    LIMIT 1000
+  `).all<{ id: string }>();
+
+  let shardUpdated = 0;
+  for (const row of candidates.results || []) {
+    const sk = shardKey16(row.id);
+    await db.prepare(`UPDATE subsidy_cache SET shard_key = ? WHERE id = ?`)
+      .bind(sk, row.id).run();
+    shardUpdated++;
+  }
+
+  // 2) job_typeごとにキュー投入（INSERT OR IGNORE）
+
+  // A) extract_forms: wall_chat_ready=0 かつ detailUrl/pdfUrlsあり
+  const exForms = await db.prepare(`
+    INSERT OR IGNORE INTO extraction_queue (id, subsidy_id, shard_key, job_type, priority, status, created_at, updated_at)
+    SELECT 
+      lower(hex(randomblob(16))),
+      sc.id,
+      sc.shard_key,
+      'extract_forms',
+      ?,
+      'queued',
+      ?,
+      ?
+    FROM subsidy_cache sc
+    WHERE sc.wall_chat_ready = 0
+      AND sc.shard_key IS NOT NULL
+      AND sc.detail_json IS NOT NULL AND sc.detail_json != '{}'
+      AND (
+        json_extract(sc.detail_json, '$.detailUrl') IS NOT NULL
+        OR (json_extract(sc.detail_json, '$.pdfUrls') IS NOT NULL AND json_array_length(json_extract(sc.detail_json, '$.pdfUrls')) > 0)
+      )
+    ORDER BY sc.cached_at DESC
+    LIMIT ?
+  `).bind(JOB_PRIORITY.extract_forms, now, now, MAX_ENQUEUE_PER_TYPE).run();
+
+  // B) enrich_shigoto: tokyo-shigoto で未READY & detailUrlあり
+  const exShigoto = await db.prepare(`
+    INSERT OR IGNORE INTO extraction_queue (id, subsidy_id, shard_key, job_type, priority, status, created_at, updated_at)
+    SELECT 
+      lower(hex(randomblob(16))),
+      sc.id,
+      sc.shard_key,
+      'enrich_shigoto',
+      ?,
+      'queued',
+      ?,
+      ?
+    FROM subsidy_cache sc
+    WHERE sc.source = 'tokyo-shigoto'
+      AND sc.wall_chat_ready = 0
+      AND sc.shard_key IS NOT NULL
+      AND json_extract(sc.detail_json, '$.detailUrl') IS NOT NULL
+    ORDER BY sc.cached_at DESC
+    LIMIT ?
+  `).bind(JOB_PRIORITY.enrich_shigoto, now, now, MAX_ENQUEUE_PER_TYPE).run();
+
+  // C) enrich_jgrants: jgrants でdetail_jsonが薄い & 期限内
+  const exJgrants = await db.prepare(`
+    INSERT OR IGNORE INTO extraction_queue (id, subsidy_id, shard_key, job_type, priority, status, created_at, updated_at)
+    SELECT 
+      lower(hex(randomblob(16))),
+      sc.id,
+      sc.shard_key,
+      'enrich_jgrants',
+      ?,
+      'queued',
+      ?,
+      ?
+    FROM subsidy_cache sc
+    WHERE sc.source = 'jgrants'
+      AND sc.wall_chat_ready = 0
+      AND sc.shard_key IS NOT NULL
+      AND (sc.detail_json IS NULL OR sc.detail_json = '{}' OR LENGTH(sc.detail_json) < 100)
+      AND (sc.acceptance_end_datetime IS NULL OR sc.acceptance_end_datetime > datetime('now'))
+    ORDER BY sc.acceptance_end_datetime ASC NULLS LAST
+    LIMIT ?
+  `).bind(JOB_PRIORITY.enrich_jgrants, now, now, MAX_ENQUEUE_PER_TYPE).run();
+
+  return c.json<ApiResponse<{
+    message: string;
+    updated_shard_key_rows: number;
+    enqueued: { extract_forms: number; enrich_shigoto: number; enrich_jgrants: number };
+  }>>({
+    success: true,
+    data: {
+      message: 'enqueue ok',
+      updated_shard_key_rows: shardUpdated,
+      enqueued: {
+        extract_forms: exForms.meta?.changes || 0,
+        enrich_shigoto: exShigoto.meta?.changes || 0,
+        enrich_jgrants: exJgrants.meta?.changes || 0,
+      },
+    },
+  });
+});
+
+type ConsumeJob = {
+  id: string;
+  subsidy_id: string;
+  shard_key: number;
+  job_type: EnqueueJobType;
+  attempts: number;
+  max_attempts: number;
+};
+
+// 1回の消化上限（止まらない設定）
+const CONSUME_BATCH = 8;          // 8件だけ（確実に30秒内）
+const LEASE_MINUTES = 8;          // リース期限
+const LEASE_OWNER = 'pages-cron'; // ざっくり識別
+
+/**
+ * POST /api/cron/consume-extractions
+ * 
+ * extraction_queue から shard 単位でジョブを取り出して処理
+ * ?shard=N で指定可能（省略時は時刻から自動決定）
+ */
+cron.post('/consume-extractions', async (c) => {
+  const db = c.env.DB;
+  const env = c.env;
+
+  const auth = verifyCronSecret(c);
+  if (!auth.valid) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: auth.error!,
+    }, auth.error!.status);
+  }
+
+  // shard指定がなければ自動決定
+  const q = c.req.query();
+  const shard = q.shard !== undefined 
+    ? Math.max(0, Math.min(15, parseInt(q.shard, 10) || 0))
+    : currentShardByHour();
+
+  const now = new Date();
+  const leaseUntil = new Date(now.getTime() + LEASE_MINUTES * 60 * 1000).toISOString();
+
+  // 0) 期限切れleasedを回収
+  await db.prepare(`
+    UPDATE extraction_queue
+    SET status='queued', lease_owner=NULL, lease_until=NULL, updated_at=datetime('now')
+    WHERE status='leased' AND lease_until IS NOT NULL AND lease_until < datetime('now')
+  `).run();
+
+  // 1) queuedからshard分だけ取る（優先度順）
+  const queued = await db.prepare(`
+    SELECT id, subsidy_id, shard_key, job_type, attempts, max_attempts
+    FROM extraction_queue
+    WHERE shard_key = ?
+      AND status = 'queued'
+    ORDER BY priority ASC, updated_at ASC
+    LIMIT ?
+  `).bind(shard, CONSUME_BATCH).all<ConsumeJob>();
+
+  const jobs = queued.results || [];
+  if (jobs.length === 0) {
+    return c.json<ApiResponse<{ shard: number; processed: number; message: string }>>({
+      success: true,
+      data: { shard, processed: 0, message: 'no jobs' },
+    });
+  }
+
+  // 2) リース獲得（原子的に leased へ）
+  const leasedIds: string[] = [];
+  for (const job of jobs) {
+    const res = await db.prepare(`
+      UPDATE extraction_queue
+      SET status='leased', lease_owner=?, lease_until=?, updated_at=datetime('now')
+      WHERE id=? AND status='queued'
+    `).bind(LEASE_OWNER, leaseUntil, job.id).run();
+
+    if ((res.meta?.changes || 0) === 1) leasedIds.push(job.id);
+  }
+
+  if (leasedIds.length === 0) {
+    return c.json<ApiResponse<{ shard: number; processed: number; message: string }>>({
+      success: true,
+      data: { shard, processed: 0, message: 'lease race lost' },
+    });
+  }
+
+  // 3) 実処理（job_typeごとに処理）
+  let done = 0;
+  let failed = 0;
+
+  for (const queueId of leasedIds) {
+    const job = jobs.find(j => j.id === queueId);
+    if (!job) continue;
+
+    try {
+      // job_typeに応じた処理
+      if (job.job_type === 'extract_forms') {
+        // 既存の extractAndUpdateSubsidy を呼ぶ
+        const subsidy = await db.prepare(`
+          SELECT id, source, title, detail_json
+          FROM subsidy_cache WHERE id = ?
+        `).bind(job.subsidy_id).first<{
+          id: string;
+          source: string;
+          title: string;
+          detail_json: string | null;
+        }>();
+
+        if (subsidy) {
+          let detail: any = {};
+          try {
+            detail = subsidy.detail_json ? JSON.parse(subsidy.detail_json) : {};
+          } catch { detail = {}; }
+
+          const detailUrl = detail.detailUrl || null;
+          const pdfUrls = detail.pdfUrls || detail.pdf_urls || [];
+
+          if (detailUrl || (Array.isArray(pdfUrls) && pdfUrls.length > 0)) {
+            // cooldown チェック
+            const cooldown = await checkCooldown(db, subsidy.id, DEFAULT_COOLDOWN_POLICY);
+
+            const extractSource: ExtractSource = {
+              subsidyId: subsidy.id,
+              source: subsidy.source,
+              title: subsidy.title,
+              detailUrl,
+              pdfUrls: Array.isArray(pdfUrls) ? pdfUrls : [],
+              existingDetailJson: subsidy.detail_json,
+            };
+
+            const extractResult = await extractAndUpdateSubsidy(extractSource, {
+              FIRECRAWL_API_KEY: env.FIRECRAWL_API_KEY,
+              GOOGLE_CLOUD_API_KEY: env.GOOGLE_CLOUD_API_KEY,
+              allowFirecrawl: cooldown.allowFirecrawl,
+              allowVision: cooldown.allowVision,
+            });
+
+            // 成功/電子申請検出時はDB更新
+            if (extractResult.success || extractResult.isElectronicApplication) {
+              await db.prepare(`
+                UPDATE subsidy_cache 
+                SET detail_json = ?, wall_chat_ready = ?, wall_chat_missing = ?
+                WHERE id = ?
+              `).bind(
+                extractResult.newDetailJson,
+                extractResult.wallChatReady ? 1 : 0,
+                JSON.stringify(extractResult.wallChatMissing),
+                subsidy.id
+              ).run();
+            }
+          }
+        }
+      }
+      // enrich_jgrants, enrich_shigoto は既存のAPIを使うか、後で追加
+      // 今は extract_forms だけ実装
+
+      // ジョブ完了
+      await db.prepare(`
+        UPDATE extraction_queue
+        SET status='done', lease_owner=NULL, lease_until=NULL, updated_at=datetime('now')
+        WHERE id=?
+      `).bind(queueId).run();
+
+      done++;
+    } catch (e: any) {
+      const attempts = (job.attempts || 0) + 1;
+      const nextStatus = attempts >= (job.max_attempts || 5) ? 'failed' : 'queued';
+
+      await db.prepare(`
+        UPDATE extraction_queue
+        SET status=?, attempts=?, last_error=?, lease_owner=NULL, lease_until=NULL, updated_at=datetime('now')
+        WHERE id=?
+      `).bind(nextStatus, attempts, String(e?.message || e).slice(0, 500), queueId).run();
+
+      failed++;
+    }
+  }
+
+  return c.json<ApiResponse<{
+    shard: number;
+    leased: number;
+    done: number;
+    failed: number;
+  }>>({
+    success: true,
+    data: {
+      shard,
+      leased: leasedIds.length,
+      done,
+      failed,
+    },
+  });
+});
 
 export default cron;
