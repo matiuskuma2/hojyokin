@@ -3,20 +3,29 @@
 ## 📋 プロジェクト概要
 
 - **Name**: subsidy-matching (hojyokin)
-- **Version**: 3.2.0
+- **Version**: 3.3.0
 - **Goal**: 企業情報を登録するだけで、最適な補助金・助成金を自動でマッチング＆申請書ドラフト作成
 
-### 🎉 最新アップデート (v3.2.0) - Shard/Queue化 + 電子申請対応 + Cooldownガード
+### 🎉 最新アップデート (v3.3.0) - Workers Cron + 検索キャッシュ + 実処理稼働
 
-**v3.2.0 リリース（2026-01-25）:**
+**v3.3.0 リリース（2026-01-25）:**
 
 | 項目 | 状態 | 詳細 |
 |------|------|------|
-| **Shard/Queue化** | ✅ NEW | 17,000件運用対応。16分割shard + リース機構 |
-| **電子申請検出** | ✅ NEW | jGrants/東京都電子申請/GビズID/ミラサポ/e-Gov 自動検出 |
-| **Cooldownガード** | ✅ NEW | Firecrawl 6h / Vision OCR 24h で二重課金防止 |
-| **extraction_queue** | ✅ NEW | 抽出ジョブキュー（優先度付き、リース/回収機構） |
-| **admin-ops管理API** | ✅ NEW | super_admin向けキュー管理（enqueue/consume/retry） |
+| **Workers Cron稼働** | ✅ NEW | 5分ごと自動消化（https://hojyokin-queue-cron.sekiyadubai.workers.dev） |
+| **検索APIキャッシュ** | ✅ NEW | Cache API 120秒TTL（同接1000対応） |
+| **enrich_jgrants/shigoto** | ✅ NEW | consume-extractionsでjob_type別実処理を実装 |
+| **shard_key crc32統一** | ✅ NEW | 偏り対策で分布を均等化 |
+
+### 📋 v3.2.0 - Shard/Queue化 + 電子申請対応 + Cooldownガード
+
+| 項目 | 状態 | 詳細 |
+|------|------|------|
+| **Shard/Queue化** | ✅ | 17,000件運用対応。16分割shard + リース機構 |
+| **電子申請検出** | ✅ | jGrants/東京都電子申請/GビズID/ミラサポ/e-Gov 自動検出 |
+| **Cooldownガード** | ✅ | Firecrawl 6h / Vision OCR 24h で二重課金防止 |
+| **extraction_queue** | ✅ | 抽出ジョブキュー（優先度付き、リース/回収機構） |
+| **admin-ops管理API** | ✅ | super_admin向けキュー管理（enqueue/consume/retry） |
 | **電子申請wall_chat_ready** | ✅ | 電子申請は 3/5 スコアで壁打ち可能（様式不要） |
 
 **アーキテクチャ概要（v3.2）:**
@@ -88,6 +97,70 @@ FIRECRAWL_COOLDOWN_HOURS = 6    // Firecrawl 再実行間隔
 VISION_COOLDOWN_HOURS = 24      // Vision OCR 再実行間隔
 MAX_ITEMS_PER_RUN = 10          // 1回Cronの処理上限
 LEASE_MINUTES = 8               // リース保持時間
+SEARCH_CACHE_TTL = 120          // 検索キャッシュTTL（秒）
+SHARD_COUNT = 16                // shard分割数
+```
+
+---
+
+## 🤖 Workers Cron運用ガイド（v3.3）
+
+### Workers Cron情報
+```bash
+# ステータス確認
+curl https://hojyokin-queue-cron.sekiyadubai.workers.dev/status
+
+# 手動トリガー（特定shard）
+curl -X POST "https://hojyokin-queue-cron.sekiyadubai.workers.dev/trigger?shard=3"
+
+# 手動enqueue（毎日00:00 UTCに自動実行）
+curl -X POST "https://hojyokin-queue-cron.sekiyadubai.workers.dev/enqueue"
+```
+
+### 運用監視コマンド（D1直接）
+```bash
+# キュー状態確認
+npx wrangler d1 execute subsidy-matching-production --remote --command \
+  "SELECT status, job_type, COUNT(*) cnt FROM extraction_queue GROUP BY status, job_type;"
+
+# shard分布確認
+npx wrangler d1 execute subsidy-matching-production --remote --command \
+  "SELECT shard_key, status, COUNT(*) cnt FROM extraction_queue GROUP BY shard_key, status ORDER BY shard_key;"
+
+# Lease状態確認（詰まり検出）
+npx wrangler d1 execute subsidy-matching-production --remote --command \
+  "SELECT id, status, lease_owner, lease_until FROM extraction_queue WHERE status='leased';"
+
+# wall_chat_ready進捗確認
+npx wrangler d1 execute subsidy-matching-production --remote --command \
+  "SELECT count(*) as ready FROM subsidy_cache WHERE wall_chat_ready = 1;"
+
+# JGrants enriched確認
+npx wrangler d1 execute subsidy-matching-production --remote --command \
+  "SELECT COUNT(*) AS enriched FROM subsidy_cache WHERE source='jgrants' AND detail_json IS NOT NULL AND LENGTH(detail_json) > 100;"
+```
+
+### 詰まり判定と対処
+
+| 状態 | 判定基準 | 対処 |
+|------|----------|------|
+| **正常** | done増加、queued/leased減少 | 問題なし |
+| **詰まり** | leased が 8分以上経過 | 次のcronで自動回収される |
+| **大量backlog** | queued > 500 | `/2分に頻度UP or 手動trigger` |
+| **連続失敗** | failed > 10 | `retry-failed` で再試行 |
+
+### 頻度引き上げ判断基準
+
+```bash
+# 現状（5分ごと）で十分なケース
+- 1日1回のenqueue、処理件数 < 500件
+- キュー backlog が常に低い
+
+# 2分に上げるべきケース
+- queued が 1000件超を常に維持
+- 処理完了まで12時間以上かかる見込み
+- Workers Cronの wrangler.toml を編集:
+#   crons = ["*/2 * * * *"]
 ```
 
 ---
