@@ -3402,12 +3402,13 @@ cron.post('/consume-extractions', async (c) => {
   const now = new Date();
   const leaseUntil = new Date(now.getTime() + LEASE_MINUTES * 60 * 1000).toISOString();
 
-  // 0) 期限切れleasedを回収
+  // 0) 期限切れleasedを回収（ISO形式で比較）
+  const nowIso = now.toISOString();
   await db.prepare(`
     UPDATE extraction_queue
     SET status='queued', lease_owner=NULL, lease_until=NULL, updated_at=datetime('now')
-    WHERE status='leased' AND lease_until IS NOT NULL AND lease_until < datetime('now')
-  `).run();
+    WHERE status='leased' AND lease_until IS NOT NULL AND lease_until < ?
+  `).bind(nowIso).run();
 
   // 1) queuedからshard分だけ取る（優先度順）
   const queued = await db.prepare(`
