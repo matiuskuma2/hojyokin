@@ -3810,6 +3810,10 @@ cron.post('/sync-jnet21', async (c) => {
     const rssText = await response.text();
     console.log(`[J-Net21] RSS fetched: ${rssText.length} bytes`);
     
+    // TODO: 要確認（P2）
+    // 正規表現パースはXML仕様変更で壊れる。軽量XMLパーサへ置換検討。
+    // 特殊文字（&amp;, &lt;等）がエスケープされたまま格納される可能性あり。
+    
     // 簡易XMLパース（DOMParserは使えないので正規表現で）
     const items: Array<{
       title: string;
@@ -3968,6 +3972,10 @@ cron.post('/sync-jnet21', async (c) => {
         }
       }
     }
+    
+    // TODO: 要確認（P1）
+    // subsidy_cache直投入は設計負債。discovery_items + promoteジョブに移行予定。
+    // 現状: 最初の50件のみ同期（軽量化）。全件が必要な場合は上限撤廃。
     
     // また、subsidy_cache にも追加（検索対象にするため）
     // ただしsource = 'jnet21' として区別
