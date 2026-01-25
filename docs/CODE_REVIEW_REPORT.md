@@ -774,5 +774,87 @@ VALUES
 
 ---
 
+## 15. v3.7.1 P0修正完了（2026-01-25）
+
+### 15.1 P0対応結果
+
+| 優先度 | 項目 | 状態 | 詳細 |
+|--------|------|------|------|
+| 🔴 P0-1 | feed_failures への記録 | ✅ 完了 | sync-jnet21 の失敗を feed_failures に書き込むよう修正 |
+| 🔴 P0-2 | SHARD_COUNT 全域整合性 | ✅ 完了 | 旧境界値（Math.min(15), SHARD_COUNT=16）は除去済みを確認 |
+| 🔴 P0-3 | migration運用整備 | ✅ 完了 | README.md に dev_schema.sql を唯一の正とする手順を追記 |
+
+### 15.2 修正内容詳細
+
+#### P0-1: feed_failures 記録追加
+
+```typescript
+// sync-jnet21 でアイテム処理失敗時に feed_failures に記録
+try {
+  // ... existing upsert logic
+} catch (itemErr) {
+  errors.push(`${item.title}: ${String(itemErr)}`);
+  console.warn(`[J-Net21] Item error:`, itemErr);
+  
+  // ★ feed_failures に記録（運用監視用）
+  try {
+    await recordFailure(
+      db, 
+      `jnet21-${urlHash.substring(0, 8)}`,  // subsidy_id
+      SOURCE_KEY,                            // source_id: 'src-jnet21'
+      item.link || '',                       // url
+      'jnet21_sync',                         // stage
+      'PARSE_FAILED',                        // reason
+      String(itemErr).substring(0, 500)      // message（500文字制限）
+    );
+  } catch (e) {
+    console.warn('[J-Net21] Failed to record feed_failures:', e);
+  }
+}
+```
+
+#### P0-2: SHARD_COUNT 整合性
+
+```bash
+# 検索結果: 旧境界値は除去済み
+grep -E 'Math\.min\(15|SHARD_COUNT\s*=\s*16|0-15' --include='*.ts' → 0件
+```
+
+**shardKey16 命名について**:
+- 関数名は歴史的理由（旧16分割時代）で残存
+- 実動作は SHARD_COUNT=64 で 0-63 を返す
+- コメントで明示済み（互換性のため改名しない）
+
+#### P0-3: ローカルマイグレーション運用
+
+```bash
+# ❌ ローカルでは使わない（依存関係エラーが発生しやすい）
+# npx wrangler d1 migrations apply subsidy-matching-production --local
+
+# ✅ dev_schema.sql を直接実行（唯一の正）
+rm -rf .wrangler/state/v3/d1
+npx wrangler d1 execute subsidy-matching-production --local --file=migrations/dev_schema.sql
+```
+
+### 15.3 デプロイ状況
+
+| サービス | URL | バージョン | 状態 |
+|----------|-----|------------|------|
+| Cloudflare Pages | https://hojyokin.pages.dev | v3.7.1 | ✅ デプロイ済み |
+| Latest Deploy | https://5bfd9c94.hojyokin.pages.dev | v3.7.1 | ✅ 確認済み |
+| Workers Cron | https://hojyokin-queue-cron.sekiyadubai.workers.dev | v3.7 | ✅ 稼働中 |
+| GitHub | https://github.com/matiuskuma2/hojyokin | 65b70a4 | ✅ push済み |
+
+### 15.4 残存タスク（P1以降）
+
+| 優先度 | 項目 | 状態 | 備考 |
+|--------|------|------|------|
+| 🟠 P1 | discovery_items テーブル設計 | 📋 計画中 | J-Net21 を subsidy_cache 直接投入から段階投入へ移行 |
+| 🟠 P1 | 50件制限の見直し | 📋 計画中 | 必要に応じて全件対応 |
+| 🟡 P2 | RSS/XMLパーサ改善 | 📋 計画中 | 正規表現から軽量パーサへ |
+| 🟡 P2 | LIKE検索エスケープ | 📋 計画中 | admin検索系の共通化 |
+
+---
+
 *レポート生成日時: 2026-01-25*
-*最終更新: v3.7 コードレビュー + Criticalバグ修正*
+*最終更新: v3.7.1 P0修正完了*
