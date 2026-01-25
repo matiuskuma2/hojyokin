@@ -2,8 +2,10 @@
  * Cron用API（外部Cronサービスから呼び出し）
  * 
  * POST /api/cron/sync-jgrants - JGrantsデータ同期
+ * POST /api/cron/sync-jnet21 - J-Net21 RSS同期（全国約3,795件）
  * POST /api/cron/scrape-tokyo-kosha - 東京都中小企業振興公社スクレイピング
  * POST /api/cron/scrape-tokyo-shigoto - 東京しごと財団スクレイピング
+ * POST /api/cron/cleanup-queue - done 7日ローテーション
  * 
  * 認証: X-Cron-Secret ヘッダーで CRON_SECRET と照合
  * 
@@ -3720,6 +3722,308 @@ cron.post('/consume-extractions', async (c) => {
       failed,
     },
   });
+});
+
+/**
+ * J-Net21 RSS Discover (全国約3,795件の補助金情報)
+ * 
+ * POST /api/cron/sync-jnet21
+ * 
+ * v3.5.2: J-Net21のRSSフィードから補助金情報を取得
+ * - RSS: https://j-net21.smrj.go.jp/snavi/support/support.xml
+ * - カタログ系ソース（Discover専用）
+ * - dedupe_key + content_hash で差分検知
+ * - 都道府県コード（JP-XX）を正規化
+ * 
+ * 推奨Cronスケジュール: 毎日 05:00 UTC (日本時間14:00)
+ */
+cron.post('/sync-jnet21', async (c) => {
+  const db = c.env.DB;
+  
+  // P2-0: CRON_SECRET 検証
+  const authResult = verifyCronSecret(c);
+  if (!authResult.valid) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: authResult.error!.code,
+        message: authResult.error!.message,
+      },
+    }, authResult.error!.status);
+  }
+  
+  // P2-0: 実行ログ開始
+  let runId: string | null = null;
+  try {
+    runId = await startCronRun(db, 'sync-jnet21', 'cron');
+  } catch (logErr) {
+    console.warn('[J-Net21] Failed to start cron_run log:', logErr);
+  }
+  
+  const RSS_URL = 'https://j-net21.smrj.go.jp/snavi/support/support.xml';
+  const SOURCE_KEY = 'src-jnet21';
+  const errors: string[] = [];
+  let itemsNew = 0;
+  let itemsUpdated = 0;
+  let itemsSkipped = 0;
+  let totalProcessed = 0;
+  
+  try {
+    console.log('[J-Net21] Fetching RSS feed...');
+    
+    // RSS フィード取得
+    const response = await fetch(RSS_URL, {
+      headers: {
+        'User-Agent': 'HojyokinBot/1.0 (+https://hojyokin.pages.dev)',
+        'Accept': 'application/rss+xml, application/xml, text/xml',
+      },
+    });
+    
+    if (!response.ok) {
+      throw new Error(`RSS fetch failed: ${response.status}`);
+    }
+    
+    const rssText = await response.text();
+    console.log(`[J-Net21] RSS fetched: ${rssText.length} bytes`);
+    
+    // 簡易XMLパース（DOMParserは使えないので正規表現で）
+    const items: Array<{
+      title: string;
+      link: string;
+      description: string;
+      prefectureCode: string | null;
+      prefectureLabel: string | null;
+      category: string;
+      pubDate: string;
+    }> = [];
+    
+    // <item>...</item> を抽出
+    const itemRegex = /<item>([\s\S]*?)<\/item>/g;
+    let match;
+    while ((match = itemRegex.exec(rssText)) !== null) {
+      const itemXml = match[1];
+      
+      // 各フィールドを抽出
+      const titleMatch = itemXml.match(/<title>([^<]*)<\/title>/);
+      const linkMatch = itemXml.match(/<link>([^<]*)<\/link>/);
+      const descMatch = itemXml.match(/<description><!\[CDATA\[([\s\S]*?)\]\]><\/description>/);
+      const prefCodeMatch = itemXml.match(/<rdf:value>([^<]*)<\/rdf:value>/);
+      const prefLabelMatch = itemXml.match(/<rdf:label>([^<]*)<\/rdf:label>/);
+      const categoryMatch = itemXml.match(/<dc:subject>([^<]*)<\/dc:subject>/);
+      const dateMatch = itemXml.match(/<dc:date>([^<]*)<\/dc:date>/);
+      
+      if (titleMatch && linkMatch) {
+        // 都道府県コード正規化 (JP-13 → 13)
+        let prefCode: string | null = null;
+        if (prefCodeMatch && prefCodeMatch[1]) {
+          const jpCode = prefCodeMatch[1].trim();
+          if (jpCode.startsWith('JP-')) {
+            prefCode = jpCode.slice(3);  // "JP-13" → "13"
+          }
+        }
+        
+        items.push({
+          title: titleMatch[1].trim(),
+          link: linkMatch[1].trim(),
+          description: descMatch ? descMatch[1].trim() : '',
+          prefectureCode: prefCode,
+          prefectureLabel: prefLabelMatch ? prefLabelMatch[1].trim() : null,
+          category: categoryMatch ? categoryMatch[1].trim() : 'support',
+          pubDate: dateMatch ? dateMatch[1].trim() : new Date().toISOString(),
+        });
+      }
+    }
+    
+    console.log(`[J-Net21] Parsed ${items.length} items from RSS`);
+    totalProcessed = items.length;
+    
+    // DB更新
+    for (const item of items) {
+      try {
+        // dedupe_key: src-jnet21:{url_hash}
+        const urlHash = await calculateContentHash(item.link);
+        const dedupeKey = `${SOURCE_KEY}:${urlHash.slice(0, 8)}`;
+        
+        // content_hash: title + description + prefectureCode
+        const contentStr = `${item.title}|${item.description}|${item.prefectureCode || ''}`;
+        const contentHash = await calculateContentHash(contentStr);
+        
+        // 既存レコードチェック
+        const existing = await db.prepare(`
+          SELECT id, content_hash FROM subsidy_feed_items WHERE dedupe_key = ?
+        `).bind(dedupeKey).first<{ id: number; content_hash: string }>();
+        
+        const now = new Date().toISOString();
+        const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+        
+        if (existing) {
+          // 既存レコード
+          if (existing.content_hash === contentHash) {
+            // 変更なし → last_seen_at 更新のみ
+            await db.prepare(`
+              UPDATE subsidy_feed_items SET last_seen_at = ?, updated_at = ? WHERE id = ?
+            `).bind(now, now, existing.id).run();
+            itemsSkipped++;
+          } else {
+            // 変更あり → 全フィールド更新
+            await db.prepare(`
+              UPDATE subsidy_feed_items SET
+                title = ?,
+                detail_url = ?,
+                description = ?,
+                prefecture_code = ?,
+                source_type = 'third_party',
+                content_hash = ?,
+                is_new = 1,
+                last_seen_at = ?,
+                updated_at = ?,
+                expires_at = ?
+              WHERE id = ?
+            `).bind(
+              item.title,
+              item.link,
+              item.description,
+              item.prefectureCode,
+              contentHash,
+              now,
+              now,
+              expiresAt,
+              existing.id
+            ).run();
+            itemsUpdated++;
+          }
+        } else {
+          // 新規レコード
+          await db.prepare(`
+            INSERT INTO subsidy_feed_items (
+              dedupe_key, source_id, source_type, title, detail_url, description,
+              prefecture_code, status, content_hash, is_new,
+              first_seen_at, last_seen_at, created_at, updated_at, expires_at
+            ) VALUES (?, ?, 'third_party', ?, ?, ?, ?, 'active', ?, 1, ?, ?, ?, ?, ?)
+          `).bind(
+            dedupeKey,
+            SOURCE_KEY,
+            item.title,
+            item.link,
+            item.description,
+            item.prefectureCode,
+            contentHash,
+            now,
+            now,
+            now,
+            now,
+            expiresAt
+          ).run();
+          itemsNew++;
+        }
+      } catch (itemErr) {
+        errors.push(`Item error (${item.link}): ${itemErr instanceof Error ? itemErr.message : String(itemErr)}`);
+        console.warn(`[J-Net21] Item error:`, itemErr);
+      }
+    }
+    
+    // また、subsidy_cache にも追加（検索対象にするため）
+    // ただしsource = 'jnet21' として区別
+    for (const item of items.slice(0, 50)) { // 最初の50件のみ（軽量化）
+      try {
+        // subsidy_cache への upsert (簡易版)
+        const subsidyId = `jnet21-${await calculateContentHash(item.link).then(h => h.slice(0, 8))}`;
+        const shardKey = shardKey16(subsidyId);
+        
+        await db.prepare(`
+          INSERT OR REPLACE INTO subsidy_cache (
+            id, source, subsidy_id, title, description, prefecture_code,
+            detail_url, detail_json, content_hash, shard_key,
+            created_at, updated_at, expires_at
+          ) VALUES (?, 'jnet21', ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'), datetime('now', '+7 days'))
+        `).bind(
+          subsidyId,
+          subsidyId,
+          item.title,
+          item.description,
+          item.prefectureCode,
+          item.link,
+          JSON.stringify({
+            source: 'jnet21',
+            category: item.category,
+            prefecture_label: item.prefectureLabel,
+            pub_date: item.pubDate,
+          }),
+          await calculateContentHash(`${item.title}|${item.description}`),
+          shardKey
+        ).run();
+      } catch (cacheErr) {
+        // キャッシュ更新失敗は致命的でないのでログのみ
+        console.warn(`[J-Net21] Cache error:`, cacheErr);
+      }
+    }
+    
+    console.log(`[J-Net21] Completed: new=${itemsNew}, updated=${itemsUpdated}, skipped=${itemsSkipped}`);
+    
+    // P2-0: 実行ログ完了
+    if (runId) {
+      try {
+        await finishCronRun(db, runId, errors.length > 0 ? 'partial' : 'success', {
+          items_processed: totalProcessed,
+          items_inserted: itemsNew,
+          items_updated: itemsUpdated,
+          items_skipped: itemsSkipped,
+          error_count: errors.length,
+          errors: errors.slice(0, 10),
+          metadata: {
+            rss_url: RSS_URL,
+            source_key: SOURCE_KEY,
+          },
+        });
+      } catch (logErr) {
+        console.warn('[J-Net21] Failed to finish cron_run log:', logErr);
+      }
+    }
+    
+    return c.json<ApiResponse<{
+      message: string;
+      total: number;
+      new: number;
+      updated: number;
+      skipped: number;
+      errors: number;
+      run_id?: string;
+    }>>({
+      success: true,
+      data: {
+        message: 'J-Net21 RSS sync completed',
+        total: totalProcessed,
+        new: itemsNew,
+        updated: itemsUpdated,
+        skipped: itemsSkipped,
+        errors: errors.length,
+        run_id: runId ?? undefined,
+      },
+    });
+    
+  } catch (error) {
+    console.error('[J-Net21] Error:', error);
+    
+    if (runId) {
+      try {
+        await finishCronRun(db, runId, 'failed', {
+          items_processed: totalProcessed,
+          error_count: 1,
+          errors: [error instanceof Error ? error.message : String(error)],
+        });
+      } catch (logErr) {
+        console.warn('[J-Net21] Failed to finish cron_run log:', logErr);
+      }
+    }
+    
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: 'JNET21_SYNC_ERROR',
+        message: `J-Net21 sync failed: ${error instanceof Error ? error.message : String(error)}`,
+      },
+    }, 500);
+  }
 });
 
 /**
