@@ -3371,7 +3371,7 @@ type ConsumeJob = {
 };
 
 // 1回の消化上限（止まらない設定）
-const CONSUME_BATCH = 8;          // 8件だけ（確実に30秒内）
+const CONSUME_BATCH = 3;          // D1 subrequest上限対策：3件に絞る
 const LEASE_MINUTES = 8;          // リース期限
 const LEASE_OWNER = 'pages-cron'; // ざっくり識別
 
@@ -3548,9 +3548,11 @@ cron.post('/consume-extractions', async (c) => {
                   .substring(0, 2000);
               }
 
-              // 申請要件
-              if (subsidyData.target_detail || subsidyData.outline_of_grant) {
-                const reqText = (subsidyData.target_detail || subsidyData.outline_of_grant || '')
+              // 申請要件（文字列でない場合は JSON.stringify で変換）
+              const rawReq = subsidyData.target_detail || subsidyData.outline_of_grant;
+              if (rawReq) {
+                const reqStr = typeof rawReq === 'string' ? rawReq : JSON.stringify(rawReq);
+                const reqText = reqStr
                   .replace(/<[^>]+>/g, '\n')
                   .replace(/&nbsp;/g, ' ')
                   .trim();
@@ -3560,9 +3562,12 @@ cron.post('/consume-extractions', async (c) => {
                   .slice(0, 20);
               }
 
-              // 対象経費
+              // 対象経費（文字列でない場合は JSON.stringify で変換）
               if (subsidyData.usage_detail) {
-                const expText = subsidyData.usage_detail
+                const usageStr = typeof subsidyData.usage_detail === 'string' 
+                  ? subsidyData.usage_detail 
+                  : JSON.stringify(subsidyData.usage_detail);
+                const expText = usageStr
                   .replace(/<[^>]+>/g, '\n')
                   .replace(/&nbsp;/g, ' ')
                   .trim();
@@ -3602,7 +3607,7 @@ cron.post('/consume-extractions', async (c) => {
               const merged = { ...existing, ...detailJson, enriched_at: new Date().toISOString() };
 
               await db.prepare(`
-                UPDATE subsidy_cache SET detail_json = ?, updated_at = datetime('now') WHERE id = ?
+                UPDATE subsidy_cache SET detail_json = ? WHERE id = ?
               `).bind(JSON.stringify(merged), subsidy.id).run();
 
               // WALL_CHAT_READY 判定
@@ -3665,7 +3670,7 @@ cron.post('/consume-extractions', async (c) => {
             const merged = { ...existing, ...detailJson, enriched_at: new Date().toISOString() };
 
             await db.prepare(`
-              UPDATE subsidy_cache SET detail_json = ?, updated_at = datetime('now') WHERE id = ?
+              UPDATE subsidy_cache SET detail_json = ? WHERE id = ?
             `).bind(JSON.stringify(merged), subsidy.id).run();
 
             // WALL_CHAT_READY 判定
