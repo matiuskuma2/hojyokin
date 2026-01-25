@@ -1,0 +1,18 @@
+name = "hojyokin-cron-feed"
+main = "src/index.ts"
+compatibility_date = "2026-01-25"
+compatibility_flags = ["nodejs_compat"]
+
+# 明示的に Workers として指定（Pages ではない）
+# type = "worker" はデフォルトなので不要だが明示
+
+# ⏰ Cron Triggers（JST 06:00 = UTC 21:00）
+[triggers]
+crons = ["0 21 * * *"]
+
+[vars]
+# Pages 本番URL
+PAGES_BASE_URL = "https://hojyokin.pages.dev"
+
+# CRON_SECRET は secret で設定する
+# wrangler secret put CRON_SECRET
