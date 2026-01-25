@@ -571,7 +571,7 @@ adminPages.get('/admin', (c) => {
 
       async function loadDashboard() {
         try {
-          const data = await api('/api/admin/dashboard');
+          const data = await api('/api/admin-ops/dashboard');
           if (!data.success) throw new Error(data.error?.message);
 
           const { kpi, queue, daily } = data.data;
@@ -692,7 +692,7 @@ adminPages.get('/admin', (c) => {
         document.getElementById('cost-section').classList.remove('hidden');
 
         try {
-          const data = await api('/api/admin/costs');
+          const data = await api('/api/admin-ops/costs');
           if (!data.success) return;
 
           const { totals, alerts } = data.data;
@@ -724,7 +724,7 @@ adminPages.get('/admin', (c) => {
         document.getElementById('coverage-section').classList.remove('hidden');
 
         try {
-          const data = await api('/api/admin/coverage');
+          const data = await api('/api/admin-ops/coverage');
           if (!data.success) {
             console.error('Coverage load failed:', data.error);
             return;
@@ -923,7 +923,7 @@ adminPages.get('/admin/costs', (c) => {
 
       async function loadCostsPage() {
         try {
-          const data = await api('/api/admin/costs');
+          const data = await api('/api/admin-ops/costs');
           if (!data.success) throw new Error(data.error?.message);
 
           const { openai, firecrawl, daily, totals } = data.data;
@@ -1070,7 +1070,7 @@ adminPages.get('/admin/updates', (c) => {
     <script>
       async function loadUpdates() {
         try {
-          const data = await api('/api/admin/updates');
+          const data = await api('/api/admin-ops/updates');
           if (!data.success) throw new Error(data.error?.message);
 
           const { registry, queue, domains, recent, cronHistory } = data.data;
@@ -2441,7 +2441,7 @@ adminPages.get('/admin/ops', (c) => {
       
       async function loadDailyReport() {
         try {
-          const data = await api('/api/admin/ops/daily-report');
+          const data = await api('/api/admin-ops/daily-report');
           if (!data.success) {
             console.error('Daily report API error:', data.error);
             return;
@@ -2671,7 +2671,7 @@ adminPages.get('/admin/ops', (c) => {
 
       async function loadCoverageData() {
         try {
-          const data = await api('/api/admin/coverage');
+          const data = await api('/api/admin-ops/coverage');
           if (!data.success) {
             console.error('Coverage API error:', data.error);
             return;
@@ -2794,7 +2794,7 @@ adminPages.get('/admin/ops', (c) => {
 
           // ドメインブロック状況
           const blockEl = document.getElementById('domain-block-status');
-          const freshnessData = await api('/api/admin/data-freshness');
+          const freshnessData = await api('/api/admin-ops/data-freshness');
           if (freshnessData.success && freshnessData.data.domainHealth) {
             const blocked = freshnessData.data.domainHealth.filter(d => d.blocked || d.failure_count >= 3);
             if (blocked.length > 0) {
@@ -2824,7 +2824,7 @@ adminPages.get('/admin/ops', (c) => {
 
       async function loadDashboardData() {
         try {
-          const data = await api('/api/admin/dashboard');
+          const data = await api('/api/admin-ops/dashboard');
           if (!data.success) {
             console.error('Dashboard API error:', data.error);
             return;
@@ -2893,7 +2893,7 @@ adminPages.get('/admin/ops', (c) => {
       // ★★★ データ収集凍結チェック v1.0 - データ健全性読み込み ★★★
       async function loadDataHealth() {
         try {
-          const data = await api('/api/admin/ops/data-health');
+          const data = await api('/api/admin-ops/data-health');
           if (!data.success) {
             console.error('Data health API error:', data.error);
             return;
@@ -3062,7 +3062,7 @@ adminPages.get('/admin/ops', (c) => {
         btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>同期中...';
 
         try {
-          const result = await api('/api/admin/ops/trigger-sync', { method: 'POST' });
+          const result = await api('/api/admin-ops/trigger-sync', { method: 'POST' });
           if (result.success) {
             alert('同期完了！\\n取得: ' + result.data.total_fetched + '件\\n追加: ' + result.data.total_inserted + '件');
             await loadDataHealth(); // 再読み込み
