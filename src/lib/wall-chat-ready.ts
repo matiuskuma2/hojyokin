@@ -34,6 +34,10 @@ export type DetailJSON = {
   related_url?: string;
   official_links?: { top?: string };
   attachments?: Array<{ name: string; url: string }>;
+  // 電子申請フラグ（true の場合、required_forms 不要で壁打ち可）
+  is_electronic_application?: boolean;
+  // 電子申請システムのURL
+  electronic_application_url?: string;
   // その他のフィールド
   [key: string]: any;
 };
@@ -106,16 +110,19 @@ export type WallChatReadyResult = {
   missing: string[];
   score: number;      // 満たしている項目数
   maxScore: number;   // 最大項目数
+  isElectronicApplication?: boolean;  // 電子申請フラグ (v3)
 };
 
 /**
  * WALL_CHAT_READY判定（壁打ちゲート）
  * 
- * 凍結仕様 v2:
+ * 凍結仕様 v3:
  * - 必須（5項目中5つ必要）: overview, application_requirements, eligible_expenses, required_documents, deadline
  * - 推奨（加点項目）: required_forms, attachments/pdfUrls
  * 
- * required_forms は段階的に追加していくため、v1では推奨扱い。
+ * 電子申請対応 (v3 新規):
+ * - is_electronic_application = true の場合、必須スコア 3/5 以上で ready = true
+ *   (電子申請システム側で書式を作成するため、required_forms 不要)
  */
 export function isWallChatReady(detail: DetailJSON | null): WallChatReadyResult {
   if (!detail) {
@@ -123,13 +130,15 @@ export function isWallChatReady(detail: DetailJSON | null): WallChatReadyResult 
       ready: false, 
       missing: ['overview', 'application_requirements', 'eligible_expenses', 'required_documents', 'deadline'],
       score: 0,
-      maxScore: 5
+      maxScore: 5,
+      isElectronicApplication: false,
     };
   }
   
   const missing: string[] = [];
   let score = 0;
   const maxScore = 5; // 必須項目は5つ
+  const isElectronicApplication = !!detail.is_electronic_application;
 
   // 1. 概要（必須）
   if (hasText(detail.overview) || hasText(detail.description)) {
@@ -168,14 +177,25 @@ export function isWallChatReady(detail: DetailJSON | null): WallChatReadyResult 
 
   // Note: required_forms は現在は推奨扱い（必須から除外）
   // PDF抽出パイプラインが整備されたら必須化する
-  // const forms = Array.isArray(detail.required_forms) ? detail.required_forms : [];
-  // const hasForms = forms.length > 0 && forms.some(f => f?.name && Array.isArray(f.fields) && f.fields.length >= 3);
+
+  // 電子申請システム対応 (v3):
+  // 電子申請の場合、書式は電子申請システム側で作成するため、
+  // required_forms がなくても、基本情報（3/5以上）が揃っていれば壁打ち可能
+  let ready: boolean;
+  if (isElectronicApplication) {
+    // 電子申請の場合: 3/5以上でOK（概要、要件、経費があれば壁打ちできる）
+    ready = score >= 3;
+  } else {
+    // 通常の場合: 5/5必須
+    ready = missing.length === 0;
+  }
 
   return { 
-    ready: missing.length === 0, 
+    ready, 
     missing,
     score,
-    maxScore
+    maxScore,
+    isElectronicApplication,
   };
 }
 

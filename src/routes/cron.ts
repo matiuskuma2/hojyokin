@@ -2754,7 +2754,7 @@ cron.post('/extract-pdf-forms', async (c) => {
   }
   
   // --- 定数（凍結仕様）---
-  const MAX_ITEMS_PER_RUN = 50;      // 1回あたり最大50件
+  const MAX_ITEMS_PER_RUN = 10;      // 1回あたり最大10件（Firecrawl呼び出しによるタイムアウト防止）
   const MIN_FORMS = 2;               // 最低フォーム数
   
   // 環境変数チェック
@@ -2934,7 +2934,10 @@ cron.post('/extract-pdf-forms', async (c) => {
           console.warn(`[Extract-PDF-Forms] Failed to log extraction for ${target.id}:`, logErr);
         }
         
-        if (extractResult.success) {
+        // 成功 または 電子申請検出時はDB更新 (v3)
+        const shouldUpdate = extractResult.success || extractResult.isElectronicApplication;
+        
+        if (shouldUpdate) {
           // DB更新
           await db.prepare(`
             UPDATE subsidy_cache 
@@ -2952,13 +2955,15 @@ cron.post('/extract-pdf-forms', async (c) => {
           results.push({
             id: target.id,
             source: target.source,
-            success: true,
+            success: extractResult.success,
             extractedFrom: extractResult.extractedFrom,
             formsCount: extractResult.formsCount,
             fieldsTotal: extractResult.fieldsTotal,
             wallChatReady: extractResult.wallChatReady,
+            isElectronicApplication: extractResult.isElectronicApplication,
           });
-          successCount++;
+          
+          if (extractResult.success) successCount++;
           if (extractResult.wallChatReady) readyCount++;
           
           // feed_failures を resolved に

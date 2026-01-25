@@ -54,6 +54,7 @@ export type ExtractResult = {
   newDetailJson: string;
   wallChatReady: boolean;
   wallChatMissing: string[];
+  isElectronicApplication?: boolean;  // 電子申請フラグ (v3)
   failureReason?: PdfFailureReason;
   failureMessage?: string;
   contentHash?: string;
@@ -325,6 +326,13 @@ export async function extractAndUpdateSubsidy(
   }
 
   // ========================================
+  // Step 6.7: 電子申請システム検出 (v3)
+  // ========================================
+  // HTMLから電子申請システムを検出し、フラグを設定
+  // 電子申請の場合、required_forms がなくても壁打ち可能
+  const electronicAppResult = detectElectronicApplication(rawHtml, extractedText);
+  
+  // ========================================
   // Step 7: detail_json にマージ
   // ========================================
   let mergedDetail = mergeDetailJson(existingDetail, extractedDetail);
@@ -337,6 +345,18 @@ export async function extractAndUpdateSubsidy(
       required_forms_extracted_at: new Date().toISOString(),
       pdf_text_source: extractedFrom,
     };
+  }
+  
+  // 電子申請フラグを追加 (v3)
+  if (electronicAppResult.isElectronic) {
+    mergedDetail = {
+      ...mergedDetail,
+      is_electronic_application: true,
+      electronic_application_url: electronicAppResult.url || undefined,
+      electronic_application_system: electronicAppResult.systemName || undefined,
+      electronic_application_detected_at: new Date().toISOString(),
+    };
+    console.log(`[extractAndUpdateSubsidy] Electronic application detected for ${subsidyId}: ${electronicAppResult.systemName}`);
   }
   
   // contentHash を記録
@@ -361,17 +381,26 @@ export async function extractAndUpdateSubsidy(
 
   metrics.processingTimeMs = Date.now() - startTime;
 
+  // 成功判定 (v3): 以下のいずれかで成功
+  // 1. フォーム抽出成功 (formsValidation.valid)
+  // 2. フォームが1つ以上ある (formsCount > 0)
+  // 3. 電子申請システムで、テキストが取れている (electronicAppResult.isElectronic && extractedFrom !== 'none')
+  //    → 電子申請の場合、required_forms 不要なので、テキストさえ取れていれば成功
+  const success = formsValidation.valid || formsCount > 0 || 
+    (electronicAppResult.isElectronic && extractedFrom !== 'none');
+
   return {
     subsidyId,
-    success: formsValidation.valid || formsCount > 0,
+    success,
     extractedFrom,
     formsCount,
     fieldsTotal,
     newDetailJson,
     wallChatReady: readyResult.ready,
     wallChatMissing: readyResult.missing,
-    failureReason,
-    failureMessage,
+    isElectronicApplication: electronicAppResult.isElectronic,
+    failureReason: success ? undefined : failureReason,
+    failureMessage: success ? undefined : failureMessage,
     contentHash,
     metrics,
   };
@@ -652,6 +681,120 @@ function extractPdfLinksFromHtml(html: string, baseUrl: string): string[] {
     .map(p => p.url);
   
   return uniqueLinks.slice(0, 10); // 最大10件
+}
+
+// ========================================
+// 電子申請システム検出 (v3)
+// ========================================
+type ElectronicApplicationResult = {
+  isElectronic: boolean;
+  systemName?: string;
+  url?: string;
+};
+
+/**
+ * HTMLおよび抽出テキストから電子申請システムを検出
+ * 
+ * 検出対象:
+ * - jGrants（補助金申請システム）
+ * - 各都道府県の電子申請システム
+ * - ミラサポplus
+ * - e-Gov
+ */
+function detectElectronicApplication(rawHtml: string, extractedText: string): ElectronicApplicationResult {
+  const combinedText = `${rawHtml}\n${extractedText}`;
+  
+  // 電子申請システムのパターン（日本語と英語）
+  const patterns: Array<{ regex: RegExp; systemName: string; urlPattern?: RegExp }> = [
+    // jGrants（経産省系補助金）
+    { 
+      regex: /jGrants|Jグランツ|jグランツ|補助金申請システム/i, 
+      systemName: 'jGrants（補助金申請システム）',
+      urlPattern: /https?:\/\/[^\s"'<>]*jgrants[^\s"'<>]*/i
+    },
+    // 東京都電子申請（複数システム）
+    { 
+      regex: /電子申請|e-?tokyo|東京電子自治体|東京共同電子申請/i, 
+      systemName: '東京都電子申請システム',
+      urlPattern: /https?:\/\/[^\s"'<>]*(?:shinsei\.e-tokyo|s-kantan\.jp\/pref-tokyo)[^\s"'<>]*/i
+    },
+    // 各自治体電子申請
+    { 
+      regex: /電子申請サービス|電子申請による|オンライン申請/i, 
+      systemName: '電子申請サービス',
+    },
+    // ミラサポplus
+    { 
+      regex: /ミラサポ|mirasapo/i, 
+      systemName: 'ミラサポplus',
+      urlPattern: /https?:\/\/[^\s"'<>]*mirasapo[^\s"'<>]*/i
+    },
+    // e-Gov
+    { 
+      regex: /e-?Gov|電子政府/i, 
+      systemName: 'e-Gov',
+      urlPattern: /https?:\/\/[^\s"'<>]*e-gov[^\s"'<>]*/i
+    },
+    // GビズID連携（電子申請の可能性が高い）
+    { 
+      regex: /GビズID|Gビズ|gBizID|gBiz/i, 
+      systemName: '電子申請（GビズID連携）',
+    },
+  ];
+  
+  // 電子申請を強く示唆するフレーズ
+  const strongIndicators = [
+    /電子申請システム.*(?:から|で|を通じて|を使って)申請/,
+    /申請方法[^。]*電子申請/,
+    /電子申請(?:のみ|限定|必須)/,
+    /紙の申請.*(?:受付|受け付け)(?:ない|しない|不可)/,
+    /オンライン.*(?:のみ|限定|必須)/,
+  ];
+  
+  // 強い指標があれば優先的に検出
+  for (const indicator of strongIndicators) {
+    if (indicator.test(combinedText)) {
+      // システム名を特定するためにパターンをチェック
+      for (const pattern of patterns) {
+        if (pattern.regex.test(combinedText)) {
+          let url: string | undefined;
+          if (pattern.urlPattern) {
+            const urlMatch = combinedText.match(pattern.urlPattern);
+            if (urlMatch) url = urlMatch[0];
+          }
+          return { isElectronic: true, systemName: pattern.systemName, url };
+        }
+      }
+      // システム特定できない場合は一般的な電子申請
+      return { isElectronic: true, systemName: '電子申請システム' };
+    }
+  }
+  
+  // 通常のパターンマッチング
+  for (const pattern of patterns) {
+    if (pattern.regex.test(combinedText)) {
+      // 電子申請に関連する文脈がある場合のみ検出
+      const contextPatterns = [
+        /申請/,
+        /手続き/,
+        /提出/,
+        /登録/,
+        /利用/,
+      ];
+      
+      const hasContext = contextPatterns.some(ctx => ctx.test(combinedText));
+      if (hasContext) {
+        let url: string | undefined;
+        if (pattern.urlPattern) {
+          const urlMatch = combinedText.match(pattern.urlPattern);
+          if (urlMatch) url = urlMatch[0];
+        }
+        return { isElectronic: true, systemName: pattern.systemName, url };
+      }
+    }
+  }
+  
+  return { isElectronic: false };
 }
 
 // ========================================

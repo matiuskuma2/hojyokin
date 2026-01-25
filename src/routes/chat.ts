@@ -48,6 +48,13 @@ interface PrecheckResult {
     prefecture: string;
     employee_count: number;
   };
+  // 電子申請情報 (v3)
+  electronic_application?: {
+    is_electronic: boolean;
+    system_name?: string;
+    url?: string;
+    notice?: string;  // ユーザーへの案内メッセージ
+  };
 }
 
 // =====================================================
@@ -296,6 +303,23 @@ function performPrecheck(
     status = 'OK';
   }
   
+  // 電子申請情報を取得 (v3)
+  let electronicApplication: PrecheckResult['electronic_application'];
+  try {
+    const detailJson = subsidy.detail_json ? JSON.parse(subsidy.detail_json) : {};
+    if (detailJson.is_electronic_application) {
+      electronicApplication = {
+        is_electronic: true,
+        system_name: detailJson.electronic_application_system,
+        url: detailJson.electronic_application_url,
+        notice: `この補助金は${detailJson.electronic_application_system || '電子申請システム'}での申請が必要です。` +
+                `壁打ちでは申請前の準備をサポートしますが、実際の申請書類の作成は電子申請システム上で行ってください。`
+      };
+    }
+  } catch {
+    // detail_json パースエラーは無視
+  }
+  
   return {
     status,
     eligible: blockedReasons.length === 0,
@@ -312,7 +336,8 @@ function performPrecheck(
       name: company.name,
       prefecture: company.prefecture,
       employee_count: company.employee_count
-    }
+    },
+    electronic_application: electronicApplication
   };
 }
 
@@ -561,12 +586,19 @@ chat.post('/sessions', async (c) => {
     const subsidyTitle = (subsidyInfo as any)?.title || '選択された補助金';
     let systemMessage: string;
     
+    // 電子申請の案内を追加 (v3)
+    const electronicNotice = precheckResult.electronic_application?.is_electronic
+      ? `\n\n【📋 電子申請について】\nこの補助金は「${precheckResult.electronic_application.system_name || '電子申請システム'}」での申請が必要です。` +
+        `ここでは申請前の準備（要件確認・情報整理）をサポートしますが、実際の申請書類は電子申請システム上で作成してください。` +
+        (precheckResult.electronic_application.url ? `\n申請先: ${precheckResult.electronic_application.url}` : '')
+      : '';
+    
     if (precheckResult.status === 'NG') {
-      systemMessage = `申し訳ございません。「${subsidyTitle}」への申請要件を満たしていない可能性があります。\n\n【該当しない理由】\n${precheckResult.blocked_reasons.map(r => `・${r}`).join('\n')}\n\n条件を満たせる場合は、会社情報を更新してから再度お試しください。`;
+      systemMessage = `申し訳ございません。「${subsidyTitle}」への申請要件を満たしていない可能性があります。\n\n【該当しない理由】\n${precheckResult.blocked_reasons.map(r => `・${r}`).join('\n')}\n\n条件を満たせる場合は、会社情報を更新してから再度お試しください。${electronicNotice}`;
     } else if (precheckResult.missing_items.length > 0) {
-      systemMessage = `「${subsidyTitle}」への申請準備を進めます。\n\n会社情報を確認したところ、以下の点について追加で確認が必要です。順番にお答えください。`;
+      systemMessage = `「${subsidyTitle}」への申請準備を進めます。\n\n会社情報を確認したところ、以下の点について追加で確認が必要です。順番にお答えください。${electronicNotice}`;
     } else {
-      systemMessage = `「${subsidyTitle}」への申請準備が整っています。\n\n必要な情報は揃っていますので、申請書ドラフトの作成に進むことができます。`;
+      systemMessage = `「${subsidyTitle}」への申請準備が整っています。\n\n必要な情報は揃っていますので、申請書ドラフトの作成に進むことができます。${electronicNotice}`;
     }
     
     const systemMsgId = crypto.randomUUID();
