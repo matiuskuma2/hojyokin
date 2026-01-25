@@ -3,10 +3,96 @@
 ## 📋 プロジェクト概要
 
 - **Name**: subsidy-matching (hojyokin)
-- **Version**: 1.7.0
+- **Version**: 3.2.0
 - **Goal**: 企業情報を登録するだけで、最適な補助金・助成金を自動でマッチング＆申請書ドラフト作成
 
-### 🎉 最新アップデート (v2.6.0) - P3-3B Sprint完了: PDF抽出ハイブリッド + 抽出ログUI
+### 🎉 最新アップデート (v3.2.0) - Shard/Queue化 + 電子申請対応 + Cooldownガード
+
+**v3.2.0 リリース（2026-01-25）:**
+
+| 項目 | 状態 | 詳細 |
+|------|------|------|
+| **Shard/Queue化** | ✅ NEW | 17,000件運用対応。16分割shard + リース機構 |
+| **電子申請検出** | ✅ NEW | jGrants/東京都電子申請/GビズID/ミラサポ/e-Gov 自動検出 |
+| **Cooldownガード** | ✅ NEW | Firecrawl 6h / Vision OCR 24h で二重課金防止 |
+| **extraction_queue** | ✅ NEW | 抽出ジョブキュー（優先度付き、リース/回収機構） |
+| **admin-ops管理API** | ✅ NEW | super_admin向けキュー管理（enqueue/consume/retry） |
+| **電子申請wall_chat_ready** | ✅ | 電子申請は 3/5 スコアで壁打ち可能（様式不要） |
+
+**アーキテクチャ概要（v3.2）:**
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  17,000件運用アーキテクチャ（同接1000対応）                      │
+├─────────────────────────────────────────────────────────────────┤
+│  ① DB重複防止: dedupe_key UNIQUE                               │
+│  ② 内容差分: content_hash で変更なしをスキップ                  │
+│  ③ API課金: Cooldownガード（Firecrawl 6h / Vision 24h）        │
+├─────────────────────────────────────────────────────────────────┤
+│  Shard/Queue設計:                                               │
+│  ├─ extraction_queue テーブル（16分割shard）                    │
+│  ├─ リース機構（lease_owner + lease_until）で並行安全          │
+│  ├─ 失敗時自動リトライ（max_attempts=5）                        │
+│  └─ job_type別優先度（extract_forms:50, enrich:60-70）         │
+├─────────────────────────────────────────────────────────────────┤
+│  Cron設計:                                                      │
+│  ├─ 1回で全件処理せず、shard単位で進行                         │
+│  ├─ MAX_ITEMS_PER_RUN=10（タイムアウト対策）                    │
+│  ├─ MAX_FIRECRAWL_CALLS=5, MAX_VISION_CALLS=1                   │
+│  └─ 予算内で自動停止（cooldown + 1回あたり上限）               │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**電子申請検出パターン:**
+| システム | パターン | URLパターン |
+|----------|----------|-------------|
+| jGrants | jGrants/Jグランツ/補助金申請システム | jgrants\.jp |
+| 東京都電子申請 | 電子申請/e-tokyo/東京共同電子申請 | shinsei\.e-tokyo |
+| GビズID連携 | GビズID/gBizID | - |
+| ミラサポplus | ミラサポ/mirasapo | mirasapo |
+| e-Gov | e-Gov/電子政府 | e-gov\.go\.jp |
+
+**新規API（v3.2）:**
+```bash
+# キュー状態サマリー（super_admin）
+GET /api/admin-ops/extraction-queue/summary
+
+# 手動enqueue（super_admin）
+POST /api/admin-ops/extraction-queue/enqueue
+
+# 手動consume（super_admin）
+POST /api/admin-ops/extraction-queue/consume
+Body: {"shard": 7}  # shard指定（省略時は自動選択）
+
+# 失敗ジョブ再試行
+POST /api/admin-ops/extraction-queue/retry-failed
+
+# 完了ジョブ削除
+DELETE /api/admin-ops/extraction-queue/clear-done
+```
+
+**Cronエンドポイント（v3.2）:**
+```bash
+# キュー投入（全ソース対象）
+POST /api/cron/enqueue-extractions
+Header: X-Cron-Secret: {CRON_SECRET}
+
+# キュー消化（shard指定）
+POST /api/cron/consume-extractions?shard=0
+Header: X-Cron-Secret: {CRON_SECRET}
+```
+
+**凍結仕様（v3.2追加）:**
+```typescript
+FIRECRAWL_COOLDOWN_HOURS = 6    // Firecrawl 再実行間隔
+VISION_COOLDOWN_HOURS = 24      // Vision OCR 再実行間隔
+MAX_ITEMS_PER_RUN = 10          // 1回Cronの処理上限
+LEASE_MINUTES = 8               // リース保持時間
+```
+
+---
+
+### 📊 v2.6.0 - P3-3B Sprint完了: PDF抽出ハイブリッド + 抽出ログUI
 
 **P3-3Bフェーズ完了（2026-01-25）:**
 
@@ -101,12 +187,22 @@ CRON_SECRET=xxx              # Cron認証用
 
 **凍結仕様（変更禁止）:**
 ```typescript
+// 抽出基準
 MIN_TEXT_LEN_FOR_NON_OCR = 800    // 非AIで有効とみなす最低文字数
 MIN_FORMS = 2                      // required_forms の最低数
 MIN_FIELDS_PER_FORM = 3            // 各フォームの最低フィールド数
 MAX_PDF_FETCH_SIZE = 5MB           // PDF取得上限
 FIRECRAWL_TIMEOUT_MS = 30000       // Firecrawl タイムアウト
 VISION_MAX_PAGES = 5               // Vision OCR 最大ページ数
+
+// Cooldownガード（v3.1追加）
+FIRECRAWL_COOLDOWN_HOURS = 6      // Firecrawl 再実行間隔
+VISION_COOLDOWN_HOURS = 24        // Vision OCR 再実行間隔
+
+// Queue設計（v3.2追加）
+MAX_ITEMS_PER_RUN = 10            // 1回Cronの処理上限
+LEASE_MINUTES = 8                 // リース保持時間
+SHARD_COUNT = 16                  // shard分割数
 ```
 
 **WALL_CHAT_READY 内訳:**
