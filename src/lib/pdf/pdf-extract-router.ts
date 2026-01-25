@@ -26,6 +26,8 @@ import {
   type FormsValidationResult 
 } from './required-forms-extractor';
 import { recordPdfFailure, type PdfFailureReason, type PdfFailureStage } from './pdf-failures';
+// Freeze-COST-2: wrapper 経由でコスト記録
+import { firecrawlScrape, visionOcr, type FirecrawlContext, type VisionContext } from '../cost';
 
 // --- 定数（凍結仕様）---
 export const MIN_TEXT_LEN_FOR_NON_OCR = 800;    // 非AIで有効とみなす最低文字数
@@ -82,6 +84,10 @@ export type ExtractEnv = {
   // cooldown ガード（false の場合はスキップ）
   allowFirecrawl?: boolean;  // undefined = true
   allowVision?: boolean;     // undefined = true
+  // Freeze-COST-2: コスト記録用のDB（nullable、指定時のみ記録）
+  DB?: D1Database;
+  // コスト記録時の関連sourceId（例: 'src-jnet21'）
+  sourceId?: string;
 };
 
 // --- メイン関数（A-0: 唯一の入り口）---
@@ -183,6 +189,7 @@ export async function extractAndUpdateSubsidy(
 
   // ========================================
   // Step 2: HTMLで不足の場合、Firecrawl でPDF抽出（非AI）
+  // Freeze-COST-2: wrapper 経由でコスト記録
   // ========================================
   if (extractedText.length < MIN_TEXT_LEN_FOR_NON_OCR && effectivePdfUrls.length > 0 && env?.FIRECRAWL_API_KEY) {
     // cooldown チェック
@@ -193,7 +200,21 @@ export async function extractAndUpdateSubsidy(
       for (const pdfUrl of effectivePdfUrls.slice(0, 3)) { // 最大3件
         metrics.firecrawlAttempted = true;
         try {
-          const firecrawlResult = await extractWithFirecrawl(pdfUrl, env.FIRECRAWL_API_KEY);
+          // Freeze-COST-2: wrapper 経由（DBある場合のみコスト記録）
+          let firecrawlResult: { text: string; hash: string };
+          if (env.DB) {
+            const ctx: FirecrawlContext = {
+              db: env.DB,
+              apiKey: env.FIRECRAWL_API_KEY,
+              subsidyId,
+              sourceId: env.sourceId,
+            };
+            const wrapperResult = await firecrawlScrape(pdfUrl, ctx);
+            firecrawlResult = { text: wrapperResult.text, hash: wrapperResult.hash };
+          } else {
+            // DB なしの場合は旧フォールバック（コスト記録なし）
+            firecrawlResult = await extractWithFirecrawl(pdfUrl, env.FIRECRAWL_API_KEY);
+          }
           if (firecrawlResult.text.length >= MIN_TEXT_LEN_FOR_NON_OCR) {
             extractedText = firecrawlResult.text;
             extractedFrom = 'firecrawl';
@@ -213,6 +234,7 @@ export async function extractAndUpdateSubsidy(
 
   // ========================================
   // Step 3: Firecrawlで不足の場合、Google Vision OCR（画像PDF用）
+  // Freeze-COST-2: wrapper 経由でコスト記録
   // ========================================
   if (extractedText.length < MIN_TEXT_LEN_FOR_NON_OCR && effectivePdfUrls.length > 0 && env?.GOOGLE_CLOUD_API_KEY) {
     // cooldown チェック
@@ -223,7 +245,20 @@ export async function extractAndUpdateSubsidy(
       for (const pdfUrl of effectivePdfUrls.slice(0, 2)) { // OCRは高コストなので最大2件
         metrics.visionAttempted = true;
         try {
-          const visionResult = await extractWithGoogleVision(pdfUrl, env.GOOGLE_CLOUD_API_KEY);
+          // Freeze-COST-2: wrapper 経由（DBある場合のみコスト記録）
+          let visionResult: { text: string; hash: string; pagesProcessed: number };
+          if (env.DB) {
+            const ctx: VisionContext = {
+              db: env.DB,
+              apiKey: env.GOOGLE_CLOUD_API_KEY,
+              subsidyId,
+              sourceId: env.sourceId,
+            };
+            visionResult = await visionOcr(pdfUrl, ctx);
+          } else {
+            // DB なしの場合は旧フォールバック（コスト記録なし）
+            visionResult = await extractWithGoogleVision(pdfUrl, env.GOOGLE_CLOUD_API_KEY);
+          }
           metrics.visionPagesProcessed += visionResult.pagesProcessed;
           
           if (visionResult.text.length >= MIN_TEXT_LEN_FOR_NON_OCR) {
@@ -290,6 +325,7 @@ export async function extractAndUpdateSubsidy(
   // ========================================
   // Step 6.5: HTMLで様式が見つからない場合、PDFからも抽出を試みる
   // （HTMLには概要、PDFには申請様式という構成が多いため）
+  // Freeze-COST-2: wrapper 経由でコスト記録
   // ========================================
   if (!formsValidation.valid && extractedFrom === 'html' && effectivePdfUrls.length > 0) {
     console.log(`[extractAndUpdateSubsidy] HTML forms insufficient for ${subsidyId}, trying PDF extraction from ${effectivePdfUrls.length} PDFs...`);
@@ -299,7 +335,20 @@ export async function extractAndUpdateSubsidy(
       for (const pdfUrl of effectivePdfUrls.slice(0, 3)) {
         metrics.firecrawlAttempted = true;
         try {
-          const firecrawlResult = await extractWithFirecrawl(pdfUrl, env.FIRECRAWL_API_KEY);
+          // Freeze-COST-2: wrapper 経由（DBある場合のみコスト記録）
+          let firecrawlResult: { text: string; hash: string };
+          if (env.DB) {
+            const ctx: FirecrawlContext = {
+              db: env.DB,
+              apiKey: env.FIRECRAWL_API_KEY,
+              subsidyId,
+              sourceId: env.sourceId,
+            };
+            const wrapperResult = await firecrawlScrape(pdfUrl, ctx);
+            firecrawlResult = { text: wrapperResult.text, hash: wrapperResult.hash };
+          } else {
+            firecrawlResult = await extractWithFirecrawl(pdfUrl, env.FIRECRAWL_API_KEY);
+          }
           if (firecrawlResult.text.length >= 200) { // 様式検出用は200文字でOK
             const pdfFormsResult = extractRequiredFormsFromText(firecrawlResult.text);
             const pdfFormsValidation = validateFormsResult(pdfFormsResult, MIN_FORMS, MIN_FIELDS_PER_FORM);
@@ -326,7 +375,19 @@ export async function extractAndUpdateSubsidy(
       for (const pdfUrl of effectivePdfUrls.slice(0, 2)) {
         metrics.visionAttempted = true;
         try {
-          const visionResult = await extractWithGoogleVision(pdfUrl, env.GOOGLE_CLOUD_API_KEY);
+          // Freeze-COST-2: wrapper 経由（DBある場合のみコスト記録）
+          let visionResult: { text: string; hash: string; pagesProcessed: number };
+          if (env.DB) {
+            const ctx: VisionContext = {
+              db: env.DB,
+              apiKey: env.GOOGLE_CLOUD_API_KEY,
+              subsidyId,
+              sourceId: env.sourceId,
+            };
+            visionResult = await visionOcr(pdfUrl, ctx);
+          } else {
+            visionResult = await extractWithGoogleVision(pdfUrl, env.GOOGLE_CLOUD_API_KEY);
+          }
           metrics.visionPagesProcessed += visionResult.pagesProcessed;
           
           if (visionResult.text.length >= 200) {

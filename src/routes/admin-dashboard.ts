@@ -4623,4 +4623,289 @@ adminDashboard.delete('/extraction-queue/clear-done', async (c) => {
   }
 });
 
+// ============================================================
+// APIコスト集計（Freeze-COST-0: api_cost_logs が唯一の真実）
+// ============================================================
+
+/**
+ * GET /api/admin-ops/cost/summary
+ * 
+ * APIコストの実数集計（super_admin専用）
+ * 
+ * Query params:
+ *   - days: 集計日数（デフォルト: 7）
+ * 
+ * Response:
+ *   - summary: 期間内の総計
+ *   - byService: サービス別内訳
+ *   - byDate: 日別推移
+ *   - topSubsidies: コスト上位補助金（上位10件）
+ *   - recentErrors: 直近のエラー（最新20件）
+ */
+adminDashboard.get('/cost/summary', async (c) => {
+  const db = c.env.DB;
+  const user = getCurrentUser(c);
+  
+  // super_admin のみ許可
+  if (user?.role !== 'super_admin') {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'FORBIDDEN', message: 'super_admin only' },
+    }, 403);
+  }
+  
+  try {
+    const days = parseInt(c.req.query('days') || '7', 10);
+    const sinceDate = new Date(Date.now() - days * 86400000).toISOString();
+    
+    // 1. 総計
+    const summary = await db.prepare(`
+      SELECT 
+        COALESCE(SUM(cost_usd), 0) as total_cost_usd,
+        COALESCE(SUM(units), 0) as total_units,
+        COUNT(*) as total_calls,
+        SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) as success_count,
+        SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) as failure_count
+      FROM api_cost_logs
+      WHERE created_at >= ?
+    `).bind(sinceDate).first<{
+      total_cost_usd: number;
+      total_units: number;
+      total_calls: number;
+      success_count: number;
+      failure_count: number;
+    }>();
+    
+    // 2. サービス別内訳
+    const byServiceResult = await db.prepare(`
+      SELECT 
+        service,
+        SUM(cost_usd) as cost_usd,
+        SUM(units) as units,
+        COUNT(*) as calls,
+        SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) as success_count
+      FROM api_cost_logs
+      WHERE created_at >= ?
+      GROUP BY service
+      ORDER BY cost_usd DESC
+    `).bind(sinceDate).all<{
+      service: string;
+      cost_usd: number;
+      units: number;
+      calls: number;
+      success_count: number;
+    }>();
+    
+    // 3. 日別推移
+    const byDateResult = await db.prepare(`
+      SELECT 
+        DATE(created_at) as date,
+        service,
+        SUM(cost_usd) as cost_usd,
+        COUNT(*) as calls
+      FROM api_cost_logs
+      WHERE created_at >= ?
+      GROUP BY DATE(created_at), service
+      ORDER BY date DESC, service
+    `).bind(sinceDate).all<{
+      date: string;
+      service: string;
+      cost_usd: number;
+      calls: number;
+    }>();
+    
+    // 4. コスト上位補助金（上位10件）
+    const topSubsidiesResult = await db.prepare(`
+      SELECT 
+        acl.subsidy_id,
+        sc.title,
+        SUM(acl.cost_usd) as cost_usd,
+        COUNT(*) as calls
+      FROM api_cost_logs acl
+      LEFT JOIN subsidy_cache sc ON acl.subsidy_id = sc.id
+      WHERE acl.created_at >= ? AND acl.subsidy_id IS NOT NULL
+      GROUP BY acl.subsidy_id
+      ORDER BY cost_usd DESC
+      LIMIT 10
+    `).bind(sinceDate).all<{
+      subsidy_id: string;
+      title: string | null;
+      cost_usd: number;
+      calls: number;
+    }>();
+    
+    // 5. 直近のエラー（最新20件）
+    const recentErrorsResult = await db.prepare(`
+      SELECT 
+        id,
+        service,
+        action,
+        url,
+        error_code,
+        error_message,
+        cost_usd,
+        created_at
+      FROM api_cost_logs
+      WHERE success = 0 AND created_at >= ?
+      ORDER BY created_at DESC
+      LIMIT 20
+    `).bind(sinceDate).all<{
+      id: number;
+      service: string;
+      action: string;
+      url: string | null;
+      error_code: string | null;
+      error_message: string | null;
+      cost_usd: number;
+      created_at: string;
+    }>();
+    
+    // 6. 累計（全期間）
+    const allTime = await db.prepare(`
+      SELECT 
+        COALESCE(SUM(cost_usd), 0) as total_cost_usd,
+        COUNT(*) as total_calls
+      FROM api_cost_logs
+    `).first<{ total_cost_usd: number; total_calls: number }>();
+    
+    return c.json<ApiResponse<{
+      period: { days: number; since: string };
+      summary: typeof summary;
+      allTime: typeof allTime;
+      byService: typeof byServiceResult.results;
+      byDate: typeof byDateResult.results;
+      topSubsidies: typeof topSubsidiesResult.results;
+      recentErrors: typeof recentErrorsResult.results;
+    }>>({
+      success: true,
+      data: {
+        period: { days, since: sinceDate },
+        summary: summary || {
+          total_cost_usd: 0,
+          total_units: 0,
+          total_calls: 0,
+          success_count: 0,
+          failure_count: 0,
+        },
+        allTime: allTime || { total_cost_usd: 0, total_calls: 0 },
+        byService: byServiceResult.results || [],
+        byDate: byDateResult.results || [],
+        topSubsidies: topSubsidiesResult.results || [],
+        recentErrors: recentErrorsResult.results || [],
+      },
+    });
+    
+  } catch (error) {
+    console.error('Cost summary error:', error);
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: 'INTERNAL_ERROR',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      },
+    }, 500);
+  }
+});
+
+/**
+ * GET /api/admin-ops/cost/logs
+ * 
+ * APIコストログ一覧（super_admin専用）
+ * 
+ * Query params:
+ *   - limit: 取得件数（デフォルト: 50, 最大: 200）
+ *   - offset: オフセット
+ *   - service: サービスでフィルタ
+ *   - success: 成功/失敗でフィルタ（0 or 1）
+ */
+adminDashboard.get('/cost/logs', async (c) => {
+  const db = c.env.DB;
+  const user = getCurrentUser(c);
+  
+  if (user?.role !== 'super_admin') {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'FORBIDDEN', message: 'super_admin only' },
+    }, 403);
+  }
+  
+  try {
+    const limit = Math.min(parseInt(c.req.query('limit') || '50', 10), 200);
+    const offset = parseInt(c.req.query('offset') || '0', 10);
+    const service = c.req.query('service');
+    const successFilter = c.req.query('success');
+    
+    let whereClause = '1=1';
+    const params: (string | number)[] = [];
+    
+    if (service) {
+      whereClause += ' AND service = ?';
+      params.push(service);
+    }
+    if (successFilter !== undefined && successFilter !== '') {
+      whereClause += ' AND success = ?';
+      params.push(parseInt(successFilter, 10));
+    }
+    
+    const countResult = await db.prepare(`
+      SELECT COUNT(*) as total FROM api_cost_logs WHERE ${whereClause}
+    `).bind(...params).first<{ total: number }>();
+    
+    const logsResult = await db.prepare(`
+      SELECT 
+        id, service, action, source_id, subsidy_id, discovery_item_id,
+        url, units, unit_type, cost_usd, currency,
+        success, http_status, error_code, error_message,
+        metadata_json, created_at
+      FROM api_cost_logs
+      WHERE ${whereClause}
+      ORDER BY created_at DESC
+      LIMIT ? OFFSET ?
+    `).bind(...params, limit, offset).all<{
+      id: number;
+      service: string;
+      action: string;
+      source_id: string | null;
+      subsidy_id: string | null;
+      discovery_item_id: string | null;
+      url: string | null;
+      units: number;
+      unit_type: string;
+      cost_usd: number;
+      currency: string;
+      success: number;
+      http_status: number | null;
+      error_code: string | null;
+      error_message: string | null;
+      metadata_json: string | null;
+      created_at: string;
+    }>();
+    
+    return c.json<ApiResponse<{
+      logs: typeof logsResult.results;
+      pagination: { total: number; limit: number; offset: number };
+    }>>({
+      success: true,
+      data: {
+        logs: logsResult.results || [],
+        pagination: {
+          total: countResult?.total || 0,
+          limit,
+          offset,
+        },
+      },
+    });
+    
+  } catch (error) {
+    console.error('Cost logs error:', error);
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: 'INTERNAL_ERROR',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      },
+    }, 500);
+  }
+});
+
 export default adminDashboard;
