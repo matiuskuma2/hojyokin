@@ -3396,9 +3396,10 @@ cron.post('/consume-extractions', async (c) => {
   }
 
   // shard指定がなければ自動決定
+  // ★ v3.5.2 fix: SHARD_COUNT=64 に合わせて範囲を 0-63 に修正
   const q = c.req.query();
   const shard = q.shard !== undefined 
-    ? Math.max(0, Math.min(15, parseInt(q.shard, 10) || 0))
+    ? Math.max(0, Math.min(63, parseInt(q.shard, 10) || 0))
     : currentShardByHour();
 
   const now = new Date();
@@ -3866,13 +3867,14 @@ cron.post('/sync-jnet21', async (c) => {
             itemsSkipped++;
           } else {
             // 変更あり → 全フィールド更新
+            // ★ v3.5.2 fix: description→summary, third_party→other_public (CHECK制約対応)
             await db.prepare(`
               UPDATE subsidy_feed_items SET
                 title = ?,
                 detail_url = ?,
-                description = ?,
+                summary = ?,
                 prefecture_code = ?,
-                source_type = 'third_party',
+                source_type = 'other_public',
                 content_hash = ?,
                 is_new = 1,
                 last_seen_at = ?,
@@ -3882,7 +3884,7 @@ cron.post('/sync-jnet21', async (c) => {
             `).bind(
               item.title,
               item.link,
-              item.description,
+              item.description,  // RSSのdescriptionをsummaryカラムへ
               item.prefectureCode,
               contentHash,
               now,
@@ -3894,18 +3896,21 @@ cron.post('/sync-jnet21', async (c) => {
           }
         } else {
           // 新規レコード
+          // ★ v3.5.2 fix: id必須(TEXT PRIMARY KEY)、description→summary、third_party→other_public
+          const itemId = `jnet21-${dedupeKey.replace('src-jnet21:', '')}`;
           await db.prepare(`
             INSERT INTO subsidy_feed_items (
-              dedupe_key, source_id, source_type, title, detail_url, description,
+              id, dedupe_key, source_id, source_type, title, detail_url, summary,
               prefecture_code, status, content_hash, is_new,
               first_seen_at, last_seen_at, created_at, updated_at, expires_at
-            ) VALUES (?, ?, 'third_party', ?, ?, ?, ?, 'active', ?, 1, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, 'other_public', ?, ?, ?, ?, 'active', ?, 1, ?, ?, ?, ?, ?)
           `).bind(
+            itemId,
             dedupeKey,
             SOURCE_KEY,
             item.title,
             item.link,
-            item.description,
+            item.description,  // RSSのdescriptionをsummaryカラムへ
             item.prefectureCode,
             contentHash,
             now,

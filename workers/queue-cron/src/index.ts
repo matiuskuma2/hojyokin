@@ -24,7 +24,8 @@ const BASE_PRIORITY = {
 };
 
 /**
- * crc32 (fast, small) → shardKey16 = crc32(id) % 16
+ * crc32 (fast, small) → shardKey = crc32(id) % SHARD_COUNT
+ * ★ v3.5.2: SHARD_COUNT=64 で計算
  */
 function crc32(str: string): number {
   let crc = 0 ^ -1;
@@ -42,6 +43,7 @@ const CRC_TABLE = (() => {
   }
   return table;
 })();
+// ★ 関数名は歴史的理由で shardKey16 のままだが、実際は SHARD_COUNT=64 で計算
 function shardKey16(id: string): number {
   return crc32(id) % SHARD_COUNT;
 }
@@ -282,7 +284,8 @@ export default {
 
     if (url.pathname === "/trigger" && req.method === "POST") {
       const shard = url.searchParams.get("shard");
-      const s = shard ? Math.max(0, Math.min(15, parseInt(shard, 10) || 0)) : currentShardBy5Min(new Date());
+      // ★ v3.5.2 fix: SHARD_COUNT=64 に合わせて範囲を 0-63 に修正
+      const s = shard ? Math.max(0, Math.min(63, parseInt(shard, 10) || 0)) : currentShardBy5Min(new Date());
       const res = await postToPages(`/api/cron/consume-extractions?shard=${s}`, env);
       const txt = await res.text();
       return new Response(txt, { headers: { "Content-Type": "application/json" } });

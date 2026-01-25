@@ -3,7 +3,7 @@
 **日付**: 2026-01-25  
 **レビュー対象**: admin.tsx, admin-dashboard.ts, admin.ts, cron.ts, shard.ts, workers/queue-cron  
 **レビュー担当**: AI Assistant  
-**バージョン**: v3.6 (運用パッチ + J-Net21 Discover実装)
+**バージョン**: v3.7 (v3.5.2 コードレビュー + バグ修正)
 
 ---
 
@@ -14,10 +14,16 @@
 | 優先度 | カテゴリ | 問題 | 状態 | 影響 |
 |--------|----------|------|------|------|
 | 🔴 Critical | 整合性 | フロントエンド→バックエンドAPIパス不一致 | ✅ 修正済み | 管理画面の全機能が動作しない |
+| 🔴 Critical | スキーマ不整合 | sync-jnet21: `description`カラム不在（正: `summary`） | ✅ 修正済み | INSERT/UPDATE全件失敗 |
+| 🔴 Critical | CHECK制約違反 | sync-jnet21: `source_type='third_party'`不正（正: `other_public`） | ✅ 修正済み | INSERT失敗 |
+| 🔴 Critical | スキーマ不整合 | sync-jnet21: `id`カラム不足（TEXT PRIMARY KEY必須） | ✅ 修正済み | INSERT失敗 |
+| 🟠 High | shard範囲 | consume-extractions: `Math.min(15,...)` → 64分割未対応 | ✅ 修正済み | shard 16-63 未処理 |
+| 🟠 High | shard範囲 | workers /trigger: 同上 | ✅ 修正済み | 手動トリガー範囲外 |
 | 🟠 High | 入力検証 | クエリパラメータのサニタイズ不足 | ⚠️ 要修正 | SQLインジェクションリスク（低） |
 | 🟠 High | セキュリティ | super_admin チェックの一貫性 | ⚠️ 要確認 | 権限昇格リスク |
 | 🟡 Medium | エラー処理 | SQLエラー時の詳細漏洩 | ⚠️ 要改善 | 情報漏洩リスク |
 | 🟡 Medium | ロジック | 日付範囲計算の重複 | 📝 改善推奨 | メンテナンス性低下 |
+| 🟡 Medium | XMLパース | sync-jnet21: XML特殊文字エスケープ未対応 | 📝 要注意 | 一部データ欠損の可能性 |
 | 🟢 Low | コード品質 | コメント言語の混在（日英） | 📝 改善推奨 | 可読性低下 |
 
 ---
@@ -682,13 +688,91 @@ function oppositeShardBy5Min(d: Date = new Date()): number {
 
 ---
 
+## 14. v3.7 コードレビュー結果（2026-01-25）
+
+### 14.1 発見・修正したCriticalバグ
+
+#### バグ1: sync-jnet21 スキーマ不整合
+
+**問題**: `subsidy_feed_items` テーブルに存在しないカラムを参照していた。
+
+```typescript
+// ❌ 修正前
+description = ?,  // カラムなし
+source_type = 'third_party',  // CHECK制約違反
+
+// ✅ 修正後
+summary = ?,  // 正しいカラム名
+source_type = 'other_public',  // CHECK制約に準拠
+```
+
+**影響**: sync-jnet21 の INSERT/UPDATE が全件失敗する重大バグ。
+
+#### バグ2: sync-jnet21 PRIMARY KEY不足
+
+**問題**: `id` カラムが TEXT PRIMARY KEY であるが、INSERT時に指定していなかった。
+
+```typescript
+// ❌ 修正前
+INSERT INTO subsidy_feed_items (dedupe_key, source_id, ...) VALUES (?, ?, ...)
+
+// ✅ 修正後
+const itemId = `jnet21-${dedupeKey.replace('src-jnet21:', '')}`;
+INSERT INTO subsidy_feed_items (id, dedupe_key, source_id, ...) VALUES (?, ?, ?, ...)
+```
+
+#### バグ3: shard範囲の不整合
+
+**問題**: SHARD_COUNT=64 に変更したが、consume-extractions の範囲制限が `Math.min(15, ...)` のままだった。
+
+```typescript
+// ❌ 修正前
+Math.max(0, Math.min(15, parseInt(q.shard, 10) || 0))
+
+// ✅ 修正後
+Math.max(0, Math.min(63, parseInt(q.shard, 10) || 0))
+```
+
+**影響**: shard 16-63 が処理されず、約75%のキューが滞留する可能性。
+
+### 14.2 追加したマイグレーション
+
+```sql
+-- migrations/0108_add_jnet21_source.sql
+INSERT OR IGNORE INTO feed_sources
+  (id, category, region_code, region_name, source_name, source_org, izumi_category, is_active, priority)
+VALUES
+  ('src-jnet21', 'other_public', '00', '全国', 'J-Net21 支援情報', '中小企業基盤整備機構', '全国支援情報', 1, 80);
+```
+
+### 14.3 残存する要注意事項
+
+| 項目 | リスク | 対応推奨 |
+|------|--------|----------|
+| XMLパース | 特殊文字（`&amp;`, `&lt;`等）がエスケープされたまま格納される可能性 | 本番データ確認後、必要に応じてデコード処理追加 |
+| RSSアイテム数 | 現在24件程度。将来的に増加した場合のページネーション未対応 | RSS仕様確認、必要に応じてcursor対応 |
+| subsidy_cache同期 | 最初の50件のみsubsidy_cacheに追加（軽量化のため） | 全件が必要な場合は上限撤廃 |
+
+### 14.4 コード品質チェックリスト
+
+| 項目 | sync-jnet21 | cleanup-queue | workers/queue-cron |
+|------|-------------|---------------|---------------------|
+| 入力検証 | ✅ URL固定、RSS解析 | ✅ なし | ✅ shard範囲制限 |
+| エラーハンドリング | ✅ try-catch + ログ | ✅ try-catch + ログ | ✅ ctx.waitUntil |
+| 認証 | ✅ CRON_SECRET | ✅ CRON_SECRET | ✅ CRON_SECRET経由 |
+| 監査ログ | ✅ cron_runs | ✅ cron_runs | ⚠️ Pages側で記録 |
+| リソース解放 | ✅ D1は自動 | ✅ D1は自動 | ✅ D1は自動 |
+| 冪等性 | ✅ dedupe_key + UPSERT | ✅ WHERE条件で重複削除防止 | ✅ INSERT OR IGNORE |
+
+---
+
 **次のアクション**:
-1. **Cloudflare Pagesデプロイ**: APIキー設定後にデプロイ
-2. **Workers Cronデプロイ**: `cd workers/queue-cron && npx wrangler deploy`
-3. **本番動作確認**: sync-jnet21, cleanup-queue, 2 shard消化
+1. **修正をデプロイ**: Pages + Workers Cron の再デプロイ
+2. **マイグレーション実行**: `npx wrangler d1 migrations apply`
+3. **sync-jnet21 テスト**: 本番で手動実行して動作確認
 4. **Cron設定完了**: cron-job.org に新エンドポイント追加
 
 ---
 
 *レポート生成日時: 2026-01-25*
-*最終更新: v3.6 運用パッチ + J-Net21 Discover実装*
+*最終更新: v3.7 コードレビュー + Criticalバグ修正*
