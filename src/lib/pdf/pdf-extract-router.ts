@@ -67,8 +67,10 @@ export type ExtractMetrics = {
   htmlSuccess: boolean;
   firecrawlAttempted: boolean;
   firecrawlSuccess: boolean;
+  firecrawlSkippedByCooldown: boolean;  // cooldown でスキップ
   visionAttempted: boolean;
   visionSuccess: boolean;
+  visionSkippedByCooldown: boolean;     // cooldown でスキップ
   visionPagesProcessed: number;
   textLengthExtracted: number;
   processingTimeMs: number;
@@ -77,6 +79,9 @@ export type ExtractMetrics = {
 export type ExtractEnv = {
   FIRECRAWL_API_KEY?: string;
   GOOGLE_CLOUD_API_KEY?: string;
+  // cooldown ガード（false の場合はスキップ）
+  allowFirecrawl?: boolean;  // undefined = true
+  allowVision?: boolean;     // undefined = true
 };
 
 // --- メイン関数（A-0: 唯一の入り口）---
@@ -102,12 +107,18 @@ export async function extractAndUpdateSubsidy(
     htmlSuccess: false,
     firecrawlAttempted: false,
     firecrawlSuccess: false,
+    firecrawlSkippedByCooldown: false,
     visionAttempted: false,
     visionSuccess: false,
+    visionSkippedByCooldown: false,
     visionPagesProcessed: 0,
     textLengthExtracted: 0,
     processingTimeMs: 0,
   };
+  
+  // cooldown フラグ（undefined は許可）
+  const allowFirecrawl = env?.allowFirecrawl !== false;
+  const allowVision = env?.allowVision !== false;
   
   // 既存の detail_json をパース
   let existingDetail: DetailJSON = {};
@@ -174,22 +185,28 @@ export async function extractAndUpdateSubsidy(
   // Step 2: HTMLで不足の場合、Firecrawl でPDF抽出（非AI）
   // ========================================
   if (extractedText.length < MIN_TEXT_LEN_FOR_NON_OCR && effectivePdfUrls.length > 0 && env?.FIRECRAWL_API_KEY) {
-    for (const pdfUrl of effectivePdfUrls.slice(0, 3)) { // 最大3件
-      metrics.firecrawlAttempted = true;
-      try {
-        const firecrawlResult = await extractWithFirecrawl(pdfUrl, env.FIRECRAWL_API_KEY);
-        if (firecrawlResult.text.length >= MIN_TEXT_LEN_FOR_NON_OCR) {
-          extractedText = firecrawlResult.text;
-          extractedFrom = 'firecrawl';
-          contentHash = firecrawlResult.hash;
-          metrics.firecrawlSuccess = true;
-          console.log(`[extractAndUpdateSubsidy] Firecrawl success for ${subsidyId}: ${firecrawlResult.text.length} chars`);
-          break;
-        } else {
-          console.log(`[extractAndUpdateSubsidy] Firecrawl insufficient for ${subsidyId}: ${firecrawlResult.text.length} chars`);
+    // cooldown チェック
+    if (!allowFirecrawl) {
+      metrics.firecrawlSkippedByCooldown = true;
+      console.log(`[extractAndUpdateSubsidy] Firecrawl skipped by cooldown for ${subsidyId}`);
+    } else {
+      for (const pdfUrl of effectivePdfUrls.slice(0, 3)) { // 最大3件
+        metrics.firecrawlAttempted = true;
+        try {
+          const firecrawlResult = await extractWithFirecrawl(pdfUrl, env.FIRECRAWL_API_KEY);
+          if (firecrawlResult.text.length >= MIN_TEXT_LEN_FOR_NON_OCR) {
+            extractedText = firecrawlResult.text;
+            extractedFrom = 'firecrawl';
+            contentHash = firecrawlResult.hash;
+            metrics.firecrawlSuccess = true;
+            console.log(`[extractAndUpdateSubsidy] Firecrawl success for ${subsidyId}: ${firecrawlResult.text.length} chars`);
+            break;
+          } else {
+            console.log(`[extractAndUpdateSubsidy] Firecrawl insufficient for ${subsidyId}: ${firecrawlResult.text.length} chars`);
+          }
+        } catch (e: any) {
+          console.warn(`[extractAndUpdateSubsidy] Firecrawl failed for ${pdfUrl}: ${e.message}`);
         }
-      } catch (e: any) {
-        console.warn(`[extractAndUpdateSubsidy] Firecrawl failed for ${pdfUrl}: ${e.message}`);
       }
     }
   }
@@ -198,24 +215,30 @@ export async function extractAndUpdateSubsidy(
   // Step 3: Firecrawlで不足の場合、Google Vision OCR（画像PDF用）
   // ========================================
   if (extractedText.length < MIN_TEXT_LEN_FOR_NON_OCR && effectivePdfUrls.length > 0 && env?.GOOGLE_CLOUD_API_KEY) {
-    for (const pdfUrl of effectivePdfUrls.slice(0, 2)) { // OCRは高コストなので最大2件
-      metrics.visionAttempted = true;
-      try {
-        const visionResult = await extractWithGoogleVision(pdfUrl, env.GOOGLE_CLOUD_API_KEY);
-        metrics.visionPagesProcessed += visionResult.pagesProcessed;
-        
-        if (visionResult.text.length >= MIN_TEXT_LEN_FOR_NON_OCR) {
-          extractedText = visionResult.text;
-          extractedFrom = 'vision_ocr';
-          contentHash = visionResult.hash;
-          metrics.visionSuccess = true;
-          console.log(`[extractAndUpdateSubsidy] Vision OCR success for ${subsidyId}: ${visionResult.text.length} chars, ${visionResult.pagesProcessed} pages`);
-          break;
-        } else {
-          console.log(`[extractAndUpdateSubsidy] Vision OCR insufficient for ${subsidyId}: ${visionResult.text.length} chars`);
+    // cooldown チェック
+    if (!allowVision) {
+      metrics.visionSkippedByCooldown = true;
+      console.log(`[extractAndUpdateSubsidy] Vision OCR skipped by cooldown for ${subsidyId}`);
+    } else {
+      for (const pdfUrl of effectivePdfUrls.slice(0, 2)) { // OCRは高コストなので最大2件
+        metrics.visionAttempted = true;
+        try {
+          const visionResult = await extractWithGoogleVision(pdfUrl, env.GOOGLE_CLOUD_API_KEY);
+          metrics.visionPagesProcessed += visionResult.pagesProcessed;
+          
+          if (visionResult.text.length >= MIN_TEXT_LEN_FOR_NON_OCR) {
+            extractedText = visionResult.text;
+            extractedFrom = 'vision_ocr';
+            contentHash = visionResult.hash;
+            metrics.visionSuccess = true;
+            console.log(`[extractAndUpdateSubsidy] Vision OCR success for ${subsidyId}: ${visionResult.text.length} chars, ${visionResult.pagesProcessed} pages`);
+            break;
+          } else {
+            console.log(`[extractAndUpdateSubsidy] Vision OCR insufficient for ${subsidyId}: ${visionResult.text.length} chars`);
+          }
+        } catch (e: any) {
+          console.warn(`[extractAndUpdateSubsidy] Vision OCR failed for ${pdfUrl}: ${e.message}`);
         }
-      } catch (e: any) {
-        console.warn(`[extractAndUpdateSubsidy] Vision OCR failed for ${pdfUrl}: ${e.message}`);
       }
     }
   }
@@ -227,8 +250,12 @@ export async function extractAndUpdateSubsidy(
   
   if (extractedText.length < MIN_TEXT_LEN_FOR_NON_OCR) {
     failureReason = 'FETCH_FAILED';
+    const cooldownInfo = [];
+    if (metrics.firecrawlSkippedByCooldown) cooldownInfo.push('Firecrawl(cooldown)');
+    if (metrics.visionSkippedByCooldown) cooldownInfo.push('Vision(cooldown)');
     failureMessage = `Insufficient text extracted (${extractedText.length} chars, min ${MIN_TEXT_LEN_FOR_NON_OCR}). ` +
-      `Attempted: HTML=${metrics.htmlAttempted}, Firecrawl=${metrics.firecrawlAttempted}, Vision=${metrics.visionAttempted}`;
+      `Attempted: HTML=${metrics.htmlAttempted}, Firecrawl=${metrics.firecrawlAttempted}, Vision=${metrics.visionAttempted}` +
+      (cooldownInfo.length > 0 ? `. Skipped: ${cooldownInfo.join(', ')}` : '');
     
     // 既存データでwall_chat_ready判定
     const readyResult = checkWallChatReadyFromJson(existingDetailJson || '{}');
@@ -267,8 +294,8 @@ export async function extractAndUpdateSubsidy(
   if (!formsValidation.valid && extractedFrom === 'html' && effectivePdfUrls.length > 0) {
     console.log(`[extractAndUpdateSubsidy] HTML forms insufficient for ${subsidyId}, trying PDF extraction from ${effectivePdfUrls.length} PDFs...`);
     
-    // Firecrawl でPDF抽出を試みる
-    if (env?.FIRECRAWL_API_KEY) {
+    // Firecrawl でPDF抽出を試みる（cooldownチェック）
+    if (env?.FIRECRAWL_API_KEY && allowFirecrawl) {
       for (const pdfUrl of effectivePdfUrls.slice(0, 3)) {
         metrics.firecrawlAttempted = true;
         try {
@@ -290,10 +317,12 @@ export async function extractAndUpdateSubsidy(
           console.warn(`[extractAndUpdateSubsidy] Firecrawl PDF forms extraction failed for ${pdfUrl}: ${e.message}`);
         }
       }
+    } else if (env?.FIRECRAWL_API_KEY && !allowFirecrawl) {
+      metrics.firecrawlSkippedByCooldown = true;
     }
     
-    // Vision OCR でPDF抽出を試みる（Firecrawlで見つからない場合）
-    if (!formsValidation.valid && env?.GOOGLE_CLOUD_API_KEY) {
+    // Vision OCR でPDF抽出を試みる（Firecrawlで見つからない場合、cooldownチェック）
+    if (!formsValidation.valid && env?.GOOGLE_CLOUD_API_KEY && allowVision) {
       for (const pdfUrl of effectivePdfUrls.slice(0, 2)) {
         metrics.visionAttempted = true;
         try {
@@ -316,6 +345,8 @@ export async function extractAndUpdateSubsidy(
           console.warn(`[extractAndUpdateSubsidy] Vision OCR PDF forms extraction failed for ${pdfUrl}: ${e.message}`);
         }
       }
+    } else if (!formsValidation.valid && env?.GOOGLE_CLOUD_API_KEY && !allowVision) {
+      metrics.visionSkippedByCooldown = true;
     }
   }
   

@@ -2728,6 +2728,7 @@ cron.post('/enrich-tokyo-shigoto', async (c) => {
 // =====================================================
 
 import { extractAndUpdateSubsidy, type ExtractSource } from '../lib/pdf/pdf-extract-router';
+import { checkCooldown, DEFAULT_COOLDOWN_POLICY } from '../lib/pdf/extraction-cooldown';
 
 cron.post('/extract-pdf-forms', async (c) => {
   const db = c.env.DB;
@@ -2839,8 +2840,10 @@ cron.post('/extract-pdf-forms', async (c) => {
       htmlSuccess: 0,
       firecrawlAttempted: 0,
       firecrawlSuccess: 0,
+      firecrawlSkippedByCooldown: 0,  // cooldown でスキップした件数
       visionAttempted: 0,
       visionSuccess: 0,
+      visionSkippedByCooldown: 0,     // cooldown でスキップした件数
       visionPagesTotal: 0,
       dedupeSkipped: 0,
     };
@@ -2874,6 +2877,9 @@ cron.post('/extract-pdf-forms', async (c) => {
           continue;
         }
         
+        // --- cooldown チェック（Firecrawl 6h / Vision 24h）---
+        const cooldown = await checkCooldown(db, target.id, DEFAULT_COOLDOWN_POLICY);
+        
         // --- 統一入口で抽出実行 ---
         const extractSource: ExtractSource = {
           subsidyId: target.id,
@@ -2887,6 +2893,8 @@ cron.post('/extract-pdf-forms', async (c) => {
         const extractResult = await extractAndUpdateSubsidy(extractSource, {
           FIRECRAWL_API_KEY: env.FIRECRAWL_API_KEY,
           GOOGLE_CLOUD_API_KEY: env.GOOGLE_CLOUD_API_KEY,
+          allowFirecrawl: cooldown.allowFirecrawl,
+          allowVision: cooldown.allowVision,
         });
         
         // メトリクス集計
@@ -2894,8 +2902,10 @@ cron.post('/extract-pdf-forms', async (c) => {
         if (extractResult.metrics.htmlSuccess) totalMetrics.htmlSuccess++;
         if (extractResult.metrics.firecrawlAttempted) totalMetrics.firecrawlAttempted++;
         if (extractResult.metrics.firecrawlSuccess) totalMetrics.firecrawlSuccess++;
+        if (extractResult.metrics.firecrawlSkippedByCooldown) totalMetrics.firecrawlSkippedByCooldown++;
         if (extractResult.metrics.visionAttempted) totalMetrics.visionAttempted++;
         if (extractResult.metrics.visionSuccess) totalMetrics.visionSuccess++;
+        if (extractResult.metrics.visionSkippedByCooldown) totalMetrics.visionSkippedByCooldown++;
         totalMetrics.visionPagesTotal += extractResult.metrics.visionPagesProcessed;
         
         // --- extraction_logs に記録 ---
