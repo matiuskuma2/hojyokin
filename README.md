@@ -548,20 +548,33 @@ EOF
 
 ### 4. D1データベースの設定
 
-**ローカル開発の場合:**
+**ローカル開発の場合（推奨: dev_schema.sql を使用）:**
 
 ```bash
-# マイグレーション適用
-npx wrangler d1 migrations apply subsidy-matching-production --local
+# ★ 推奨: dev_schema.sql で初期化（マイグレーションは本番専用）
+rm -rf .wrangler/state/v3/d1  # 既存DBをクリア
+npx wrangler d1 execute subsidy-matching-production --local --file=migrations/dev_schema.sql
 
 # シードデータ投入（必要に応じて）
 npx wrangler d1 execute subsidy-matching-production --local --file=./seed.sql
 ```
 
+**重要: ローカル/本番 マイグレーション運用ルール:**
+- **ローカル**: `dev_schema.sql` を唯一の正とする（マイグレーションは不要）
+- **本番**: 個別マイグレーションファイルで差分適用
+
+```bash
+# ❌ ローカルでは使わない（依存関係エラーが発生しやすい）
+# npx wrangler d1 migrations apply subsidy-matching-production --local
+
+# ✅ dev_schema.sql を直接実行
+npx wrangler d1 execute subsidy-matching-production --local --file=migrations/dev_schema.sql
+```
+
 **本番デプロイの場合:**
 
 ```bash
-# マイグレーション適用
+# 本番は個別マイグレーションを適用（差分管理）
 npx wrangler d1 migrations apply subsidy-matching-production
 
 # データベースIDは wrangler.jsonc に記載:

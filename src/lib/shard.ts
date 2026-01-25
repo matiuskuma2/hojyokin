@@ -34,6 +34,11 @@ export function crc32(str: string): number {
 
 /**
  * ★ v3.5.2: 64分割shard_keyを計算
+ * 
+ * NOTE: 関数名 "shardKey16" は歴史的理由（旧16分割時代）で残存。
+ * 実際は SHARD_COUNT=64 で 0-63 を返す。
+ * 互換性のため改名はしない（呼び出し元が多数）。
+ * 
  * @param id - 補助金ID
  * @returns 0-63 のshard_key
  */

@@ -3781,6 +3781,16 @@ cron.post('/sync-jnet21', async (c) => {
     });
     
     if (!response.ok) {
+      // ★ P0-1: HTTP失敗を feed_failures に記録
+      await recordFailure(
+        db,
+        'jnet21-rss-feed',  // subsidy_id（RSSフィード全体を示す）
+        SOURCE_KEY,
+        RSS_URL,
+        'discover',
+        'FETCH_FAILED',
+        `HTTP ${response.status}: ${response.statusText}`
+      );
       throw new Error(`RSS fetch failed: ${response.status}`);
     }
     
@@ -3922,8 +3932,21 @@ cron.post('/sync-jnet21', async (c) => {
           itemsNew++;
         }
       } catch (itemErr) {
-        errors.push(`Item error (${item.link}): ${itemErr instanceof Error ? itemErr.message : String(itemErr)}`);
+        const errMsg = itemErr instanceof Error ? itemErr.message : String(itemErr);
+        errors.push(`Item error (${item.link}): ${errMsg}`);
         console.warn(`[J-Net21] Item error:`, itemErr);
+        
+        // ★ P0-1: feed_failures に記録（super_admin で可視化）
+        const failureId = `jnet21-${dedupeKey.replace('src-jnet21:', '')}`;
+        await recordFailure(
+          db,
+          failureId,
+          SOURCE_KEY,
+          item.link,
+          'discover',  // stage: discover（カタログ取得段階）
+          'UPSERT_FAILED',  // error_type
+          errMsg.slice(0, 500)
+        );
       }
     }
     
