@@ -70,9 +70,11 @@ export type ExtractMetrics = {
   firecrawlAttempted: boolean;
   firecrawlSuccess: boolean;
   firecrawlSkippedByCooldown: boolean;  // cooldown でスキップ
+  firecrawlBlockedByCostGuard: boolean; // P0-1: DB欠如でブロック（Freeze-COST-2違反防止）
   visionAttempted: boolean;
   visionSuccess: boolean;
   visionSkippedByCooldown: boolean;     // cooldown でスキップ
+  visionBlockedByCostGuard: boolean;    // P0-1: DB欠如でブロック（Freeze-COST-2違反防止）
   visionPagesProcessed: number;
   textLengthExtracted: number;
   processingTimeMs: number;
@@ -114,9 +116,11 @@ export async function extractAndUpdateSubsidy(
     firecrawlAttempted: false,
     firecrawlSuccess: false,
     firecrawlSkippedByCooldown: false,
+    firecrawlBlockedByCostGuard: false, // P0-1: CostGuard
     visionAttempted: false,
     visionSuccess: false,
     visionSkippedByCooldown: false,
+    visionBlockedByCostGuard: false,    // P0-1: CostGuard
     visionPagesProcessed: 0,
     textLengthExtracted: 0,
     processingTimeMs: 0,
@@ -198,9 +202,10 @@ export async function extractAndUpdateSubsidy(
       console.log(`[extractAndUpdateSubsidy] Firecrawl skipped by cooldown for ${subsidyId}`);
     } else {
       // Freeze-COST-2: DB必須化（コスト記録なしの呼び出しは禁止）
+      // P0-1: CostGuard として扱い、cooldown とは別のメトリクスで記録
       if (!env.DB) {
-        console.error(`[extractAndUpdateSubsidy] Firecrawl call blocked: env.DB is required for cost logging (Freeze-COST-2)`);
-        metrics.firecrawlSkippedByCooldown = true; // 実質的にスキップ扱い
+        console.error(`[extractAndUpdateSubsidy] Firecrawl blocked by CostGuard: env.DB is required for cost logging (Freeze-COST-2)`);
+        metrics.firecrawlBlockedByCostGuard = true; // cooldown ではなく CostGuard
       } else {
         for (const pdfUrl of effectivePdfUrls.slice(0, 3)) { // 最大3件
           metrics.firecrawlAttempted = true;
@@ -242,9 +247,10 @@ export async function extractAndUpdateSubsidy(
       metrics.visionSkippedByCooldown = true;
       console.log(`[extractAndUpdateSubsidy] Vision OCR skipped by cooldown for ${subsidyId}`);
     // Freeze-COST-2: DB必須化（コスト記録なしの呼び出しは禁止）
+    // P0-1: CostGuard として扱い、cooldown とは別のメトリクスで記録
     } else if (!env.DB) {
-      console.error(`[extractAndUpdateSubsidy] Vision OCR call blocked: env.DB is required for cost logging (Freeze-COST-2)`);
-      metrics.visionSkippedByCooldown = true; // 実質的にスキップ扱い
+      console.error(`[extractAndUpdateSubsidy] Vision OCR blocked by CostGuard: env.DB is required for cost logging (Freeze-COST-2)`);
+      metrics.visionBlockedByCostGuard = true; // cooldown ではなく CostGuard
     } else {
       for (const pdfUrl of effectivePdfUrls.slice(0, 2)) { // OCRは高コストなので最大2件
         metrics.visionAttempted = true;
@@ -285,7 +291,9 @@ export async function extractAndUpdateSubsidy(
     failureReason = 'FETCH_FAILED';
     const cooldownInfo = [];
     if (metrics.firecrawlSkippedByCooldown) cooldownInfo.push('Firecrawl(cooldown)');
+    if (metrics.firecrawlBlockedByCostGuard) cooldownInfo.push('Firecrawl(CostGuard:no-DB)');
     if (metrics.visionSkippedByCooldown) cooldownInfo.push('Vision(cooldown)');
+    if (metrics.visionBlockedByCostGuard) cooldownInfo.push('Vision(CostGuard:no-DB)');
     failureMessage = `Insufficient text extracted (${extractedText.length} chars, min ${MIN_TEXT_LEN_FOR_NON_OCR}). ` +
       `Attempted: HTML=${metrics.htmlAttempted}, Firecrawl=${metrics.firecrawlAttempted}, Vision=${metrics.visionAttempted}` +
       (cooldownInfo.length > 0 ? `. Skipped: ${cooldownInfo.join(', ')}` : '');
@@ -330,9 +338,10 @@ export async function extractAndUpdateSubsidy(
     
     // Firecrawl でPDF抽出を試みる（cooldownチェック + DB必須）
     if (env?.FIRECRAWL_API_KEY && allowFirecrawl) {
-      // Freeze-COST-2: DB必須化
+      // Freeze-COST-2: DB必須化（P0-1: CostGuard）
       if (!env.DB) {
-        console.error(`[extractAndUpdateSubsidy] Firecrawl forms call blocked: env.DB is required (Freeze-COST-2)`);
+        console.error(`[extractAndUpdateSubsidy] Firecrawl forms blocked by CostGuard: env.DB is required (Freeze-COST-2)`);
+        metrics.firecrawlBlockedByCostGuard = true;
       } else {
         for (const pdfUrl of effectivePdfUrls.slice(0, 3)) {
           metrics.firecrawlAttempted = true;
@@ -370,9 +379,10 @@ export async function extractAndUpdateSubsidy(
     
     // Vision OCR でPDF抽出を試みる（Firecrawlで見つからない場合、cooldownチェック + DB必須）
     if (!formsValidation.valid && env?.GOOGLE_CLOUD_API_KEY && allowVision) {
-      // Freeze-COST-2: DB必須化
+      // Freeze-COST-2: DB必須化（P0-1: CostGuard）
       if (!env.DB) {
-        console.error(`[extractAndUpdateSubsidy] Vision OCR forms call blocked: env.DB is required (Freeze-COST-2)`);
+        console.error(`[extractAndUpdateSubsidy] Vision OCR forms blocked by CostGuard: env.DB is required (Freeze-COST-2)`);
+        metrics.visionBlockedByCostGuard = true;
       } else {
         for (const pdfUrl of effectivePdfUrls.slice(0, 2)) {
           metrics.visionAttempted = true;
@@ -996,8 +1006,12 @@ export async function batchExtractPdfForms(
               htmlSuccess: false,
               firecrawlAttempted: false,
               firecrawlSuccess: false,
+              firecrawlSkippedByCooldown: false,
+              firecrawlBlockedByCostGuard: false,
               visionAttempted: false,
               visionSuccess: false,
+              visionSkippedByCooldown: false,
+              visionBlockedByCostGuard: false,
               visionPagesProcessed: 0,
               textLengthExtracted: 0,
               processingTimeMs: 0,

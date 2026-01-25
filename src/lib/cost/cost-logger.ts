@@ -41,9 +41,10 @@ export interface CostLogInput {
   
   // 詳細（Freeze-COST-4）
   rawUsage?: Record<string, unknown>;  // API応答の生usage
-  metadata?: {                         // モデル名/単価
+  metadata?: {                         // モデル名/単価/billingステータス
     model?: string;
     rate?: number;
+    billing?: 'known' | 'unknown';     // P0-2: billing ステータス（unknown = USAGE_MISSING）
     [key: string]: unknown;
   };
 }
@@ -130,6 +131,9 @@ export async function logFirecrawlCost(
     subsidyId?: string;
     sourceId?: string;
     discoveryItemId?: string;
+    // P0-2: billing ステータス（unknown = USAGE_MISSING）
+    billing?: 'known' | 'unknown';
+    rawUsage?: Record<string, unknown>;
   }
 ): Promise<CostLogResult> {
   return logApiCost(db, {
@@ -146,8 +150,10 @@ export async function logFirecrawlCost(
     subsidyId: params.subsidyId,
     sourceId: params.sourceId,
     discoveryItemId: params.discoveryItemId,
+    rawUsage: params.rawUsage,
     metadata: {
       rate: 0.001, // $0.001 per credit
+      billing: params.billing || 'known', // P0-2: デフォルトはknown
     },
   });
 }
@@ -168,6 +174,9 @@ export async function logVisionCost(
     subsidyId?: string;
     sourceId?: string;
     discoveryItemId?: string;
+    // P0-3: billing ステータス（Visionはknown固定、pages unknownでもルール化済み）
+    billing?: 'known' | 'unknown';
+    rawUsage?: Record<string, unknown>;
   }
 ): Promise<CostLogResult> {
   return logApiCost(db, {
@@ -184,8 +193,10 @@ export async function logVisionCost(
     subsidyId: params.subsidyId,
     sourceId: params.sourceId,
     discoveryItemId: params.discoveryItemId,
+    rawUsage: params.rawUsage,
     metadata: {
       rate: 0.0015, // $0.0015 per page (tier1)
+      billing: params.billing || 'known', // P0-3: Visionはページ数ルール化済みなのでknown
     },
   });
 }

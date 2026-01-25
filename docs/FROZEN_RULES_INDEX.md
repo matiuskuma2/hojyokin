@@ -1,7 +1,7 @@
 # 凍結ルール インデックス（唯一の入口）
 
 **作成日**: 2026-01-25  
-**最終更新**: 2026-01-25 v1  
+**最終更新**: 2026-01-25 v2  
 **ステータス**: 凍結
 
 ---
@@ -14,15 +14,31 @@
 
 ---
 
-## 凍結仕様一覧
+## ドキュメント構成（3カテゴリ）
 
-| カテゴリ | ファイル | 概要 |
-|----------|----------|------|
-| **コスト会計** | [COST_ACCOUNTING_FREEZE_SPEC.md](./COST_ACCOUNTING_FREEZE_SPEC.md) | APIコスト記録・集計・表示の凍結ルール |
-| **データ収集** | [FEED_PIPELINE_SPEC.md](./FEED_PIPELINE_SPEC.md) | RSS/クローラーパイプラインの凍結仕様 |
-| **品質管理** | [QUALITY_FREEZE_CHECKLIST.md](./QUALITY_FREEZE_CHECKLIST.md) | P0-P1タスクと品質ゲートの凍結チェックリスト |
-| **次フェーズ** | [FREEZE_CHECKLIST_NEXT_PHASE.md](./FREEZE_CHECKLIST_NEXT_PHASE.md) | 次フェーズ向け凍結条件と合格基準 |
-| **Agency機能** | [AGENCY_DASHBOARD_FREEZE.md](./AGENCY_DASHBOARD_FREEZE.md) | Agency管理画面の凍結仕様 |
+### 1. Frozen Specs（凍結仕様）
+システム動作を規定する凍結済み仕様
+
+| ファイル | 概要 |
+|----------|------|
+| [COST_ACCOUNTING_FREEZE_SPEC.md](./COST_ACCOUNTING_FREEZE_SPEC.md) | APIコスト記録・集計・表示の凍結ルール（Freeze-COST-0〜4） |
+| [FEED_PIPELINE_SPEC.md](./FEED_PIPELINE_SPEC.md) | RSS/クローラーパイプラインの凍結仕様（Freeze-4） |
+| [AGENCY_DASHBOARD_FREEZE.md](./AGENCY_DASHBOARD_FREEZE.md) | Agency管理画面の凍結仕様 |
+
+### 2. Frozen Checklists（凍結チェックリスト）
+品質管理とリリース判定のためのチェックリスト
+
+| ファイル | 概要 |
+|----------|------|
+| [QUALITY_FREEZE_CHECKLIST.md](./QUALITY_FREEZE_CHECKLIST.md) | P0-P1タスクと品質ゲートの凍結チェックリスト |
+| [FREEZE_CHECKLIST_NEXT_PHASE.md](./FREEZE_CHECKLIST_NEXT_PHASE.md) | 次フェーズ向け凍結条件と合格基準 |
+
+### 3. Review Reports（レビューレポート）
+過去のレビュー・監査結果の記録
+
+| ファイル | 概要 |
+|----------|------|
+| *(今後追加予定)* | 凍結ルール適合性レビュー結果 |
 
 ---
 
@@ -34,9 +50,9 @@
 |--------|------|
 | **Freeze-COST-0** | `api_cost_logs` テーブルが唯一の真実、super_admin はこれのみ表示 |
 | **Freeze-COST-1** | 推定値禁止、実数のみ集計・表示 |
-| **Freeze-COST-2** | 外部API呼び出しは wrapper 経由必須（DB必須化） |
+| **Freeze-COST-2** | 外部API呼び出しは wrapper 経由必須（DB必須化 = CostGuard） |
 | **Freeze-COST-3** | 失敗時もコスト記録（credits消費は発生） |
-| **Freeze-COST-4** | モデル名/単価は metadata_json に保持 |
+| **Freeze-COST-4** | モデル名/単価/billing は metadata_json に保持 |
 
 **実装ファイル**:
 - `src/lib/cost/cost-logger.ts` - コスト記録ロガー
@@ -45,10 +61,18 @@
 - `src/lib/cost/vision.ts` - Vision OCR wrapper
 - `src/routes/admin-dashboard.ts` - 集計API
 
-**追加ルール（P0修正）**:
-- `env.DB` なしでの Firecrawl/Vision 呼び出しは禁止（エラーで拒否）
-- Firecrawl: usage 取得不可時は `USAGE_MISSING` として記録
-- Vision: pages 取得不可時は 1 ページ固定（凍結ルール）
+**P0修正（2026-01-25）**:
+
+| 修正 | 内容 |
+|------|------|
+| **CostGuard** | `env.DB` なしでの Firecrawl/Vision 呼び出しは `firecrawlBlockedByCostGuard` / `visionBlockedByCostGuard` で記録（cooldown とは別） |
+| **billing=unknown** | Firecrawl usage 取得不可時は `cost_usd=0` + `billing=unknown` で記録（USAGE_MISSING） |
+| **billing=known** | Vision は pages unknown でも 1ページルール適用、`billing=known` 固定 |
+| **unknown_billing_count** | super_admin API で `unknown_billing_count` を集計・表示 |
+
+**運用ルール**:
+- `USAGE_MISSING` が出た日の unknown billing は未確定扱い（推定禁止）
+- 月次で `unknown_billing_count` を確認し、Firecrawl API の usage 仕様変更を検知
 
 ---
 
@@ -130,7 +154,7 @@
 
 | エンドポイント | 用途 |
 |----------------|------|
-| `GET /api/admin-ops/cost/summary` | コスト集計サマリー |
+| `GET /api/admin-ops/cost/summary` | コスト集計サマリー（`unknown_billing_count` 含む） |
 | `GET /api/admin-ops/cost/logs` | コストログ一覧 |
 | `GET /api/admin-ops/extraction-queue/summary` | 抽出キュー状況 |
 | `POST /api/admin-ops/extraction-queue/consume` | キュー消化（手動） |
@@ -151,3 +175,4 @@
 | 日付 | バージョン | 変更内容 |
 |------|-----------|----------|
 | 2026-01-25 | v1 | 初版作成（コスト会計凍結、P0修正追加） |
+| 2026-01-25 | v2 | 3カテゴリ構成（Frozen Specs / Checklists / Reports）、CostGuard・billing 詳細追加 |

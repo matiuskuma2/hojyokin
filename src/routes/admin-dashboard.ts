@@ -4664,13 +4664,15 @@ adminDashboard.get('/cost/summary', async (c) => {
     const daysParam = `-${days} days`;
     
     // 1. 総計
+    // P0-2: unknown_billing_count を追加（metadata_json->>'$.billing' = 'unknown' のカウント）
     const summary = await db.prepare(`
       SELECT 
         COALESCE(SUM(cost_usd), 0) as total_cost_usd,
         COALESCE(SUM(units), 0) as total_units,
         COUNT(*) as total_calls,
         SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) as success_count,
-        SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) as failure_count
+        SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) as failure_count,
+        SUM(CASE WHEN json_extract(metadata_json, '$.billing') = 'unknown' THEN 1 ELSE 0 END) as unknown_billing_count
       FROM api_cost_logs
       WHERE created_at >= datetime('now', ?)
     `).bind(daysParam).first<{
@@ -4679,16 +4681,19 @@ adminDashboard.get('/cost/summary', async (c) => {
       total_calls: number;
       success_count: number;
       failure_count: number;
+      unknown_billing_count: number;
     }>();
     
     // 2. サービス別内訳
+    // P0-2: unknown_billing_count をサービス別にも追加
     const byServiceResult = await db.prepare(`
       SELECT 
         service,
         SUM(cost_usd) as cost_usd,
         SUM(units) as units,
         COUNT(*) as calls,
-        SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) as success_count
+        SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) as success_count,
+        SUM(CASE WHEN json_extract(metadata_json, '$.billing') = 'unknown' THEN 1 ELSE 0 END) as unknown_billing_count
       FROM api_cost_logs
       WHERE created_at >= datetime('now', ?)
       GROUP BY service
@@ -4699,6 +4704,7 @@ adminDashboard.get('/cost/summary', async (c) => {
       units: number;
       calls: number;
       success_count: number;
+      unknown_billing_count: number;
     }>();
     
     // 3. 日別推移
@@ -4791,6 +4797,7 @@ adminDashboard.get('/cost/summary', async (c) => {
           total_calls: 0,
           success_count: 0,
           failure_count: 0,
+          unknown_billing_count: 0, // P0-2: unknown_billing_count 追加
         },
         allTime: allTime || { total_cost_usd: 0, total_calls: 0 },
         byService: byServiceResult.results || [],

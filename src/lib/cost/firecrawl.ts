@@ -28,6 +28,8 @@ export interface FirecrawlScrapeResult {
   costUsd: number;
   error?: string;
   httpStatus?: number;
+  // P0-2: billing ステータス
+  billing: 'known' | 'unknown';
 }
 
 export interface FirecrawlContext {
@@ -65,10 +67,11 @@ export async function firecrawlScrape(
   let success = false;
   let text = '';
   let hash = '';
-  // P0-2: usage を API レスポンスから取得、取得できない場合は USAGE_MISSING
+  // P0-2: usage を API レスポンスから取得、取得できない場合は USAGE_MISSING (cost=0 + billing=unknown)
   let credits = 0;
   let usageFromApi = false;
   let rawUsage: Record<string, unknown> | undefined;
+  let billing: 'known' | 'unknown' = 'unknown'; // P0-2: デフォルトはunknown
   
   try {
     const response = await fetch(FIRECRAWL_API_URL, {
@@ -113,28 +116,32 @@ export async function firecrawlScrape(
       if (result.usage?.credits !== undefined) {
         credits = result.usage.credits;
         usageFromApi = true;
+        billing = 'known'; // P0-2: APIから取得できたらknown
       } else if (result.usage?.creditsUsed !== undefined) {
         credits = result.usage.creditsUsed;
         usageFromApi = true;
+        billing = 'known'; // P0-2: APIから取得できたらknown
       }
       
       if (!result.success || !result.data?.markdown) {
         errorCode = 'NO_DATA';
         errorMessage = 'Firecrawl returned no data';
-        // データなしでも 1 credit 消費と仮定
+        // P0-2: データなしでも usage が取得できていればknown、そうでなければunknown
         if (!usageFromApi) {
-          credits = FIRECRAWL_RATES.CREDITS_PER_SCRAPE;
+          credits = 0; // P0-2: USAGE_MISSING 時は cost=0
+          billing = 'unknown';
         }
       } else {
         text = result.data.markdown;
         hash = simpleHash(text);
         success = true;
-        // 成功時に usage が取得できなかった場合は USAGE_MISSING として記録
+        // P0-2: 成功時に usage が取得できなかった場合は USAGE_MISSING (cost=0 + billing=unknown)
         if (!usageFromApi) {
-          credits = FIRECRAWL_RATES.CREDITS_PER_SCRAPE; // デフォルト 1 credit
+          credits = 0; // P0-2: USAGE_MISSING 時は cost=0（実数不明）
+          billing = 'unknown';
           errorCode = 'USAGE_MISSING';
-          errorMessage = 'Firecrawl API did not return usage information; using default 1 credit';
-          // Note: success は true のままだが、usage 不明を errorCode で記録
+          errorMessage = 'Firecrawl API did not return usage information; cost recorded as 0 (unknown billing)';
+          // Note: success は true のままだが、billing=unknown で記録
         }
       }
     }
@@ -146,15 +153,17 @@ export async function firecrawlScrape(
       errorCode = 'NETWORK_ERROR';
       errorMessage = e.message;
     }
-    // エラー時も 1 credit 消費と仮定
-    credits = FIRECRAWL_RATES.CREDITS_PER_SCRAPE;
+    // P0-2: エラー時はusage不明なので cost=0 + billing=unknown
+    credits = 0;
+    billing = 'unknown';
   } finally {
     clearTimeout(timeoutId);
   }
   
-  const costUsd = calculateFirecrawlCost(credits);
+  // P0-2: billing=unknown の場合は cost_usd=0、known の場合のみ実費用計算
+  const costUsd = billing === 'known' ? calculateFirecrawlCost(credits) : 0;
   
-  // Freeze-COST-3: 失敗時もコスト記録（1 credit 消費は発生）
+  // Freeze-COST-3: 失敗時もコスト記録（P0-2: billing=unknown は cost=0 で記録）
   await logFirecrawlCost(db, {
     credits,
     costUsd,
@@ -166,6 +175,8 @@ export async function firecrawlScrape(
     subsidyId,
     sourceId,
     discoveryItemId,
+    billing, // P0-2: billing ステータス
+    rawUsage,
   });
   
   return {
@@ -176,6 +187,7 @@ export async function firecrawlScrape(
     costUsd,
     error: errorMessage,
     httpStatus,
+    billing, // P0-2: billing ステータスを返却
   };
 }
 

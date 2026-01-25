@@ -29,6 +29,8 @@ export interface VisionOcrResult {
   costUsd: number;
   error?: string;
   httpStatus?: number;
+  // P0-3: billing ステータス（Visionはknown固定、pages unknownでも1ページルール）
+  billing: 'known' | 'unknown';
 }
 
 export interface VisionContext {
@@ -172,6 +174,9 @@ export async function visionOcr(
   const costUsd = calculateVisionCost(pagesProcessed);
   
   // Freeze-COST-3: 失敗時もコスト記録
+  // P0-3: Visionはknown固定（pages unknownでも1ページルール化済み）
+  const billing: 'known' | 'unknown' = 'known';
+  
   await logVisionCost(db, {
     pages: pagesProcessed,
     costUsd,
@@ -183,6 +188,7 @@ export async function visionOcr(
     subsidyId,
     sourceId,
     discoveryItemId,
+    billing, // P0-3: known固定
   });
   
   return {
@@ -193,6 +199,7 @@ export async function visionOcr(
     costUsd,
     error: errorMessage,
     httpStatus,
+    billing, // P0-3: billing ステータス
   };
 }
 
