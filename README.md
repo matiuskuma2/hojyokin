@@ -6,16 +6,43 @@
 - **Version**: 3.4.0
 - **Goal**: 企業情報を登録するだけで、最適な補助金・助成金を自動でマッチング＆申請書ドラフト作成
 
-### 🎉 最新アップデート (v3.4.0) - APIコスト会計凍結
+### 🎉 最新アップデート (v4.0.0) - jGrants V2 + OpenAI PDF抽出 + Cron統合
+
+**v4.0.0 リリース（2026-01-26）:**
+
+| 項目 | 状態 | 詳細 |
+|------|------|------|
+| **jGrants V2 API** | ✅ | 125件エンリッチ済み、workflow/PDF URL抽出 |
+| **OpenAI PDF抽出** | ✅ | Firecrawl + GPT-4o-miniで構造化データ抽出 |
+| **extract_pdf ハンドラー** | ✅ | consume-extractions で PDF→構造化データ変換 |
+| **Cron Workers統合** | ✅ | 重複Worker削除、既存Workerに機能統合 |
+| **subsidy_cache修正** | ✅ | updated_at → cached_at カラム参照修正 |
+
+**Cron Workers構成（v4.0）:**
+| Worker | スケジュール | 役割 |
+|--------|------------|------|
+| `hojyokin-cron-feed` | 21:00 UTC (06:00 JST) | J-Net21 + jGrants sync/enrich |
+| `hojyokin-queue-cron` | 5分ごと | extraction_queue enqueue/consume |
+| `hojyokin-cron` (workers/cron) | 18:00 UTC (03:00 JST) | source_registry/subsidy_lifecycle 処理 |
+
+**データ状況（v4.0）:**
+| Source | Total | Wall Chat Ready | V2 Enriched |
+|--------|-------|-----------------|-------------|
+| jgrants | 2,894 | 5 | 125 |
+| tokyo-kosha | 23 | 23 | - |
+| tokyo-hataraku | 15 | 15 | - |
+| manual | 8 | 3 | - |
+
+### 📋 v3.4.0 - APIコスト会計凍結
 
 **v3.4.0 リリース（2026-01-25）:**
 
 | 項目 | 状態 | 詳細 |
 |------|------|------|
-| **api_cost_logs** | ✅ NEW | 実数コスト記録テーブル（Freeze-COST-0: 唯一の真実） |
-| **コストwrapper** | ✅ NEW | Firecrawl/Vision OCR の直 fetch 禁止、wrapper 経由必須 |
-| **super_admin集計API** | ✅ NEW | GET /api/admin-ops/cost/summary, /cost/logs |
-| **凍結仕様書** | ✅ NEW | docs/COST_ACCOUNTING_FREEZE_SPEC.md |
+| **api_cost_logs** | ✅ | 実数コスト記録テーブル（Freeze-COST-0: 唯一の真実） |
+| **コストwrapper** | ✅ | Firecrawl/Vision OCR の直 fetch 禁止、wrapper 経由必須 |
+| **super_admin集計API** | ✅ | GET /api/admin-ops/cost/summary, /cost/logs |
+| **凍結仕様書** | ✅ | docs/COST_ACCOUNTING_FREEZE_SPEC.md |
 
 **コスト会計凍結ルール（Freeze-COST-0〜4）:**
 | ルール | 内容 |
