@@ -21,24 +21,63 @@ export type DetailJSON = {
   title?: string;
   overview?: string;
   description?: string;
-  application_requirements?: string | string[];
-  eligible_expenses?: string | string[];
-  required_documents?: string | string[];
-  required_forms?: RequiredForm[];
-  acceptance_start_datetime?: string;
-  acceptance_end_datetime?: string;
-  deadline?: string;
+  
+  // === 金額・補助率情報 ===
+  subsidy_max_limit?: number;         // 上限金額（円）
+  subsidy_min_limit?: number;         // 下限金額（円）
+  subsidy_rate?: string;              // 補助率（例: "2/3", "1/2"）
+  subsidy_rate_detail?: string;       // 補助率詳細（例: "小規模事業者3/4"）
+  
+  // === 申請要件・対象 ===
+  application_requirements?: string | string[];  // 申請要件
+  eligible_expenses?: string | string[];         // 対象経費
+  target_businesses?: string | string[];         // 対象事業
+  target_applicants?: string | string[];         // 対象者（法人・個人・その他）
+  target_region?: string | string[];             // 対象地域
+  target_industry?: string | string[];           // 対象業種
+  target_employee_count?: string;                // 対象従業員数
+  
+  // === 書類・様式 ===
+  required_documents?: string | string[];        // 必要書類
+  required_forms?: RequiredForm[];               // 様式一覧
+  
+  // === スケジュール ===
+  acceptance_start_datetime?: string;            // 募集開始日時
+  acceptance_end_datetime?: string;              // 募集終了日時
+  deadline?: string;                             // 締切（テキスト）
+  application_period?: string;                   // 申請期間（テキスト）
+  
+  // === URL・添付ファイル ===
   pdf_urls?: string[];
   pdfUrls?: string[];
   detailUrl?: string;
   related_url?: string;
   official_links?: { top?: string };
   attachments?: Array<{ name: string; url: string }>;
-  // 電子申請フラグ（true の場合、required_forms 不要で壁打ち可）
-  is_electronic_application?: boolean;
-  // 電子申請システムのURL
-  electronic_application_url?: string;
-  // その他のフィールド
+  
+  // === 電子申請 ===
+  is_electronic_application?: boolean;           // 電子申請フラグ
+  electronic_application_url?: string;           // 電子申請システムURL
+  electronic_application_system?: string;        // 電子申請システム名
+  
+  // === お問い合わせ先 ===
+  contact?: {
+    organization?: string;   // 組織名
+    department?: string;     // 部署名
+    phone?: string;          // 電話番号
+    fax?: string;            // FAX番号
+    email?: string;          // メールアドレス
+    address?: string;        // 住所
+    hours?: string;          // 受付時間
+    url?: string;            // お問い合わせページURL
+  };
+  
+  // === メタ情報 ===
+  fiscal_year?: string;                          // 年度（例: "令和5年度"）
+  implementing_agency?: string;                  // 実施機関
+  funding_source?: string;                       // 財源（国・都道府県・市区町村）
+  
+  // === 拡張用 ===
   [key: string]: any;
 };
 

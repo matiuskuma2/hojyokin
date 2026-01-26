@@ -141,15 +141,50 @@ export interface JGrantsSearchResult {
 }
 
 export interface JGrantsDetailResult extends JGrantsSearchResult {
+  // 基本情報
   description?: string;
-  target_area_detail?: string;
-  application_requirements?: string;
-  eligible_expenses?: string;
-  required_documents?: string;
-  application_procedure?: string;
-  contact_info?: string;
+  overview?: string;                      // 事業概要
+  
+  // 対象・要件
+  target_area_detail?: string;            // 対象地域詳細
+  target_businesses?: string;             // 対象事業
+  target_applicants?: string;             // 対象者詳細（法人・個人等）
+  application_requirements?: string;      // 申請要件
+  eligible_expenses?: string;             // 対象経費
+  
+  // 金額情報
+  subsidy_min_limit?: number;             // 補助下限額
+  subsidy_rate_detail?: string;           // 補助率詳細
+  
+  // スケジュール
+  application_period?: string;            // 申請期間（テキスト）
+  deadline?: string;                      // 締切
+  
+  // 書類・手続き
+  required_documents?: string;            // 必要書類
+  application_procedure?: string;         // 申請手続き
+  
+  // お問い合わせ
+  contact_info?: string;                  // お問い合わせ（テキスト）
+  contact?: {                             // お問い合わせ（構造化）
+    organization?: string;
+    department?: string;
+    phone?: string;
+    fax?: string;
+    email?: string;
+    address?: string;
+    hours?: string;
+  };
+  
+  // URL・添付ファイル
   related_url?: string;
+  official_url?: string;                  // 公式ページURL
   attachments?: JGrantsAttachment[];
+  
+  // メタ情報
+  fiscal_year?: string;                   // 年度
+  implementing_agency?: string;           // 実施機関
+  funding_source?: string;                // 財源
 }
 
 export interface JGrantsAttachment {
