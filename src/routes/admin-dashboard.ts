@@ -4950,4 +4950,334 @@ adminDashboard.get('/cost/logs', async (c) => {
   }
 });
 
+// ============================================================
+// Discovery Items 統計（super_admin限定）
+// ============================================================
+
+/**
+ * discovery_items のステージ別・ソース別統計
+ * 
+ * GET /api/admin-ops/discovery/stats
+ * 
+ * 不足フィールド分析、ステージ分布、促進状況を可視化
+ */
+adminDashboard.get('/discovery/stats', async (c) => {
+  const db = c.env.DB;
+  const user = c.get('user');
+  
+  // super_admin 限定
+  if (user.role !== 'super_admin') {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'FORBIDDEN', message: 'super_admin only' },
+    }, 403);
+  }
+  
+  try {
+    // 1. ソース×ステージ別件数
+    const stageDistribution = await db.prepare(`
+      SELECT 
+        source_id,
+        source_type,
+        stage,
+        COUNT(*) as count
+      FROM discovery_items
+      GROUP BY source_id, source_type, stage
+      ORDER BY source_id, stage
+    `).all<{
+      source_id: string;
+      source_type: string;
+      stage: string;
+      count: number;
+    }>();
+    
+    // 2. フィールド充足率
+    const fieldCompleteness = await db.prepare(`
+      SELECT
+        COUNT(*) as total,
+        SUM(CASE WHEN title IS NOT NULL AND LENGTH(title) > 10 THEN 1 ELSE 0 END) as has_title,
+        SUM(CASE WHEN summary IS NOT NULL AND LENGTH(summary) > 0 THEN 1 ELSE 0 END) as has_summary,
+        SUM(CASE WHEN prefecture_code IS NOT NULL THEN 1 ELSE 0 END) as has_prefecture,
+        SUM(CASE WHEN url IS NOT NULL THEN 1 ELSE 0 END) as has_url,
+        SUM(CASE WHEN quality_score >= 50 THEN 1 ELSE 0 END) as tier1_ready,
+        SUM(CASE WHEN quality_score >= 70 THEN 1 ELSE 0 END) as tier2_ready
+      FROM discovery_items
+    `).first<{
+      total: number;
+      has_title: number;
+      has_summary: number;
+      has_prefecture: number;
+      has_url: number;
+      tier1_ready: number;
+      tier2_ready: number;
+    }>();
+    
+    // 3. 今日の昇格状況
+    const today = new Date().toISOString().split('T')[0];
+    const todayPromoted = await db.prepare(`
+      SELECT 
+        source_id,
+        COUNT(*) as promoted_count
+      FROM discovery_items
+      WHERE date(promoted_at) = ?
+      GROUP BY source_id
+    `).bind(today).all<{
+      source_id: string;
+      promoted_count: number;
+    }>();
+    
+    // 4. 最近のfeed_failures（discover段階）
+    const recentFailures = await db.prepare(`
+      SELECT 
+        source_id,
+        error_type,
+        COUNT(*) as count
+      FROM feed_failures
+      WHERE stage = 'discover'
+        AND created_at >= datetime('now', '-24 hours')
+      GROUP BY source_id, error_type
+      ORDER BY count DESC
+      LIMIT 20
+    `).all<{
+      source_id: string;
+      error_type: string;
+      count: number;
+    }>();
+    
+    // 5. subsidy_cache のソース別件数
+    const cacheBySource = await db.prepare(`
+      SELECT 
+        source,
+        COUNT(*) as count,
+        SUM(CASE WHEN wall_chat_ready = 1 THEN 1 ELSE 0 END) as wall_chat_ready_count
+      FROM subsidy_cache
+      GROUP BY source
+      ORDER BY count DESC
+    `).all<{
+      source: string;
+      count: number;
+      wall_chat_ready_count: number;
+    }>();
+    
+    // 6. quality_score 分布
+    const scoreDistribution = await db.prepare(`
+      SELECT 
+        CASE 
+          WHEN quality_score >= 100 THEN '100+'
+          WHEN quality_score >= 70 THEN '70-99'
+          WHEN quality_score >= 50 THEN '50-69'
+          WHEN quality_score >= 30 THEN '30-49'
+          ELSE '0-29'
+        END as score_range,
+        COUNT(*) as count
+      FROM discovery_items
+      GROUP BY score_range
+      ORDER BY 
+        CASE score_range
+          WHEN '100+' THEN 1
+          WHEN '70-99' THEN 2
+          WHEN '50-69' THEN 3
+          WHEN '30-49' THEN 4
+          ELSE 5
+        END
+    `).all<{
+      score_range: string;
+      count: number;
+    }>();
+    
+    // 充足率計算
+    const total = fieldCompleteness?.total || 1;
+    const completenessRates = {
+      title: Math.round(((fieldCompleteness?.has_title || 0) / total) * 100),
+      summary: Math.round(((fieldCompleteness?.has_summary || 0) / total) * 100),
+      prefecture: Math.round(((fieldCompleteness?.has_prefecture || 0) / total) * 100),
+      url: Math.round(((fieldCompleteness?.has_url || 0) / total) * 100),
+      tier1_rate: Math.round(((fieldCompleteness?.tier1_ready || 0) / total) * 100),
+      tier2_rate: Math.round(((fieldCompleteness?.tier2_ready || 0) / total) * 100),
+    };
+    
+    return c.json<ApiResponse<{
+      stage_distribution: typeof stageDistribution.results;
+      field_completeness: typeof fieldCompleteness;
+      completeness_rates: typeof completenessRates;
+      today_promoted: typeof todayPromoted.results;
+      recent_failures: typeof recentFailures.results;
+      cache_by_source: typeof cacheBySource.results;
+      score_distribution: typeof scoreDistribution.results;
+      generated_at: string;
+    }>>({
+      success: true,
+      data: {
+        stage_distribution: stageDistribution.results || [],
+        field_completeness: fieldCompleteness!,
+        completeness_rates,
+        today_promoted: todayPromoted.results || [],
+        recent_failures: recentFailures.results || [],
+        cache_by_source: cacheBySource.results || [],
+        score_distribution: scoreDistribution.results || [],
+        generated_at: new Date().toISOString(),
+      },
+    });
+    
+  } catch (error) {
+    console.error('Discovery stats error:', error);
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: 'INTERNAL_ERROR',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      },
+    }, 500);
+  }
+});
+
+/**
+ * discovery_items の不足フィールド詳細
+ * 
+ * GET /api/admin-ops/discovery/missing-fields
+ * 
+ * どのフィールドが欠けているアイテムがどれだけあるかを詳細に分析
+ */
+adminDashboard.get('/discovery/missing-fields', async (c) => {
+  const db = c.env.DB;
+  const user = c.get('user');
+  
+  // super_admin 限定
+  if (user.role !== 'super_admin') {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'FORBIDDEN', message: 'super_admin only' },
+    }, 403);
+  }
+  
+  try {
+    // 不足パターン分析
+    // 各組み合わせがどれだけあるか
+    const missingPatterns = await db.prepare(`
+      SELECT 
+        CASE WHEN title IS NULL OR LENGTH(title) <= 10 THEN 1 ELSE 0 END as missing_title,
+        CASE WHEN summary IS NULL OR LENGTH(summary) = 0 THEN 1 ELSE 0 END as missing_summary,
+        CASE WHEN prefecture_code IS NULL THEN 1 ELSE 0 END as missing_prefecture,
+        CASE WHEN url IS NULL THEN 1 ELSE 0 END as missing_url,
+        COUNT(*) as count
+      FROM discovery_items
+      WHERE stage IN ('raw', 'validated')
+      GROUP BY missing_title, missing_summary, missing_prefecture, missing_url
+      ORDER BY count DESC
+      LIMIT 20
+    `).all<{
+      missing_title: number;
+      missing_summary: number;
+      missing_prefecture: number;
+      missing_url: number;
+      count: number;
+    }>();
+    
+    // タイトルなし（最も致命的）
+    const noTitleSamples = await db.prepare(`
+      SELECT id, url, stage, quality_score, first_seen_at
+      FROM discovery_items
+      WHERE (title IS NULL OR LENGTH(title) <= 10)
+        AND stage IN ('raw', 'validated')
+      ORDER BY first_seen_at DESC
+      LIMIT 10
+    `).all<{
+      id: string;
+      url: string;
+      stage: string;
+      quality_score: number;
+      first_seen_at: string;
+    }>();
+    
+    // 概要なし
+    const noSummarySamples = await db.prepare(`
+      SELECT id, title, url, stage, quality_score, first_seen_at
+      FROM discovery_items
+      WHERE (summary IS NULL OR LENGTH(summary) = 0)
+        AND title IS NOT NULL AND LENGTH(title) > 10
+        AND stage IN ('raw', 'validated')
+      ORDER BY first_seen_at DESC
+      LIMIT 10
+    `).all<{
+      id: string;
+      title: string;
+      url: string;
+      stage: string;
+      quality_score: number;
+      first_seen_at: string;
+    }>();
+    
+    // 都道府県なし
+    const noPrefectureSamples = await db.prepare(`
+      SELECT id, title, url, stage, quality_score, first_seen_at
+      FROM discovery_items
+      WHERE prefecture_code IS NULL
+        AND title IS NOT NULL AND LENGTH(title) > 10
+        AND stage IN ('raw', 'validated')
+      ORDER BY first_seen_at DESC
+      LIMIT 10
+    `).all<{
+      id: string;
+      title: string;
+      url: string;
+      stage: string;
+      quality_score: number;
+      first_seen_at: string;
+    }>();
+    
+    // 改善可能件数（URLはあるが他が欠けている）
+    const improvableCounts = await db.prepare(`
+      SELECT 
+        SUM(CASE WHEN (title IS NULL OR LENGTH(title) <= 10) AND url IS NOT NULL THEN 1 ELSE 0 END) as needs_title,
+        SUM(CASE WHEN (summary IS NULL OR LENGTH(summary) = 0) AND url IS NOT NULL THEN 1 ELSE 0 END) as needs_summary,
+        SUM(CASE WHEN prefecture_code IS NULL AND url IS NOT NULL THEN 1 ELSE 0 END) as needs_prefecture
+      FROM discovery_items
+      WHERE stage IN ('raw', 'validated')
+    `).first<{
+      needs_title: number;
+      needs_summary: number;
+      needs_prefecture: number;
+    }>();
+    
+    return c.json<ApiResponse<{
+      missing_patterns: typeof missingPatterns.results;
+      samples: {
+        no_title: typeof noTitleSamples.results;
+        no_summary: typeof noSummarySamples.results;
+        no_prefecture: typeof noPrefectureSamples.results;
+      };
+      improvable_counts: typeof improvableCounts;
+      recommendation: string;
+    }>>({
+      success: true,
+      data: {
+        missing_patterns: missingPatterns.results || [],
+        samples: {
+          no_title: noTitleSamples.results || [],
+          no_summary: noSummarySamples.results || [],
+          no_prefecture: noPrefectureSamples.results || [],
+        },
+        improvable_counts: improvableCounts!,
+        recommendation: improvableCounts?.needs_title && improvableCounts.needs_title > 100
+          ? 'タイトルが欠けているアイテムが多数あります。詳細ページのスクレイピングを推奨します。'
+          : improvableCounts?.needs_summary && improvableCounts.needs_summary > 100
+          ? '概要が欠けているアイテムが多数あります。詳細ページから概要を抽出することを推奨します。'
+          : improvableCounts?.needs_prefecture && improvableCounts.needs_prefecture > 100
+          ? '都道府県情報が欠けているアイテムが多数あります。都道府県の推論ロジック追加を推奨します。'
+          : 'フィールド充足率は良好です。',
+      },
+    });
+    
+  } catch (error) {
+    console.error('Missing fields analysis error:', error);
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: 'INTERNAL_ERROR',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      },
+    }, 500);
+  }
+});
+
 export default adminDashboard;

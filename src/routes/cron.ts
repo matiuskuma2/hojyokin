@@ -4320,12 +4320,14 @@ cron.post('/promote-jnet21', async (c) => {
     // - 都道府県コードあり: +20点
     // - URLあり: +20点
     // 合計 50点以上で validated
+    // v4.0.0: LIMIT拡大 (500 → 2000)
+    // 一覧クロールで大量にrawが入るため、処理能力を拡大
     const rawItems = await db.prepare(`
       SELECT id, title, summary, url, prefecture_code, raw_json
       FROM discovery_items
       WHERE source_id = ? AND stage = 'raw'
       ORDER BY first_seen_at DESC
-      LIMIT 500
+      LIMIT 2000
     `).bind(SOURCE_KEY).all<{
       id: string;
       title: string;
@@ -4386,12 +4388,14 @@ cron.post('/promote-jnet21', async (c) => {
     console.log(`[Promote-J-Net21] Validation: validated=${itemsValidated}, rejected=${itemsSkipped}`);
     
     // Step 2: validated → promoted (subsidy_cache へ UPSERT)
+    // v4.0.0: LIMIT拡大 (100 → 500)
+    // 検索に出す件数を早く増やすため
     const validatedItems = await db.prepare(`
       SELECT id, dedupe_key, title, summary, url, prefecture_code, content_hash, quality_score, raw_json
       FROM discovery_items
       WHERE source_id = ? AND stage = 'validated'
       ORDER BY quality_score DESC, first_seen_at DESC
-      LIMIT 100
+      LIMIT 500
     `).bind(SOURCE_KEY).all<{
       id: string;
       dedupe_key: string;
@@ -4552,5 +4556,310 @@ cron.post('/promote-jnet21', async (c) => {
     }, 500);
   }
 });
+
+/**
+ * J-Net21 一覧ページクロール (全件取得拡張)
+ * 
+ * POST /api/cron/sync-jnet21-catalog
+ * 
+ * v4.0.0: 一覧ページから全記事URLを取得し discovery_items へ投入
+ * - Firecrawl で一覧ページをクロール（コスト: 1 credit/page）
+ * - 記事URL抽出（/snavi/articles/{id}）
+ * - discovery_items (stage=raw) へ UPSERT
+ * - RSS (sync-jnet21) の補完/代替
+ * 
+ * 推奨Cronスケジュール: 毎日 05:00 UTC (日本時間14:00)
+ * ※ sync-jnet21 (RSS) よりも先に実行推奨
+ */
+cron.post('/sync-jnet21-catalog', async (c) => {
+  const db = c.env.DB;
+  const FIRECRAWL_API_KEY = c.env.FIRECRAWL_API_KEY;
+  
+  // P2-0: CRON_SECRET 検証
+  const authResult = verifyCronSecret(c);
+  if (!authResult.valid) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: authResult.error!.code,
+        message: authResult.error!.message,
+      },
+    }, authResult.error!.status);
+  }
+  
+  // Firecrawl APIキーチェック
+  if (!FIRECRAWL_API_KEY) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: 'CONFIG_ERROR',
+        message: 'FIRECRAWL_API_KEY not configured',
+      },
+    }, 500);
+  }
+  
+  // P2-0: 実行ログ開始
+  let runId: string | null = null;
+  try {
+    runId = await startCronRun(db, 'sync-jnet21-catalog', 'cron');
+  } catch (logErr) {
+    console.warn('[J-Net21-Catalog] Failed to start cron_run log:', logErr);
+  }
+  
+  const SOURCE_KEY = 'src-jnet21-catalog';
+  const errors: string[] = [];
+  let itemsNew = 0;
+  let itemsUpdated = 0;
+  let itemsSkipped = 0;
+  let totalArticles = 0;
+  let pagesCrawled = 0;
+  let firecrawlCost = 0;
+  
+  // パラメータ（将来的にクエリパラメータで上書き可能）
+  const MAX_PAGES = 100;      // 最大クロールページ数
+  const PER_PAGE = 50;        // 1ページあたりの記事数
+  const START_PAGE = 1;       // 開始ページ
+  
+  try {
+    console.log('[J-Net21-Catalog] Starting catalog crawl...');
+    
+    // Firecrawl wrapper をインポート
+    const { firecrawlScrape, FirecrawlScrapeResult } = await import('../lib/cost/firecrawl');
+    
+    // ページネーションループ
+    let hasNextPage = true;
+    let currentPage = START_PAGE;
+    
+    while (hasNextPage && currentPage <= MAX_PAGES) {
+      // J-Net21 一覧URL（補助金・助成金・融資カテゴリ）
+      // category[]=2 は「補助金・助成金・融資」
+      const listUrl = `https://j-net21.smrj.go.jp/snavi/articles?category%5B%5D=2&page=${currentPage}&num=${PER_PAGE}`;
+      
+      console.log(`[J-Net21-Catalog] Fetching page ${currentPage}: ${listUrl}`);
+      
+      // Freeze-COST-2: Firecrawl wrapper 経由
+      const result = await firecrawlScrape(listUrl, {
+        db,
+        apiKey: FIRECRAWL_API_KEY,
+        sourceId: SOURCE_KEY,
+      });
+      
+      pagesCrawled++;
+      firecrawlCost += result.costUsd;
+      
+      if (!result.success) {
+        console.warn(`[J-Net21-Catalog] Page ${currentPage} failed: ${result.error}`);
+        errors.push(`Page ${currentPage}: ${result.error}`);
+        
+        // ★ 失敗を feed_failures に記録
+        try {
+          await recordFailure(
+            db,
+            `jnet21-catalog-page-${currentPage}`,
+            SOURCE_KEY,
+            listUrl,
+            'discover',
+            'FIRECRAWL_FAILED',
+            result.error || 'Unknown error'
+          );
+        } catch (recordErr) {
+          console.warn('[J-Net21-Catalog] Failed to record failure:', recordErr);
+        }
+        
+        // 3回連続失敗で中断
+        if (errors.length >= 3) {
+          console.error('[J-Net21-Catalog] Too many errors, stopping crawl');
+          break;
+        }
+        
+        currentPage++;
+        continue;
+      }
+      
+      // 記事URL抽出（/snavi/articles/{数字}）
+      const articleUrls = extractJNet21ArticleUrls(result.text);
+      
+      console.log(`[J-Net21-Catalog] Page ${currentPage}: found ${articleUrls.length} articles`);
+      
+      if (articleUrls.length === 0) {
+        // 記事がない = 最終ページに到達
+        hasNextPage = false;
+        console.log(`[J-Net21-Catalog] No more articles, stopping at page ${currentPage}`);
+        break;
+      }
+      
+      totalArticles += articleUrls.length;
+      
+      // discovery_items へ UPSERT
+      for (const articleUrl of articleUrls) {
+        try {
+          const urlHash = await calculateContentHash(articleUrl);
+          const dedupeKey = `src-jnet21:${urlHash.slice(0, 8)}`;
+          const itemId = `jnet21-${urlHash.slice(0, 8)}`;
+          const now = new Date().toISOString();
+          
+          // タイトルは後で詳細ページから取得するため、URLから簡易生成
+          const articleId = articleUrl.match(/\/articles\/(\d+)/)?.[1] || '';
+          const tempTitle = `J-Net21 記事 #${articleId}`;
+          
+          // 既存レコードチェック
+          const existing = await db.prepare(`
+            SELECT id, content_hash, stage FROM discovery_items WHERE dedupe_key = ?
+          `).bind(dedupeKey).first<{ id: string; content_hash: string; stage: string }>();
+          
+          if (existing) {
+            // 既存 → last_seen_at 更新のみ
+            await db.prepare(`
+              UPDATE discovery_items SET last_seen_at = ?, updated_at = ? WHERE id = ?
+            `).bind(now, now, existing.id).run();
+            itemsSkipped++;
+          } else {
+            // 新規 → stage='raw' で投入
+            await db.prepare(`
+              INSERT INTO discovery_items (
+                id, dedupe_key, source_id, source_type, title, summary, url,
+                prefecture_code, stage, quality_score, content_hash, raw_json,
+                first_seen_at, last_seen_at, created_at, updated_at
+              ) VALUES (?, ?, ?, 'catalog', ?, '', ?, NULL, 'raw', 0, ?, ?, ?, ?, ?, ?)
+            `).bind(
+              itemId,
+              dedupeKey,
+              SOURCE_KEY,
+              tempTitle,
+              articleUrl,
+              urlHash,
+              JSON.stringify({
+                catalog_page: currentPage,
+                article_id: articleId,
+                discovered_at: now,
+              }),
+              now,
+              now,
+              now,
+              now
+            ).run();
+            itemsNew++;
+          }
+        } catch (itemErr) {
+          const errMsg = itemErr instanceof Error ? itemErr.message : String(itemErr);
+          errors.push(`Article ${articleUrl}: ${errMsg}`);
+          console.warn(`[J-Net21-Catalog] Item error:`, itemErr);
+        }
+      }
+      
+      // 次ページ判定（記事数がPER_PAGE未満なら最終ページ）
+      if (articleUrls.length < PER_PAGE) {
+        hasNextPage = false;
+        console.log(`[J-Net21-Catalog] Reached last page (${articleUrls.length} < ${PER_PAGE})`);
+      } else {
+        currentPage++;
+        
+        // レート制限: 500ms待機
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+    }
+    
+    console.log(`[J-Net21-Catalog] Completed: pages=${pagesCrawled}, articles=${totalArticles}, new=${itemsNew}, updated=${itemsUpdated}, skipped=${itemsSkipped}`);
+    
+    // P2-0: 実行ログ完了
+    if (runId) {
+      try {
+        await finishCronRun(db, runId, errors.length > 0 ? 'partial' : 'success', {
+          items_processed: totalArticles,
+          items_inserted: itemsNew,
+          items_updated: itemsUpdated,
+          items_skipped: itemsSkipped,
+          error_count: errors.length,
+          errors: errors.slice(0, 10),
+          metadata: {
+            source_key: SOURCE_KEY,
+            pages_crawled: pagesCrawled,
+            firecrawl_cost_usd: firecrawlCost,
+          },
+        });
+      } catch (logErr) {
+        console.warn('[J-Net21-Catalog] Failed to finish cron_run log:', logErr);
+      }
+    }
+    
+    return c.json<ApiResponse<{
+      message: string;
+      pages_crawled: number;
+      articles_found: number;
+      new_items: number;
+      updated_items: number;
+      skipped_items: number;
+      firecrawl_cost_usd: number;
+      errors: number;
+      run_id?: string;
+    }>>({
+      success: true,
+      data: {
+        message: 'J-Net21 catalog sync completed',
+        pages_crawled: pagesCrawled,
+        articles_found: totalArticles,
+        new_items: itemsNew,
+        updated_items: itemsUpdated,
+        skipped_items: itemsSkipped,
+        firecrawl_cost_usd: firecrawlCost,
+        errors: errors.length,
+        run_id: runId ?? undefined,
+      },
+    });
+    
+  } catch (error) {
+    console.error('[J-Net21-Catalog] Error:', error);
+    
+    if (runId) {
+      try {
+        await finishCronRun(db, runId, 'failed', {
+          items_processed: totalArticles,
+          error_count: 1,
+          errors: [error instanceof Error ? error.message : String(error)],
+          metadata: {
+            pages_crawled: pagesCrawled,
+            firecrawl_cost_usd: firecrawlCost,
+          },
+        });
+      } catch (logErr) {
+        console.warn('[J-Net21-Catalog] Failed to finish cron_run log:', logErr);
+      }
+    }
+    
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: 'JNET21_CATALOG_ERROR',
+        message: `J-Net21 catalog sync failed: ${error instanceof Error ? error.message : String(error)}`,
+      },
+    }, 500);
+  }
+});
+
+/**
+ * J-Net21 記事URLを抽出
+ * 
+ * パターン: /snavi/articles/{数字}
+ * 絶対URLに変換して返却
+ */
+function extractJNet21ArticleUrls(markdown: string): string[] {
+  const BASE_URL = 'https://j-net21.smrj.go.jp';
+  const urls = new Set<string>();
+  
+  // パターン1: 相対URL (/snavi/articles/123456)
+  const relativePattern = /\/snavi\/articles\/(\d+)/g;
+  let match;
+  while ((match = relativePattern.exec(markdown)) !== null) {
+    urls.add(`${BASE_URL}/snavi/articles/${match[1]}`);
+  }
+  
+  // パターン2: 絶対URL (https://j-net21.smrj.go.jp/snavi/articles/123456)
+  const absolutePattern = /https?:\/\/j-net21\.smrj\.go\.jp\/snavi\/articles\/(\d+)/g;
+  while ((match = absolutePattern.exec(markdown)) !== null) {
+    urls.add(`${BASE_URL}/snavi/articles/${match[1]}`);
+  }
+  
+  return Array.from(urls);
+}
 
 export default cron;
