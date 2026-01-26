@@ -2285,12 +2285,14 @@ cron.post('/enrich-jgrants', async (c) => {
     console.warn('[Enrich-JGrants] Failed to start cron_run log:', logErr);
   }
   
-  // 設定
-  const MAX_ITEMS_PER_RUN = 50; // v2: 50件に増加
-  const JGRANTS_DETAIL_API_V2 = 'https://api.jgrants-portal.go.jp/exp/v2/public/subsidies/id';
-  
   // forceモード: v2エンリッチ済みでもeligible_expensesがないものを再処理
   const forceMode = c.req.query('force') === 'true';
+  // allモード: 期限切れも含めて全件を対象にする
+  const allMode = c.req.query('all') === 'true';
+  
+  // 設定 (Cloudflare Worker 30秒制限のため10件に制限)
+  const MAX_ITEMS_PER_RUN = 10;
+  const JGRANTS_DETAIL_API_V2 = 'https://api.jgrants-portal.go.jp/exp/v2/public/subsidies/id';
   
   let itemsEnriched = 0;
   let itemsSkipped = 0;
@@ -2487,6 +2489,11 @@ cron.post('/enrich-jgrants', async (c) => {
       ? `(detail_json IS NULL OR detail_json NOT LIKE '%"enriched_version":"v2"%' OR (json_extract(detail_json, '$.eligible_expenses') IS NULL AND detail_json LIKE '%"enriched_version":"v2"%'))`
       : `(detail_json IS NULL OR detail_json NOT LIKE '%"enriched_version":"v2"%')`;
     
+    // allモードの場合は期限切れも含める
+    const dateCondition = allMode 
+      ? '1=1' 
+      : `(acceptance_end_datetime IS NULL OR acceptance_end_datetime > datetime('now'))`;
+    
     const targets = await db.prepare(`
       SELECT 
         id, title, detail_json, acceptance_end_datetime,
@@ -2499,7 +2506,7 @@ cron.post('/enrich-jgrants', async (c) => {
       WHERE source = 'jgrants'
         AND wall_chat_ready = 0
         AND ${enrichmentCondition}
-        AND (acceptance_end_datetime IS NULL OR acceptance_end_datetime > datetime('now'))
+        AND ${dateCondition}
         AND (${allCondition})
       ORDER BY 
         priority_tier ASC,
@@ -2526,7 +2533,7 @@ cron.post('/enrich-jgrants', async (c) => {
         WHERE source = 'jgrants'
           AND wall_chat_ready = 0
           AND ${enrichmentCondition}
-          AND (acceptance_end_datetime IS NULL OR acceptance_end_datetime > datetime('now'))
+          AND ${dateCondition}
         ORDER BY acceptance_end_datetime ASC
         LIMIT ?
       `).bind(MAX_ITEMS_PER_RUN).all<{
