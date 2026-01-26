@@ -2564,10 +2564,19 @@ cron.post('/enrich-jgrants', async (c) => {
       try {
         console.log(`[Enrich-JGrants-v2] Fetching (Tier${target.priority_tier}): ${target.id} - ${target.title.substring(0, 50)}`);
         
-        // V2 API から詳細取得
-        const response = await fetch(`${JGRANTS_DETAIL_API_V2}/${target.id}`, {
-          headers: { 'Accept': 'application/json' },
-        });
+        // V2 API から詳細取得（タイムアウト5秒）
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 5000);
+        
+        let response: Response;
+        try {
+          response = await fetch(`${JGRANTS_DETAIL_API_V2}/${target.id}`, {
+            headers: { 'Accept': 'application/json' },
+            signal: controller.signal,
+          });
+        } finally {
+          clearTimeout(timeoutId);
+        }
         
         if (!response.ok) {
           errors.push(`${target.id}: HTTP ${response.status}`);
