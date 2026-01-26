@@ -5280,4 +5280,451 @@ adminDashboard.get('/discovery/missing-fields', async (c) => {
   }
 });
 
+// ============================================================
+// A. PDF Coverage Dashboard (jGrants)
+// GET /api/admin-ops/jgrants/pdf-coverage
+// ============================================================
+
+adminDashboard.get('/jgrants/pdf-coverage', async (c) => {
+  const db = c.env.DB;
+  const days = parseInt(c.req.query('days') || '90', 10);
+  const limit = Math.min(parseInt(c.req.query('limit') || '100', 10), 500);
+  const offset = parseInt(c.req.query('offset') || '0', 10);
+  
+  try {
+    const cutoffDate = new Date(Date.now() - days * 86400000).toISOString();
+    const now = new Date().toISOString();
+    
+    // Summary: 全体のPDF有無・enriched_v2・ready数
+    const summary = await db.prepare(`
+      SELECT 
+        COUNT(*) as total,
+        SUM(CASE WHEN detail_json IS NOT NULL AND json_valid(detail_json) = 1 
+            AND json_extract(detail_json, '$.enriched_version') = 'v2' THEN 1 ELSE 0 END) as enriched_v2,
+        SUM(CASE WHEN detail_json IS NOT NULL AND json_valid(detail_json) = 1 
+            AND json_extract(detail_json, '$.pdf_urls') IS NOT NULL 
+            AND json_extract(detail_json, '$.pdf_urls') != '[]' THEN 1 ELSE 0 END) as has_pdf_urls,
+        SUM(CASE WHEN detail_json IS NOT NULL AND json_valid(detail_json) = 1 
+            AND (json_extract(detail_json, '$.related_url') IS NOT NULL 
+                 OR json_extract(detail_json, '$.reference_urls') IS NOT NULL) THEN 1 ELSE 0 END) as has_related_urls,
+        SUM(CASE WHEN wall_chat_ready = 1 THEN 1 ELSE 0 END) as wall_chat_ready,
+        SUM(CASE WHEN acceptance_end_datetime IS NOT NULL 
+            AND acceptance_end_datetime > ? THEN 1 ELSE 0 END) as active_acceptance
+      FROM subsidy_cache 
+      WHERE source = 'jgrants'
+    `).bind(now).first<{
+      total: number;
+      enriched_v2: number;
+      has_pdf_urls: number;
+      has_related_urls: number;
+      wall_chat_ready: number;
+      active_acceptance: number;
+    }>();
+    
+    // Top: PDFあり（期限近い順）
+    const topPdfYes = await db.prepare(`
+      SELECT 
+        id, title, 
+        acceptance_end_datetime,
+        json_extract(detail_json, '$.pdf_urls') as pdf_urls,
+        json_extract(detail_json, '$.subsidy_max_limit') as max_limit,
+        wall_chat_ready
+      FROM subsidy_cache 
+      WHERE source = 'jgrants'
+        AND detail_json IS NOT NULL AND json_valid(detail_json) = 1
+        AND json_extract(detail_json, '$.pdf_urls') IS NOT NULL 
+        AND json_extract(detail_json, '$.pdf_urls') != '[]'
+        AND (acceptance_end_datetime IS NULL OR acceptance_end_datetime > ?)
+      ORDER BY 
+        CASE WHEN acceptance_end_datetime IS NOT NULL THEN 0 ELSE 1 END,
+        acceptance_end_datetime ASC
+      LIMIT ? OFFSET ?
+    `).bind(now, limit, offset).all<{
+      id: string;
+      title: string;
+      acceptance_end_datetime: string | null;
+      pdf_urls: string | null;
+      max_limit: number | null;
+      wall_chat_ready: number;
+    }>();
+    
+    // Top: PDFなし（期限近い・Tier1優先）
+    const tier1Keywords = ['ものづくり', '持続化', '事業再構築', '再構築', 'IT導入', '省力化'];
+    const tier1Condition = tier1Keywords.map(k => `title LIKE '%${k}%'`).join(' OR ');
+    
+    const topPdfNo = await db.prepare(`
+      SELECT 
+        id, title, 
+        acceptance_end_datetime,
+        json_extract(detail_json, '$.related_url') as related_url,
+        json_extract(detail_json, '$.reference_urls') as reference_urls,
+        json_extract(detail_json, '$.enriched_version') as enriched_version,
+        CASE WHEN (${tier1Condition}) THEN 1 ELSE 0 END as is_tier1,
+        wall_chat_ready
+      FROM subsidy_cache 
+      WHERE source = 'jgrants'
+        AND (detail_json IS NULL 
+             OR json_valid(detail_json) = 0
+             OR json_extract(detail_json, '$.pdf_urls') IS NULL 
+             OR json_extract(detail_json, '$.pdf_urls') = '[]')
+        AND (acceptance_end_datetime IS NULL OR acceptance_end_datetime > ?)
+      ORDER BY 
+        CASE WHEN (${tier1Condition}) THEN 0 ELSE 1 END,
+        CASE WHEN acceptance_end_datetime IS NOT NULL THEN 0 ELSE 1 END,
+        acceptance_end_datetime ASC
+      LIMIT ? OFFSET ?
+    `).bind(now, limit, offset).all<{
+      id: string;
+      title: string;
+      acceptance_end_datetime: string | null;
+      related_url: string | null;
+      reference_urls: string | null;
+      enriched_version: string | null;
+      is_tier1: number;
+      wall_chat_ready: number;
+    }>();
+    
+    // PDFなし but related/reference_urls あり（次の取り方候補）
+    const pdfNoButHasUrls = await db.prepare(`
+      SELECT 
+        id, title, 
+        acceptance_end_datetime,
+        json_extract(detail_json, '$.related_url') as related_url,
+        json_extract(detail_json, '$.reference_urls') as reference_urls,
+        wall_chat_ready
+      FROM subsidy_cache 
+      WHERE source = 'jgrants'
+        AND detail_json IS NOT NULL AND json_valid(detail_json) = 1
+        AND (json_extract(detail_json, '$.pdf_urls') IS NULL 
+             OR json_extract(detail_json, '$.pdf_urls') = '[]')
+        AND (json_extract(detail_json, '$.related_url') IS NOT NULL 
+             OR json_extract(detail_json, '$.reference_urls') IS NOT NULL)
+        AND (acceptance_end_datetime IS NULL OR acceptance_end_datetime > ?)
+      ORDER BY 
+        CASE WHEN acceptance_end_datetime IS NOT NULL THEN 0 ELSE 1 END,
+        acceptance_end_datetime ASC
+      LIMIT 50
+    `).bind(now).all<{
+      id: string;
+      title: string;
+      acceptance_end_datetime: string | null;
+      related_url: string | null;
+      reference_urls: string | null;
+      wall_chat_ready: number;
+    }>();
+    
+    return c.json<ApiResponse<any>>({
+      success: true,
+      data: {
+        summary: {
+          ...summary,
+          pdf_coverage_rate: summary?.total ? ((summary.has_pdf_urls || 0) / summary.total * 100).toFixed(1) + '%' : '0%',
+          enriched_rate: summary?.total ? ((summary.enriched_v2 || 0) / summary.total * 100).toFixed(1) + '%' : '0%',
+          ready_rate: summary?.total ? ((summary.wall_chat_ready || 0) / summary.total * 100).toFixed(1) + '%' : '0%',
+        },
+        top_pdf_yes: topPdfYes.results?.map(r => ({
+          ...r,
+          pdf_urls: r.pdf_urls ? JSON.parse(r.pdf_urls) : [],
+          pdf_count: r.pdf_urls ? JSON.parse(r.pdf_urls).length : 0,
+        })) || [],
+        top_pdf_no: topPdfNo.results || [],
+        pdf_no_but_has_urls: pdfNoButHasUrls.results?.map(r => ({
+          ...r,
+          reference_urls: r.reference_urls ? JSON.parse(r.reference_urls) : [],
+        })) || [],
+        query_params: { days, limit, offset },
+        generated_at: new Date().toISOString(),
+      },
+    });
+    
+  } catch (error) {
+    console.error('PDF coverage error:', error);
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: 'INTERNAL_ERROR',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      },
+    }, 500);
+  }
+});
+
+// ============================================================
+// B. PDF Missing Types Classification
+// GET /api/admin-ops/jgrants/pdf-missing-types
+// ============================================================
+
+adminDashboard.get('/jgrants/pdf-missing-types', async (c) => {
+  const db = c.env.DB;
+  const days = parseInt(c.req.query('days') || '180', 10);
+  
+  try {
+    const now = new Date().toISOString();
+    
+    // 分類の定義とカウント
+    // 1. E-APPLY: 電子申請/オンライン完結
+    const eApplyCount = await db.prepare(`
+      SELECT COUNT(*) as cnt FROM subsidy_cache
+      WHERE source = 'jgrants'
+        AND detail_json IS NOT NULL AND json_valid(detail_json) = 1
+        AND (json_extract(detail_json, '$.pdf_urls') IS NULL OR json_extract(detail_json, '$.pdf_urls') = '[]')
+        AND (json_extract(detail_json, '$.is_electronic_application') = 1
+             OR json_extract(detail_json, '$.overview') LIKE '%電子申請%'
+             OR json_extract(detail_json, '$.overview') LIKE '%jGrants%'
+             OR json_extract(detail_json, '$.overview') LIKE '%GビズID%'
+             OR json_extract(detail_json, '$.overview') LIKE '%オンライン%申請%')
+        AND (acceptance_end_datetime IS NULL OR acceptance_end_datetime > ?)
+    `).bind(now).first<{ cnt: number }>();
+    
+    // 2. HAS_RELATED_URL: related_urlはあるがpdf_urlsなし
+    const hasRelatedCount = await db.prepare(`
+      SELECT COUNT(*) as cnt FROM subsidy_cache
+      WHERE source = 'jgrants'
+        AND detail_json IS NOT NULL AND json_valid(detail_json) = 1
+        AND (json_extract(detail_json, '$.pdf_urls') IS NULL OR json_extract(detail_json, '$.pdf_urls') = '[]')
+        AND (json_extract(detail_json, '$.related_url') IS NOT NULL 
+             OR json_extract(detail_json, '$.reference_urls') IS NOT NULL)
+        AND NOT (json_extract(detail_json, '$.is_electronic_application') = 1
+             OR json_extract(detail_json, '$.overview') LIKE '%電子申請%')
+        AND (acceptance_end_datetime IS NULL OR acceptance_end_datetime > ?)
+    `).bind(now).first<{ cnt: number }>();
+    
+    // 3. NO_URLS: related_urlすら無い
+    const noUrlsCount = await db.prepare(`
+      SELECT COUNT(*) as cnt FROM subsidy_cache
+      WHERE source = 'jgrants'
+        AND (detail_json IS NULL 
+             OR json_valid(detail_json) = 0
+             OR (json_extract(detail_json, '$.pdf_urls') IS NULL OR json_extract(detail_json, '$.pdf_urls') = '[]')
+                AND json_extract(detail_json, '$.related_url') IS NULL 
+                AND json_extract(detail_json, '$.reference_urls') IS NULL)
+        AND (acceptance_end_datetime IS NULL OR acceptance_end_datetime > ?)
+    `).bind(now).first<{ cnt: number }>();
+    
+    // 4. ENDED_OR_UNKNOWN: 募集終了/期限不明
+    const endedCount = await db.prepare(`
+      SELECT COUNT(*) as cnt FROM subsidy_cache
+      WHERE source = 'jgrants'
+        AND (json_extract(detail_json, '$.pdf_urls') IS NULL OR json_extract(detail_json, '$.pdf_urls') = '[]')
+        AND acceptance_end_datetime IS NOT NULL 
+        AND acceptance_end_datetime <= ?
+    `).bind(now).first<{ cnt: number }>();
+    
+    // 5. NEEDS_MANUAL: 主要補助金なのにPDFなし
+    const tier1Keywords = ['ものづくり', '持続化', '事業再構築', '再構築', 'IT導入', '省力化', 'DX', '創業'];
+    const tier1Condition = tier1Keywords.map(k => `title LIKE '%${k}%'`).join(' OR ');
+    
+    const needsManualCount = await db.prepare(`
+      SELECT COUNT(*) as cnt FROM subsidy_cache
+      WHERE source = 'jgrants'
+        AND (${tier1Condition})
+        AND detail_json IS NOT NULL AND json_valid(detail_json) = 1
+        AND (json_extract(detail_json, '$.pdf_urls') IS NULL OR json_extract(detail_json, '$.pdf_urls') = '[]')
+        AND (acceptance_end_datetime IS NULL OR acceptance_end_datetime > ?)
+    `).bind(now).first<{ cnt: number }>();
+    
+    // 各バケットのサンプル10件
+    const eApplySamples = await db.prepare(`
+      SELECT id, title, acceptance_end_datetime,
+        json_extract(detail_json, '$.related_url') as related_url
+      FROM subsidy_cache
+      WHERE source = 'jgrants'
+        AND detail_json IS NOT NULL AND json_valid(detail_json) = 1
+        AND (json_extract(detail_json, '$.pdf_urls') IS NULL OR json_extract(detail_json, '$.pdf_urls') = '[]')
+        AND (json_extract(detail_json, '$.is_electronic_application') = 1
+             OR json_extract(detail_json, '$.overview') LIKE '%電子申請%'
+             OR json_extract(detail_json, '$.overview') LIKE '%jGrants%')
+        AND (acceptance_end_datetime IS NULL OR acceptance_end_datetime > ?)
+      LIMIT 10
+    `).bind(now).all<{ id: string; title: string; acceptance_end_datetime: string | null; related_url: string | null }>();
+    
+    const hasRelatedSamples = await db.prepare(`
+      SELECT id, title, acceptance_end_datetime,
+        json_extract(detail_json, '$.related_url') as related_url,
+        json_extract(detail_json, '$.reference_urls') as reference_urls
+      FROM subsidy_cache
+      WHERE source = 'jgrants'
+        AND detail_json IS NOT NULL AND json_valid(detail_json) = 1
+        AND (json_extract(detail_json, '$.pdf_urls') IS NULL OR json_extract(detail_json, '$.pdf_urls') = '[]')
+        AND (json_extract(detail_json, '$.related_url') IS NOT NULL 
+             OR json_extract(detail_json, '$.reference_urls') IS NOT NULL)
+        AND NOT (json_extract(detail_json, '$.overview') LIKE '%電子申請%')
+        AND (acceptance_end_datetime IS NULL OR acceptance_end_datetime > ?)
+      LIMIT 10
+    `).bind(now).all<{ id: string; title: string; acceptance_end_datetime: string | null; related_url: string | null; reference_urls: string | null }>();
+    
+    const needsManualSamples = await db.prepare(`
+      SELECT id, title, acceptance_end_datetime,
+        json_extract(detail_json, '$.related_url') as related_url
+      FROM subsidy_cache
+      WHERE source = 'jgrants'
+        AND (${tier1Condition})
+        AND detail_json IS NOT NULL AND json_valid(detail_json) = 1
+        AND (json_extract(detail_json, '$.pdf_urls') IS NULL OR json_extract(detail_json, '$.pdf_urls') = '[]')
+        AND (acceptance_end_datetime IS NULL OR acceptance_end_datetime > ?)
+      LIMIT 10
+    `).bind(now).all<{ id: string; title: string; acceptance_end_datetime: string | null; related_url: string | null }>();
+    
+    return c.json<ApiResponse<any>>({
+      success: true,
+      data: {
+        buckets: {
+          E_APPLY: {
+            label: '電子申請/オンライン完結',
+            description: 'jGrants/GビズID等で電子申請。PDFなしでも壁打ち可能候補',
+            count: eApplyCount?.cnt || 0,
+            samples: eApplySamples.results || [],
+          },
+          HAS_RELATED_URL: {
+            label: '外部URLあり（PDF未取得）',
+            description: 'related_url/reference_urlsはあるがPDF未取得。スクレイプ対象',
+            count: hasRelatedCount?.cnt || 0,
+            samples: hasRelatedSamples.results?.map(r => ({
+              ...r,
+              reference_urls: r.reference_urls ? JSON.parse(r.reference_urls) : null,
+            })) || [],
+          },
+          NO_URLS: {
+            label: 'URLなし',
+            description: 'related_urlすら無い。APIメタのみで情報が薄い',
+            count: noUrlsCount?.cnt || 0,
+            samples: [],
+          },
+          ENDED_OR_UNKNOWN: {
+            label: '募集終了/期限切れ',
+            description: '期限切れのため優先度を下げる',
+            count: endedCount?.cnt || 0,
+            samples: [],
+          },
+          NEEDS_MANUAL: {
+            label: '主要補助金（要対応）',
+            description: 'ものづくり/持続化/再構築等の主要補助金でPDFなし。別手段が必要',
+            count: needsManualCount?.cnt || 0,
+            samples: needsManualSamples.results || [],
+          },
+        },
+        tier1_keywords: tier1Keywords,
+        generated_at: new Date().toISOString(),
+      },
+    });
+    
+  } catch (error) {
+    console.error('PDF missing types error:', error);
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: 'INTERNAL_ERROR',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      },
+    }, 500);
+  }
+});
+
+// ============================================================
+// C. Wall Chat Ready Progress Trend
+// GET /api/admin-ops/progress/wall-chat-ready
+// ============================================================
+
+adminDashboard.get('/progress/wall-chat-ready', async (c) => {
+  const db = c.env.DB;
+  const days = parseInt(c.req.query('days') || '60', 10);
+  
+  try {
+    // Source別の現在の状態
+    const bySource = await db.prepare(`
+      SELECT 
+        source,
+        COUNT(*) as total,
+        SUM(CASE WHEN wall_chat_ready = 1 THEN 1 ELSE 0 END) as ready,
+        SUM(CASE WHEN detail_json LIKE '%"enriched_version":"v2"%' THEN 1 ELSE 0 END) as enriched_v2,
+        SUM(CASE WHEN acceptance_end_datetime IS NOT NULL 
+            AND acceptance_end_datetime > datetime('now') THEN 1 ELSE 0 END) as active
+      FROM subsidy_cache
+      GROUP BY source
+      ORDER BY total DESC
+    `).all<{
+      source: string;
+      total: number;
+      ready: number;
+      enriched_v2: number;
+      active: number;
+    }>();
+    
+    // 全体サマリー
+    const totalSummary = await db.prepare(`
+      SELECT 
+        COUNT(*) as total,
+        SUM(CASE WHEN wall_chat_ready = 1 THEN 1 ELSE 0 END) as ready,
+        SUM(CASE WHEN detail_json LIKE '%"enriched_version"%' THEN 1 ELSE 0 END) as enriched
+      FROM subsidy_cache
+    `).first<{ total: number; ready: number; enriched: number }>();
+    
+    // cron_runs から日別の enrichment 実績を取得（wall_chat_ready増加の代替指標）
+    const dailyEnrichment = await db.prepare(`
+      SELECT 
+        date(completed_at) as date,
+        job_name,
+        SUM(COALESCE(json_extract(metadata_json, '$.items_ready'), 0)) as ready_added,
+        SUM(items_inserted) as items_enriched,
+        COUNT(*) as run_count
+      FROM cron_runs
+      WHERE job_name LIKE '%enrich%'
+        AND completed_at IS NOT NULL
+        AND completed_at >= datetime('now', '-' || ? || ' days')
+      GROUP BY date(completed_at), job_name
+      ORDER BY date DESC
+      LIMIT 100
+    `).bind(days).all<{
+      date: string;
+      job_name: string;
+      ready_added: number;
+      items_enriched: number;
+      run_count: number;
+    }>();
+    
+    // extraction_queue の処理状況
+    const extractionStats = await db.prepare(`
+      SELECT 
+        status,
+        job_type,
+        COUNT(*) as count
+      FROM extraction_queue
+      GROUP BY status, job_type
+    `).all<{ status: string; job_type: string; count: number }>();
+    
+    return c.json<ApiResponse<any>>({
+      success: true,
+      data: {
+        summary: {
+          total: totalSummary?.total || 0,
+          ready: totalSummary?.ready || 0,
+          enriched: totalSummary?.enriched || 0,
+          ready_rate: totalSummary?.total 
+            ? ((totalSummary.ready || 0) / totalSummary.total * 100).toFixed(2) + '%' 
+            : '0%',
+        },
+        by_source: bySource.results?.map(r => ({
+          ...r,
+          ready_rate: r.total ? ((r.ready / r.total) * 100).toFixed(1) + '%' : '0%',
+          enriched_rate: r.total ? ((r.enriched_v2 / r.total) * 100).toFixed(1) + '%' : '0%',
+        })) || [],
+        daily_enrichment: dailyEnrichment.results || [],
+        extraction_queue: extractionStats.results || [],
+        query_params: { days },
+        generated_at: new Date().toISOString(),
+      },
+    });
+    
+  } catch (error) {
+    console.error('Wall chat ready progress error:', error);
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: 'INTERNAL_ERROR',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      },
+    }, 500);
+  }
+});
+
 export default adminDashboard;

@@ -526,6 +526,160 @@ adminPages.get('/admin', (c) => {
       </div>
     </div>
 
+    <!-- ============================================================ -->
+    <!-- Data Coverage / Crawl Strategy（super_admin のみ） -->
+    <!-- ============================================================ -->
+    <div id="data-coverage-section" class="hidden mb-8">
+      
+      <!-- カード1: PDF Coverage (jGrants) -->
+      <div class="bg-white rounded-xl shadow p-6 mb-6">
+        <div class="flex items-center justify-between mb-4">
+          <h2 class="text-lg font-bold text-gray-800">
+            <i class="fas fa-file-pdf text-red-600 mr-2"></i>PDF Coverage（jGrants）
+          </h2>
+          <button onclick="loadPdfCoverage()" class="text-sm text-indigo-600 hover:text-indigo-800">
+            <i class="fas fa-sync-alt mr-1"></i>更新
+          </button>
+        </div>
+        
+        <!-- サマリーカード -->
+        <div class="grid grid-cols-2 md:grid-cols-5 gap-4 mb-6">
+          <div class="bg-gradient-to-br from-indigo-50 to-indigo-100 rounded-lg p-4 text-center">
+            <p class="text-sm text-indigo-600 font-medium">総数</p>
+            <p id="pdf-total" class="text-3xl font-bold text-indigo-700">-</p>
+          </div>
+          <div class="bg-gradient-to-br from-green-50 to-green-100 rounded-lg p-4 text-center">
+            <p class="text-sm text-green-600 font-medium">PDF取得済み</p>
+            <p id="pdf-has-urls" class="text-3xl font-bold text-green-700">-</p>
+            <p id="pdf-coverage-rate" class="text-xs text-green-500">-%</p>
+          </div>
+          <div class="bg-gradient-to-br from-blue-50 to-blue-100 rounded-lg p-4 text-center">
+            <p class="text-sm text-blue-600 font-medium">V2エンリッチ</p>
+            <p id="pdf-enriched-v2" class="text-3xl font-bold text-blue-700">-</p>
+            <p id="pdf-enriched-rate" class="text-xs text-blue-500">-%</p>
+          </div>
+          <div class="bg-gradient-to-br from-purple-50 to-purple-100 rounded-lg p-4 text-center">
+            <p class="text-sm text-purple-600 font-medium">壁打ちReady</p>
+            <p id="pdf-ready" class="text-3xl font-bold text-purple-700">-</p>
+            <p id="pdf-ready-rate" class="text-xs text-purple-500">-%</p>
+          </div>
+          <div class="bg-gradient-to-br from-yellow-50 to-yellow-100 rounded-lg p-4 text-center">
+            <p class="text-sm text-yellow-600 font-medium">受付中</p>
+            <p id="pdf-active" class="text-3xl font-bold text-yellow-700">-</p>
+          </div>
+        </div>
+        
+        <!-- PDFあり Top テーブル -->
+        <div class="mb-6">
+          <h3 class="text-sm font-medium text-gray-700 mb-2">
+            <i class="fas fa-check-circle text-green-500 mr-1"></i>PDFあり（締切近い順）
+          </h3>
+          <div id="pdf-yes-table" class="overflow-x-auto max-h-64">
+            <div class="loading text-gray-400 p-4">読み込み中...</div>
+          </div>
+        </div>
+        
+        <!-- PDFなし Top テーブル -->
+        <div class="mb-6">
+          <h3 class="text-sm font-medium text-gray-700 mb-2">
+            <i class="fas fa-times-circle text-red-500 mr-1"></i>PDFなし（Tier1優先・締切近い順）
+          </h3>
+          <div id="pdf-no-table" class="overflow-x-auto max-h-64">
+            <div class="loading text-gray-400 p-4">読み込み中...</div>
+          </div>
+        </div>
+        
+        <!-- 次のアクション候補 -->
+        <div>
+          <h3 class="text-sm font-medium text-gray-700 mb-2">
+            <i class="fas fa-lightbulb text-yellow-500 mr-1"></i>次のアクション候補（PDFなし but 参照URLあり）
+          </h3>
+          <div id="pdf-action-candidates" class="overflow-x-auto max-h-48">
+            <div class="loading text-gray-400 p-4">読み込み中...</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- カード2: PDF Missing Types -->
+      <div class="bg-white rounded-xl shadow p-6 mb-6">
+        <div class="flex items-center justify-between mb-4">
+          <h2 class="text-lg font-bold text-gray-800">
+            <i class="fas fa-layer-group text-orange-600 mr-2"></i>PDFなしタイプ分類
+          </h2>
+          <button onclick="loadPdfMissingTypes()" class="text-sm text-indigo-600 hover:text-indigo-800">
+            <i class="fas fa-sync-alt mr-1"></i>更新
+          </button>
+        </div>
+        
+        <!-- バケット別バー -->
+        <div id="missing-types-bars" class="space-y-4 mb-6">
+          <div class="loading text-gray-400 p-4">読み込み中...</div>
+        </div>
+        
+        <!-- 主要補助金（要対応）サンプル -->
+        <div>
+          <h3 class="text-sm font-medium text-gray-700 mb-2">
+            <i class="fas fa-star text-yellow-500 mr-1"></i>主要補助金（PDFなし・要対応）
+          </h3>
+          <div id="needs-manual-samples" class="overflow-x-auto max-h-48">
+            <div class="loading text-gray-400 p-4">読み込み中...</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- カード3: Wall Chat Ready Progress -->
+      <div class="bg-white rounded-xl shadow p-6">
+        <div class="flex items-center justify-between mb-4">
+          <h2 class="text-lg font-bold text-gray-800">
+            <i class="fas fa-chart-line text-green-600 mr-2"></i>Wall Chat Ready 進捗
+          </h2>
+          <button onclick="loadWallChatProgress()" class="text-sm text-indigo-600 hover:text-indigo-800">
+            <i class="fas fa-sync-alt mr-1"></i>更新
+          </button>
+        </div>
+        
+        <!-- 全体サマリー -->
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+          <div class="bg-gray-50 rounded-lg p-4 text-center">
+            <p class="text-sm text-gray-500">総数</p>
+            <p id="wcr-total" class="text-2xl font-bold text-gray-700">-</p>
+          </div>
+          <div class="bg-green-50 rounded-lg p-4 text-center">
+            <p class="text-sm text-green-600">Ready</p>
+            <p id="wcr-ready" class="text-2xl font-bold text-green-700">-</p>
+          </div>
+          <div class="bg-blue-50 rounded-lg p-4 text-center">
+            <p class="text-sm text-blue-600">Enriched</p>
+            <p id="wcr-enriched" class="text-2xl font-bold text-blue-700">-</p>
+          </div>
+          <div class="bg-purple-50 rounded-lg p-4 text-center">
+            <p class="text-sm text-purple-600">Ready率</p>
+            <p id="wcr-ready-rate" class="text-2xl font-bold text-purple-700">-%</p>
+          </div>
+        </div>
+        
+        <!-- Source別テーブル -->
+        <div class="mb-6">
+          <h3 class="text-sm font-medium text-gray-700 mb-2">
+            <i class="fas fa-database mr-1"></i>Source別 Ready率
+          </h3>
+          <div id="wcr-by-source" class="overflow-x-auto">
+            <div class="loading text-gray-400 p-4">読み込み中...</div>
+          </div>
+        </div>
+        
+        <!-- Extraction Queue 状態 -->
+        <div>
+          <h3 class="text-sm font-medium text-gray-700 mb-2">
+            <i class="fas fa-tasks mr-1"></i>Extraction Queue 状態
+          </h3>
+          <div id="extraction-queue-stats" class="flex flex-wrap gap-2">
+            <div class="loading text-gray-400 p-4">読み込み中...</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- コスト概要（super_admin のみ） -->
     <div id="cost-section" class="hidden mb-8">
       <div class="bg-white rounded-xl shadow p-6">
@@ -808,9 +962,225 @@ adminPages.get('/admin', (c) => {
         }
       }
 
+      // ============================================================
+      // PDF Coverage (jGrants)
+      // ============================================================
+      async function loadPdfCoverage() {
+        const user = JSON.parse(localStorage.getItem('user') || 'null');
+        if (user?.role !== 'super_admin') return;
+        
+        document.getElementById('data-coverage-section').classList.remove('hidden');
+        
+        try {
+          const data = await api('/api/admin-ops/jgrants/pdf-coverage?days=90&limit=50');
+          if (!data.success) throw new Error(data.error?.message);
+          
+          const { summary, top_pdf_yes, top_pdf_no, pdf_no_but_has_urls } = data.data;
+          
+          // サマリー更新
+          document.getElementById('pdf-total').textContent = summary.total || 0;
+          document.getElementById('pdf-has-urls').textContent = summary.has_pdf_urls || 0;
+          document.getElementById('pdf-coverage-rate').textContent = summary.pdf_coverage_rate || '0%';
+          document.getElementById('pdf-enriched-v2').textContent = summary.enriched_v2 || 0;
+          document.getElementById('pdf-enriched-rate').textContent = summary.enriched_rate || '0%';
+          document.getElementById('pdf-ready').textContent = summary.wall_chat_ready || 0;
+          document.getElementById('pdf-ready-rate').textContent = summary.ready_rate || '0%';
+          document.getElementById('pdf-active').textContent = summary.active_acceptance || 0;
+          
+          // PDFありテーブル
+          const yesEl = document.getElementById('pdf-yes-table');
+          if (top_pdf_yes && top_pdf_yes.length > 0) {
+            const html = '<table class="min-w-full text-sm">' +
+              '<thead class="bg-green-50"><tr><th class="px-3 py-2 text-left">ID</th><th class="px-3 py-2 text-left">タイトル</th><th class="px-3 py-2 text-right">締切</th><th class="px-3 py-2 text-right">PDF数</th><th class="px-3 py-2 text-center">Ready</th></tr></thead>' +
+              '<tbody>' + top_pdf_yes.slice(0, 20).map(r => {
+                const deadline = r.acceptance_end_datetime ? new Date(r.acceptance_end_datetime).toLocaleDateString('ja-JP') : '-';
+                const readyBadge = r.wall_chat_ready ? '<span class="text-green-600"><i class="fas fa-check"></i></span>' : '<span class="text-gray-300">-</span>';
+                return '<tr class="border-b hover:bg-green-50">' +
+                  '<td class="px-3 py-2 font-mono text-xs">' + (r.id?.substring(0, 12) || '-') + '</td>' +
+                  '<td class="px-3 py-2 max-w-xs truncate" title="' + r.title + '">' + (r.title?.substring(0, 40) || '-') + '</td>' +
+                  '<td class="px-3 py-2 text-right text-xs">' + deadline + '</td>' +
+                  '<td class="px-3 py-2 text-right font-medium text-green-600">' + (r.pdf_count || 0) + '</td>' +
+                  '<td class="px-3 py-2 text-center">' + readyBadge + '</td></tr>';
+              }).join('') + '</tbody></table>';
+            yesEl.innerHTML = html;
+          } else {
+            yesEl.innerHTML = '<p class="text-gray-400 p-4">PDFあり案件はありません</p>';
+          }
+          
+          // PDFなしテーブル
+          const noEl = document.getElementById('pdf-no-table');
+          if (top_pdf_no && top_pdf_no.length > 0) {
+            const html = '<table class="min-w-full text-sm">' +
+              '<thead class="bg-red-50"><tr><th class="px-3 py-2 text-left">ID</th><th class="px-3 py-2 text-left">タイトル</th><th class="px-3 py-2 text-right">締切</th><th class="px-3 py-2 text-center">Tier1</th><th class="px-3 py-2 text-center">V2</th></tr></thead>' +
+              '<tbody>' + top_pdf_no.slice(0, 20).map(r => {
+                const deadline = r.acceptance_end_datetime ? new Date(r.acceptance_end_datetime).toLocaleDateString('ja-JP') : '-';
+                const tier1Badge = r.is_tier1 ? '<span class="text-yellow-600"><i class="fas fa-star"></i></span>' : '-';
+                const v2Badge = r.enriched_version === 'v2' ? '<span class="text-blue-600"><i class="fas fa-check"></i></span>' : '-';
+                return '<tr class="border-b hover:bg-red-50 ' + (r.is_tier1 ? 'bg-yellow-50' : '') + '">' +
+                  '<td class="px-3 py-2 font-mono text-xs">' + (r.id?.substring(0, 12) || '-') + '</td>' +
+                  '<td class="px-3 py-2 max-w-xs truncate" title="' + r.title + '">' + (r.title?.substring(0, 40) || '-') + '</td>' +
+                  '<td class="px-3 py-2 text-right text-xs">' + deadline + '</td>' +
+                  '<td class="px-3 py-2 text-center">' + tier1Badge + '</td>' +
+                  '<td class="px-3 py-2 text-center">' + v2Badge + '</td></tr>';
+              }).join('') + '</tbody></table>';
+            noEl.innerHTML = html;
+          } else {
+            noEl.innerHTML = '<p class="text-gray-400 p-4">PDFなし案件はありません</p>';
+          }
+          
+          // アクション候補テーブル
+          const actEl = document.getElementById('pdf-action-candidates');
+          if (pdf_no_but_has_urls && pdf_no_but_has_urls.length > 0) {
+            const html = '<table class="min-w-full text-sm">' +
+              '<thead class="bg-yellow-50"><tr><th class="px-3 py-2 text-left">ID</th><th class="px-3 py-2 text-left">タイトル</th><th class="px-3 py-2 text-right">締切</th><th class="px-3 py-2 text-center">参照URL</th></tr></thead>' +
+              '<tbody>' + pdf_no_but_has_urls.slice(0, 15).map(r => {
+                const deadline = r.acceptance_end_datetime ? new Date(r.acceptance_end_datetime).toLocaleDateString('ja-JP') : '-';
+                const urlCount = (r.reference_urls?.length || 0) + (r.related_url ? 1 : 0);
+                return '<tr class="border-b hover:bg-yellow-50">' +
+                  '<td class="px-3 py-2 font-mono text-xs">' + (r.id?.substring(0, 12) || '-') + '</td>' +
+                  '<td class="px-3 py-2 max-w-xs truncate" title="' + r.title + '">' + (r.title?.substring(0, 40) || '-') + '</td>' +
+                  '<td class="px-3 py-2 text-right text-xs">' + deadline + '</td>' +
+                  '<td class="px-3 py-2 text-center text-blue-600 font-medium">' + urlCount + '</td></tr>';
+              }).join('') + '</tbody></table>';
+            actEl.innerHTML = html;
+          } else {
+            actEl.innerHTML = '<p class="text-gray-400 p-4">アクション候補はありません</p>';
+          }
+          
+        } catch (error) {
+          console.error('PDF coverage load error:', error);
+        }
+      }
+
+      // ============================================================
+      // PDF Missing Types
+      // ============================================================
+      async function loadPdfMissingTypes() {
+        try {
+          const data = await api('/api/admin-ops/jgrants/pdf-missing-types?days=180');
+          if (!data.success) throw new Error(data.error?.message);
+          
+          const { buckets } = data.data;
+          
+          // バケット別バー
+          const barsEl = document.getElementById('missing-types-bars');
+          const bucketConfigs = {
+            E_APPLY: { color: 'bg-blue-500', icon: 'fas fa-laptop' },
+            HAS_RELATED_URL: { color: 'bg-yellow-500', icon: 'fas fa-link' },
+            NO_URLS: { color: 'bg-gray-500', icon: 'fas fa-ban' },
+            ENDED_OR_UNKNOWN: { color: 'bg-gray-400', icon: 'fas fa-calendar-times' },
+            NEEDS_MANUAL: { color: 'bg-red-500', icon: 'fas fa-star' },
+          };
+          
+          const maxCount = Math.max(...Object.values(buckets).map((b: any) => b.count || 0), 1);
+          const barsHtml = Object.entries(buckets).map(([key, bucket]: [string, any]) => {
+            const cfg = bucketConfigs[key] || { color: 'bg-gray-500', icon: 'fas fa-question' };
+            const pct = Math.round((bucket.count / maxCount) * 100);
+            return '<div class="flex items-center gap-3">' +
+              '<div class="w-40 text-sm"><i class="' + cfg.icon + ' mr-2 text-gray-500"></i>' + bucket.label + '</div>' +
+              '<div class="flex-1 bg-gray-200 rounded-full h-6 relative">' +
+                '<div class="' + cfg.color + ' h-6 rounded-full flex items-center justify-end pr-2" style="width: ' + pct + '%">' +
+                  '<span class="text-white text-xs font-bold">' + bucket.count + '</span>' +
+                '</div>' +
+              '</div>' +
+              '<div class="w-48 text-xs text-gray-500">' + bucket.description + '</div>' +
+            '</div>';
+          }).join('');
+          barsEl.innerHTML = barsHtml || '<p class="text-gray-400">データがありません</p>';
+          
+          // 要対応サンプル
+          const manualEl = document.getElementById('needs-manual-samples');
+          const manualSamples = buckets.NEEDS_MANUAL?.samples || [];
+          if (manualSamples.length > 0) {
+            const html = '<table class="min-w-full text-sm">' +
+              '<thead class="bg-red-50"><tr><th class="px-3 py-2 text-left">ID</th><th class="px-3 py-2 text-left">タイトル</th><th class="px-3 py-2 text-right">締切</th><th class="px-3 py-2 text-center">URL</th></tr></thead>' +
+              '<tbody>' + manualSamples.map((r: any) => {
+                const deadline = r.acceptance_end_datetime ? new Date(r.acceptance_end_datetime).toLocaleDateString('ja-JP') : '-';
+                const hasUrl = r.related_url ? '<i class="fas fa-check text-green-500"></i>' : '<i class="fas fa-times text-red-400"></i>';
+                return '<tr class="border-b hover:bg-red-50">' +
+                  '<td class="px-3 py-2 font-mono text-xs">' + (r.id?.substring(0, 12) || '-') + '</td>' +
+                  '<td class="px-3 py-2 max-w-xs truncate" title="' + r.title + '">' + (r.title?.substring(0, 40) || '-') + '</td>' +
+                  '<td class="px-3 py-2 text-right text-xs">' + deadline + '</td>' +
+                  '<td class="px-3 py-2 text-center">' + hasUrl + '</td></tr>';
+              }).join('') + '</tbody></table>';
+            manualEl.innerHTML = html;
+          } else {
+            manualEl.innerHTML = '<p class="text-gray-400 p-4">主要補助金のPDFなしはありません</p>';
+          }
+          
+        } catch (error) {
+          console.error('PDF missing types load error:', error);
+        }
+      }
+
+      // ============================================================
+      // Wall Chat Ready Progress
+      // ============================================================
+      async function loadWallChatProgress() {
+        try {
+          const data = await api('/api/admin-ops/progress/wall-chat-ready?days=60');
+          if (!data.success) throw new Error(data.error?.message);
+          
+          const { summary, by_source, extraction_queue } = data.data;
+          
+          // サマリー更新
+          document.getElementById('wcr-total').textContent = summary.total || 0;
+          document.getElementById('wcr-ready').textContent = summary.ready || 0;
+          document.getElementById('wcr-enriched').textContent = summary.enriched || 0;
+          document.getElementById('wcr-ready-rate').textContent = summary.ready_rate || '0%';
+          
+          // Source別テーブル
+          const srcEl = document.getElementById('wcr-by-source');
+          if (by_source && by_source.length > 0) {
+            const html = '<table class="min-w-full text-sm">' +
+              '<thead class="bg-gray-50"><tr><th class="px-3 py-2 text-left">Source</th><th class="px-3 py-2 text-right">総数</th><th class="px-3 py-2 text-right">Ready</th><th class="px-3 py-2 text-right">Ready率</th><th class="px-3 py-2 text-right">V2</th><th class="px-3 py-2 text-right">受付中</th></tr></thead>' +
+              '<tbody>' + by_source.map((r: any) => {
+                const readyPct = parseFloat(r.ready_rate) || 0;
+                const rowBg = readyPct >= 50 ? 'bg-green-50' : readyPct >= 10 ? 'bg-yellow-50' : '';
+                return '<tr class="border-b ' + rowBg + '">' +
+                  '<td class="px-3 py-2 font-medium">' + r.source + '</td>' +
+                  '<td class="px-3 py-2 text-right">' + r.total + '</td>' +
+                  '<td class="px-3 py-2 text-right text-green-600 font-medium">' + r.ready + '</td>' +
+                  '<td class="px-3 py-2 text-right font-bold">' + r.ready_rate + '</td>' +
+                  '<td class="px-3 py-2 text-right text-blue-600">' + r.enriched_v2 + '</td>' +
+                  '<td class="px-3 py-2 text-right">' + r.active + '</td></tr>';
+              }).join('') + '</tbody></table>';
+            srcEl.innerHTML = html;
+          } else {
+            srcEl.innerHTML = '<p class="text-gray-400 p-4">ソース別データがありません</p>';
+          }
+          
+          // Extraction Queue状態
+          const qEl = document.getElementById('extraction-queue-stats');
+          if (extraction_queue && extraction_queue.length > 0) {
+            const statusColors = {
+              queued: 'bg-yellow-100 text-yellow-800',
+              leased: 'bg-blue-100 text-blue-800',
+              done: 'bg-green-100 text-green-800',
+              failed: 'bg-red-100 text-red-800',
+            };
+            const html = extraction_queue.map((q: any) => {
+              const color = statusColors[q.status] || 'bg-gray-100 text-gray-800';
+              return '<span class="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium ' + color + '">' +
+                q.job_type + ' (' + q.status + '): ' + q.count +
+              '</span>';
+            }).join(' ');
+            qEl.innerHTML = html;
+          } else {
+            qEl.innerHTML = '<p class="text-gray-400">キューは空です</p>';
+          }
+          
+        } catch (error) {
+          console.error('Wall chat progress load error:', error);
+        }
+      }
+
       loadDashboard();
       loadCosts();
       loadCoverage();
+      loadPdfCoverage();
+      loadPdfMissingTypes();
+      loadWallChatProgress();
     </script>
   `;
 
