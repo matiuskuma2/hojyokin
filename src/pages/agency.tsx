@@ -3242,7 +3242,7 @@ agencyPages.get('/agency/search', (c) => {
         }
       }
       
-      // 顧客一覧取得
+      // 顧客一覧取得（3パターン対応: 0社 / 全社NG / 1社以上OK）
       async function loadClients() {
         try {
           const res = await apiCall('/api/agency/clients?limit=100');
@@ -3254,52 +3254,157 @@ agencyPages.get('/agency/search', (c) => {
             return;
           }
           
-          if (res.data && res.data.clients && res.data.clients.length > 0) {
-            clients = res.data.clients;
-            const select = document.getElementById('client-select');
-            if (!select) return;
-            
-            clients.forEach(client => {
-              const option = document.createElement('option');
-              option.value = client.company_id;
-              option.textContent = client.client_name || client.company_name || '(顧客名未設定)';
-              select.appendChild(option);
-            });
-            
-            // 顧客選択変更時にcompleteness確認
-            select.addEventListener('change', async function() {
-              var selectedCompanyId = this.value;
-              if (selectedCompanyId) {
-                await checkClientCompleteness(selectedCompanyId);
-              }
-            });
-            
-            // 凍結仕様v1: URLパラメータまたはlocalStorageから顧客を自動選択
-            const urlParams = new URLSearchParams(window.location.search);
-            const urlCompanyId = urlParams.get('company_id');
-            const storedCompanyId = localStorage.getItem('selectedCompanyId');
-            const targetCompanyId = urlCompanyId || storedCompanyId || clients[0].company_id;
-            
-            // 使用後はlocalStorageをクリア
-            if (storedCompanyId) {
-              localStorage.removeItem('selectedCompanyId');
-            }
-            
-            // 指定されたcompany_idが顧客リストにあるか確認
-            const targetClient = clients.find(c => c.company_id === targetCompanyId);
-            select.value = targetClient ? targetCompanyId : clients[0].company_id;
-            await checkClientCompleteness(select.value);
-            
-          } else {
+          const data = res.data;
+          const allClients = data?.clients || [];
+          const okCount = data?.ok_count || 0;
+          const blockedCount = data?.blocked_count || 0;
+          const total = allClients.length;
+          
+          // パターン1: 顧客0社
+          if (total === 0) {
             showNoClientAlert();
+            return;
           }
+          
+          // パターン2: 全社が必須情報不足
+          if (okCount === 0) {
+            showAllClientsBlockedAlert(total, allClients);
+            return;
+          }
+          
+          // パターン3: 1社以上OK → 検索可能
+          clients = allClients;
+          const okClients = allClients.filter(c => c.completeness_status === 'OK');
+          const blockedClients = allClients.filter(c => c.completeness_status === 'BLOCKED');
+          
+          const select = document.getElementById('client-select');
+          if (!select) return;
+          
+          // OK顧客のみドロップダウンに追加
+          okClients.forEach(client => {
+            const option = document.createElement('option');
+            option.value = client.company_id;
+            option.textContent = client.client_name || client.company_name || '(顧客名未設定)';
+            select.appendChild(option);
+          });
+          
+          // BLOCKED顧客がいる場合は案内を表示
+          if (blockedCount > 0) {
+            showPartialBlockedNotice(okCount, blockedCount, blockedClients);
+          }
+          
+          // 顧客選択変更時
+          select.addEventListener('change', function() {
+            var selectedCompanyId = this.value;
+            if (selectedCompanyId) {
+              const client = clients.find(c => c.company_id === selectedCompanyId);
+              if (client) {
+                showClientReadySimple(client);
+              }
+            }
+          });
+          
+          // 自動選択: URLパラメータ or localStorage or 最初のOK顧客
+          const urlParams = new URLSearchParams(window.location.search);
+          const urlCompanyId = urlParams.get('company_id');
+          const storedCompanyId = localStorage.getItem('selectedCompanyId');
+          if (storedCompanyId) localStorage.removeItem('selectedCompanyId');
+          
+          // 指定されたIDがOK顧客にあるか確認
+          const targetCompanyId = urlCompanyId || storedCompanyId;
+          const targetOkClient = targetCompanyId ? okClients.find(c => c.company_id === targetCompanyId) : null;
+          const selectedClient = targetOkClient || okClients[0];
+          
+          select.value = selectedClient.company_id;
+          showClientReadySimple(selectedClient);
+          enableSearchPanel();
+          
         } catch (e) {
           console.error('loadClients error:', e);
           showNoClientAlert();
         }
       }
       
-      // Completeness APIによる顧客企業情報チェック
+      // 全顧客が必須情報不足の場合
+      function showAllClientsBlockedAlert(total, allClients) {
+        const statusEl = document.getElementById('client-status');
+        if (!statusEl) return;
+        
+        // 不足情報の例を収集
+        const missingExamples = allClients.slice(0, 3).map(c => {
+          const name = escapeHtml(c.client_name || c.company_name || '(名前未設定)');
+          const missing = (c.missing_fields || []).map(m => escapeHtml(m)).join('、');
+          return '<li class="text-sm text-red-700">' + name + ': <span class="text-red-500">' + (missing || '不明') + '</span>が未登録</li>';
+        }).join('');
+        
+        statusEl.className = 'bg-gradient-to-r from-red-50 to-orange-50 border border-red-300 rounded-xl p-5 mb-6';
+        statusEl.innerHTML = 
+          '<div class="flex items-start gap-4">' +
+            '<div class="w-12 h-12 bg-red-200 rounded-full flex items-center justify-center flex-shrink-0">' +
+              '<i class="fas fa-users-slash text-red-600 text-xl"></i>' +
+            '</div>' +
+            '<div class="flex-1">' +
+              '<p class="text-red-800 font-semibold text-lg"><i class="fas fa-exclamation-triangle mr-2"></i>' + total + '社登録済み - 全社とも必須情報が不足しています</p>' +
+              '<p class="text-red-700 text-sm mt-1 mb-3">' +
+                '補助金検索を行うには、顧客企業の<strong>必須4項目（会社名・都道府県・業種・従業員数）</strong>を登録してください。' +
+              '</p>' +
+              '<ul class="mb-3 pl-2 space-y-1">' + missingExamples + '</ul>' +
+              '<div class="bg-white/70 rounded-lg p-3 mb-3 text-sm text-red-800">' +
+                '<i class="fas fa-lightbulb mr-2 text-yellow-500"></i>' +
+                '<strong>メリット:</strong> 必須情報を登録すると、' +
+                '<span class="font-semibold">47都道府県＋国の補助金から最適なものを自動マッチング</span>できます。' +
+              '</div>' +
+              '<a href="/agency/clients" class="inline-flex items-center gap-2 bg-red-600 text-white px-5 py-2.5 rounded-lg hover:bg-red-700 transition shadow">' +
+                '<i class="fas fa-list"></i> 顧客一覧で情報を編集する' +
+              '</a>' +
+            '</div>' +
+          '</div>';
+        statusEl.classList.remove('hidden');
+        
+        // ドロップダウンを非表示
+        const selectWrapper = document.getElementById('client-select')?.closest('.flex');
+        if (selectWrapper) selectWrapper.style.display = 'none';
+        
+        disableSearchPanel();
+      }
+      
+      // 一部顧客がBLOCKEDの場合の通知（検索パネル上部に表示）
+      function showPartialBlockedNotice(okCount, blockedCount, blockedClients) {
+        const statusEl = document.getElementById('client-status');
+        if (!statusEl) return;
+        
+        const blockedNames = blockedClients.slice(0, 3).map(c => {
+          return escapeHtml(c.client_name || c.company_name || '(名前未設定)');
+        }).join('、');
+        const moreText = blockedCount > 3 ? '他' + (blockedCount - 3) + '社' : '';
+        
+        statusEl.className = 'bg-gradient-to-r from-green-50 to-yellow-50 border border-green-300 rounded-xl p-4 mb-6';
+        statusEl.innerHTML = 
+          '<div class="flex items-start gap-3">' +
+            '<div class="w-10 h-10 bg-green-200 rounded-full flex items-center justify-center flex-shrink-0">' +
+              '<i class="fas fa-check-circle text-green-600 text-lg"></i>' +
+            '</div>' +
+            '<div class="flex-1">' +
+              '<p class="text-green-800 font-semibold">✓ ' + okCount + '社で検索可能</p>' +
+              '<p class="text-yellow-700 text-sm mt-1">' +
+                '<i class="fas fa-info-circle mr-1"></i>' +
+                '<strong>' + blockedCount + '社</strong>は必須情報が不足のため検索できません' +
+                (blockedNames ? '（' + blockedNames + (moreText ? '、' + moreText : '') + '）' : '') +
+                ' <a href="/agency/clients" class="text-blue-600 hover:underline ml-1"><i class="fas fa-edit text-xs"></i>編集する</a>' +
+              '</p>' +
+            '</div>' +
+          '</div>';
+        statusEl.classList.remove('hidden');
+      }
+      
+      // OK顧客選択時のシンプル表示
+      function showClientReadySimple(client) {
+        // partialBlockedNoticeが表示されている場合は維持
+        // 検索パネルは有効のまま
+        enableSearchPanel();
+      }
+      
+      // 個別completeness API呼び出し（詳細表示用、必要な場合のみ）
       async function checkClientCompleteness(companyId) {
         try {
           const res = await apiCall('/api/companies/' + companyId + '/completeness');
@@ -3307,23 +3412,13 @@ agencyPages.get('/agency/search', (c) => {
           
           if (!res || !res.success) {
             console.error('[Agency検索] Completeness API error:', res?.error);
-            showBlockedClientAlert({}, null);
-            return;
+            return null;
           }
           
-          const completeness = res.data;
-          const client = clients.find(c => c.company_id === companyId);
-          
-          if (completeness.status === 'BLOCKED') {
-            showBlockedClientAlert(completeness, client);
-          } else if (completeness.status === 'NEEDS_RECOMMENDED') {
-            showNeedsRecommendedAlert(completeness, client);
-          } else {
-            showClientReady(completeness, client);
-          }
+          return res.data;
         } catch (e) {
           console.error('[Agency検索] checkClientCompleteness error:', e);
-          showNoClientAlert();
+          return null;
         }
       }
       
@@ -3446,7 +3541,7 @@ agencyPages.get('/agency/search', (c) => {
         disableSearchPanel();
       }
       
-      // 顧客が存在しない場合
+      // 顧客が存在しない場合（0社）
       function showNoClientAlert() {
         const statusEl = document.getElementById('client-status');
         if (!statusEl) return;
@@ -3458,9 +3553,9 @@ agencyPages.get('/agency/search', (c) => {
               '<i class="fas fa-building text-blue-600 text-xl"></i>' +
             '</div>' +
             '<div class="flex-1">' +
-              '<p class="text-blue-800 font-semibold text-lg">顧客企業を登録して、補助金を探しましょう</p>' +
+              '<p class="text-blue-800 font-semibold text-lg"><i class="fas fa-user-plus mr-2"></i>顧客企業を登録してください</p>' +
               '<p class="text-blue-700 text-sm mt-1 mb-3">' +
-                '補助金検索を始めるには、まず<strong>顧客企業の基本情報</strong>を登録してください。' +
+                '補助金検索を始めるには、まず<strong>顧客企業の基本情報（会社名・都道府県・業種・従業員数）</strong>を登録してください。' +
               '</p>' +
               '<a href="/agency/clients" class="inline-flex items-center gap-2 bg-blue-600 text-white px-6 py-3 rounded-lg hover:bg-blue-700 transition shadow-md">' +
                 '<i class="fas fa-plus-circle"></i> 顧客企業を追加する' +
@@ -3468,6 +3563,10 @@ agencyPages.get('/agency/search', (c) => {
             '</div>' +
           '</div>';
         statusEl.classList.remove('hidden');
+        
+        // 顧客選択ドロップダウンを非表示
+        const selectWrapper = document.getElementById('client-select')?.closest('.flex');
+        if (selectWrapper) selectWrapper.style.display = 'none';
         
         disableSearchPanel();
       }

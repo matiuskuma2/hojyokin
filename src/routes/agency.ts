@@ -553,24 +553,60 @@ agencyRoutes.get('/clients', async (c) => {
   const total = await db.prepare(countQuery).bind(...countParams).first<{ count: number }>();
   
   // 凍結仕様: id を必ず返す + agency_client_id エイリアス追加（互換用）
+  // + completeness_status を計算して返す（検索画面用）
   // id 欠損があればログ出力（データ健全性監視）
   const safeClients = (clients?.results || []).map((client: Record<string, unknown>) => {
     if (!client.id) {
       console.warn('[Agency API] client.id is missing:', JSON.stringify(client));
     }
+    
+    // completeness_status を計算
+    // 必須4項目: company_name, prefecture, industry, employee_count
+    const hasName = !!(client.company_name && String(client.company_name).trim());
+    const hasPrefecture = !!(client.prefecture && String(client.prefecture).trim());
+    const hasIndustry = !!(client.industry && String(client.industry).trim());
+    // employee_count は文字列（'1-5'等）または数値に対応
+    const empVal = client.employee_count;
+    const hasEmployeeCount = (() => {
+      if (!empVal) return false;
+      if (typeof empVal === 'string') {
+        const trimmed = empVal.trim();
+        return trimmed !== '' && trimmed !== '0';
+      }
+      return (empVal as number) > 0;
+    })();
+    
+    const isComplete = hasName && hasPrefecture && hasIndustry && hasEmployeeCount;
+    
+    // 不足フィールドのリスト
+    const missingFields: string[] = [];
+    if (!hasName) missingFields.push('会社名');
+    if (!hasPrefecture) missingFields.push('都道府県');
+    if (!hasIndustry) missingFields.push('業種');
+    if (!hasEmployeeCount) missingFields.push('従業員数');
+    
     return {
       ...client,
       // 互換用エイリアス（UIが揺れても壊れない）
       agency_client_id: client.id,
       client_id: client.id,
+      // completeness情報（検索画面用）
+      completeness_status: isComplete ? 'OK' : 'BLOCKED',
+      missing_fields: missingFields,
     };
   });
+  
+  // 集計: OK顧客数 / BLOCKED顧客数
+  const okCount = safeClients.filter(c => c.completeness_status === 'OK').length;
+  const blockedCount = safeClients.filter(c => c.completeness_status === 'BLOCKED').length;
   
   return c.json<ApiResponse<{
     clients: typeof safeClients;
     total: number;
     limit: number;
     offset: number;
+    ok_count: number;
+    blocked_count: number;
   }>>({
     success: true,
     data: {
@@ -578,6 +614,8 @@ agencyRoutes.get('/clients', async (c) => {
       total: total?.count || 0,
       limit: parsedLimit,
       offset: parsedOffset,
+      ok_count: okCount,
+      blocked_count: blockedCount,
     },
   });
 });
