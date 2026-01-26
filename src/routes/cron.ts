@@ -1,9 +1,7 @@
 /**
  * Cron用API（外部Cronサービスから呼び出し）
  * 
- * POST /api/cron/sync-jgrants - JGrantsデータ同期
- * POST /api/cron/sync-jnet21 - J-Net21 RSS同期（discovery_items へ stage='raw' で投入）
- * POST /api/cron/promote-jnet21 - J-Net21 昇格（discovery_items → subsidy_cache）
+ * POST /api/cron/sync-jgrants - JGrantsデータ同期（discovery_items → subsidy_cache）
  * POST /api/cron/scrape-tokyo-kosha - 東京都中小企業振興公社スクレイピング
  * POST /api/cron/scrape-tokyo-shigoto - 東京しごと財団スクレイピング
  * POST /api/cron/cleanup-queue - done 7日ローテーション
@@ -15,6 +13,8 @@
  * - 冪等性保証（dedupe_key + ON CONFLICT）
  * - 監査ログ（cron_runs テーブルに実行履歴を記録）
  * - エラー時のトランザクション安全性
+ * 
+ * NOTE: J-Net21は制度収集から撤去（2026-01-26）。士業ニュース専用に降格。
  */
 
 import { Hono } from 'hono';
@@ -3798,318 +3798,18 @@ cron.post('/consume-extractions', async (c) => {
   });
 });
 
-/**
- * J-Net21 RSS Discover (全国約3,795件の補助金情報)
- * 
- * POST /api/cron/sync-jnet21
- * 
- * v3.6.0: Freeze-4準拠 - discovery_items への UPSERT
- * - RSS: https://j-net21.smrj.go.jp/snavi/support/support.xml
- * - カタログ系ソース（Discover専用）
- * - dedupe_key + content_hash で差分検知
- * - 都道府県コード（JP-XX）を正規化
- * - stage='raw' で discovery_items に投入
- * - subsidy_cache への昇格は promote-jnet21 ジョブで実施
- * 
- * 推奨Cronスケジュール: 毎日 05:00 UTC (日本時間14:00)
- */
-cron.post('/sync-jnet21', async (c) => {
-  const db = c.env.DB;
-  
-  // P2-0: CRON_SECRET 検証
-  const authResult = verifyCronSecret(c);
-  if (!authResult.valid) {
-    return c.json<ApiResponse<null>>({
-      success: false,
-      error: {
-        code: authResult.error!.code,
-        message: authResult.error!.message,
-      },
-    }, authResult.error!.status);
-  }
-  
-  // P2-0: 実行ログ開始
-  let runId: string | null = null;
-  try {
-    runId = await startCronRun(db, 'sync-jnet21', 'cron');
-  } catch (logErr) {
-    console.warn('[J-Net21] Failed to start cron_run log:', logErr);
-  }
-  
-  const RSS_URL = 'https://j-net21.smrj.go.jp/snavi/support/support.xml';
-  const SOURCE_KEY = 'src-jnet21';
-  const errors: string[] = [];
-  let itemsNew = 0;
-  let itemsUpdated = 0;
-  let itemsSkipped = 0;
-  let totalProcessed = 0;
-  
-  try {
-    console.log('[J-Net21] Fetching RSS feed...');
-    
-    // RSS フィード取得
-    const response = await fetch(RSS_URL, {
-      headers: {
-        'User-Agent': 'HojyokinBot/1.0 (+https://hojyokin.pages.dev)',
-        'Accept': 'application/rss+xml, application/xml, text/xml',
-      },
-    });
-    
-    if (!response.ok) {
-      // ★ P0-1: HTTP失敗を feed_failures に記録
-      await recordFailure(
-        db,
-        'jnet21-rss-feed',  // subsidy_id（RSSフィード全体を示す）
-        SOURCE_KEY,
-        RSS_URL,
-        'discover',
-        'FETCH_FAILED',
-        `HTTP ${response.status}: ${response.statusText}`
-      );
-      throw new Error(`RSS fetch failed: ${response.status}`);
-    }
-    
-    const rssText = await response.text();
-    console.log(`[J-Net21] RSS fetched: ${rssText.length} bytes`);
-    
-    // TODO: 要確認（P2）
-    // 正規表現パースはXML仕様変更で壊れる。軽量XMLパーサへ置換検討。
-    // 特殊文字（&amp;, &lt;等）がエスケープされたまま格納される可能性あり。
-    
-    // 簡易XMLパース（DOMParserは使えないので正規表現で）
-    const items: Array<{
-      title: string;
-      link: string;
-      description: string;
-      prefectureCode: string | null;
-      prefectureLabel: string | null;
-      category: string;
-      pubDate: string;
-    }> = [];
-    
-    // <item>...</item> を抽出
-    const itemRegex = /<item>([\s\S]*?)<\/item>/g;
-    let match;
-    while ((match = itemRegex.exec(rssText)) !== null) {
-      const itemXml = match[1];
-      
-      // 各フィールドを抽出
-      const titleMatch = itemXml.match(/<title>([^<]*)<\/title>/);
-      const linkMatch = itemXml.match(/<link>([^<]*)<\/link>/);
-      const descMatch = itemXml.match(/<description><!\[CDATA\[([\s\S]*?)\]\]><\/description>/);
-      const prefCodeMatch = itemXml.match(/<rdf:value>([^<]*)<\/rdf:value>/);
-      const prefLabelMatch = itemXml.match(/<rdf:label>([^<]*)<\/rdf:label>/);
-      const categoryMatch = itemXml.match(/<dc:subject>([^<]*)<\/dc:subject>/);
-      const dateMatch = itemXml.match(/<dc:date>([^<]*)<\/dc:date>/);
-      
-      if (titleMatch && linkMatch) {
-        // 都道府県コード正規化 (JP-13 → 13)
-        let prefCode: string | null = null;
-        if (prefCodeMatch && prefCodeMatch[1]) {
-          const jpCode = prefCodeMatch[1].trim();
-          if (jpCode.startsWith('JP-')) {
-            prefCode = jpCode.slice(3);  // "JP-13" → "13"
-          }
-        }
-        
-        items.push({
-          title: titleMatch[1].trim(),
-          link: linkMatch[1].trim(),
-          description: descMatch ? descMatch[1].trim() : '',
-          prefectureCode: prefCode,
-          prefectureLabel: prefLabelMatch ? prefLabelMatch[1].trim() : null,
-          category: categoryMatch ? categoryMatch[1].trim() : 'support',
-          pubDate: dateMatch ? dateMatch[1].trim() : new Date().toISOString(),
-        });
-      }
-    }
-    
-    console.log(`[J-Net21] Parsed ${items.length} items from RSS`);
-    totalProcessed = items.length;
-    
-    // ★ v3.6.0 Freeze-4準拠: discovery_items への UPSERT (stage='raw')
-    // subsidy_feed_items / subsidy_cache への直接投入は廃止
-    // 昇格は promote-jnet21 ジョブで実施
-    for (const item of items) {
-      try {
-        // dedupe_key: src-jnet21:{url_hash}
-        const urlHash = await calculateContentHash(item.link);
-        const dedupeKey = `${SOURCE_KEY}:${urlHash.slice(0, 8)}`;
-        
-        // content_hash: title + description + prefectureCode
-        const contentStr = `${item.title}|${item.description}|${item.prefectureCode || ''}`;
-        const contentHash = await calculateContentHash(contentStr);
-        
-        // 既存レコードチェック (discovery_items)
-        const existing = await db.prepare(`
-          SELECT id, content_hash, stage FROM discovery_items WHERE dedupe_key = ?
-        `).bind(dedupeKey).first<{ id: string; content_hash: string; stage: string }>();
-        
-        const now = new Date().toISOString();
-        const itemId = `jnet21-${urlHash.slice(0, 8)}`;
-        
-        if (existing) {
-          // 既存レコード
-          if (existing.content_hash === contentHash) {
-            // 変更なし → last_seen_at 更新のみ
-            await db.prepare(`
-              UPDATE discovery_items SET last_seen_at = ?, updated_at = ? WHERE id = ?
-            `).bind(now, now, existing.id).run();
-            itemsSkipped++;
-          } else {
-            // 変更あり → 内容更新 (stageはそのまま維持)
-            await db.prepare(`
-              UPDATE discovery_items SET
-                title = ?,
-                summary = ?,
-                url = ?,
-                prefecture_code = ?,
-                content_hash = ?,
-                raw_json = ?,
-                last_seen_at = ?,
-                updated_at = ?
-              WHERE id = ?
-            `).bind(
-              item.title,
-              item.description,
-              item.link,
-              item.prefectureCode,
-              contentHash,
-              JSON.stringify({
-                category: item.category,
-                prefecture_label: item.prefectureLabel,
-                pub_date: item.pubDate,
-              }),
-              now,
-              now,
-              existing.id
-            ).run();
-            itemsUpdated++;
-          }
-        } else {
-          // 新規レコード → discovery_items に stage='raw' で投入
-          await db.prepare(`
-            INSERT INTO discovery_items (
-              id, dedupe_key, source_id, source_type, title, summary, url,
-              prefecture_code, stage, quality_score, content_hash, raw_json,
-              first_seen_at, last_seen_at, created_at, updated_at
-            ) VALUES (?, ?, ?, 'rss', ?, ?, ?, ?, 'raw', 0, ?, ?, ?, ?, ?, ?)
-          `).bind(
-            itemId,
-            dedupeKey,
-            SOURCE_KEY,
-            item.title,
-            item.description,
-            item.link,
-            item.prefectureCode,
-            contentHash,
-            JSON.stringify({
-              category: item.category,
-              prefecture_label: item.prefectureLabel,
-              pub_date: item.pubDate,
-            }),
-            now,
-            now,
-            now,
-            now
-          ).run();
-          itemsNew++;
-        }
-      } catch (itemErr) {
-        const errMsg = itemErr instanceof Error ? itemErr.message : String(itemErr);
-        errors.push(`Item error (${item.link}): ${errMsg}`);
-        console.warn(`[J-Net21] Item error:`, itemErr);
-        
-        // ★ P0-1 v3.7.1: feed_failures に記録（super_admin で可視化）
-        const linkHash = await calculateContentHash(item.link).then(h => h.slice(0, 8));
-        const failureId = `jnet21-${linkHash}`;
-        try {
-          await recordFailure(
-            db,
-            failureId,
-            SOURCE_KEY,
-            item.link,
-            'db',  // stage: db（DB書き込み段階）
-            'UPSERT_FAILED',  // reason（recordFailure内でerror_type='db'に変換）
-            errMsg.slice(0, 500)
-          );
-        } catch (recordErr) {
-          console.warn('[J-Net21] Failed to record feed_failures:', recordErr);
-        }
-      }
-    }
-    
-    // ★ v3.6.0 Freeze-4準拠: subsidy_cache への直接投入は廃止
-    // 昇格は /api/cron/promote-jnet21 ジョブで実施
-    // discovery_items (stage='validated') → subsidy_cache の流れ
-    
-    console.log(`[J-Net21] Completed: new=${itemsNew}, updated=${itemsUpdated}, skipped=${itemsSkipped}`);
-    
-    // P2-0: 実行ログ完了
-    if (runId) {
-      try {
-        await finishCronRun(db, runId, errors.length > 0 ? 'partial' : 'success', {
-          items_processed: totalProcessed,
-          items_inserted: itemsNew,
-          items_updated: itemsUpdated,
-          items_skipped: itemsSkipped,
-          error_count: errors.length,
-          errors: errors.slice(0, 10),
-          metadata: {
-            rss_url: RSS_URL,
-            source_key: SOURCE_KEY,
-          },
-        });
-      } catch (logErr) {
-        console.warn('[J-Net21] Failed to finish cron_run log:', logErr);
-      }
-    }
-    
-    return c.json<ApiResponse<{
-      message: string;
-      total: number;
-      new: number;
-      updated: number;
-      skipped: number;
-      errors: number;
-      run_id?: string;
-    }>>({
-      success: true,
-      data: {
-        message: 'J-Net21 RSS sync completed',
-        total: totalProcessed,
-        new: itemsNew,
-        updated: itemsUpdated,
-        skipped: itemsSkipped,
-        errors: errors.length,
-        run_id: runId ?? undefined,
-      },
-    });
-    
-  } catch (error) {
-    console.error('[J-Net21] Error:', error);
-    
-    if (runId) {
-      try {
-        await finishCronRun(db, runId, 'failed', {
-          items_processed: totalProcessed,
-          error_count: 1,
-          errors: [error instanceof Error ? error.message : String(error)],
-        });
-      } catch (logErr) {
-        console.warn('[J-Net21] Failed to finish cron_run log:', logErr);
-      }
-    }
-    
-    return c.json<ApiResponse<null>>({
-      success: false,
-      error: {
-        code: 'JNET21_SYNC_ERROR',
-        message: `J-Net21 sync failed: ${error instanceof Error ? error.message : String(error)}`,
-      },
-    }, 500);
-  }
-});
+// =====================================================
+// [REMOVED v4.1.0] J-Net21 制度収集エンドポイント
+// 
+// sync-jnet21 / sync-jnet21-catalog / promote-jnet21 は削除
+// 
+// 理由: J-Net21は「制度データ」ではなく「ニュース」
+// - discovery_items / subsidy_cache に入れない
+// - 壁打ち（申請書生成）のナレッジに使わない
+// - 士業ダッシュボードの「ニュース枠」専用
+//
+// 詳細: docs/FROZEN_RULES_INDEX.md「ニュースソース凍結」参照
+// =====================================================
 
 /**
  * extraction_queue のdoneローテーション（DB肥大対策）

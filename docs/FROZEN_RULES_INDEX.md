@@ -1,7 +1,7 @@
 # 凍結ルール インデックス（唯一の入口）
 
 **作成日**: 2026-01-25  
-**最終更新**: 2026-01-25 v2  
+**最終更新**: 2026-01-26 v4  
 **ステータス**: 凍結
 
 ---
@@ -27,7 +27,7 @@
 | ファイル | 概要 |
 |----------|------|
 | [COST_ACCOUNTING_FREEZE_SPEC.md](./COST_ACCOUNTING_FREEZE_SPEC.md) | APIコスト記録・集計・表示の凍結ルール（Freeze-COST-0〜4） |
-| [FEED_PIPELINE_SPEC.md](./FEED_PIPELINE_SPEC.md) | RSS/クローラーパイプラインの凍結仕様（Freeze-4） |
+| [FEED_PIPELINE_SPEC.md](./FEED_PIPELINE_SPEC.md) | RSS/クローラーパイプラインの凍結仕様（jGrants/自治体ページ） |
 | [AGENCY_DASHBOARD_FREEZE.md](./AGENCY_DASHBOARD_FREEZE.md) | Agency管理画面の凍結仕様 |
 
 ### 2. Frozen Checklists（凍結チェックリスト）
@@ -83,23 +83,33 @@
 
 ## データ収集凍結（Freeze-4）
 
-**詳細**: [FEED_PIPELINE_SPEC.md](./FEED_PIPELINE_SPEC.md) / [JNET21_CATALOG_CRAWLER_SPEC.md](./JNET21_CATALOG_CRAWLER_SPEC.md)
+**詳細**: [FEED_PIPELINE_SPEC.md](./FEED_PIPELINE_SPEC.md)
+
+### 収集ソース方針（2026-01-26 確定）
+
+| ソース | 分類 | 状況 | 用途 |
+|--------|------|------|------|
+| **jGrants (API)** | 公式 | ✅ 採用 | 制度収集・検索母集団 |
+| **自治体公式ページ** | 公式 | ✅ 採用 | 制度収集・検索母集団 |
+| **J-Net21** | 二次ソース | ❌ 撤廃 | 士業ニュース専用に降格 |
+
+**J-Net21 撤廃理由**:
+- 二次ソース（公式API/ページからの集約）であり、情報鮮度・精度が不十分
+- discovery_items / subsidy_cache には入れず、制度検索の母集団にしない
+- 士業ダッシュボードのニュース枚としてのみ利用
+
+### Cron エンドポイント（稼働中）
 
 | ルール | 内容 |
 |--------|------|
-| **Freeze-4-RSS** | sync-jnet21 → discovery_items (stage=raw) |
-| **Freeze-4-CATALOG** | sync-jnet21-catalog → 一覧ページクロール → discovery_items (stage=raw) |
-| **Freeze-4-PROMOTE** | promote-jnet21 → subsidy_cache へ昇格（LIMIT: raw 2000件、promoted 500件） |
-| **Freeze-4-CRON** | hojyokin-cron-feed Worker で自動実行 |
-
-**v4.0.0 拡張（2026-01-26）**:
-- `sync-jnet21-catalog`: 一覧ページを Firecrawl でクロールし全記事URLを取得
-- promote LIMIT 拡大: raw→validated 500→2000件、validated→promoted 100→500件
-- Tier階層: Tier1(score>=50)=検索対象、Tier2(score>=70)=壁打ち対象
+| **Freeze-4-JGRANTS** | sync-jgrants → subsidy_cache |
+| **Freeze-4-KOSHA** | scrape-tokyo-kosha → subsidy_feed_items |
+| **Freeze-4-SHIGOTO** | scrape-tokyo-shigoto → subsidy_feed_items |
+| **Freeze-4-CLEANUP** | cleanup-queue → done 7日ローテーション |
 
 **関連テーブル**:
-- `discovery_items` - 外部データのステージング
-- `discovery_promote_log` - 昇格ログ
+- `subsidy_cache` - 補助金キャッシュ（検索・壁打ち対象）
+- `subsidy_feed_items` - フィードアイテム（ニュース表示用）
 - `feed_sources` - ソース定義
 
 ---
@@ -176,9 +186,10 @@
 
 | エンドポイント | 用途 |
 |----------------|------|
-| `POST /api/cron/sync-jnet21` | J-Net21 RSS同期（補助） |
-| `POST /api/cron/sync-jnet21-catalog` | J-Net21 一覧クロール（メイン） |
-| `POST /api/cron/promote-jnet21` | discovery_items 昇格（2000→500件/run） |
+| `POST /api/cron/sync-jgrants` | jGrants API 同期 |
+| `POST /api/cron/scrape-tokyo-kosha` | 東京都中小企業振興公社 |
+| `POST /api/cron/scrape-tokyo-shigoto` | 東京しごと財団 |
+| `POST /api/cron/cleanup-queue` | done 7日ローテーション |
 | `POST /api/cron/enqueue-extractions` | 抽出キュー投入 |
 | `POST /api/cron/consume-extractions` | 抽出キュー消化 |
 
@@ -191,3 +202,4 @@
 | 2026-01-25 | v1 | 初版作成（コスト会計凍結、P0修正追加） |
 | 2026-01-25 | v2 | 3カテゴリ構成（Frozen Specs / Checklists / Reports）、CostGuard・billing 詳細追加 |
 | 2026-01-26 | v3 | J-Net21一覧クロール (sync-jnet21-catalog)、promote LIMIT拡大、discovery stats API 追加 |
+| 2026-01-26 | v4 | J-Net21を制度収集から撤廃（士業ニュース専用に降格）、関連API/ドキュメント削除 |
