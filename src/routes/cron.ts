@@ -2289,6 +2289,9 @@ cron.post('/enrich-jgrants', async (c) => {
   const MAX_ITEMS_PER_RUN = 50; // v2: 50件に増加
   const JGRANTS_DETAIL_API_V2 = 'https://api.jgrants-portal.go.jp/exp/v2/public/subsidies/id';
   
+  // forceモード: v2エンリッチ済みでもeligible_expensesがないものを再処理
+  const forceMode = c.req.query('force') === 'true';
+  
   let itemsEnriched = 0;
   let itemsSkipped = 0;
   let itemsReady = 0;
@@ -2318,6 +2321,99 @@ cron.post('/enrich-jgrants', async (c) => {
       }
     }
     return pdfUrls;
+  }
+  
+  /**
+   * HTMLから参照URL（外部サイト）を抽出
+   * jGrants以外のドメインへのリンクを取得
+   */
+  function extractReferenceUrls(html: string): string[] {
+    const refUrls: string[] = [];
+    // href属性からURL抽出
+    const hrefPattern = /href=["'](https?:\/\/[^"']+)["']/gi;
+    let match;
+    while ((match = hrefPattern.exec(html)) !== null) {
+      const url = match[1];
+      // jGrants以外のドメインを対象とする
+      if (!url.includes('jgrants-portal.go.jp') && 
+          !url.includes('javascript:') &&
+          !url.includes('#')) {
+        // 末尾のエスケープ文字を除去
+        const cleanUrl = url.replace(/\\+$/, '').replace(/\\/g, '');
+        if (!refUrls.includes(cleanUrl)) {
+          refUrls.push(cleanUrl);
+        }
+      }
+    }
+    return refUrls;
+  }
+  
+  /**
+   * 概要テキストから申請要件・対象経費・対象者を簡易抽出
+   * セクションヘッダー「■」「◆」「●」などで区切られた箇所から抽出
+   */
+  function extractFieldsFromOverview(overviewText: string): {
+    application_requirements?: string[];
+    eligible_expenses?: string[];
+    target_businesses?: string[];
+  } {
+    const result: {
+      application_requirements?: string[];
+      eligible_expenses?: string[];
+      target_businesses?: string[];
+    } = {};
+    
+    // セクション名のパターン（日本語の一般的なヘッダー）
+    const sections = overviewText.split(/[■◆●▼]/);
+    
+    for (const section of sections) {
+      const sectionText = section.trim();
+      if (sectionText.length < 10) continue;
+      
+      // セクション名は最初の空白または改行まで
+      const headerEndIdx = sectionText.search(/[\s。、]/);
+      const header = headerEndIdx > 0 ? sectionText.substring(0, Math.min(headerEndIdx, 20)) : sectionText.substring(0, 20);
+      const content = headerEndIdx > 0 ? sectionText.substring(headerEndIdx).trim() : sectionText;
+      
+      // 対象者・対象事業者
+      if (header.includes('対象者') || header.includes('対象事業者') || 
+          header.includes('申請対象') || header.includes('交付対象者')) {
+        const cleanContent = content.substring(0, 500).trim();
+        if (cleanContent.length > 20 && !result.target_businesses) {
+          result.target_businesses = [cleanContent];
+        }
+      }
+      
+      // 申請要件・補助要件・要件
+      else if (header.includes('要件') || header.includes('条件')) {
+        const cleanContent = content.substring(0, 500).trim();
+        if (cleanContent.length > 20 && !result.application_requirements) {
+          result.application_requirements = [cleanContent];
+        }
+      }
+      
+      // 対象経費・補助対象経費・助成対象（事業内容含む）
+      else if (header.includes('対象経費') || header.includes('補助対象') || 
+          header.includes('助成対象経費') || header.includes('助成対象') ||
+          header.includes('対象事業')) {
+        const cleanContent = content.substring(0, 500).trim();
+        if (cleanContent.length > 20 && !result.eligible_expenses) {
+          result.eligible_expenses = [cleanContent];
+        }
+      }
+      
+      // 支援内容・助成金の額（対象経費の代替）
+      else if (header.includes('支援内容') || header.includes('補助内容') || 
+          header.includes('助成内容') || header.includes('助成金の額') ||
+          header.includes('補助金額') || header.includes('助成額')) {
+        const cleanContent = content.substring(0, 500).trim();
+        if (cleanContent.length > 20 && !result.eligible_expenses) {
+          result.eligible_expenses = [cleanContent];
+        }
+      }
+    }
+    
+    return result;
   }
   
   /**
@@ -2386,6 +2482,11 @@ cron.post('/enrich-jgrants', async (c) => {
     
     // 対象制度を取得（優先度順）
     // v2未エンリッチ + 受付中 + キーワードマッチ
+    // forceモード: v2済みでもeligible_expensesがないものを対象
+    const enrichmentCondition = forceMode
+      ? `(detail_json IS NULL OR detail_json NOT LIKE '%"enriched_version":"v2"%' OR (json_extract(detail_json, '$.eligible_expenses') IS NULL AND detail_json LIKE '%"enriched_version":"v2"%'))`
+      : `(detail_json IS NULL OR detail_json NOT LIKE '%"enriched_version":"v2"%')`;
+    
     const targets = await db.prepare(`
       SELECT 
         id, title, detail_json, acceptance_end_datetime,
@@ -2397,7 +2498,7 @@ cron.post('/enrich-jgrants', async (c) => {
       FROM subsidy_cache
       WHERE source = 'jgrants'
         AND wall_chat_ready = 0
-        AND (detail_json IS NULL OR detail_json NOT LIKE '%"enriched_version":"v2"%')
+        AND ${enrichmentCondition}
         AND (acceptance_end_datetime IS NULL OR acceptance_end_datetime > datetime('now'))
         AND (${allCondition})
       ORDER BY 
@@ -2424,7 +2525,7 @@ cron.post('/enrich-jgrants', async (c) => {
         FROM subsidy_cache
         WHERE source = 'jgrants'
           AND wall_chat_ready = 0
-          AND (detail_json IS NULL OR detail_json NOT LIKE '%"enriched_version":"v2"%')
+          AND ${enrichmentCondition}
           AND (acceptance_end_datetime IS NULL OR acceptance_end_datetime > datetime('now'))
         ORDER BY acceptance_end_datetime ASC
         LIMIT ?
@@ -2485,6 +2586,18 @@ cron.post('/enrich-jgrants', async (c) => {
         if (subsidy.detail && subsidy.detail.length > 20) {
           detailJson.overview = htmlToText(subsidy.detail, 3000);
           detailJson.overview_html_length = subsidy.detail.length;
+          
+          // 1.5. 概要テキストから申請要件・対象経費・対象者を簡易抽出
+          const extractedFields = extractFieldsFromOverview(detailJson.overview);
+          if (extractedFields.application_requirements) {
+            detailJson.application_requirements = extractedFields.application_requirements;
+          }
+          if (extractedFields.eligible_expenses) {
+            detailJson.eligible_expenses = extractedFields.eligible_expenses;
+          }
+          if (extractedFields.target_businesses) {
+            detailJson.target_businesses = extractedFields.target_businesses;
+          }
         }
         
         // 2. キャッチフレーズ
@@ -2564,6 +2677,15 @@ cron.post('/enrich-jgrants', async (c) => {
         if (subsidy.detail) {
           const extractedPdfs = extractPdfLinksFromHtml(subsidy.detail);
           pdfUrls.push(...extractedPdfs);
+        }
+        
+        // 13.5. 参照URL抽出（外部サイトへのリンク）
+        if (subsidy.detail) {
+          const refUrls = extractReferenceUrls(subsidy.detail);
+          if (refUrls.length > 0) {
+            detailJson.reference_urls = refUrls;
+            console.log(`[Enrich-JGrants-v2] Found ${refUrls.length} reference URLs for ${target.id}`);
+          }
         }
         
         // 14. API添付ファイル（application_guidelines, outline_of_grant, application_form）
@@ -3908,6 +4030,7 @@ cron.post('/consume-extractions', async (c) => {
       }
 
       // extract_pdf: PDFからFirecrawl+OpenAIで構造化データ抽出
+      // 参照URLがある場合はそこからPDFを収集することも試みる
       if (job.job_type === 'extract_pdf') {
         const subsidy = await db.prepare(`
           SELECT id, title, detail_json
@@ -3924,7 +4047,84 @@ cron.post('/consume-extractions', async (c) => {
             detail = subsidy.detail_json ? JSON.parse(subsidy.detail_json) : {};
           } catch { detail = {}; }
 
-          const pdfUrls = detail.pdf_urls || [];
+          let pdfUrls = detail.pdf_urls || [];
+          
+          // 参照URLからPDFを収集（pdf_urlsが空または少ない場合）
+          if ((!Array.isArray(pdfUrls) || pdfUrls.length < 3) && Array.isArray(detail.reference_urls)) {
+            const firecrawlKey = env.FIRECRAWL_API_KEY;
+            
+            for (const refUrl of detail.reference_urls.slice(0, 2)) { // 最大2つの参照URLを処理
+              try {
+                console.log(`[extract_pdf] Scraping reference URL: ${refUrl}`);
+                
+                // HTMLを取得（Firecrawlまたは直接fetch）
+                let pageHtml = '';
+                
+                if (firecrawlKey) {
+                  const fcResponse = await fetch('https://api.firecrawl.dev/v1/scrape', {
+                    method: 'POST',
+                    headers: {
+                      'Authorization': `Bearer ${firecrawlKey}`,
+                      'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ url: refUrl, formats: ['html'] }),
+                  });
+                  
+                  if (fcResponse.ok) {
+                    const fcData = await fcResponse.json() as any;
+                    pageHtml = fcData.data?.html || '';
+                  }
+                } else {
+                  // Firecrawlがない場合は直接fetch
+                  const response = await fetch(refUrl, {
+                    headers: {
+                      'Accept': 'text/html',
+                      'User-Agent': 'Mozilla/5.0 (compatible; HojyokinBot/1.0)',
+                    },
+                  });
+                  if (response.ok) {
+                    pageHtml = await response.text();
+                  }
+                }
+                
+                // HTMLからPDFリンクを抽出
+                if (pageHtml) {
+                  const pdfPattern = /href=["']([^"']*\.pdf[^"']*)["']/gi;
+                  let match;
+                  const baseUrl = new URL(refUrl);
+                  
+                  while ((match = pdfPattern.exec(pageHtml)) !== null) {
+                    let pdfLink = match[1];
+                    // 相対URLを絶対URLに変換
+                    if (pdfLink.startsWith('./')) {
+                      pdfLink = `${baseUrl.origin}${baseUrl.pathname.replace(/\/[^/]*$/, '')}/${pdfLink.substring(2)}`;
+                    } else if (pdfLink.startsWith('/')) {
+                      pdfLink = `${baseUrl.origin}${pdfLink}`;
+                    } else if (!pdfLink.startsWith('http')) {
+                      pdfLink = `${baseUrl.origin}${baseUrl.pathname.replace(/\/[^/]*$/, '')}/${pdfLink}`;
+                    }
+                    
+                    if (!pdfUrls.includes(pdfLink)) {
+                      pdfUrls.push(pdfLink);
+                      console.log(`[extract_pdf] Found PDF: ${pdfLink}`);
+                    }
+                  }
+                }
+              } catch (e) {
+                console.warn(`[extract_pdf] Failed to scrape reference URL ${refUrl}:`, e);
+              }
+            }
+            
+            // 新しいPDFが見つかったらdetail_jsonを更新
+            if (pdfUrls.length > (detail.pdf_urls?.length || 0)) {
+              detail.pdf_urls = [...new Set(pdfUrls)];
+              await db.prepare(`
+                UPDATE subsidy_cache SET detail_json = ?, cached_at = datetime('now')
+                WHERE id = ?
+              `).bind(JSON.stringify(detail), subsidy.id).run();
+              console.log(`[extract_pdf] Updated pdf_urls for ${subsidy.id}: ${pdfUrls.length} PDFs`);
+            }
+          }
           
           if (Array.isArray(pdfUrls) && pdfUrls.length > 0) {
             const firecrawlKey = env.FIRECRAWL_API_KEY;
