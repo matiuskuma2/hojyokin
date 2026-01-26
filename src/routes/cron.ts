@@ -2385,6 +2385,7 @@ cron.post('/enrich-jgrants', async (c) => {
     const allCondition = allKeywords.map(k => `title LIKE '%${k}%'`).join(' OR ');
     
     // 対象制度を取得（優先度順）
+    // v2未エンリッチ + 受付中 + キーワードマッチ
     const targets = await db.prepare(`
       SELECT 
         id, title, detail_json, acceptance_end_datetime,
@@ -2396,7 +2397,7 @@ cron.post('/enrich-jgrants', async (c) => {
       FROM subsidy_cache
       WHERE source = 'jgrants'
         AND wall_chat_ready = 0
-        AND (detail_json IS NULL OR detail_json = '{}' OR LENGTH(detail_json) < 200)
+        AND (detail_json IS NULL OR detail_json NOT LIKE '%"enriched_version":"v2"%')
         AND (acceptance_end_datetime IS NULL OR acceptance_end_datetime > datetime('now'))
         AND (${allCondition})
       ORDER BY 
@@ -2423,7 +2424,7 @@ cron.post('/enrich-jgrants', async (c) => {
         FROM subsidy_cache
         WHERE source = 'jgrants'
           AND wall_chat_ready = 0
-          AND (detail_json IS NULL OR detail_json = '{}' OR LENGTH(detail_json) < 200)
+          AND (detail_json IS NULL OR detail_json NOT LIKE '%"enriched_version":"v2"%')
           AND (acceptance_end_datetime IS NULL OR acceptance_end_datetime > datetime('now'))
         ORDER BY acceptance_end_datetime ASC
         LIMIT ?
@@ -2628,7 +2629,7 @@ cron.post('/enrich-jgrants', async (c) => {
         await db.prepare(`
           UPDATE subsidy_cache SET
             detail_json = ?,
-            updated_at = datetime('now')
+            cached_at = datetime('now')
           WHERE id = ?
         `).bind(JSON.stringify(merged), target.id).run();
         
@@ -2861,7 +2862,7 @@ cron.post('/enrich-tokyo-shigoto', async (c) => {
         await db.prepare(`
           UPDATE subsidy_cache SET
             detail_json = ?,
-            updated_at = datetime('now')
+            cached_at = datetime('now')
           WHERE id = ?
         `).bind(JSON.stringify(merged), target.id).run();
         
@@ -3901,6 +3902,109 @@ cron.post('/consume-extractions', async (c) => {
                 await db.prepare(`UPDATE subsidy_cache SET wall_chat_ready = 1 WHERE id = ?`)
                   .bind(subsidy.id).run();
               }
+            }
+          }
+        }
+      }
+
+      // extract_pdf: PDFからFirecrawl+OpenAIで構造化データ抽出
+      if (job.job_type === 'extract_pdf') {
+        const subsidy = await db.prepare(`
+          SELECT id, title, detail_json
+          FROM subsidy_cache WHERE id = ?
+        `).bind(job.subsidy_id).first<{
+          id: string;
+          title: string;
+          detail_json: string | null;
+        }>();
+
+        if (subsidy) {
+          let detail: any = {};
+          try {
+            detail = subsidy.detail_json ? JSON.parse(subsidy.detail_json) : {};
+          } catch { detail = {}; }
+
+          const pdfUrls = detail.pdf_urls || [];
+          
+          if (Array.isArray(pdfUrls) && pdfUrls.length > 0) {
+            const firecrawlKey = env.FIRECRAWL_API_KEY;
+            const openaiKey = env.OPENAI_API_KEY;
+            
+            // 最初のPDFをスクレイピング
+            const pdfUrl = pdfUrls[0];
+            let pdfText = '';
+            
+            if (firecrawlKey) {
+              try {
+                const fcResponse = await fetch('https://api.firecrawl.dev/v1/scrape', {
+                  method: 'POST',
+                  headers: {
+                    'Authorization': `Bearer ${firecrawlKey}`,
+                    'Content-Type': 'application/json',
+                  },
+                  body: JSON.stringify({ url: pdfUrl, formats: ['markdown'] }),
+                });
+                
+                if (fcResponse.ok) {
+                  const fcData = await fcResponse.json() as any;
+                  pdfText = fcData.data?.markdown || '';
+                }
+              } catch (e) {
+                console.warn(`[extract_pdf] Firecrawl failed for ${pdfUrl}:`, e);
+              }
+            }
+            
+            // OpenAI で構造化データ抽出
+            if (pdfText && pdfText.length > 100 && openaiKey) {
+              try {
+                const { extractSubsidyDataFromPdf, mergeExtractedData } = await import('../services/openai-extractor');
+                const extracted = await extractSubsidyDataFromPdf(pdfText, openaiKey);
+                
+                if (extracted) {
+                  // 既存データとマージ (mergeExtractedData を使用)
+                  const merged = mergeExtractedData(detail, extracted);
+                  merged.extracted_pdf_text = pdfText.substring(0, 5000);
+                  merged.extracted_at = new Date().toISOString();
+                  
+                  await db.prepare(`
+                    UPDATE subsidy_cache SET detail_json = ?, cached_at = datetime('now')
+                    WHERE id = ?
+                  `).bind(JSON.stringify(merged), subsidy.id).run();
+                  
+                  // WALL_CHAT_READY 判定
+                  const { checkWallChatReadyFromJson } = await import('../lib/wall-chat-ready');
+                  const readyResult = checkWallChatReadyFromJson(JSON.stringify(merged));
+                  if (readyResult.ready) {
+                    await db.prepare(`UPDATE subsidy_cache SET wall_chat_ready = 1 WHERE id = ?`)
+                      .bind(subsidy.id).run();
+                  }
+                }
+              } catch (e) {
+                console.warn(`[extract_pdf] OpenAI extraction failed for ${subsidy.id}:`, e);
+                // OpenAIが失敗してもFirecrawlの結果は保存
+                if (pdfText.length > 100) {
+                  const merged = {
+                    ...detail,
+                    extracted_pdf_text: pdfText.substring(0, 5000),
+                    extracted_at: new Date().toISOString(),
+                  };
+                  await db.prepare(`
+                    UPDATE subsidy_cache SET detail_json = ?, cached_at = datetime('now')
+                    WHERE id = ?
+                  `).bind(JSON.stringify(merged), subsidy.id).run();
+                }
+              }
+            } else if (pdfText && pdfText.length > 100) {
+              // OpenAI キーがない場合は生テキストだけ保存
+              const merged = {
+                ...detail,
+                extracted_pdf_text: pdfText.substring(0, 5000),
+                extracted_at: new Date().toISOString(),
+              };
+              await db.prepare(`
+                UPDATE subsidy_cache SET detail_json = ?, cached_at = datetime('now')
+                WHERE id = ?
+              `).bind(JSON.stringify(merged), subsidy.id).run();
             }
           }
         }
