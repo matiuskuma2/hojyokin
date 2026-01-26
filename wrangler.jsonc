@@ -69,4 +69,16 @@
       "bucket_name": "subsidy-knowledge"
     }
   ]
+
+  // ========================================
+  // Cron Triggers
+  // ========================================
+  // Pages では Cron Triggers は使えないため、
+  // 別途 Workers (hojyokin-cron) をデプロイして定期実行
+  // 
+  // hojyokin-cron Worker のスケジュール:
+  // - 0 21 * * * (06:00 JST): sync-jgrants + enrich-jgrants
+  // - 15 * * * * (毎時15分): consume-extractions
+  //
+  // Workers URL: https://hojyokin-cron.sekiyadubai.workers.dev
 }
