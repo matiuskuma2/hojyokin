@@ -83,13 +83,19 @@
 
 ## データ収集凍結（Freeze-4）
 
-**詳細**: [FEED_PIPELINE_SPEC.md](./FEED_PIPELINE_SPEC.md)
+**詳細**: [FEED_PIPELINE_SPEC.md](./FEED_PIPELINE_SPEC.md) / [JNET21_CATALOG_CRAWLER_SPEC.md](./JNET21_CATALOG_CRAWLER_SPEC.md)
 
 | ルール | 内容 |
 |--------|------|
 | **Freeze-4-RSS** | sync-jnet21 → discovery_items (stage=raw) |
-| **Freeze-4-PROMOTE** | promote-jnet21 → subsidy_cache へ昇格 |
+| **Freeze-4-CATALOG** | sync-jnet21-catalog → 一覧ページクロール → discovery_items (stage=raw) |
+| **Freeze-4-PROMOTE** | promote-jnet21 → subsidy_cache へ昇格（LIMIT: raw 2000件、promoted 500件） |
 | **Freeze-4-CRON** | hojyokin-cron-feed Worker で自動実行 |
+
+**v4.0.0 拡張（2026-01-26）**:
+- `sync-jnet21-catalog`: 一覧ページを Firecrawl でクロールし全記事URLを取得
+- promote LIMIT 拡大: raw→validated 500→2000件、validated→promoted 100→500件
+- Tier階層: Tier1(score>=50)=検索対象、Tier2(score>=70)=壁打ち対象
 
 **関連テーブル**:
 - `discovery_items` - 外部データのステージング
@@ -163,13 +169,16 @@
 | `GET /api/admin-ops/cost/logs` | コストログ一覧 |
 | `GET /api/admin-ops/extraction-queue/summary` | 抽出キュー状況 |
 | `POST /api/admin-ops/extraction-queue/consume` | キュー消化（手動） |
+| `GET /api/admin-ops/discovery/stats` | discovery_items 統計（ステージ分布、フィールド充足率） |
+| `GET /api/admin-ops/discovery/missing-fields` | 欠落フィールド詳細分析 |
 
 ### Cron エンドポイント
 
 | エンドポイント | 用途 |
 |----------------|------|
-| `POST /api/cron/sync-jnet21` | J-Net21 RSS同期 |
-| `POST /api/cron/promote-jnet21` | discovery_items 昇格 |
+| `POST /api/cron/sync-jnet21` | J-Net21 RSS同期（補助） |
+| `POST /api/cron/sync-jnet21-catalog` | J-Net21 一覧クロール（メイン） |
+| `POST /api/cron/promote-jnet21` | discovery_items 昇格（2000→500件/run） |
 | `POST /api/cron/enqueue-extractions` | 抽出キュー投入 |
 | `POST /api/cron/consume-extractions` | 抽出キュー消化 |
 
@@ -181,3 +190,4 @@
 |------|-----------|----------|
 | 2026-01-25 | v1 | 初版作成（コスト会計凍結、P0修正追加） |
 | 2026-01-25 | v2 | 3カテゴリ構成（Frozen Specs / Checklists / Reports）、CostGuard・billing 詳細追加 |
+| 2026-01-26 | v3 | J-Net21一覧クロール (sync-jnet21-catalog)、promote LIMIT拡大、discovery stats API 追加 |
