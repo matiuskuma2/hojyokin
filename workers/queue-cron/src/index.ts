@@ -183,6 +183,7 @@ async function enqueueToD1(env: Env) {
 
   // ★ (D) jgrants enrich: 締切ベースの動的優先度
   // 7日以内: priority 40, 30日以内: priority 55, それ以外: priority 70
+  // ★ v4.0: enriched_version = 'v2' 未満のものを対象に変更
   const insertJgrants = await db.prepare(`
     INSERT OR IGNORE INTO extraction_queue
       (id, subsidy_id, shard_key, job_type, priority, status, attempts, max_attempts, created_at, updated_at)
@@ -207,7 +208,7 @@ async function enqueueToD1(env: Env) {
     WHERE sc.source = 'jgrants'
       AND sc.wall_chat_ready = 0
       AND sc.shard_key IS NOT NULL
-      AND (sc.detail_json IS NULL OR sc.detail_json = '{}' OR LENGTH(sc.detail_json) < 100)
+      AND (sc.detail_json IS NULL OR sc.detail_json NOT LIKE '%"enriched_version":"v2"%')
       AND (sc.acceptance_end_datetime IS NULL OR sc.acceptance_end_datetime > datetime('now'))
       AND NOT EXISTS (
         SELECT 1 FROM extraction_queue eq

@@ -4438,7 +4438,7 @@ adminDashboard.post('/extraction-queue/consume', async (c) => {
           const merged = { ...existing, ...detailJson, enriched_at: new Date().toISOString() };
 
           await db.prepare(`
-            UPDATE subsidy_cache SET detail_json = ?, updated_at = datetime('now') WHERE id = ?
+            UPDATE subsidy_cache SET detail_json = ?, cached_at = datetime('now') WHERE id = ?
           `).bind(JSON.stringify(merged), subsidy.id).run();
 
           // WALL_CHAT_READY 判定
@@ -4505,7 +4505,7 @@ adminDashboard.post('/extraction-queue/consume', async (c) => {
           const merged = { ...existing, ...detailJson, enriched_at: new Date().toISOString() };
 
           await db.prepare(`
-            UPDATE subsidy_cache SET detail_json = ?, updated_at = datetime('now') WHERE id = ?
+            UPDATE subsidy_cache SET detail_json = ?, cached_at = datetime('now') WHERE id = ?
           `).bind(JSON.stringify(merged), subsidy.id).run();
 
           // WALL_CHAT_READY 判定

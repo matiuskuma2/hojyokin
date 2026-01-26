@@ -95,6 +95,18 @@ export default {
 
     /**
      * ===============================
+     * 3) jGrants 同期・エンリッチ
+     * ===============================
+     */
+
+    // jGrants → subsidy_cache 同期
+    await postCron(env, '/api/cron/sync-jgrants');
+
+    // jGrants V2 API でエンリッチ（PDF URL抽出含む）
+    await postCron(env, '/api/cron/enrich-jgrants');
+
+    /**
+     * ===============================
      * 将来拡張（ここに足すだけ）
      * ===============================
      *
