@@ -3421,7 +3421,7 @@ agencyPages.get('/agency/search', (c) => {
         
         requiredChecklist += '<div class="flex items-center gap-2 ' + (completeness.required?.employee_count ? 'text-green-600' : 'text-red-600') + '">';
         requiredChecklist += '<i class="fas fa-' + (completeness.required?.employee_count ? 'check-circle' : 'times-circle') + '"></i>';
-        requiredChecklist += '<span>従業員数（数値 &gt; 0）</span></div>';
+        requiredChecklist += '<span>従業員数</span></div>';
         
         statusEl.innerHTML = 
           '<div class="flex items-start gap-4">' +

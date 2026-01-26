@@ -333,11 +333,24 @@ companies.get('/:company_id/completeness', requireCompanyAccess(), async (c) => 
       }>();
     
     // 必須項目チェック
+    // employee_countは文字列（"1-5", "6-20"等）または数値（100等）の両方に対応
+    const employeeCountValid = (() => {
+      if (!company.employee_count) return false;
+      const val = company.employee_count;
+      // 文字列の場合: 空でないこと、かつ "0" でないこと
+      if (typeof val === 'string') {
+        const trimmed = val.trim();
+        return trimmed !== '' && trimmed !== '0';
+      }
+      // 数値の場合: 0より大きいこと
+      return val > 0;
+    })();
+    
     const required = {
       name: !!(company.name && company.name.trim()),
       prefecture: !!(company.prefecture && company.prefecture.trim()),
       industry_major: !!(company.industry_major && company.industry_major.trim()),
-      employee_count: !!(company.employee_count && company.employee_count > 0),
+      employee_count: employeeCountValid,
     };
     
     // 推奨項目チェック
