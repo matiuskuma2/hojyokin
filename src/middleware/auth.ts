@@ -162,21 +162,44 @@ export function requireCompanyAccess(): MiddlewareHandler<{ Bindings: Env; Varia
       });
     }
     
-    // D1でメンバーシップを確認
-    // 注: テーブル名は user_companies (company_memberships ではない)
+    // D1でアクセス権を確認
     const db = c.env.DB;
+    
+    // 1. 直接のメンバーシップ確認（一般ユーザー）
     const membership = await db
       .prepare('SELECT user_id, company_id, role FROM user_companies WHERE user_id = ? AND company_id = ?')
       .bind(user.id, companyId)
       .first();
     
-    if (!membership) {
-      throw new HTTPException(403, {
-        message: 'No access to this company',
-      });
+    if (membership) {
+      await next();
+      return;
     }
     
-    await next();
+    // 2. Agency経由のアクセス確認（士業ユーザーが顧客企業にアクセス）
+    // agency_members → agencies → agency_clients で company_id を持っているか
+    if (user.role === 'agency') {
+      const agencyAccess = await db.prepare(`
+        SELECT ac.company_id 
+        FROM agency_clients ac
+        JOIN agency_members am ON am.agency_id = ac.agency_id
+        WHERE am.user_id = ? AND ac.company_id = ?
+        UNION
+        SELECT ac.company_id
+        FROM agency_clients ac
+        JOIN agencies a ON a.id = ac.agency_id
+        WHERE a.owner_user_id = ? AND ac.company_id = ?
+      `).bind(user.id, companyId, user.id, companyId).first();
+      
+      if (agencyAccess) {
+        await next();
+        return;
+      }
+    }
+    
+    throw new HTTPException(403, {
+      message: 'No access to this company',
+    });
   };
 }
 
