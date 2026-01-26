@@ -2733,6 +2733,7 @@ cron.post('/enrich-tokyo-shigoto', async (c) => {
 
 import { extractAndUpdateSubsidy, type ExtractSource } from '../lib/pdf/pdf-extract-router';
 import { checkCooldown, DEFAULT_COOLDOWN_POLICY } from '../lib/pdf/extraction-cooldown';
+import { recordCostGuardFailure } from '../lib/failures/feed-failure-writer';
 
 cron.post('/extract-pdf-forms', async (c) => {
   const db = c.env.DB;
@@ -2899,7 +2900,36 @@ cron.post('/extract-pdf-forms', async (c) => {
           GOOGLE_CLOUD_API_KEY: env.GOOGLE_CLOUD_API_KEY,
           allowFirecrawl: cooldown.allowFirecrawl,
           allowVision: cooldown.allowVision,
+          DB: db, // P0: DB を必ず渡す（Freeze-COST-2）
+          sourceId: target.source,
         });
+        
+        // P0: CostGuard 発生時は feed_failures に落とす（Freeze-3）
+        try {
+          const m = extractResult.metrics;
+          const anyUrl = detailUrl || (pdfUrls?.[0] as string) || '';
+          
+          if (m.firecrawlBlockedByCostGuard) {
+            await recordCostGuardFailure(db, {
+              subsidy_id: target.id,
+              source_id: target.source,
+              url: anyUrl,
+              stage: 'pdf',
+              message: 'COST_GUARD_DB_MISSING: Firecrawl blocked because env.DB was missing (Freeze-COST-2)',
+            });
+          }
+          if (m.visionBlockedByCostGuard) {
+            await recordCostGuardFailure(db, {
+              subsidy_id: target.id,
+              source_id: target.source,
+              url: anyUrl,
+              stage: 'pdf',
+              message: 'COST_GUARD_DB_MISSING: Vision OCR blocked because env.DB was missing (Freeze-COST-2)',
+            });
+          }
+        } catch (e) {
+          console.warn('[cron/extract-pdf-forms] failed to record CostGuard feed_failures:', e);
+        }
         
         // メトリクス集計
         if (extractResult.metrics.htmlAttempted) totalMetrics.htmlAttempted++;
@@ -3513,7 +3543,36 @@ cron.post('/consume-extractions', async (c) => {
               GOOGLE_CLOUD_API_KEY: env.GOOGLE_CLOUD_API_KEY,
               allowFirecrawl: cooldown.allowFirecrawl,
               allowVision: cooldown.allowVision,
+              DB: db, // P0: DB を必ず渡す（Freeze-COST-2）
+              sourceId: subsidy.source,
             });
+
+            // P0: CostGuard 発生時は feed_failures に落とす（Freeze-3）
+            try {
+              const m = extractResult.metrics;
+              const anyUrl = detailUrl || (pdfUrls?.[0] as string) || '';
+              
+              if (m.firecrawlBlockedByCostGuard) {
+                await recordCostGuardFailure(db, {
+                  subsidy_id: subsidy.id,
+                  source_id: subsidy.source,
+                  url: anyUrl,
+                  stage: 'pdf',
+                  message: 'COST_GUARD_DB_MISSING: Firecrawl blocked because env.DB was missing (Freeze-COST-2)',
+                });
+              }
+              if (m.visionBlockedByCostGuard) {
+                await recordCostGuardFailure(db, {
+                  subsidy_id: subsidy.id,
+                  source_id: subsidy.source,
+                  url: anyUrl,
+                  stage: 'pdf',
+                  message: 'COST_GUARD_DB_MISSING: Vision OCR blocked because env.DB was missing (Freeze-COST-2)',
+                });
+              }
+            } catch (e) {
+              console.warn('[cron/consume-extractions] failed to record CostGuard feed_failures:', e);
+            }
 
             // 成功/電子申請検出時はDB更新
             if (extractResult.success || extractResult.isElectronicApplication) {

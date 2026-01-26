@@ -4296,7 +4296,37 @@ adminDashboard.post('/extraction-queue/consume', async (c) => {
             GOOGLE_CLOUD_API_KEY: cooldown.allowVision ? c.env.GOOGLE_CLOUD_API_KEY : undefined,
             allowFirecrawl: cooldown.allowFirecrawl,
             allowVision: cooldown.allowVision,
+            DB: db, // P0: DB を必ず渡す（Freeze-COST-2）
+            sourceId: subsidy.source,
           });
+
+          // P0: CostGuard 発生時は feed_failures に落とす（Freeze-3）
+          try {
+            const { recordCostGuardFailure } = await import('../lib/failures/feed-failure-writer');
+            const m = extractResult.metrics;
+            const anyUrl = detailUrl || (pdfUrls?.[0] as string) || '';
+            
+            if (m.firecrawlBlockedByCostGuard) {
+              await recordCostGuardFailure(db, {
+                subsidy_id: subsidy.id,
+                source_id: subsidy.source,
+                url: anyUrl,
+                stage: 'pdf',
+                message: 'COST_GUARD_DB_MISSING: Firecrawl blocked (Freeze-COST-2)',
+              });
+            }
+            if (m.visionBlockedByCostGuard) {
+              await recordCostGuardFailure(db, {
+                subsidy_id: subsidy.id,
+                source_id: subsidy.source,
+                url: anyUrl,
+                stage: 'pdf',
+                message: 'COST_GUARD_DB_MISSING: Vision OCR blocked (Freeze-COST-2)',
+              });
+            }
+          } catch (e) {
+            console.warn('[admin/consume] failed to record CostGuard feed_failures:', e);
+          }
 
           // DB 更新
           if (extractResult.success || extractResult.isElectronicApplication) {
@@ -4672,7 +4702,7 @@ adminDashboard.get('/cost/summary', async (c) => {
         COUNT(*) as total_calls,
         SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) as success_count,
         SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) as failure_count,
-        SUM(CASE WHEN json_extract(metadata_json, '$.billing') = 'unknown' THEN 1 ELSE 0 END) as unknown_billing_count
+        SUM(CASE WHEN metadata_json IS NOT NULL AND json_valid(metadata_json) = 1 AND json_extract(metadata_json, '$.billing') = 'unknown' THEN 1 ELSE 0 END) as unknown_billing_count
       FROM api_cost_logs
       WHERE created_at >= datetime('now', ?)
     `).bind(daysParam).first<{
@@ -4693,7 +4723,7 @@ adminDashboard.get('/cost/summary', async (c) => {
         SUM(units) as units,
         COUNT(*) as calls,
         SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) as success_count,
-        SUM(CASE WHEN json_extract(metadata_json, '$.billing') = 'unknown' THEN 1 ELSE 0 END) as unknown_billing_count
+        SUM(CASE WHEN metadata_json IS NOT NULL AND json_valid(metadata_json) = 1 AND json_extract(metadata_json, '$.billing') = 'unknown' THEN 1 ELSE 0 END) as unknown_billing_count
       FROM api_cost_logs
       WHERE created_at >= datetime('now', ?)
       GROUP BY service

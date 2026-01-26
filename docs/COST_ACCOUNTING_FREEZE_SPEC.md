@@ -86,6 +86,13 @@ const result = await firecrawlScrape(url, { db: env.DB, apiKey, subsidyId });
 **DB 必須化の実装箇所**:
 - `src/lib/pdf/pdf-extract-router.ts` の Step 2, 3, 6.5
 - `env.DB` が undefined の場合は `console.error` でログを残し、呼び出しをスキップ
+- メトリクスに `firecrawlBlockedByCostGuard` / `visionBlockedByCostGuard` を設定
+
+**CostGuard → feed_failures 記録**:
+- **CostGuard** = `env.DB` 欠如による外部API呼び出しブロック（cooldown とは別）
+- CostGuard 発生時は **cron側** で `feed_failures` に記録（`error_type = 'db'`）
+- 実装ファイル: `src/lib/failures/feed-failure-writer.ts` → `recordCostGuardFailure()`
+- 呼び出し箇所: `src/routes/cron.ts` の `extractAndUpdateSubsidy()` 直後
 
 ### Freeze-COST-3: 失敗時もコスト記録
 
