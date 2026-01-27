@@ -63,6 +63,84 @@ app.get('/api/health', (c) => {
   });
 });
 
+// ========================================
+// GET /api/r2-pdf
+// R2に保存されたPDFをHTTP経由で配信（公開エンドポイント）
+// Firecrawl がアクセスするため認証なし
+// 
+// 使用方法:
+//   r2://subsidy-knowledge/pdf/a0WJ.../xxx.pdf
+//   → GET /api/r2-pdf?key=pdf/a0WJ.../xxx.pdf
+// ========================================
+app.get('/api/r2-pdf', async (c) => {
+  const { env } = c;
+  const key = c.req.query('key');
+
+  if (!key) {
+    return c.json({ 
+      success: false, 
+      error: { code: 'MISSING_KEY', message: 'key query parameter is required' } 
+    }, 400);
+  }
+
+  // キーのバリデーション（pdf/で始まること）
+  if (!key.startsWith('pdf/')) {
+    return c.json({ 
+      success: false, 
+      error: { code: 'INVALID_KEY', message: 'key must start with pdf/' } 
+    }, 400);
+  }
+
+  // パストラバーサル攻撃防止
+  if (key.includes('..') || key.includes('//')) {
+    return c.json({ 
+      success: false, 
+      error: { code: 'INVALID_KEY', message: 'Invalid key path' } 
+    }, 400);
+  }
+
+  try {
+    // R2からPDFを取得
+    const object = await env.R2_KNOWLEDGE.get(key);
+
+    if (!object) {
+      console.warn(`[R2-PDF] Not found: ${key}`);
+      return c.json({ 
+        success: false, 
+        error: { code: 'NOT_FOUND', message: 'PDF not found in R2' } 
+      }, 404);
+    }
+
+    // PDFとして配信
+    const headers = new Headers();
+    headers.set('Content-Type', 'application/pdf');
+    headers.set('Content-Length', object.size.toString());
+    
+    // キャッシュ設定（R2のPDFは変更されないためキャッシュ有効）
+    headers.set('Cache-Control', 'public, max-age=86400'); // 1日
+    
+    // 元のファイル名を取得（あれば）
+    const fileName = key.split('/').pop() || 'document.pdf';
+    headers.set('Content-Disposition', `inline; filename="${fileName}"`);
+
+    console.log(`[R2-PDF] Serving: ${key} (${object.size} bytes)`);
+
+    return new Response(object.body, {
+      status: 200,
+      headers,
+    });
+  } catch (error) {
+    console.error('[R2-PDF] Error fetching from R2:', error);
+    return c.json({
+      success: false,
+      error: {
+        code: 'R2_ERROR',
+        message: error instanceof Error ? error.message : 'Failed to fetch from R2',
+      },
+    }, 500);
+  }
+});
+
 // API バージョン情報
 app.get('/api', (c) => {
   return c.json<ApiResponse<{ version: string; name: string; description: string }>>({

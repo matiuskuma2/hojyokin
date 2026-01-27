@@ -5111,6 +5111,19 @@ cron.post('/consume-extractions', async (c) => {
             let pdfText = '';
             let successfulPdfUrl = '';
             
+            // R2 URL を HTTP URL に変換するヘルパー
+            // r2://subsidy-knowledge/pdf/xxx.pdf → https://hojyokin.pages.dev/api/r2-pdf?key=pdf/xxx.pdf
+            const convertR2UrlToHttp = (url: string): { isR2: boolean; httpUrl: string; r2Key: string | null } => {
+              const r2Prefix = 'r2://subsidy-knowledge/';
+              if (url.startsWith(r2Prefix)) {
+                const r2Key = url.substring(r2Prefix.length); // pdf/xxx.pdf
+                const baseUrl = env.CLOUDFLARE_API_BASE_URL || 'https://hojyokin.pages.dev';
+                const httpUrl = `${baseUrl}/api/r2-pdf?key=${encodeURIComponent(r2Key)}`;
+                return { isR2: true, httpUrl, r2Key };
+              }
+              return { isR2: false, httpUrl: url, r2Key: null };
+            };
+            
             // フォールバック付きでPDFを順番に試行
             for (const pdfUrl of prioritizedPdfs) {
               if (pdfText && pdfText.length > 100) break; // 成功したら終了
@@ -5121,6 +5134,51 @@ cron.post('/consume-extractions', async (c) => {
                 continue;
               }
               
+              // R2 URL の変換
+              const { isR2, httpUrl, r2Key } = convertR2UrlToHttp(pdfUrl);
+              
+              // ===== R2 PDF: 直接 R2 から取得してテキスト化 =====
+              if (isR2 && r2Key && env.R2_KNOWLEDGE) {
+                try {
+                  console.log(`[extract_pdf] Fetching R2 PDF: ${r2Key}`);
+                  const r2Object = await env.R2_KNOWLEDGE.get(r2Key);
+                  
+                  if (r2Object) {
+                    // R2 の PDF を取得成功 → Firecrawl 経由で変換
+                    // Firecrawl は HTTP URL が必要なので内部ブリッジを使う
+                    if (firecrawlKey) {
+                      console.log(`[extract_pdf] Converting R2 PDF via internal bridge: ${httpUrl}`);
+                      const fcResponse = await fetch('https://api.firecrawl.dev/v1/scrape', {
+                        method: 'POST',
+                        headers: {
+                          'Authorization': `Bearer ${firecrawlKey}`,
+                          'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({ url: httpUrl, formats: ['markdown'] }),
+                      });
+                      
+                      if (fcResponse.ok) {
+                        const fcData = await fcResponse.json() as any;
+                        const text = fcData.data?.markdown || '';
+                        if (text.length > 100) {
+                          pdfText = text;
+                          successfulPdfUrl = pdfUrl; // 元の r2:// URL を記録
+                          console.log(`[extract_pdf] R2 PDF Success: ${pdfUrl.substring(0, 60)}... (${text.length} chars)`);
+                        }
+                      } else {
+                        console.warn(`[extract_pdf] Firecrawl failed for R2 PDF: ${fcResponse.status}`);
+                      }
+                    }
+                  } else {
+                    console.warn(`[extract_pdf] R2 object not found: ${r2Key}`);
+                  }
+                } catch (e) {
+                  console.warn(`[extract_pdf] R2 PDF processing failed for ${pdfUrl}:`, e);
+                }
+                continue; // R2 PDF は処理完了、次へ
+              }
+              
+              // ===== 通常の HTTP(S) URL: 従来通り Firecrawl に渡す =====
               if (firecrawlKey) {
                 try {
                   const fcResponse = await fetch('https://api.firecrawl.dev/v1/scrape', {
