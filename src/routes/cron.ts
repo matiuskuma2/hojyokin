@@ -24,6 +24,8 @@ import { shardKey16, currentShardByHour } from '../lib/shard';
 import { 
   checkExclusion, 
   checkWallChatReadyFromJson,
+  selectBestPdfs,
+  scorePdfUrl,
   type ExclusionReasonCode 
 } from '../lib/wall-chat-ready';
 
@@ -4466,27 +4468,53 @@ cron.post('/consume-extractions', async (c) => {
             const firecrawlKey = env.FIRECRAWL_API_KEY;
             const openaiKey = env.OPENAI_API_KEY;
             
-            // 最初のPDFをスクレイピング
-            const pdfUrl = pdfUrls[0];
-            let pdfText = '';
+            // v4: PDF選別スコアリングで公募要領を優先
+            // attachments情報があれば使う（ファイル名でスコアリング精度向上）
+            const attachments = detail.attachments as Array<{ name: string; type: string; url?: string }> | undefined;
+            const prioritizedPdfs = selectBestPdfs(pdfUrls, 3, attachments);
             
-            if (firecrawlKey) {
-              try {
-                const fcResponse = await fetch('https://api.firecrawl.dev/v1/scrape', {
-                  method: 'POST',
-                  headers: {
-                    'Authorization': `Bearer ${firecrawlKey}`,
-                    'Content-Type': 'application/json',
-                  },
-                  body: JSON.stringify({ url: pdfUrl, formats: ['markdown'] }),
-                });
-                
-                if (fcResponse.ok) {
-                  const fcData = await fcResponse.json() as any;
-                  pdfText = fcData.data?.markdown || '';
+            console.log(`[extract_pdf] ${subsidy.id}: ${pdfUrls.length} PDFs, prioritized ${prioritizedPdfs.length}`);
+            if (prioritizedPdfs.length > 0) {
+              const topScore = scorePdfUrl(prioritizedPdfs[0]);
+              console.log(`[extract_pdf] Top PDF: ${prioritizedPdfs[0].substring(0, 80)}... (score: ${topScore.score}, ${topScore.reason})`);
+            }
+            
+            let pdfText = '';
+            let successfulPdfUrl = '';
+            
+            // フォールバック付きでPDFを順番に試行
+            for (const pdfUrl of prioritizedPdfs) {
+              if (pdfText && pdfText.length > 100) break; // 成功したら終了
+              
+              const pdfScore = scorePdfUrl(pdfUrl);
+              if (pdfScore.score < 0) {
+                console.log(`[extract_pdf] Skipping low-score PDF: ${pdfUrl.substring(0, 60)}... (score: ${pdfScore.score})`);
+                continue;
+              }
+              
+              if (firecrawlKey) {
+                try {
+                  const fcResponse = await fetch('https://api.firecrawl.dev/v1/scrape', {
+                    method: 'POST',
+                    headers: {
+                      'Authorization': `Bearer ${firecrawlKey}`,
+                      'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ url: pdfUrl, formats: ['markdown'] }),
+                  });
+                  
+                  if (fcResponse.ok) {
+                    const fcData = await fcResponse.json() as any;
+                    const text = fcData.data?.markdown || '';
+                    if (text.length > 100) {
+                      pdfText = text;
+                      successfulPdfUrl = pdfUrl;
+                      console.log(`[extract_pdf] Success: ${pdfUrl.substring(0, 60)}... (${text.length} chars)`);
+                    }
+                  }
+                } catch (e) {
+                  console.warn(`[extract_pdf] Firecrawl failed for ${pdfUrl}:`, e);
                 }
-              } catch (e) {
-                console.warn(`[extract_pdf] Firecrawl failed for ${pdfUrl}:`, e);
               }
             }
             
@@ -4501,15 +4529,15 @@ cron.post('/consume-extractions', async (c) => {
                   const merged = mergeExtractedData(detail, extracted);
                   merged.extracted_pdf_text = pdfText.substring(0, 5000);
                   merged.extracted_at = new Date().toISOString();
+                  merged.extracted_from_pdf = successfulPdfUrl; // どのPDFから抽出したか記録
                   
                   await db.prepare(`
                     UPDATE subsidy_cache SET detail_json = ?, cached_at = datetime('now')
                     WHERE id = ?
                   `).bind(JSON.stringify(merged), subsidy.id).run();
                   
-                  // WALL_CHAT_READY 判定
-                  const { checkWallChatReadyFromJson } = await import('../lib/wall-chat-ready');
-                  const readyResult = checkWallChatReadyFromJson(JSON.stringify(merged));
+                  // WALL_CHAT_READY 判定（v4: タイトルも渡す）
+                  const readyResult = checkWallChatReadyFromJson(JSON.stringify(merged), subsidy.title);
                   if (readyResult.ready) {
                     await db.prepare(`UPDATE subsidy_cache SET wall_chat_ready = 1 WHERE id = ?`)
                       .bind(subsidy.id).run();
@@ -4523,6 +4551,7 @@ cron.post('/consume-extractions', async (c) => {
                     ...detail,
                     extracted_pdf_text: pdfText.substring(0, 5000),
                     extracted_at: new Date().toISOString(),
+                    extracted_from_pdf: successfulPdfUrl,
                   };
                   await db.prepare(`
                     UPDATE subsidy_cache SET detail_json = ?, cached_at = datetime('now')
@@ -4536,6 +4565,7 @@ cron.post('/consume-extractions', async (c) => {
                 ...detail,
                 extracted_pdf_text: pdfText.substring(0, 5000),
                 extracted_at: new Date().toISOString(),
+                extracted_from_pdf: successfulPdfUrl,
               };
               await db.prepare(`
                 UPDATE subsidy_cache SET detail_json = ?, cached_at = datetime('now')
