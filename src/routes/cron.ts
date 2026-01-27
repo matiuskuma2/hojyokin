@@ -2290,8 +2290,8 @@ cron.post('/enrich-jgrants', async (c) => {
   // allモード: 期限切れも含めて全件を対象にする
   const allMode = c.req.query('all') === 'true';
   
-  // 設定 (Cloudflare Worker 30秒制限のため10件に制限)
-  const MAX_ITEMS_PER_RUN = 10;
+  // 設定 (Cloudflare Worker 30秒制限のため5件に制限)
+  const MAX_ITEMS_PER_RUN = 5;
   const JGRANTS_DETAIL_API_V2 = 'https://api.jgrants-portal.go.jp/exp/v2/public/subsidies/id';
   
   let itemsEnriched = 0;
@@ -2564,9 +2564,9 @@ cron.post('/enrich-jgrants', async (c) => {
       try {
         console.log(`[Enrich-JGrants-v2] Fetching (Tier${target.priority_tier}): ${target.id} - ${target.title.substring(0, 50)}`);
         
-        // V2 API から詳細取得（タイムアウト5秒）
+        // V2 API から詳細取得（タイムアウト10秒）
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 5000);
+        const timeoutId = setTimeout(() => controller.abort(), 10000);
         
         let response: Response;
         try {
