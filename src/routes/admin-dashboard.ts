@@ -2644,36 +2644,50 @@ adminDashboard.get('/wall-chat-status', async (c) => {
   }
 
   try {
-    // ソース別 WALL_CHAT_READY 状況
+    // 2026-01-27: Active（受付中）を中心にKPIを表示
+    // - Active: acceptance_end_datetime IS NOT NULL AND > now
+    // - Expired は参考として別枠に
+    
+    // ソース別 WALL_CHAT_READY 状況（Active中心）
     const bySource = await db.prepare(`
       SELECT 
         source,
         COUNT(*) as total,
-        SUM(CASE WHEN wall_chat_ready = 1 THEN 1 ELSE 0 END) as ready,
-        SUM(CASE WHEN wall_chat_ready = 0 OR wall_chat_ready IS NULL THEN 1 ELSE 0 END) as not_ready
+        SUM(CASE WHEN acceptance_end_datetime IS NOT NULL AND acceptance_end_datetime > datetime('now') THEN 1 ELSE 0 END) as active,
+        SUM(CASE WHEN wall_chat_ready = 1 THEN 1 ELSE 0 END) as ready_all,
+        SUM(CASE WHEN wall_chat_ready = 1 AND acceptance_end_datetime IS NOT NULL AND acceptance_end_datetime > datetime('now') THEN 1 ELSE 0 END) as ready_active,
+        SUM(CASE WHEN wall_chat_ready = 0 OR wall_chat_ready IS NULL THEN 1 ELSE 0 END) as not_ready,
+        SUM(CASE WHEN acceptance_end_datetime < datetime('now') THEN 1 ELSE 0 END) as expired
       FROM subsidy_cache
       GROUP BY source
-      ORDER BY ready DESC
+      ORDER BY ready_active DESC
     `).all<{
       source: string;
       total: number;
-      ready: number;
+      active: number;
+      ready_all: number;
+      ready_active: number;
       not_ready: number;
+      expired: number;
     }>();
 
-    // 全体の合計
+    // 全体の合計（Active中心）
     const totals = await db.prepare(`
       SELECT 
         COUNT(*) as total,
-        SUM(CASE WHEN wall_chat_ready = 1 THEN 1 ELSE 0 END) as ready
+        SUM(CASE WHEN acceptance_end_datetime IS NOT NULL AND acceptance_end_datetime > datetime('now') THEN 1 ELSE 0 END) as active,
+        SUM(CASE WHEN wall_chat_ready = 1 THEN 1 ELSE 0 END) as ready_all,
+        SUM(CASE WHEN wall_chat_ready = 1 AND acceptance_end_datetime IS NOT NULL AND acceptance_end_datetime > datetime('now') THEN 1 ELSE 0 END) as ready_active
       FROM subsidy_cache
-    `).first<{ total: number; ready: number }>();
+    `).first<{ total: number; active: number; ready_all: number; ready_active: number }>();
 
-    // 最近 WALL_CHAT_READY になったもの
+    // 最近 WALL_CHAT_READY になったもの（Active のみ）
     const recentReady = await db.prepare(`
-      SELECT id, title, source, cached_at
+      SELECT id, title, source, cached_at, acceptance_end_datetime
       FROM subsidy_cache
       WHERE wall_chat_ready = 1
+        AND acceptance_end_datetime IS NOT NULL
+        AND acceptance_end_datetime > datetime('now')
       ORDER BY cached_at DESC
       LIMIT 10
     `).all<{
@@ -2681,15 +2695,31 @@ adminDashboard.get('/wall-chat-status', async (c) => {
       title: string;
       source: string;
       cached_at: string;
+      acceptance_end_datetime: string;
     }>();
 
     return c.json<ApiResponse<{
-      totals: { total: number; ready: number; ready_pct: number };
+      totals: { 
+        total: number; 
+        active: number;
+        ready_all: number;
+        ready_active: number; 
+        ready_active_pct: number;
+        // 後方互換性のため ready, ready_pct も残す
+        ready: number;
+        ready_pct: number;
+      };
       by_source: Array<{
         source: string;
         total: number;
-        ready: number;
+        active: number;
+        ready_all: number;
+        ready_active: number;
         not_ready: number;
+        expired: number;
+        ready_active_pct: number;
+        // 後方互換性
+        ready: number;
         ready_pct: number;
       }>;
       recent_ready: Array<{
@@ -2697,6 +2727,7 @@ adminDashboard.get('/wall-chat-status', async (c) => {
         title: string;
         source: string;
         cached_at: string;
+        acceptance_end_datetime: string;
       }>;
       generated_at: string;
     }>>({
@@ -2704,12 +2735,20 @@ adminDashboard.get('/wall-chat-status', async (c) => {
       data: {
         totals: {
           total: totals?.total || 0,
-          ready: totals?.ready || 0,
-          ready_pct: totals?.total ? Math.round((totals.ready / totals.total) * 100) : 0,
+          active: totals?.active || 0,
+          ready_all: totals?.ready_all || 0,
+          ready_active: totals?.ready_active || 0,
+          ready_active_pct: totals?.active ? Math.round((totals.ready_active / totals.active) * 100) : 0,
+          // 後方互換性: ready = ready_active (Active中心)
+          ready: totals?.ready_active || 0,
+          ready_pct: totals?.active ? Math.round((totals.ready_active / totals.active) * 100) : 0,
         },
         by_source: (bySource.results || []).map(s => ({
           ...s,
-          ready_pct: s.total > 0 ? Math.round((s.ready / s.total) * 100) : 0,
+          ready_active_pct: s.active > 0 ? Math.round((s.ready_active / s.active) * 100) : 0,
+          // 後方互換性: ready = ready_active
+          ready: s.ready_active,
+          ready_pct: s.active > 0 ? Math.round((s.ready_active / s.active) * 100) : 0,
         })),
         recent_ready: recentReady.results || [],
         generated_at: new Date().toISOString(),

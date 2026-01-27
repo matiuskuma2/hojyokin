@@ -2292,10 +2292,10 @@ cron.post('/enrich-jgrants', async (c) => {
     console.warn('[Enrich-JGrants] Failed to start cron_run log:', logErr);
   }
   
-  // forceモード: v2エンリッチ済みでもeligible_expensesがないものを再処理
+  // forceモード: v2エンリッチ済みでもeligible_expensesがないものを再処理（Active内のみ）
   const forceMode = c.req.query('force') === 'true';
-  // allモード: 期限切れも含めて全件を対象にする
-  const allMode = c.req.query('all') === 'true';
+  // 注意: allMode は削除（2026-01-27）
+  // 期限切れを処理する導線を完全に塞ぐ - Activeのみを対象とする
   
   // 設定 (Cloudflare Worker 30秒制限のため5件に制限)
   const MAX_ITEMS_PER_RUN = 5;
@@ -2565,10 +2565,10 @@ cron.post('/enrich-jgrants', async (c) => {
       ? `(detail_json IS NULL OR detail_json NOT LIKE '%"enriched_version":"v2"%' OR (json_extract(detail_json, '$.eligible_expenses') IS NULL AND detail_json LIKE '%"enriched_version":"v2"%'))`
       : `(detail_json IS NULL OR detail_json NOT LIKE '%"enriched_version":"v2"%')`;
     
-    // allモードの場合は期限切れも含める
-    const dateCondition = allMode 
-      ? '1=1' 
-      : `(acceptance_end_datetime IS NULL OR acceptance_end_datetime > datetime('now'))`;
+    // Active only: 受付中のみを対象（2026-01-27 確定方針）
+    // - acceptance_end_datetime が NULL の場合は対象外（期限不明は Active とみなさない）
+    // - 期限切れを処理する導線を完全に塞ぐ
+    const dateCondition = `acceptance_end_datetime IS NOT NULL AND acceptance_end_datetime > datetime('now')`;
     
     const targets = await db.prepare(`
       SELECT 
@@ -3294,6 +3294,7 @@ cron.post('/scrape-jgrants-detail', async (c) => {
     runId = await startCronRun(db, 'scrape-jgrants-detail', 'cron');
     
     // pdf_urlsが空 かつ front_subsidy_detail_page_url がある制度を取得
+    // Active only: 受付中のみを対象（2026-01-27 確定方針）
     const targets = await db.prepare(`
       SELECT 
         id, title, detail_json,
@@ -3303,6 +3304,8 @@ cron.post('/scrape-jgrants-detail', async (c) => {
       WHERE source = 'jgrants'
         AND wall_chat_ready = 0
         AND detail_json IS NOT NULL
+        AND acceptance_end_datetime IS NOT NULL
+        AND acceptance_end_datetime > datetime('now')
         AND (
           json_extract(detail_json, '$.pdf_urls') IS NULL 
           OR json_extract(detail_json, '$.pdf_urls') = '[]'
@@ -3310,7 +3313,7 @@ cron.post('/scrape-jgrants-detail', async (c) => {
         )
         AND json_extract(detail_json, '$.related_url') IS NOT NULL
         AND json_extract(detail_json, '$.wall_chat_excluded') IS NULL
-      ORDER BY cached_at DESC
+      ORDER BY acceptance_end_datetime ASC
       LIMIT ?
     `).bind(MAX_ITEMS_PER_RUN).all<{
       id: string;
@@ -4382,7 +4385,8 @@ cron.post('/enqueue-extractions', async (c) => {
     LIMIT ?
   `).bind(JOB_PRIORITY.enrich_shigoto, now, now, MAX_ENQUEUE_PER_TYPE).run();
 
-  // C) enrich_jgrants: jgrants でdetail_jsonが薄い & 期限内
+  // C) enrich_jgrants: jgrants でdetail_jsonが薄い & Active only
+  // 2026-01-27 確定方針: acceptance_end_datetime IS NOT NULL AND > now のみ
   const exJgrants = await db.prepare(`
     INSERT OR IGNORE INTO extraction_queue (id, subsidy_id, shard_key, job_type, priority, status, created_at, updated_at)
     SELECT 
@@ -4399,8 +4403,9 @@ cron.post('/enqueue-extractions', async (c) => {
       AND sc.wall_chat_ready = 0
       AND sc.shard_key IS NOT NULL
       AND (sc.detail_json IS NULL OR sc.detail_json = '{}' OR LENGTH(sc.detail_json) < 100)
-      AND (sc.acceptance_end_datetime IS NULL OR sc.acceptance_end_datetime > datetime('now'))
-    ORDER BY sc.acceptance_end_datetime ASC NULLS LAST
+      AND sc.acceptance_end_datetime IS NOT NULL 
+      AND sc.acceptance_end_datetime > datetime('now')
+    ORDER BY sc.acceptance_end_datetime ASC
     LIMIT ?
   `).bind(JOB_PRIORITY.enrich_jgrants, now, now, MAX_ENQUEUE_PER_TYPE).run();
 
