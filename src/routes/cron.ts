@@ -3596,14 +3596,18 @@ cron.post('/recalc-wall-chat-ready', async (c) => {
     let itemsNotReady = 0;
     const errors: string[] = [];
     
+    let itemsFallbackApplied = 0;
+    
     for (const target of targets.results) {
       try {
+        let detail = target.detail_json ? JSON.parse(target.detail_json) : {};
+        let detailModified = false;
+        
         // checkWallChatReadyFromJson で判定
-        const result = checkWallChatReadyFromJson(target.detail_json, target.title);
+        let result = checkWallChatReadyFromJson(JSON.stringify(detail), target.title);
         
         if (result.excluded) {
           // 除外対象
-          const detail = target.detail_json ? JSON.parse(target.detail_json) : {};
           detail.wall_chat_excluded_reason = result.exclusion_reason;
           detail.wall_chat_excluded_reason_ja = result.exclusion_reason_ja;
           detail.wall_chat_excluded_at = new Date().toISOString();
@@ -3622,8 +3626,52 @@ cron.post('/recalc-wall-chat-ready', async (c) => {
           `).bind(target.id).run();
           itemsReady++;
         } else {
-          // Not Ready (除外でもないが条件不足)
-          itemsNotReady++;
+          // Not Ready - required_documents だけ不足の場合はデフォルト補完を試行
+          const missingOnlyDocs = result.missing.length === 1 && result.missing[0] === 'required_documents';
+          const missingIncludesDocs = result.missing.includes('required_documents');
+          
+          // 4項目揃っていて required_documents だけ不足、またはスコアが4の場合
+          if (missingOnlyDocs || (result.score === 4 && missingIncludesDocs)) {
+            // デフォルト書類セットを追加
+            const hasReqDocs = detail.required_documents && 
+              Array.isArray(detail.required_documents) && 
+              detail.required_documents.length > 0;
+            
+            if (!hasReqDocs) {
+              detail.required_documents = [
+                '公募要領',
+                '申請書',
+                '事業計画書',
+                '見積書',
+                '会社概要'
+              ];
+              detail.required_documents_source = 'default_fallback_v1';
+              detail.required_documents_generated_at = new Date().toISOString();
+              detailModified = true;
+              itemsFallbackApplied++;
+              
+              // 再判定
+              result = checkWallChatReadyFromJson(JSON.stringify(detail), target.title);
+            }
+          }
+          
+          if (result.ready) {
+            // デフォルト補完後に Ready になった
+            await db.prepare(`
+              UPDATE subsidy_cache SET wall_chat_ready = 1, wall_chat_excluded = 0, detail_json = ?
+              WHERE id = ?
+            `).bind(JSON.stringify(detail), target.id).run();
+            itemsReady++;
+          } else {
+            // それでも Not Ready
+            if (detailModified) {
+              // detail_json は更新（デフォルト補完は保存）
+              await db.prepare(`
+                UPDATE subsidy_cache SET detail_json = ? WHERE id = ?
+              `).bind(JSON.stringify(detail), target.id).run();
+            }
+            itemsNotReady++;
+          }
         }
         
         itemsProcessed++;
@@ -3633,7 +3681,7 @@ cron.post('/recalc-wall-chat-ready', async (c) => {
       }
     }
     
-    console.log(`[Recalc-Wall-Chat-Ready] Completed: processed=${itemsProcessed}, ready=${itemsReady}, excluded=${itemsExcluded}, not_ready=${itemsNotReady}`);
+    console.log(`[Recalc-Wall-Chat-Ready] Completed: processed=${itemsProcessed}, ready=${itemsReady}, excluded=${itemsExcluded}, not_ready=${itemsNotReady}, fallback=${itemsFallbackApplied}`);
     
     if (runId) {
       await finishCronRun(db, runId, errors.length > 0 ? 'partial' : 'success', {
@@ -3642,7 +3690,7 @@ cron.post('/recalc-wall-chat-ready', async (c) => {
         items_skipped: itemsExcluded + itemsNotReady,
         error_count: errors.length,
         errors: errors.slice(0, 50),
-        metadata: { items_ready: itemsReady, items_excluded: itemsExcluded, items_not_ready: itemsNotReady },
+        metadata: { items_ready: itemsReady, items_excluded: itemsExcluded, items_not_ready: itemsNotReady, items_fallback_applied: itemsFallbackApplied },
       });
     }
     
@@ -3652,6 +3700,7 @@ cron.post('/recalc-wall-chat-ready', async (c) => {
       items_ready: number;
       items_excluded: number;
       items_not_ready: number;
+      items_fallback_applied: number;
       errors: string[];
       timestamp: string;
       run_id?: string;
@@ -3663,6 +3712,7 @@ cron.post('/recalc-wall-chat-ready', async (c) => {
         items_ready: itemsReady,
         items_excluded: itemsExcluded,
         items_not_ready: itemsNotReady,
+        items_fallback_applied: itemsFallbackApplied,
         errors: errors.slice(0, 20),
         timestamp: new Date().toISOString(),
         run_id: runId ?? undefined,
