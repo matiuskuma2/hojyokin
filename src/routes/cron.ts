@@ -2359,8 +2359,7 @@ cron.post('/enrich-jgrants', async (c) => {
   
   /**
    * 概要テキストから申請要件・対象経費・対象者を簡易抽出
-   * セクションヘッダー「■」「◆」「●」などで区切られた箇所から抽出
-   * v4: パターン強化
+   * v5: 「見出し＋次の数行」方式で確実に抽出
    */
   function extractFieldsFromOverview(overviewText: string): {
     application_requirements?: string[];
@@ -2373,77 +2372,96 @@ cron.post('/enrich-jgrants', async (c) => {
       target_businesses?: string[];
     } = {};
     
-    // セクション名のパターン（日本語の一般的なヘッダー）
-    const sections = overviewText.split(/[■◆●▼【】\n]/);
+    // セクション区切りパターン（■◆●▼【】や改行）
+    const sections = overviewText.split(/[■◆●▼【】]/);
     
     for (const section of sections) {
       const sectionText = section.trim();
       if (sectionText.length < 10) continue;
       
-      // セクション名は最初の空白または改行まで
-      const headerEndIdx = sectionText.search(/[\s。、：:]/);
-      const header = headerEndIdx > 0 ? sectionText.substring(0, Math.min(headerEndIdx, 30)) : sectionText.substring(0, 30);
-      const content = headerEndIdx > 0 ? sectionText.substring(headerEndIdx).trim() : sectionText;
+      // 最初の30文字をヘッダーとして判定
+      const header = sectionText.substring(0, 40).toLowerCase();
+      // ヘッダー後の内容（最初の句点・改行まで、または全体）
+      const contentStart = sectionText.search(/[\s。、：:\n]/);
+      const content = contentStart > 0 
+        ? sectionText.substring(contentStart).trim().substring(0, 600)
+        : sectionText.substring(0, 600);
       
-      // 対象者・対象事業者（v4: パターン追加）
-      if (header.includes('対象者') || header.includes('対象事業者') || 
+      // === 対象者・対象事業者 ===
+      if (!result.target_businesses && (
+          header.includes('対象者') || header.includes('対象事業者') || 
           header.includes('申請対象') || header.includes('交付対象者') ||
           header.includes('補助対象者') || header.includes('助成対象者') ||
-          header.includes('申請資格') || header.includes('応募資格')) {
-        const cleanContent = content.substring(0, 500).trim();
-        if (cleanContent.length > 15 && !result.target_businesses) {
-          result.target_businesses = [cleanContent];
+          header.includes('申請資格') || header.includes('応募資格'))) {
+        if (content.length > 15) {
+          result.target_businesses = [content];
         }
       }
       
-      // 申請要件・補助要件・要件（v4: パターン大幅追加）
-      else if (header.includes('要件') || header.includes('条件') ||
+      // === 申請要件 ===
+      else if (!result.application_requirements && (
+          header.includes('要件') || header.includes('条件') ||
           header.includes('申請資格') || header.includes('応募資格') ||
           header.includes('対象となる') || header.includes('対象事業者') ||
-          header.includes('申請者の') || header.includes('補助対象者') ||
+          header.includes('申請者') || header.includes('補助対象者') ||
           header.includes('交付の対象') || header.includes('助成の対象') ||
-          header.includes('対象とする')) {
-        const cleanContent = content.substring(0, 500).trim();
-        if (cleanContent.length > 15 && !result.application_requirements) {
-          result.application_requirements = [cleanContent];
+          header.includes('対象とする') || header.includes('申請できる'))) {
+        if (content.length > 15) {
+          result.application_requirements = [content];
         }
       }
       
-      // 対象経費・補助対象経費・助成対象（事業内容含む）
-      else if (header.includes('対象経費') || header.includes('補助対象') || 
-          header.includes('助成対象経費') || header.includes('助成対象') ||
-          header.includes('対象事業') || header.includes('対象となる経費') ||
-          header.includes('補助対象経費') || header.includes('経費の範囲')) {
-        const cleanContent = content.substring(0, 500).trim();
-        if (cleanContent.length > 15 && !result.eligible_expenses) {
-          result.eligible_expenses = [cleanContent];
+      // === 対象経費（v5: パターン強化） ===
+      else if (!result.eligible_expenses && (
+          header.includes('対象経費') || header.includes('補助対象経費') || 
+          header.includes('助成対象経費') || header.includes('対象となる経費') ||
+          header.includes('経費の範囲') || header.includes('補助対象となる') ||
+          header.includes('助成対象となる') || header.includes('対象費用'))) {
+        if (content.length > 15) {
+          result.eligible_expenses = [content];
         }
       }
       
-      // 支援内容・助成金の額（対象経費の代替）
-      else if (header.includes('支援内容') || header.includes('補助内容') || 
+      // === 支援内容・助成額（対象経費の代替） ===
+      else if (!result.eligible_expenses && (
+          header.includes('支援内容') || header.includes('補助内容') || 
           header.includes('助成内容') || header.includes('助成金の額') ||
           header.includes('補助金額') || header.includes('助成額') ||
-          header.includes('補助率') || header.includes('助成率')) {
-        const cleanContent = content.substring(0, 500).trim();
-        if (cleanContent.length > 15 && !result.eligible_expenses) {
-          result.eligible_expenses = [cleanContent];
+          header.includes('補助事業') || header.includes('助成事業'))) {
+        if (content.length > 15) {
+          result.eligible_expenses = [content];
         }
       }
     }
     
-    // v4: セクションで見つからなかった場合、全文からパターンマッチ
+    // v5: セクションで見つからなかった場合、「見出しキーワード＋後続テキスト」を直接検索
+    if (!result.eligible_expenses) {
+      const expensePatterns = [
+        /(?:対象(?:となる)?経費|補助対象経費|助成対象経費|経費の範囲)[：:\s]*(.{20,400}?)(?:[。\n■◆●]|$)/,
+        /(?:補助対象|助成対象)[：:\s]*(.{20,400}?)(?:[。\n■◆●]|$)/,
+      ];
+      for (const pattern of expensePatterns) {
+        const match = overviewText.match(pattern);
+        if (match && match[1]) {
+          result.eligible_expenses = [match[1].trim()];
+          break;
+        }
+      }
+    }
+    
+    // v4/v5: 申請要件のフォールバック
     if (!result.application_requirements) {
-      // 「〜であること」「〜が必要」「〜に該当する」などのパターン
       const reqPatterns = [
-        /(?:中小企業|小規模事業者|事業者).*(?:であること|に該当する|を満たす).{10,200}/g,
-        /(?:次の|以下の)(?:いずれか|すべて|全て).*(?:に該当|を満たす).{10,200}/g,
-        /申請(?:者|事業者)(?:は|が).*(?:である|とする|に限る).{10,100}/g,
+        /(?:中小企業|小規模事業者|事業者).*(?:であること|に該当する|を満たす).{10,200}/,
+        /(?:次の|以下の)(?:いずれか|すべて|全て).*(?:に該当|を満たす).{10,200}/,
+        /申請(?:者|事業者)(?:は|が).*(?:である|とする|に限る).{10,100}/,
+        /(?:対象者|対象事業者)[：:\s]*(.{15,300}?)(?:[。\n■◆●]|$)/,
       ];
       for (const pattern of reqPatterns) {
-        const matches = overviewText.match(pattern);
-        if (matches && matches.length > 0) {
-          result.application_requirements = [matches[0].substring(0, 500)];
+        const match = overviewText.match(pattern);
+        if (match) {
+          const extracted = match[1] || match[0];
+          result.application_requirements = [extracted.substring(0, 500).trim()];
           break;
         }
       }
@@ -2797,14 +2815,46 @@ cron.post('/enrich-jgrants', async (c) => {
           detailJson.pdf_urls = [...new Set(pdfUrls)]; // 重複除去
         }
         
-        // 16. 必要書類リスト（application_formから名前抽出）
+        // 16. 必要書類リスト（v4強化: attachments/application_form/outline_of_grant全体から抽出）
+        const allDocNames: string[] = [];
+        
+        // application_form から書類名を抽出
         if (subsidy.application_form && Array.isArray(subsidy.application_form)) {
-          const docNames = subsidy.application_form
-            .map((f: any) => f.name || f.title)
-            .filter((s: any) => typeof s === 'string' && s.length >= 2);
-          if (docNames.length > 0) {
-            detailJson.required_documents = docNames;
+          for (const af of subsidy.application_form) {
+            const name = af.name || af.title;
+            if (typeof name === 'string' && name.length >= 2) {
+              allDocNames.push(name);
+            }
           }
+        }
+        
+        // outline_of_grant から書類名を抽出（交付要綱等）
+        if (subsidy.outline_of_grant && Array.isArray(subsidy.outline_of_grant)) {
+          for (const og of subsidy.outline_of_grant) {
+            const name = og.name || og.title;
+            if (typeof name === 'string' && name.length >= 2) {
+              allDocNames.push(name);
+            }
+          }
+        }
+        
+        // application_guidelines から書類名を抽出（公募要領等）
+        if (subsidy.application_guidelines && Array.isArray(subsidy.application_guidelines)) {
+          for (const ag of subsidy.application_guidelines) {
+            const name = ag.name || ag.title;
+            if (typeof name === 'string' && name.length >= 2) {
+              allDocNames.push(name);
+            }
+          }
+        }
+        
+        // 重複除去して保存（空文字・短すぎるものは除外）
+        const uniqueDocNames = [...new Set(allDocNames)]
+          .filter(n => n.trim().length >= 2)
+          .map(n => n.trim());
+        
+        if (uniqueDocNames.length > 0) {
+          detailJson.required_documents = uniqueDocNames;
         }
         
         // 17. エンリッチメタ情報
