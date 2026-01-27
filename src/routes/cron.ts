@@ -3466,6 +3466,157 @@ cron.post('/scrape-jgrants-detail', async (c) => {
 });
 
 // =====================================================
+// A-3.5: WALL_CHAT_READY 再計算エンドポイント
+// POST /api/cron/recalc-wall-chat-ready
+// 
+// 正規ロジック (checkWallChatReadyFromJson) を使って wall_chat_ready を再計算
+// - 5項目が揃っている案件を ready=1 に
+// - 除外対象を wall_chat_excluded=1 に
+// =====================================================
+
+cron.post('/recalc-wall-chat-ready', async (c) => {
+  const db = c.env.DB;
+  
+  // P2-0: CRON_SECRET 検証
+  const authResult = verifyCronSecret(c);
+  if (!authResult.valid) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: authResult.error!.code, message: authResult.error!.message },
+    }, authResult.error!.status);
+  }
+  
+  const MAX_ITEMS = 100; // 1回あたりの処理件数
+  let runId: string | null = null;
+  
+  try {
+    runId = await startCronRun(db, 'recalc-wall-chat-ready', authResult.triggeredBy);
+    
+    // パラメータ
+    const url = new URL(c.req.url);
+    const source = url.searchParams.get('source') || 'jgrants';
+    const onlyNotReady = url.searchParams.get('only_not_ready') !== 'false';
+    
+    // 対象取得: wall_chat_ready = 0 かつ enriched 済みの案件
+    const whereClause = onlyNotReady 
+      ? `source = ? AND wall_chat_ready = 0 AND json_extract(detail_json, '$.enriched_version') IS NOT NULL`
+      : `source = ? AND json_extract(detail_json, '$.enriched_version') IS NOT NULL`;
+    
+    const targets = await db.prepare(`
+      SELECT id, title, detail_json
+      FROM subsidy_cache
+      WHERE ${whereClause}
+      ORDER BY RANDOM()
+      LIMIT ?
+    `).bind(source, MAX_ITEMS).all<{
+      id: string;
+      title: string;
+      detail_json: string | null;
+    }>();
+    
+    if (!targets.results || targets.results.length === 0) {
+      if (runId) await finishCronRun(db, runId, 'success', { items_processed: 0 });
+      return c.json<ApiResponse<{ message: string }>>({
+        success: true,
+        data: { message: 'No targets found for recalculation' },
+      });
+    }
+    
+    let itemsProcessed = 0;
+    let itemsReady = 0;
+    let itemsExcluded = 0;
+    let itemsNotReady = 0;
+    const errors: string[] = [];
+    
+    for (const target of targets.results) {
+      try {
+        // checkWallChatReadyFromJson で判定
+        const result = checkWallChatReadyFromJson(target.detail_json, target.title);
+        
+        if (result.excluded) {
+          // 除外対象
+          const detail = target.detail_json ? JSON.parse(target.detail_json) : {};
+          detail.wall_chat_excluded_reason = result.exclusion_reason;
+          detail.wall_chat_excluded_reason_ja = result.exclusion_reason_ja;
+          detail.wall_chat_excluded_at = new Date().toISOString();
+          
+          await db.prepare(`
+            UPDATE subsidy_cache 
+            SET wall_chat_ready = 0, wall_chat_excluded = 1, detail_json = ?
+            WHERE id = ?
+          `).bind(JSON.stringify(detail), target.id).run();
+          
+          itemsExcluded++;
+        } else if (result.ready) {
+          // Ready
+          await db.prepare(`
+            UPDATE subsidy_cache SET wall_chat_ready = 1, wall_chat_excluded = 0 WHERE id = ?
+          `).bind(target.id).run();
+          itemsReady++;
+        } else {
+          // Not Ready (除外でもないが条件不足)
+          itemsNotReady++;
+        }
+        
+        itemsProcessed++;
+        
+      } catch (err) {
+        errors.push(`${target.id}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    
+    console.log(`[Recalc-Wall-Chat-Ready] Completed: processed=${itemsProcessed}, ready=${itemsReady}, excluded=${itemsExcluded}, not_ready=${itemsNotReady}`);
+    
+    if (runId) {
+      await finishCronRun(db, runId, errors.length > 0 ? 'partial' : 'success', {
+        items_processed: itemsProcessed,
+        items_inserted: itemsReady,
+        items_skipped: itemsExcluded + itemsNotReady,
+        error_count: errors.length,
+        errors: errors.slice(0, 50),
+        metadata: { items_ready: itemsReady, items_excluded: itemsExcluded, items_not_ready: itemsNotReady },
+      });
+    }
+    
+    return c.json<ApiResponse<{
+      message: string;
+      items_processed: number;
+      items_ready: number;
+      items_excluded: number;
+      items_not_ready: number;
+      errors: string[];
+      timestamp: string;
+      run_id?: string;
+    }>>({
+      success: true,
+      data: {
+        message: 'Wall chat ready recalculation completed',
+        items_processed: itemsProcessed,
+        items_ready: itemsReady,
+        items_excluded: itemsExcluded,
+        items_not_ready: itemsNotReady,
+        errors: errors.slice(0, 20),
+        timestamp: new Date().toISOString(),
+        run_id: runId ?? undefined,
+      },
+    });
+    
+  } catch (error) {
+    console.error('[Recalc-Wall-Chat-Ready] Error:', error);
+    if (runId) {
+      await finishCronRun(db, runId, 'failed', {
+        error_count: 1,
+        errors: [error instanceof Error ? error.message : String(error)],
+      });
+    }
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'INTERNAL_ERROR', message: `Recalculation failed: ${error instanceof Error ? error.message : String(error)}` },
+    }, 500);
+  }
+});
+
+// =====================================================
 // A-4: PDF抽出Cronジョブ（統一入口）- 完成版
 // POST /api/cron/extract-pdf-forms
 // 
