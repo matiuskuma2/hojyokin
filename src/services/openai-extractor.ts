@@ -130,6 +130,7 @@ export async function extractSubsidyDataFromPdf(
 
 /**
  * 抽出結果を detail_json にマージ
+ * v2: 空上書き禁止 - 既存値がある場合は新しい値が空なら上書きしない
  */
 export function mergeExtractedData(
   existingDetailJson: Record<string, any>,
@@ -137,40 +138,62 @@ export function mergeExtractedData(
 ): Record<string, any> {
   const merged = { ...existingDetailJson };
 
-  // 配列フィールド
+  // ヘルパー: 既存値が有効かチェック
+  const hasValidValue = (val: any): boolean => {
+    if (!val) return false;
+    if (Array.isArray(val)) return val.length > 0;
+    if (typeof val === 'string') return val.trim().length > 0;
+    return true;
+  };
+
+  // 配列フィールド（v2: 空上書き禁止）
   if (extracted.application_requirements?.length) {
     merged.application_requirements = extracted.application_requirements;
   }
+  // 既存値がなく、抽出も空の場合は何もしない（既存値を維持）
+
   if (extracted.eligible_expenses?.length) {
     merged.eligible_expenses = extracted.eligible_expenses;
   }
+
   if (extracted.required_documents?.length) {
     merged.required_documents = extracted.required_documents;
   }
+
   if (extracted.target_businesses?.length) {
-    merged.target_businesses = extracted.target_businesses;
+    // v2: 既存値がある場合はスキップ（target_businessesは上書きしない）
+    if (!hasValidValue(merged.target_businesses)) {
+      merged.target_businesses = extracted.target_businesses;
+    }
   }
+
   if (extracted.application_flow?.length) {
     merged.application_flow = extracted.application_flow;
   }
+
   if (extracted.notes?.length) {
     merged.notes = extracted.notes;
   }
 
-  // 文字列フィールド
+  // 文字列フィールド（v2: 空上書き禁止）
   if (extracted.deadline) {
-    merged.deadline = extracted.deadline;
+    // deadlineは既存値がなければ設定
+    if (!hasValidValue(merged.deadline) && !hasValidValue(merged.acceptance_end_datetime)) {
+      merged.deadline = extracted.deadline;
+    }
   }
+
   if (extracted.subsidy_rate_detail) {
     merged.subsidy_rate_detail = extracted.subsidy_rate_detail;
   }
+
   if (extracted.subsidy_max_detail) {
     merged.subsidy_max_detail = extracted.subsidy_max_detail;
   }
 
   // メタ情報
   merged.pdf_extracted_at = new Date().toISOString();
-  merged.pdf_extraction_version = 'v1';
+  merged.pdf_extraction_version = 'v2';
 
   return merged;
 }

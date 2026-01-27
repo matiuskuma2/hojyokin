@@ -2886,9 +2886,53 @@ cron.post('/enrich-jgrants', async (c) => {
         detailJson.enriched_version = 'v2';
         detailJson.api_version = 'v2';
         
-        // 既存detail_jsonとマージ
+        // 既存detail_jsonとマージ（v5: 空上書き禁止）
         const existing = target.detail_json ? JSON.parse(target.detail_json) : {};
+        
+        // v5: 空上書き禁止 - 既存値があり、新しい値が空の場合は上書きしない
+        const safeFields = [
+          'application_requirements', 'eligible_expenses', 'target_businesses',
+          'required_documents', 'overview', 'deadline', 'acceptance_end_datetime'
+        ];
+        for (const field of safeFields) {
+          const existingValue = existing[field];
+          const newValue = detailJson[field];
+          
+          // 既存が有効な値を持っている場合
+          const existingHasValue = existingValue && 
+            (Array.isArray(existingValue) ? existingValue.length > 0 : String(existingValue).length > 0);
+          
+          // 新しい値が空または未定義の場合
+          const newIsEmpty = !newValue || 
+            (Array.isArray(newValue) && newValue.length === 0) ||
+            (typeof newValue === 'string' && newValue.trim().length === 0);
+          
+          // 既存が有効で新しい値が空なら、detailJsonから削除（既存を維持）
+          if (existingHasValue && newIsEmpty) {
+            delete detailJson[field];
+          }
+        }
+        
         const merged = { ...existing, ...detailJson };
+        
+        // v5: required_documents デフォルト補完
+        // 条件: required_documents が null/[] で、かつ除外対象でない場合
+        const hasReqDocs = merged.required_documents && 
+          Array.isArray(merged.required_documents) && 
+          merged.required_documents.length > 0;
+        
+        if (!hasReqDocs) {
+          // 安全なデフォルト書類セット
+          merged.required_documents = [
+            '公募要領',
+            '申請書',
+            '事業計画書',
+            '見積書',
+            '会社概要'
+          ];
+          merged.required_documents_source = 'default_fallback_v1';
+          merged.required_documents_generated_at = new Date().toISOString();
+        }
         
         // v4: 壁打ち対象外判定（DB更新前に実行）
         const exclusionResult = checkExclusion(target.title, merged.overview);
