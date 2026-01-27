@@ -322,10 +322,15 @@ export class JGrantsAdapter {
    * D1キャッシュから検索
    * 凍結仕様: SEARCHABLE条件を満たす補助金のみ返す（壁打ち成立を保証）
    * P0-2-1: includeUnready=true の場合は未整備も含める（super_admin debug用）
+   * 2026-01-27: 申請期限が今日以降のもののみ表示（期限切れ案件を除外）
    */
   private async searchFromCache(params: AdapterSearchParams): Promise<Omit<AdapterSearchResponse, 'source' | 'gate'> & { gate: 'searchable-only' | 'debug:all' }> {
     try {
       const includeUnready = params.includeUnready === true;
+      
+      // 今日の日付（JST）を取得してISO形式に
+      const today = new Date();
+      const todayStr = today.toISOString().slice(0, 10); // YYYY-MM-DD
       
       // SQLレベルでは基本的なフィルタ
       let query = `
@@ -333,6 +338,14 @@ export class JGrantsAdapter {
         WHERE expires_at > datetime('now')
       `;
       const bindings: any[] = [];
+      
+      // 申請期限が今日以降のもののみ（期限切れを除外）
+      // acceptance_end_datetime が NULL または今日以降の場合のみ表示
+      // includeUnready の場合は期限切れも含める（debug用）
+      if (!includeUnready) {
+        query += ` AND (acceptance_end_datetime IS NULL OR acceptance_end_datetime >= ?)`;
+        bindings.push(todayStr);
+      }
       
       // 未整備を含めない場合はdetail_jsonの存在チェック
       if (!includeUnready) {
