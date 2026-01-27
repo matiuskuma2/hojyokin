@@ -58,6 +58,12 @@ export interface Env {
   CRON_SECRET?: string;
   
   // ========================================
+  // R2 PDF Signing Secret (署名付きURL認証)
+  // Firecrawl に渡す R2 PDF URL を署名で保護
+  // ========================================
+  R2_PDF_SIGNING_SECRET?: string;
+  
+  // ========================================
   // R2 Storage (Phase K1: ナレッジ保存)
   // ========================================
   // キー設計:

@@ -5111,15 +5111,26 @@ cron.post('/consume-extractions', async (c) => {
             let pdfText = '';
             let successfulPdfUrl = '';
             
-            // R2 URL を HTTP URL に変換するヘルパー
-            // r2://subsidy-knowledge/pdf/xxx.pdf → https://hojyokin.pages.dev/api/r2-pdf?key=pdf/xxx.pdf
-            const convertR2UrlToHttp = (url: string): { isR2: boolean; httpUrl: string; r2Key: string | null } => {
+            // R2 URL を署名付き HTTP URL に変換するヘルパー
+            // r2://subsidy-knowledge/pdf/xxx.pdf → https://hojyokin.pages.dev/api/r2-pdf?key=...&exp=...&sig=...
+            const convertR2UrlToHttp = async (url: string): Promise<{ isR2: boolean; httpUrl: string; r2Key: string | null }> => {
               const r2Prefix = 'r2://subsidy-knowledge/';
               if (url.startsWith(r2Prefix)) {
                 const r2Key = url.substring(r2Prefix.length); // pdf/xxx.pdf
                 const baseUrl = env.CLOUDFLARE_API_BASE_URL || 'https://hojyokin.pages.dev';
-                const httpUrl = `${baseUrl}/api/r2-pdf?key=${encodeURIComponent(r2Key)}`;
-                return { isR2: true, httpUrl, r2Key };
+                const signingSecret = env.R2_PDF_SIGNING_SECRET;
+                
+                if (signingSecret) {
+                  // 署名付きURL生成（有効期限10分）
+                  const { buildSignedR2PdfUrl } = await import('../lib/r2-sign');
+                  const httpUrl = await buildSignedR2PdfUrl(baseUrl, r2Key, signingSecret, 600);
+                  return { isR2: true, httpUrl, r2Key };
+                } else {
+                  // 署名シークレット未設定（開発環境用）
+                  console.warn('[extract_pdf] R2_PDF_SIGNING_SECRET not set - using unsigned URL');
+                  const httpUrl = `${baseUrl}/api/r2-pdf?key=${encodeURIComponent(r2Key)}`;
+                  return { isR2: true, httpUrl, r2Key };
+                }
               }
               return { isR2: false, httpUrl: url, r2Key: null };
             };
@@ -5134,8 +5145,8 @@ cron.post('/consume-extractions', async (c) => {
                 continue;
               }
               
-              // R2 URL の変換
-              const { isR2, httpUrl, r2Key } = convertR2UrlToHttp(pdfUrl);
+              // R2 URL の変換（署名付き）
+              const { isR2, httpUrl, r2Key } = await convertR2UrlToHttp(pdfUrl);
               
               // ===== R2 PDF: 直接 R2 から取得してテキスト化 =====
               if (isR2 && r2Key && env.R2_KNOWLEDGE) {

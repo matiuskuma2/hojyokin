@@ -2820,7 +2820,14 @@ adminDashboard.get('/wall-chat-status', async (c) => {
         SUM(CASE WHEN wall_chat_ready = 1 THEN 1 ELSE 0 END) as ready_all,
         SUM(CASE WHEN wall_chat_ready = 1 AND acceptance_end_datetime IS NOT NULL AND acceptance_end_datetime > datetime('now') THEN 1 ELSE 0 END) as ready_active,
         SUM(CASE WHEN wall_chat_ready = 0 OR wall_chat_ready IS NULL THEN 1 ELSE 0 END) as not_ready,
-        SUM(CASE WHEN acceptance_end_datetime < datetime('now') THEN 1 ELSE 0 END) as expired
+        SUM(CASE WHEN acceptance_end_datetime < datetime('now') THEN 1 ELSE 0 END) as expired,
+        SUM(CASE WHEN json_extract(detail_json, '$.base64_processed') = 1 THEN 1 ELSE 0 END) as base64_processed,
+        SUM(
+          CASE WHEN EXISTS (
+            SELECT 1 FROM json_each(json_extract(detail_json, '$.pdf_urls'))
+            WHERE value LIKE 'r2://%'
+          ) THEN 1 ELSE 0 END
+        ) as has_r2_pdf
       FROM subsidy_cache
       GROUP BY source
       ORDER BY ready_active DESC
@@ -2832,6 +2839,8 @@ adminDashboard.get('/wall-chat-status', async (c) => {
       ready_active: number;
       not_ready: number;
       expired: number;
+      base64_processed: number;
+      has_r2_pdf: number;
     }>();
 
     // 全体の合計（Active中心）
@@ -2840,9 +2849,16 @@ adminDashboard.get('/wall-chat-status', async (c) => {
         COUNT(*) as total,
         SUM(CASE WHEN acceptance_end_datetime IS NOT NULL AND acceptance_end_datetime > datetime('now') THEN 1 ELSE 0 END) as active,
         SUM(CASE WHEN wall_chat_ready = 1 THEN 1 ELSE 0 END) as ready_all,
-        SUM(CASE WHEN wall_chat_ready = 1 AND acceptance_end_datetime IS NOT NULL AND acceptance_end_datetime > datetime('now') THEN 1 ELSE 0 END) as ready_active
+        SUM(CASE WHEN wall_chat_ready = 1 AND acceptance_end_datetime IS NOT NULL AND acceptance_end_datetime > datetime('now') THEN 1 ELSE 0 END) as ready_active,
+        SUM(CASE WHEN json_extract(detail_json, '$.base64_processed') = 1 THEN 1 ELSE 0 END) as base64_processed,
+        SUM(
+          CASE WHEN EXISTS (
+            SELECT 1 FROM json_each(json_extract(detail_json, '$.pdf_urls'))
+            WHERE value LIKE 'r2://%'
+          ) THEN 1 ELSE 0 END
+        ) as has_r2_pdf
       FROM subsidy_cache
-    `).first<{ total: number; active: number; ready_all: number; ready_active: number }>();
+    `).first<{ total: number; active: number; ready_all: number; ready_active: number; base64_processed: number; has_r2_pdf: number }>();
 
     // 最近 WALL_CHAT_READY になったもの（Active のみ）
     const recentReady = await db.prepare(`
@@ -2868,6 +2884,8 @@ adminDashboard.get('/wall-chat-status', async (c) => {
         ready_all: number;
         ready_active: number; 
         ready_active_pct: number;
+        base64_processed: number;
+        has_r2_pdf: number;
         // 後方互換性のため ready, ready_pct も残す
         ready: number;
         ready_pct: number;
@@ -2881,6 +2899,8 @@ adminDashboard.get('/wall-chat-status', async (c) => {
         not_ready: number;
         expired: number;
         ready_active_pct: number;
+        base64_processed: number;
+        has_r2_pdf: number;
         // 後方互換性
         ready: number;
         ready_pct: number;
@@ -2902,6 +2922,8 @@ adminDashboard.get('/wall-chat-status', async (c) => {
           ready_all: totals?.ready_all || 0,
           ready_active: totals?.ready_active || 0,
           ready_active_pct: totals?.active ? Math.round((totals.ready_active / totals.active) * 100) : 0,
+          base64_processed: totals?.base64_processed || 0,
+          has_r2_pdf: totals?.has_r2_pdf || 0,
           // 後方互換性: ready = ready_active (Active中心)
           ready: totals?.ready_active || 0,
           ready_pct: totals?.active ? Math.round((totals.ready_active / totals.active) * 100) : 0,

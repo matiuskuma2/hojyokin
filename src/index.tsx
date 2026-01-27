@@ -65,17 +65,22 @@ app.get('/api/health', (c) => {
 
 // ========================================
 // GET /api/r2-pdf
-// R2に保存されたPDFをHTTP経由で配信（公開エンドポイント）
-// Firecrawl がアクセスするため認証なし
+// R2に保存されたPDFをHTTP経由で配信（署名付きURL必須）
+// Firecrawl がアクセスするため公開だが、署名と期限で保護
 // 
 // 使用方法:
 //   r2://subsidy-knowledge/pdf/a0WJ.../xxx.pdf
-//   → GET /api/r2-pdf?key=pdf/a0WJ.../xxx.pdf
+//   → GET /api/r2-pdf?key=pdf/a0WJ.../xxx.pdf&exp=UNIX秒&sig=HMAC署名
+// 
+// 署名生成: HMAC-SHA256(R2_PDF_SIGNING_SECRET, "${key}.${exp}")
 // ========================================
 app.get('/api/r2-pdf', async (c) => {
   const { env } = c;
   const key = c.req.query('key');
+  const expStr = c.req.query('exp');
+  const sig = c.req.query('sig');
 
+  // 必須パラメータチェック
   if (!key) {
     return c.json({ 
       success: false, 
@@ -99,6 +104,49 @@ app.get('/api/r2-pdf', async (c) => {
     }, 400);
   }
 
+  // 署名検証（R2_PDF_SIGNING_SECRET が設定されている場合のみ）
+  const signingSecret = env.R2_PDF_SIGNING_SECRET;
+  if (signingSecret) {
+    if (!expStr || !sig) {
+      return c.json({ 
+        success: false, 
+        error: { code: 'MISSING_SIGNATURE', message: 'exp and sig query parameters are required' } 
+      }, 400);
+    }
+
+    const exp = parseInt(expStr, 10);
+    if (isNaN(exp)) {
+      return c.json({ 
+        success: false, 
+        error: { code: 'INVALID_EXP', message: 'exp must be a valid UNIX timestamp' } 
+      }, 400);
+    }
+
+    // 期限チェック
+    const now = Math.floor(Date.now() / 1000);
+    if (exp < now) {
+      console.warn(`[R2-PDF] URL expired: key=${key}, exp=${exp}, now=${now}`);
+      return c.json({ 
+        success: false, 
+        error: { code: 'URL_EXPIRED', message: 'Signed URL has expired' } 
+      }, 403);
+    }
+
+    // 署名検証
+    const { verifySignature } = await import('./lib/r2-sign');
+    const verification = await verifySignature(signingSecret, key, exp, sig);
+    if (!verification.valid) {
+      console.warn(`[R2-PDF] Invalid signature: key=${key}, reason=${verification.reason}`);
+      return c.json({ 
+        success: false, 
+        error: { code: 'INVALID_SIGNATURE', message: verification.reason || 'Invalid signature' } 
+      }, 403);
+    }
+  } else {
+    // R2_PDF_SIGNING_SECRET が未設定の場合は警告ログ（開発環境用）
+    console.warn('[R2-PDF] R2_PDF_SIGNING_SECRET not set - serving without signature verification');
+  }
+
   try {
     // R2からPDFを取得
     const object = await env.R2_KNOWLEDGE.get(key);
@@ -116,8 +164,8 @@ app.get('/api/r2-pdf', async (c) => {
     headers.set('Content-Type', 'application/pdf');
     headers.set('Content-Length', object.size.toString());
     
-    // キャッシュ設定（R2のPDFは変更されないためキャッシュ有効）
-    headers.set('Cache-Control', 'public, max-age=86400'); // 1日
+    // キャッシュ設定（署名付きURLは一時的なのでキャッシュは控えめに）
+    headers.set('Cache-Control', 'private, max-age=300'); // 5分
     
     // 元のファイル名を取得（あれば）
     const fileName = key.split('/').pop() || 'document.pdf';
