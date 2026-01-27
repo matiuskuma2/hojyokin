@@ -6,7 +6,115 @@
  * 凍結仕様:
  * - SEARCHABLE: 検索結果に出してよい（2/5以上）
  * - WALL_CHAT_READY: 壁打ちが成立する（全必須項目あり）
+ * - EXCLUDED: 壁打ち対象外（構造的に壁打ち不可能）
+ *
+ * 除外ルール（v4）:
+ * - 交付申請系: 採択後の手続き用（公募ではない）
+ * - 宣言/認定系: 認定プログラム（補助金ではない、eligible_expensesが存在しない）
+ * - ガイドライン系: ロゴ使用規約などの付随文書
+ * - 練習用: テスト・練習用の申請
  */
+
+// =====================================================
+// 壁打ち対象外（EXCLUDED）判定
+// =====================================================
+
+/**
+ * 壁打ち対象外の除外理由コード
+ */
+export type ExclusionReasonCode =
+  | 'KOFU_SHINSEI'           // 交付申請系（採択後の手続き）
+  | 'SENGEN_NINTEI'          // 宣言/認定系（補助金ではない）
+  | 'GUIDELINE_ONLY'         // ガイドライン/ロゴ使用規約のみ
+  | 'RENSHU_TEST'            // 練習・テスト用
+  | 'NO_ELIGIBLE_EXPENSES';  // 構造的に対象経費が存在しない
+
+/**
+ * 除外判定結果
+ */
+export type ExclusionResult = {
+  excluded: boolean;
+  reason_code?: ExclusionReasonCode;
+  reason_ja?: string;
+  matched_pattern?: string;
+};
+
+/**
+ * 除外パターン定義
+ */
+const EXCLUSION_PATTERNS: Array<{
+  pattern: RegExp;
+  code: ExclusionReasonCode;
+  reason_ja: string;
+}> = [
+  // 交付申請系（採択後の手続き）
+  {
+    pattern: /交付申請|交付決定後|採択後|実績報告|精算払い|概算払い/,
+    code: 'KOFU_SHINSEI',
+    reason_ja: '交付申請等（採択後の手続き）のため壁打ち対象外',
+  },
+  // 宣言/認定系（補助金ではない）
+  {
+    pattern: /(?:^|[\s（【])(?:成長)?宣言(?:[\s）】]|$)|(?:^|[\s（【])認定(?:制度|プログラム|企業)(?:[\s）】]|$)|(?:^|[\s（【])ロゴ(?:マーク)?(?:使用|利用)|ブランディング支援宣言/,
+    code: 'SENGEN_NINTEI',
+    reason_ja: '宣言/認定プログラムのため壁打ち対象外（補助金ではない）',
+  },
+  // ガイドライン系
+  {
+    pattern: /ガイドライン(?:のみ)?|使用規約|利用規約|手引き(?:書)?(?:のみ)?/,
+    code: 'GUIDELINE_ONLY',
+    reason_ja: 'ガイドライン/手引き等のため壁打ち対象外',
+  },
+  // 練習・テスト用
+  {
+    pattern: /練習用|テスト用|ダミー|サンプル(?:申請)?/,
+    code: 'RENSHU_TEST',
+    reason_ja: '練習/テスト用のため壁打ち対象外',
+  },
+];
+
+/**
+ * 壁打ち対象外かどうかを判定
+ * 
+ * @param title - 補助金タイトル
+ * @param overview - 概要テキスト（オプション）
+ * @returns 除外判定結果
+ */
+export function checkExclusion(title: string, overview?: string): ExclusionResult {
+  const textToCheck = `${title} ${overview || ''}`;
+  
+  for (const { pattern, code, reason_ja } of EXCLUSION_PATTERNS) {
+    const match = textToCheck.match(pattern);
+    if (match) {
+      return {
+        excluded: true,
+        reason_code: code,
+        reason_ja,
+        matched_pattern: match[0],
+      };
+    }
+  }
+  
+  return { excluded: false };
+}
+
+/**
+ * detail_json から除外判定を行う
+ */
+export function checkExclusionFromDetail(detail: DetailJSON | null, title?: string): ExclusionResult {
+  if (!detail && !title) {
+    return { excluded: false };
+  }
+  
+  const titleText = title || detail?.title || '';
+  const overview = detail?.overview || detail?.description || '';
+  
+  return checkExclusion(titleText, overview);
+}
+
+// =====================================================
+// 型定義
+// =====================================================
 
 export type RequiredForm = {
   name: string;
@@ -150,20 +258,24 @@ export type WallChatReadyResult = {
   score: number;      // 満たしている項目数
   maxScore: number;   // 最大項目数
   isElectronicApplication?: boolean;  // 電子申請フラグ (v3)
+  excluded?: boolean;                 // 壁打ち対象外フラグ (v4)
+  exclusion_reason?: ExclusionReasonCode;  // 除外理由コード (v4)
+  exclusion_reason_ja?: string;       // 除外理由（日本語）(v4)
 };
 
 /**
  * WALL_CHAT_READY判定（壁打ちゲート）
  * 
- * 凍結仕様 v3:
+ * 凍結仕様 v4:
  * - 必須（5項目中5つ必要）: overview, application_requirements, eligible_expenses, required_documents, deadline
  * - 推奨（加点項目）: required_forms, attachments/pdfUrls
+ * - 除外ルール: 交付申請/宣言/認定/ガイドライン等は壁打ち対象外
  * 
- * 電子申請対応 (v3 新規):
+ * 電子申請対応 (v3):
  * - is_electronic_application = true の場合、必須スコア 3/5 以上で ready = true
  *   (電子申請システム側で書式を作成するため、required_forms 不要)
  */
-export function isWallChatReady(detail: DetailJSON | null): WallChatReadyResult {
+export function isWallChatReady(detail: DetailJSON | null, title?: string): WallChatReadyResult {
   if (!detail) {
     return { 
       ready: false, 
@@ -171,6 +283,21 @@ export function isWallChatReady(detail: DetailJSON | null): WallChatReadyResult 
       score: 0,
       maxScore: 5,
       isElectronicApplication: false,
+    };
+  }
+  
+  // v4: 除外判定を先に行う
+  const exclusionResult = checkExclusionFromDetail(detail, title);
+  if (exclusionResult.excluded) {
+    return {
+      ready: false,
+      missing: [],
+      score: 0,
+      maxScore: 5,
+      isElectronicApplication: false,
+      excluded: true,
+      exclusion_reason: exclusionResult.reason_code,
+      exclusion_reason_ja: exclusionResult.reason_ja,
     };
   }
   
@@ -240,17 +367,35 @@ export function isWallChatReady(detail: DetailJSON | null): WallChatReadyResult 
 
 /**
  * detail_json文字列からWALL_CHAT_READY判定
+ * @param detailJsonStr - detail_json文字列
+ * @param title - タイトル（除外判定用、オプション）
  */
-export function checkWallChatReadyFromJson(detailJsonStr: string | null): WallChatReadyResult {
+export function checkWallChatReadyFromJson(detailJsonStr: string | null, title?: string): WallChatReadyResult {
   if (!detailJsonStr || detailJsonStr === '{}' || detailJsonStr.length <= 2) {
+    // タイトルのみで除外判定
+    if (title) {
+      const exclusionResult = checkExclusion(title);
+      if (exclusionResult.excluded) {
+        return {
+          ready: false,
+          missing: ['overview', 'application_requirements', 'eligible_expenses', 'required_documents', 'deadline'],
+          score: 0,
+          maxScore: 5,
+          isElectronicApplication: false,
+          excluded: true,
+          exclusion_reason: exclusionResult.reason_code,
+          exclusion_reason_ja: exclusionResult.reason_ja,
+        };
+      }
+    }
     return isWallChatReady(null);
   }
   
   try {
     const detail = JSON.parse(detailJsonStr) as DetailJSON;
-    return isWallChatReady(detail);
+    return isWallChatReady(detail, title);
   } catch (e) {
-    return isWallChatReady(null);
+    return isWallChatReady(null, title);
   }
 }
 
@@ -290,10 +435,148 @@ export function missingToJapanese(missing: string[]): string[] {
  * WALL_CHAT_READY の結果をデバッグ用に文字列化
  */
 export function wallChatReadyToString(result: WallChatReadyResult): string {
+  // v4: 除外の場合は専用メッセージ
+  if (result.excluded) {
+    return `🚫 EXCLUDED - ${result.exclusion_reason_ja || '壁打ち対象外'}`;
+  }
+  
   const status = result.ready ? '✅ READY' : '❌ NOT READY';
   const scoreStr = `${result.score}/${result.maxScore}`;
   const missingStr = result.missing.length > 0 
     ? `Missing: ${missingToJapanese(result.missing).join(', ')}`
     : 'All required fields present';
   return `${status} (${scoreStr}) - ${missingStr}`;
+}
+
+// =====================================================
+// PDF選別スコアリング（公募要領優先）
+// =====================================================
+
+/**
+ * PDFファイル名/URLのスコアリング結果
+ */
+export type PdfScoreResult = {
+  url: string;
+  score: number;
+  reason: string;
+  category: 'KOUBO_YORYO' | 'KOFU_YOKO' | 'APPLICATION_FORM' | 'MANUAL' | 'OTHER';
+};
+
+/**
+ * PDFスコアリング基準
+ * 数値が高いほど優先度が高い（公募要領 > 交付要綱 > 申請様式 > マニュアル > その他）
+ */
+const PDF_SCORING_PATTERNS: Array<{
+  pattern: RegExp;
+  score: number;
+  category: PdfScoreResult['category'];
+  reason: string;
+}> = [
+  // 公募要領（最高優先度）
+  { pattern: /公募要領|募集要項|公募案内|応募要項/i, score: 100, category: 'KOUBO_YORYO', reason: '公募要領' },
+  { pattern: /koubo|boshu|youryou|youryo/i, score: 95, category: 'KOUBO_YORYO', reason: '公募要領（ローマ字）' },
+  
+  // 交付要綱・交付規程
+  { pattern: /交付要綱|交付規程|補助金交付|助成金交付/i, score: 80, category: 'KOFU_YOKO', reason: '交付要綱' },
+  { pattern: /kofu|youkou|kitei/i, score: 75, category: 'KOFU_YOKO', reason: '交付要綱（ローマ字）' },
+  
+  // 申請様式・申請書
+  { pattern: /申請様式|申請書|様式|記入例|記載例/i, score: 60, category: 'APPLICATION_FORM', reason: '申請様式' },
+  { pattern: /shinsei|youshiki/i, score: 55, category: 'APPLICATION_FORM', reason: '申請様式（ローマ字）' },
+  
+  // マニュアル・手引き（優先度低め）
+  { pattern: /マニュアル|手引き|ガイド|利用案内|操作説明/i, score: 30, category: 'MANUAL', reason: 'マニュアル' },
+  { pattern: /manual|guide|tebiki/i, score: 25, category: 'MANUAL', reason: 'マニュアル（ローマ字）' },
+  
+  // 除外すべきパターン（ロゴ、規約など）
+  { pattern: /ロゴ|logo|規約|利用規約|プライバシー|privacy/i, score: -50, category: 'OTHER', reason: '対象外（ロゴ/規約）' },
+  { pattern: /チラシ|flyer|ポスター|poster/i, score: -30, category: 'OTHER', reason: '対象外（広報物）' },
+];
+
+/**
+ * PDF URLまたはファイル名からスコアを計算
+ * 
+ * @param pdfUrl - PDFのURL
+ * @param fileName - ファイル名（attachments.nameから取得、オプション）
+ * @returns スコアリング結果
+ */
+export function scorePdfUrl(pdfUrl: string, fileName?: string): PdfScoreResult {
+  const textToCheck = `${pdfUrl} ${fileName || ''}`;
+  
+  let bestMatch: {
+    score: number;
+    category: PdfScoreResult['category'];
+    reason: string;
+  } = { score: 0, category: 'OTHER', reason: 'その他' };
+  
+  for (const { pattern, score, category, reason } of PDF_SCORING_PATTERNS) {
+    if (pattern.test(textToCheck)) {
+      if (score > bestMatch.score || (score < 0 && bestMatch.score >= 0)) {
+        bestMatch = { score, category, reason };
+      }
+    }
+  }
+  
+  return {
+    url: pdfUrl,
+    score: bestMatch.score,
+    reason: bestMatch.reason,
+    category: bestMatch.category,
+  };
+}
+
+/**
+ * PDF URLリストを優先度順にソート
+ * 
+ * @param pdfUrls - PDFのURLリスト
+ * @param attachments - JGrants APIからの添付ファイル情報（オプション）
+ * @returns 優先度順にソートされたPDFスコアリング結果
+ */
+export function prioritizePdfUrls(
+  pdfUrls: string[],
+  attachments?: Array<{ name: string; type: string; url?: string }>
+): PdfScoreResult[] {
+  // URLとファイル名のマッピングを作成
+  const fileNameMap = new Map<string, string>();
+  if (attachments) {
+    for (const att of attachments) {
+      if (att.url) {
+        fileNameMap.set(att.url, att.name);
+      }
+      // ファイル名からURL末尾を推測
+      for (const pdfUrl of pdfUrls) {
+        if (pdfUrl.includes(att.name) || att.name.includes(pdfUrl.split('/').pop() || '')) {
+          fileNameMap.set(pdfUrl, att.name);
+        }
+      }
+    }
+  }
+  
+  // スコアリング
+  const scored = pdfUrls.map(url => scorePdfUrl(url, fileNameMap.get(url)));
+  
+  // スコア降順でソート（負のスコアは除外候補なので最後に）
+  return scored.sort((a, b) => b.score - a.score);
+}
+
+/**
+ * 最も優先度の高いPDFを選択（最大N件）
+ * 
+ * @param pdfUrls - PDFのURLリスト
+ * @param maxCount - 最大取得件数（デフォルト3）
+ * @param attachments - JGrants APIからの添付ファイル情報（オプション）
+ * @returns 優先度の高いPDF URL（負のスコアは除外）
+ */
+export function selectBestPdfs(
+  pdfUrls: string[],
+  maxCount: number = 3,
+  attachments?: Array<{ name: string; type: string; url?: string }>
+): string[] {
+  const prioritized = prioritizePdfUrls(pdfUrls, attachments);
+  
+  // 負のスコアを除外し、上位N件を返す
+  return prioritized
+    .filter(p => p.score >= 0)
+    .slice(0, maxCount)
+    .map(p => p.url);
 }

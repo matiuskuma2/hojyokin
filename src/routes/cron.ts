@@ -21,6 +21,11 @@ import { Hono } from 'hono';
 import type { Env, Variables, ApiResponse } from '../types';
 import { simpleScrape, parseTokyoKoshaList, extractPdfLinks, calculateContentHash } from '../services/firecrawl';
 import { shardKey16, currentShardByHour } from '../lib/shard';
+import { 
+  checkExclusion, 
+  checkWallChatReadyFromJson,
+  type ExclusionReasonCode 
+} from '../lib/wall-chat-ready';
 
 const cron = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -2666,8 +2671,9 @@ cron.post('/enrich-jgrants', async (c) => {
           detailJson.related_url = subsidy.front_subsidy_detail_page_url;
         }
         
-        // 12. workflow（V2専用: 公募回ごとの期間情報）
+        // 12. workflow（V2専用: 公募回ごとの期間情報）- SSOT化強化 v4
         if (subsidy.workflow && Array.isArray(subsidy.workflow) && subsidy.workflow.length > 0) {
+          // workflow情報を保存（対象地域、募集期間など）
           detailJson.workflows = subsidy.workflow.map((w: any) => ({
             id: w.id,
             target_area: w.target_area_search,
@@ -2677,14 +2683,32 @@ cron.post('/enrich-jgrants', async (c) => {
             acceptance_end: w.acceptance_end_datetime,
             project_end: w.project_end_deadline,
           }));
-          // 最新の締切を採用
-          const latestEnd = subsidy.workflow
+          
+          // deadline SSOT: max(acceptance_end_datetime) を採用
+          const allEnds = subsidy.workflow
             .map((w: any) => w.acceptance_end_datetime)
-            .filter(Boolean)
-            .sort()
-            .pop();
-          if (latestEnd) {
+            .filter((d: any) => d && typeof d === 'string');
+          
+          if (allEnds.length > 0) {
+            // 日付としてソートして最大値を取得
+            const sortedEnds = allEnds.sort((a: string, b: string) => 
+              new Date(b).getTime() - new Date(a).getTime()
+            );
+            const latestEnd = sortedEnds[0];
             detailJson.acceptance_end_datetime = latestEnd;
+            // deadline フィールドにも設定（WALL_CHAT_READY判定用）
+            detailJson.deadline = latestEnd;
+          }
+          
+          // 対象地域を統合（workflows から unique な地域を抽出）
+          const targetAreas = subsidy.workflow
+            .map((w: any) => w.target_area_search)
+            .filter((a: any) => a && typeof a === 'string' && a !== '全国');
+          if (targetAreas.length > 0) {
+            const uniqueAreas = [...new Set(targetAreas)] as string[];
+            if (uniqueAreas.length > 0 && !detailJson.target_region) {
+              detailJson.target_region = uniqueAreas;
+            }
           }
         }
         
@@ -2763,7 +2787,29 @@ cron.post('/enrich-jgrants', async (c) => {
         const existing = target.detail_json ? JSON.parse(target.detail_json) : {};
         const merged = { ...existing, ...detailJson };
         
-        // DB更新
+        // v4: 壁打ち対象外判定（DB更新前に実行）
+        const exclusionResult = checkExclusion(target.title, merged.overview);
+        if (exclusionResult.excluded) {
+          // detail_jsonに除外理由を記録
+          merged.wall_chat_excluded = true;
+          merged.wall_chat_excluded_reason = exclusionResult.reason_code;
+          merged.wall_chat_excluded_reason_ja = exclusionResult.reason_ja;
+          merged.wall_chat_excluded_at = new Date().toISOString();
+          
+          // DB更新（detail_jsonのみ、wall_chat_readyは0のまま）
+          await db.prepare(`
+            UPDATE subsidy_cache SET
+              detail_json = ?,
+              cached_at = datetime('now')
+            WHERE id = ?
+          `).bind(JSON.stringify(merged), target.id).run();
+          
+          console.log(`[Enrich-JGrants-v2] EXCLUDED: ${target.id} - ${exclusionResult.reason_ja}`);
+          itemsSkipped++;
+          continue;
+        }
+        
+        // DB更新（通常のエンリッチ処理）
         await db.prepare(`
           UPDATE subsidy_cache SET
             detail_json = ?,
@@ -2778,9 +2824,8 @@ cron.post('/enrich-jgrants', async (c) => {
           pdfLinksQueued += queued;
         }
         
-        // WALL_CHAT_READY判定
-        const { checkWallChatReadyFromJson } = await import('../lib/wall-chat-ready');
-        const readyResult = checkWallChatReadyFromJson(JSON.stringify(merged));
+        // WALL_CHAT_READY判定（v4: タイトルも渡す）
+        const readyResult = checkWallChatReadyFromJson(JSON.stringify(merged), target.title);
         
         if (readyResult.ready) {
           await db.prepare(`
@@ -3061,6 +3106,281 @@ cron.post('/enrich-tokyo-shigoto', async (c) => {
       error: {
         code: 'INTERNAL_ERROR',
         message: `Enrichment failed: ${error instanceof Error ? error.message : String(error)}`,
+      },
+    }, 500);
+  }
+});
+
+// =====================================================
+// P3-4: JGrants詳細ページスクレイピング（pdf_urls補完）
+// POST /api/cron/scrape-jgrants-detail
+// 
+// 対象: pdf_urls が空でfront_subsidy_detail_page_urlがある制度
+// 目的: 詳細ページからPDFリンクを抽出してextraction_queueに登録
+// =====================================================
+cron.post('/scrape-jgrants-detail', async (c) => {
+  const db = c.env.DB;
+  
+  // P2-0: CRON_SECRET 検証
+  const authResult = verifyCronSecret(c);
+  if (!authResult.valid) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: authResult.error!.code,
+        message: authResult.error!.message,
+      },
+    }, authResult.error!.status);
+  }
+  
+  // 設定 (Cloudflare Worker 30秒制限のため3件に制限)
+  const MAX_ITEMS_PER_RUN = 3;
+  const FIRECRAWL_API_KEY = (c.env as any).FIRECRAWL_API_KEY;
+  
+  let runId: string | null = null;
+  let itemsProcessed = 0;
+  let pdfLinksFound = 0;
+  let itemsQueued = 0;
+  const errors: string[] = [];
+  
+  try {
+    runId = await startCronRun(db, 'scrape-jgrants-detail', 'cron');
+    
+    // pdf_urlsが空 かつ front_subsidy_detail_page_url がある制度を取得
+    const targets = await db.prepare(`
+      SELECT 
+        id, title, detail_json,
+        json_extract(detail_json, '$.related_url') as related_url,
+        json_extract(detail_json, '$.reference_urls') as reference_urls
+      FROM subsidy_cache
+      WHERE source = 'jgrants'
+        AND wall_chat_ready = 0
+        AND detail_json IS NOT NULL
+        AND (
+          json_extract(detail_json, '$.pdf_urls') IS NULL 
+          OR json_extract(detail_json, '$.pdf_urls') = '[]'
+          OR json_array_length(json_extract(detail_json, '$.pdf_urls')) = 0
+        )
+        AND json_extract(detail_json, '$.related_url') IS NOT NULL
+        AND json_extract(detail_json, '$.wall_chat_excluded') IS NULL
+      ORDER BY cached_at DESC
+      LIMIT ?
+    `).bind(MAX_ITEMS_PER_RUN).all<{
+      id: string;
+      title: string;
+      detail_json: string;
+      related_url: string | null;
+      reference_urls: string | null;
+    }>();
+    
+    if (!targets.results || targets.results.length === 0) {
+      if (runId) {
+        await finishCronRun(db, runId, 'success', {
+          items_processed: 0,
+          metadata: { message: 'No targets found' },
+        });
+      }
+      return c.json<ApiResponse<{ message: string }>>({
+        success: true,
+        data: { message: 'No targets found for scraping' },
+      });
+    }
+    
+    console.log(`[Scrape-JGrants-Detail] Found ${targets.results.length} targets`);
+    
+    for (const target of targets.results) {
+      try {
+        const detailJson = JSON.parse(target.detail_json);
+        const urlsToScrape: string[] = [];
+        
+        // 1. related_url (front_subsidy_detail_page_url)
+        if (target.related_url) {
+          urlsToScrape.push(target.related_url);
+        }
+        
+        // 2. reference_urls から最大2件
+        if (target.reference_urls) {
+          try {
+            const refUrls = JSON.parse(target.reference_urls);
+            if (Array.isArray(refUrls)) {
+              urlsToScrape.push(...refUrls.slice(0, 2));
+            }
+          } catch (e) {
+            // JSON parse error, skip
+          }
+        }
+        
+        const pdfUrls: string[] = [];
+        
+        for (const url of urlsToScrape.slice(0, 3)) {
+          try {
+            let html = '';
+            
+            // Firecrawl APIで取得（SPAレンダリング対応）
+            if (FIRECRAWL_API_KEY) {
+              const fcResponse = await fetch('https://api.firecrawl.dev/v1/scrape', {
+                method: 'POST',
+                headers: {
+                  'Authorization': `Bearer ${FIRECRAWL_API_KEY}`,
+                  'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                  url,
+                  formats: ['html'],
+                  waitFor: 3000,
+                  timeout: 15000,
+                }),
+              });
+              
+              if (fcResponse.ok) {
+                const fcData = await fcResponse.json() as any;
+                html = fcData.data?.html || '';
+              }
+            }
+            
+            // Firecrawl失敗時は直接fetch
+            if (!html) {
+              const directResponse = await fetch(url, {
+                headers: { 'User-Agent': 'Mozilla/5.0 (compatible; SubsidyBot/1.0)' },
+              });
+              if (directResponse.ok) {
+                html = await directResponse.text();
+              }
+            }
+            
+            if (html) {
+              // PDFリンク抽出
+              const hrefPattern = /href=["']([^"']*\.pdf)["']/gi;
+              let match;
+              while ((match = hrefPattern.exec(html)) !== null) {
+                let pdfUrl = match[1];
+                // 相対URLを絶対URLに変換
+                if (pdfUrl.startsWith('/')) {
+                  const urlObj = new URL(url);
+                  pdfUrl = `${urlObj.origin}${pdfUrl}`;
+                } else if (!pdfUrl.startsWith('http')) {
+                  const urlObj = new URL(url);
+                  const basePath = urlObj.pathname.substring(0, urlObj.pathname.lastIndexOf('/') + 1);
+                  pdfUrl = `${urlObj.origin}${basePath}${pdfUrl}`;
+                }
+                if (!pdfUrls.includes(pdfUrl)) {
+                  pdfUrls.push(pdfUrl);
+                }
+              }
+              
+              // テキスト内のPDF URL
+              const urlPattern = /https?:\/\/[^\s"'<>]+\.pdf/gi;
+              while ((match = urlPattern.exec(html)) !== null) {
+                if (!pdfUrls.includes(match[0])) {
+                  pdfUrls.push(match[0]);
+                }
+              }
+            }
+            
+            // レート制限
+            await new Promise(resolve => setTimeout(resolve, 500));
+            
+          } catch (urlErr) {
+            console.warn(`[Scrape-JGrants-Detail] Failed to fetch ${url}:`, urlErr);
+          }
+        }
+        
+        if (pdfUrls.length > 0) {
+          pdfLinksFound += pdfUrls.length;
+          
+          // detail_json更新
+          detailJson.pdf_urls = pdfUrls;
+          detailJson.pdf_urls_scraped_at = new Date().toISOString();
+          
+          await db.prepare(`
+            UPDATE subsidy_cache SET
+              detail_json = ?,
+              cached_at = datetime('now')
+            WHERE id = ?
+          `).bind(JSON.stringify(detailJson), target.id).run();
+          
+          // extraction_queueに登録
+          for (const pdfUrl of pdfUrls.slice(0, 5)) {
+            try {
+              const queueId = generateUUID();
+              const shard = shardKey16(target.id);
+              await db.prepare(`
+                INSERT OR IGNORE INTO extraction_queue 
+                  (id, subsidy_id, shard_key, job_type, priority, status, created_at, updated_at)
+                VALUES (?, ?, ?, 'extract_pdf', 80, 'queued', datetime('now'), datetime('now'))
+              `).bind(queueId, target.id, shard).run();
+              itemsQueued++;
+            } catch (queueErr) {
+              // 重複は無視
+            }
+          }
+          
+          console.log(`[Scrape-JGrants-Detail] ${target.id}: Found ${pdfUrls.length} PDFs`);
+        } else {
+          console.log(`[Scrape-JGrants-Detail] ${target.id}: No PDFs found`);
+        }
+        
+        itemsProcessed++;
+        
+      } catch (err) {
+        errors.push(`${target.id}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    
+    console.log(`[Scrape-JGrants-Detail] Completed: processed=${itemsProcessed}, pdfs=${pdfLinksFound}, queued=${itemsQueued}`);
+    
+    if (runId) {
+      await finishCronRun(db, runId, errors.length > 0 ? 'partial' : 'success', {
+        items_processed: itemsProcessed,
+        items_inserted: itemsQueued,
+        error_count: errors.length,
+        errors: errors.slice(0, 50),
+        metadata: {
+          pdf_links_found: pdfLinksFound,
+        },
+      });
+    }
+    
+    return c.json<ApiResponse<{
+      message: string;
+      items_processed: number;
+      pdf_links_found: number;
+      items_queued: number;
+      errors: string[];
+      timestamp: string;
+      run_id?: string;
+    }>>({
+      success: true,
+      data: {
+        message: 'JGrants detail scraping completed',
+        items_processed: itemsProcessed,
+        pdf_links_found: pdfLinksFound,
+        items_queued: itemsQueued,
+        errors: errors.slice(0, 20),
+        timestamp: new Date().toISOString(),
+        run_id: runId ?? undefined,
+      },
+    });
+    
+  } catch (error) {
+    console.error('[Scrape-JGrants-Detail] Error:', error);
+    
+    if (runId) {
+      try {
+        await finishCronRun(db, runId, 'failed', {
+          error_count: 1,
+          errors: [error instanceof Error ? error.message : String(error)],
+        });
+      } catch (logErr) {
+        console.warn('[Scrape-JGrants-Detail] Failed to finish cron_run log:', logErr);
+      }
+    }
+    
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: 'INTERNAL_ERROR',
+        message: `Scraping failed: ${error instanceof Error ? error.message : String(error)}`,
       },
     }, 500);
   }
