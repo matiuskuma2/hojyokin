@@ -3537,6 +3537,284 @@ cron.post('/scrape-jgrants-detail', async (c) => {
 });
 
 // =====================================================
+// Phase 2: Base64 PDF → R2 保存（application_guidelinesのみ）
+// POST /api/cron/save-base64-pdfs
+// 
+// 対象: Active + pdf_urls が空 + v2 API で application_guidelines に data がある制度
+// 目的: Base64 PDF を R2 に保存し、pdf_urls に追加 → extract_pdf を enqueue
+// 
+// 仕様:
+// - Active only（acceptance_end_datetime IS NOT NULL AND > now）
+// - PDFスコアリング適用（score < 0 は保存しない）
+// - 公募要領（application_guidelines）のみ先に処理
+// - R2キー: pdf/{subsidy_id}/{file_hash}.pdf
+// =====================================================
+cron.post('/save-base64-pdfs', async (c) => {
+  const db = c.env.DB;
+  const r2 = c.env.R2_KNOWLEDGE;
+  
+  // P2-0: CRON_SECRET 検証
+  const authResult = verifyCronSecret(c);
+  if (!authResult.valid) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: authResult.error!.code,
+        message: authResult.error!.message,
+      },
+    }, authResult.error!.status);
+  }
+  
+  // 設定 (Cloudflare Worker 30秒制限のため3件に制限)
+  const MAX_ITEMS_PER_RUN = 3;
+  const JGRANTS_DETAIL_API_V2 = 'https://api.jgrants-portal.go.jp/exp/v2/public/subsidies/id';
+  
+  let runId: string | null = null;
+  let itemsProcessed = 0;
+  let pdfsSaved = 0;
+  let itemsQueued = 0;
+  let itemsSkipped = 0;
+  const errors: string[] = [];
+  
+  try {
+    runId = await startCronRun(db, 'save-base64-pdfs', 'cron');
+    
+    // Active + pdf_urls が空の案件を取得
+    const targets = await db.prepare(`
+      SELECT 
+        id, title, detail_json
+      FROM subsidy_cache
+      WHERE source = 'jgrants'
+        AND wall_chat_ready = 0
+        AND detail_json IS NOT NULL
+        AND acceptance_end_datetime IS NOT NULL
+        AND acceptance_end_datetime > datetime('now')
+        AND (
+          json_extract(detail_json, '$.pdf_urls') IS NULL 
+          OR json_extract(detail_json, '$.pdf_urls') = '[]'
+          OR json_array_length(json_extract(detail_json, '$.pdf_urls')) = 0
+        )
+        AND json_extract(detail_json, '$.base64_processed') IS NULL
+      ORDER BY acceptance_end_datetime ASC
+      LIMIT ?
+    `).bind(MAX_ITEMS_PER_RUN).all<{
+      id: string;
+      title: string;
+      detail_json: string;
+    }>();
+    
+    if (!targets.results || targets.results.length === 0) {
+      if (runId) {
+        await finishCronRun(db, runId, 'success', {
+          items_processed: 0,
+          metadata: { message: 'No targets found' },
+        });
+      }
+      return c.json<ApiResponse<{ message: string }>>({
+        success: true,
+        data: { message: 'No targets found for Base64 PDF processing' },
+      });
+    }
+    
+    console.log(`[Save-Base64-PDFs] Found ${targets.results.length} targets`);
+    
+    for (const target of targets.results) {
+      try {
+        // v2 API から詳細を取得
+        const apiUrl = `${JGRANTS_DETAIL_API_V2}/${target.id}`;
+        console.log(`[Save-Base64-PDFs] Fetching ${target.id}: ${apiUrl}`);
+        
+        const response = await fetch(apiUrl, {
+          headers: { 'Accept': 'application/json' },
+        });
+        
+        if (!response.ok) {
+          errors.push(`${target.id}: API ${response.status}`);
+          itemsSkipped++;
+          continue;
+        }
+        
+        const data = await response.json() as any;
+        const subsidy = data.result?.[0];
+        
+        if (!subsidy) {
+          errors.push(`${target.id}: No result in API response`);
+          itemsSkipped++;
+          continue;
+        }
+        
+        const detailJson = JSON.parse(target.detail_json || '{}');
+        const savedPdfUrls: string[] = [];
+        
+        // application_guidelines（公募要領）を処理
+        if (subsidy.application_guidelines && Array.isArray(subsidy.application_guidelines)) {
+          for (const ag of subsidy.application_guidelines) {
+            if (!ag.data || !ag.name) continue;
+            
+            // PDFスコアリング（score < 0 は保存しない）
+            const score = scorePdfUrl(ag.name, ag.name);
+            if (score.score < 0) {
+              console.log(`[Save-Base64-PDFs] Skipping ${ag.name}: score=${score.score} (${score.reason})`);
+              continue;
+            }
+            
+            try {
+              // Base64 decode
+              const binaryString = atob(ag.data);
+              const bytes = new Uint8Array(binaryString.length);
+              for (let i = 0; i < binaryString.length; i++) {
+                bytes[i] = binaryString.charCodeAt(i);
+              }
+              
+              // ファイルハッシュ生成（簡易）
+              const hashBuffer = await crypto.subtle.digest('SHA-256', bytes);
+              const hashArray = Array.from(new Uint8Array(hashBuffer));
+              const fileHash = hashArray.slice(0, 8).map(b => b.toString(16).padStart(2, '0')).join('');
+              
+              // R2に保存
+              const r2Key = `pdf/${target.id}/${fileHash}.pdf`;
+              await r2.put(r2Key, bytes, {
+                httpMetadata: {
+                  contentType: 'application/pdf',
+                },
+                customMetadata: {
+                  subsidyId: target.id,
+                  originalName: ag.name,
+                  source: 'jgrants_application_guidelines',
+                  savedAt: new Date().toISOString(),
+                  scoreCategory: score.category,
+                },
+              });
+              
+              // R2 URL（公開バケットの場合）または内部参照用URL
+              // Note: R2は公開設定が必要。ここでは内部参照用キーを保存
+              const r2Url = `r2://subsidy-knowledge/${r2Key}`;
+              savedPdfUrls.push(r2Url);
+              pdfsSaved++;
+              
+              console.log(`[Save-Base64-PDFs] Saved ${ag.name} -> ${r2Key} (score: ${score.score})`);
+              
+            } catch (saveErr) {
+              console.warn(`[Save-Base64-PDFs] Failed to save ${ag.name}:`, saveErr);
+              errors.push(`${target.id}/${ag.name}: ${saveErr instanceof Error ? saveErr.message : String(saveErr)}`);
+            }
+          }
+        }
+        
+        // detail_json 更新
+        if (savedPdfUrls.length > 0) {
+          detailJson.pdf_urls = savedPdfUrls;
+          detailJson.base64_processed = true;
+          detailJson.base64_processed_at = new Date().toISOString();
+          
+          await db.prepare(`
+            UPDATE subsidy_cache SET
+              detail_json = ?,
+              cached_at = datetime('now')
+            WHERE id = ?
+          `).bind(JSON.stringify(detailJson), target.id).run();
+          
+          // extraction_queue に登録
+          const queueId = generateUUID();
+          const shard = shardKey16(target.id);
+          await db.prepare(`
+            INSERT OR IGNORE INTO extraction_queue 
+              (id, subsidy_id, shard_key, job_type, priority, status, created_at, updated_at)
+            VALUES (?, ?, ?, 'extract_pdf', 50, 'queued', datetime('now'), datetime('now'))
+          `).bind(queueId, target.id, shard).run();
+          itemsQueued++;
+          
+          console.log(`[Save-Base64-PDFs] ${target.id}: Saved ${savedPdfUrls.length} PDFs, queued for extraction`);
+        } else {
+          // Base64 データがなかった場合もマーク（再処理防止）
+          detailJson.base64_processed = true;
+          detailJson.base64_processed_at = new Date().toISOString();
+          detailJson.base64_no_data = true;
+          
+          await db.prepare(`
+            UPDATE subsidy_cache SET
+              detail_json = ?,
+              cached_at = datetime('now')
+            WHERE id = ?
+          `).bind(JSON.stringify(detailJson), target.id).run();
+          
+          console.log(`[Save-Base64-PDFs] ${target.id}: No Base64 PDF data found`);
+        }
+        
+        itemsProcessed++;
+        
+        // レート制限
+        await new Promise(resolve => setTimeout(resolve, 500));
+        
+      } catch (err) {
+        errors.push(`${target.id}: ${err instanceof Error ? err.message : String(err)}`);
+        itemsSkipped++;
+      }
+    }
+    
+    if (runId) {
+      await finishCronRun(db, runId, 'success', {
+        items_processed: itemsProcessed,
+        items_inserted: pdfsSaved,
+        items_updated: itemsQueued,
+        items_skipped: itemsSkipped,
+        error_count: errors.length,
+        errors: errors.slice(0, 20),
+        metadata: {
+          pdfs_saved: pdfsSaved,
+          items_queued: itemsQueued,
+        },
+      });
+    }
+    
+    return c.json<ApiResponse<{
+      message: string;
+      items_processed: number;
+      pdfs_saved: number;
+      items_queued: number;
+      items_skipped: number;
+      errors: string[];
+      timestamp: string;
+      run_id?: string;
+    }>>({
+      success: true,
+      data: {
+        message: 'Base64 PDF processing completed',
+        items_processed: itemsProcessed,
+        pdfs_saved: pdfsSaved,
+        items_queued: itemsQueued,
+        items_skipped: itemsSkipped,
+        errors: errors.slice(0, 20),
+        timestamp: new Date().toISOString(),
+        run_id: runId ?? undefined,
+      },
+    });
+    
+  } catch (error) {
+    console.error('[Save-Base64-PDFs] Error:', error);
+    
+    if (runId) {
+      try {
+        await finishCronRun(db, runId, 'failed', {
+          error_count: 1,
+          errors: [error instanceof Error ? error.message : String(error)],
+        });
+      } catch (logErr) {
+        console.warn('[Save-Base64-PDFs] Failed to finish cron_run log:', logErr);
+      }
+    }
+    
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: 'INTERNAL_ERROR',
+        message: `Base64 PDF processing failed: ${error instanceof Error ? error.message : String(error)}`,
+      },
+    }, 500);
+  }
+});
+
+// =====================================================
 // A-3.5: WALL_CHAT_READY 再計算エンドポイント
 // POST /api/cron/recalc-wall-chat-ready
 // 
