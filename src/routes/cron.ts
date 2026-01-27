@@ -2359,7 +2359,7 @@ cron.post('/enrich-jgrants', async (c) => {
   
   /**
    * 概要テキストから申請要件・対象経費・対象者を簡易抽出
-   * v5: 「見出し＋次の数行」方式で確実に抽出
+   * v6: 各項目を独立して抽出（else if チェーンを解消）
    */
   function extractFieldsFromOverview(overviewText: string): {
     application_requirements?: string[];
@@ -2372,58 +2372,88 @@ cron.post('/enrich-jgrants', async (c) => {
       target_businesses?: string[];
     } = {};
     
-    // セクション区切りパターン（■◆●▼【】や改行）
+    // === 1. 正規表現で直接抽出（最優先） ===
+    
+    // 対象経費の直接抽出パターン（v6: 強化）
+    const expenseDirectPatterns = [
+      /(?:助成対象経費|補助対象経費|対象経費|経費の範囲|対象となる経費)[／\/：:\s]*(.{20,600}?)(?=(?:■|◆|●|▼|【|\n\n|問[合い]?せ|$))/s,
+      /(?:助成対象|補助対象)[：:\s]*(.{20,400}?)(?=[。\n])/,
+      /①[^②]+(?:経費|費用)[^②]*(?:②[^③]+(?:経費|費用)[^③]*)?/,  // 番号付きリスト形式
+    ];
+    for (const pattern of expenseDirectPatterns) {
+      if (!result.eligible_expenses) {
+        const match = overviewText.match(pattern);
+        if (match) {
+          const extracted = (match[1] || match[0]).trim().substring(0, 600);
+          if (extracted.length > 20) {
+            result.eligible_expenses = [extracted];
+          }
+        }
+      }
+    }
+    
+    // 申請要件の直接抽出パターン（v6: 強化）
+    const reqDirectPatterns = [
+      /(?:応募資格|申請資格|交付対象者|補助対象者|助成対象者)[：:\s]*(.{20,500}?)(?=(?:■|◆|●|問[合い]?せ|\n\n|$))/s,
+      /(?:対象(?:となる)?事業者)[：:\s]*(.{20,400}?)(?=[。\n])/,
+      /(?:中小企業|小規模事業者)(?:者)?.*(?:であること|に該当|を満たす).{10,300}/,
+      /(?:次の|以下の)(?:いずれ|すべて|全て).*(?:に該当|を満たす).{10,300}/,
+    ];
+    for (const pattern of reqDirectPatterns) {
+      if (!result.application_requirements) {
+        const match = overviewText.match(pattern);
+        if (match) {
+          const extracted = (match[1] || match[0]).trim().substring(0, 500);
+          if (extracted.length > 15) {
+            result.application_requirements = [extracted];
+          }
+        }
+      }
+    }
+    
+    // 対象者の直接抽出パターン
+    const targetDirectPatterns = [
+      /(?:対象者|対象事業者)[：:\s]*(.{20,400}?)(?=[。\n■◆●])/,
+    ];
+    for (const pattern of targetDirectPatterns) {
+      if (!result.target_businesses) {
+        const match = overviewText.match(pattern);
+        if (match && match[1]) {
+          const extracted = match[1].trim().substring(0, 500);
+          if (extracted.length > 15) {
+            result.target_businesses = [extracted];
+          }
+        }
+      }
+    }
+    
+    // === 2. セクション分割による抽出（フォールバック） ===
     const sections = overviewText.split(/[■◆●▼【】]/);
     
     for (const section of sections) {
       const sectionText = section.trim();
       if (sectionText.length < 10) continue;
       
-      // 最初の30文字をヘッダーとして判定
-      const header = sectionText.substring(0, 40).toLowerCase();
-      // ヘッダー後の内容（最初の句点・改行まで、または全体）
-      const contentStart = sectionText.search(/[\s。、：:\n]/);
+      // ヘッダー（最初の40文字）
+      const header = sectionText.substring(0, 40);
+      // 内容（ヘッダー後のテキスト）
+      const contentStart = sectionText.search(/[：:\s\n]/);
       const content = contentStart > 0 
-        ? sectionText.substring(contentStart).trim().substring(0, 600)
+        ? sectionText.substring(contentStart).replace(/^[：:\s\n]+/, '').trim().substring(0, 600)
         : sectionText.substring(0, 600);
       
-      // === 対象者・対象事業者 ===
-      if (!result.target_businesses && (
-          header.includes('対象者') || header.includes('対象事業者') || 
-          header.includes('申請対象') || header.includes('交付対象者') ||
-          header.includes('補助対象者') || header.includes('助成対象者') ||
-          header.includes('申請資格') || header.includes('応募資格'))) {
-        if (content.length > 15) {
-          result.target_businesses = [content];
-        }
-      }
-      
-      // === 申請要件 ===
-      else if (!result.application_requirements && (
-          header.includes('要件') || header.includes('条件') ||
-          header.includes('申請資格') || header.includes('応募資格') ||
-          header.includes('対象となる') || header.includes('対象事業者') ||
-          header.includes('申請者') || header.includes('補助対象者') ||
-          header.includes('交付の対象') || header.includes('助成の対象') ||
-          header.includes('対象とする') || header.includes('申請できる'))) {
-        if (content.length > 15) {
-          result.application_requirements = [content];
-        }
-      }
-      
-      // === 対象経費（v5: パターン強化） ===
-      else if (!result.eligible_expenses && (
+      // 対象経費（独立チェック）
+      if (!result.eligible_expenses && (
           header.includes('対象経費') || header.includes('補助対象経費') || 
-          header.includes('助成対象経費') || header.includes('対象となる経費') ||
-          header.includes('経費の範囲') || header.includes('補助対象となる') ||
-          header.includes('助成対象となる') || header.includes('対象費用'))) {
+          header.includes('助成対象経費') || header.includes('経費の範囲') ||
+          header.includes('対象費用') || header.includes('対象となる経費'))) {
         if (content.length > 15) {
           result.eligible_expenses = [content];
         }
       }
       
-      // === 支援内容・助成額（対象経費の代替） ===
-      else if (!result.eligible_expenses && (
+      // 支援内容・助成額（対象経費の代替、独立チェック）
+      if (!result.eligible_expenses && (
           header.includes('支援内容') || header.includes('補助内容') || 
           header.includes('助成内容') || header.includes('助成金の額') ||
           header.includes('補助金額') || header.includes('助成額') ||
@@ -2432,37 +2462,25 @@ cron.post('/enrich-jgrants', async (c) => {
           result.eligible_expenses = [content];
         }
       }
-    }
-    
-    // v5: セクションで見つからなかった場合、「見出しキーワード＋後続テキスト」を直接検索
-    if (!result.eligible_expenses) {
-      const expensePatterns = [
-        /(?:対象(?:となる)?経費|補助対象経費|助成対象経費|経費の範囲)[：:\s]*(.{20,400}?)(?:[。\n■◆●]|$)/,
-        /(?:補助対象|助成対象)[：:\s]*(.{20,400}?)(?:[。\n■◆●]|$)/,
-      ];
-      for (const pattern of expensePatterns) {
-        const match = overviewText.match(pattern);
-        if (match && match[1]) {
-          result.eligible_expenses = [match[1].trim()];
-          break;
+      
+      // 申請要件（独立チェック）
+      if (!result.application_requirements && (
+          header.includes('要件') || header.includes('条件') ||
+          header.includes('申請資格') || header.includes('応募資格') ||
+          header.includes('対象となる') || header.includes('補助対象者') ||
+          header.includes('助成対象者') || header.includes('交付の対象') ||
+          header.includes('対象とする') || header.includes('申請できる'))) {
+        if (content.length > 15) {
+          result.application_requirements = [content];
         }
       }
-    }
-    
-    // v4/v5: 申請要件のフォールバック
-    if (!result.application_requirements) {
-      const reqPatterns = [
-        /(?:中小企業|小規模事業者|事業者).*(?:であること|に該当する|を満たす).{10,200}/,
-        /(?:次の|以下の)(?:いずれか|すべて|全て).*(?:に該当|を満たす).{10,200}/,
-        /申請(?:者|事業者)(?:は|が).*(?:である|とする|に限る).{10,100}/,
-        /(?:対象者|対象事業者)[：:\s]*(.{15,300}?)(?:[。\n■◆●]|$)/,
-      ];
-      for (const pattern of reqPatterns) {
-        const match = overviewText.match(pattern);
-        if (match) {
-          const extracted = match[1] || match[0];
-          result.application_requirements = [extracted.substring(0, 500).trim()];
-          break;
+      
+      // 対象者（独立チェック）
+      if (!result.target_businesses && (
+          header.includes('対象者') || header.includes('対象事業者') || 
+          header.includes('申請対象') || header.includes('交付対象者'))) {
+        if (content.length > 15) {
+          result.target_businesses = [content];
         }
       }
     }
