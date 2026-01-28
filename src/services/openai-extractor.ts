@@ -55,21 +55,49 @@ PDFテキスト:
 `;
 
 /**
+ * OpenAI 抽出結果 + 使用量情報
+ */
+export interface ExtractedResult {
+  data: ExtractedSubsidyData | null;
+  usage?: {
+    prompt_tokens: number;
+    completion_tokens: number;
+    total_tokens: number;
+  };
+  model: string;
+  success: boolean;
+  error?: string;
+}
+
+/**
  * OpenAI API を使って PDF テキストから構造化データを抽出
+ * v2: usage情報を含むオブジェクトを返す
  */
 export async function extractSubsidyDataFromPdf(
   pdfText: string,
   openaiApiKey: string,
   model: string = 'gpt-4o-mini'
-): Promise<ExtractedSubsidyData | null> {
+): Promise<ExtractedSubsidyData | null>;
+export async function extractSubsidyDataFromPdf(
+  pdfText: string,
+  openaiApiKey: string,
+  model: string,
+  returnUsage: true
+): Promise<ExtractedResult>;
+export async function extractSubsidyDataFromPdf(
+  pdfText: string,
+  openaiApiKey: string,
+  model: string = 'gpt-4o-mini',
+  returnUsage: boolean = false
+): Promise<ExtractedSubsidyData | null | ExtractedResult> {
   if (!openaiApiKey) {
     console.warn('[OpenAI] API key not configured');
-    return null;
+    return returnUsage ? { data: null, model, success: false, error: 'API key not configured' } : null;
   }
 
   if (!pdfText || pdfText.length < 100) {
     console.warn('[OpenAI] PDF text too short');
-    return null;
+    return returnUsage ? { data: null, model, success: false, error: 'PDF text too short' } : null;
   }
 
   // テキストを最大8000文字に制限（トークン節約）
@@ -102,7 +130,7 @@ export async function extractSubsidyDataFromPdf(
 
     if (!response.ok) {
       console.error(`[OpenAI] API error: ${response.status}`);
-      return null;
+      return returnUsage ? { data: null, model, success: false, error: `API error: ${response.status}` } : null;
     }
 
     const data = await response.json() as any;
@@ -110,7 +138,7 @@ export async function extractSubsidyDataFromPdf(
 
     if (!content) {
       console.warn('[OpenAI] Empty response');
-      return null;
+      return returnUsage ? { data: null, model, success: false, error: 'Empty response' } : null;
     }
 
     const extracted = JSON.parse(content) as ExtractedSubsidyData;
@@ -121,10 +149,23 @@ export async function extractSubsidyDataFromPdf(
       console.log(`[OpenAI] Tokens used: ${usage.total_tokens} (prompt: ${usage.prompt_tokens}, completion: ${usage.completion_tokens})`);
     }
 
+    if (returnUsage) {
+      return {
+        data: extracted,
+        usage: usage ? {
+          prompt_tokens: usage.prompt_tokens,
+          completion_tokens: usage.completion_tokens,
+          total_tokens: usage.total_tokens,
+        } : undefined,
+        model,
+        success: true,
+      };
+    }
+
     return extracted;
   } catch (error) {
     console.error('[OpenAI] Extraction error:', error);
-    return null;
+    return returnUsage ? { data: null, model, success: false, error: error instanceof Error ? error.message : 'Unknown error' } : null;
   }
 }
 

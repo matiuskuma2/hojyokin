@@ -733,8 +733,17 @@ adminPages.get('/admin', (c) => {
 
       async function loadDashboard() {
         try {
+          console.log('[loadDashboard] Starting...');
           const data = await api('/api/admin-ops/dashboard');
-          if (!data.success) throw new Error(data.error?.message);
+          console.log('[loadDashboard] Response:', data);
+          
+          if (!data.success) {
+            throw new Error(data.error?.message || 'Unknown error');
+          }
+          
+          if (!data.data) {
+            throw new Error('No data in response');
+          }
 
           const { kpi, queue, daily } = data.data;
 
@@ -844,6 +853,17 @@ adminPages.get('/admin', (c) => {
 
         } catch (error) {
           console.error('Dashboard load error:', error);
+          // エラー表示をUIに反映
+          const errorMsg = error.message || 'データの読み込みに失敗しました';
+          document.getElementById('kpi-users-total').textContent = '!';
+          document.getElementById('kpi-users-total').title = errorMsg;
+          document.getElementById('kpi-searches-total').textContent = '!';
+          document.getElementById('kpi-chats-total').textContent = '!';
+          document.getElementById('kpi-drafts-total').textContent = '!';
+          document.querySelectorAll('.loading').forEach(el => {
+            el.classList.remove('loading');
+            el.classList.add('text-red-500');
+          });
         }
       }
 

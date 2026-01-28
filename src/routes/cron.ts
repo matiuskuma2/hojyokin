@@ -28,6 +28,7 @@ import {
   scorePdfUrl,
   type ExclusionReasonCode 
 } from '../lib/wall-chat-ready';
+import { logFirecrawlCost, logOpenAICost } from '../lib/cost/cost-logger';
 
 const cron = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -5168,17 +5169,32 @@ cron.post('/consume-extractions', async (c) => {
                         body: JSON.stringify({ url: httpUrl, formats: ['markdown'] }),
                       });
                       
-                      if (fcResponse.ok) {
+                      const fcSuccess = fcResponse.ok;
+                      let fcText = '';
+                      
+                      if (fcSuccess) {
                         const fcData = await fcResponse.json() as any;
-                        const text = fcData.data?.markdown || '';
-                        if (text.length > 100) {
-                          pdfText = text;
+                        fcText = fcData.data?.markdown || '';
+                        if (fcText.length > 100) {
+                          pdfText = fcText;
                           successfulPdfUrl = pdfUrl; // 元の r2:// URL を記録
-                          console.log(`[extract_pdf] R2 PDF Success: ${pdfUrl.substring(0, 60)}... (${text.length} chars)`);
+                          console.log(`[extract_pdf] R2 PDF Success: ${pdfUrl.substring(0, 60)}... (${fcText.length} chars)`);
                         }
                       } else {
                         console.warn(`[extract_pdf] Firecrawl failed for R2 PDF: ${fcResponse.status}`);
                       }
+                      
+                      // Firecrawl コスト記録 (1 credit per scrape)
+                      await logFirecrawlCost(db, {
+                        credits: 1,
+                        costUsd: 0.001,
+                        url: httpUrl,
+                        success: fcSuccess,
+                        httpStatus: fcResponse.status,
+                        subsidyId: subsidy.id,
+                        billing: 'known',
+                        rawUsage: { markdown_length: fcText.length },
+                      });
                     }
                   } else {
                     console.warn(`[extract_pdf] R2 object not found: ${r2Key}`);
@@ -5201,17 +5217,42 @@ cron.post('/consume-extractions', async (c) => {
                     body: JSON.stringify({ url: pdfUrl, formats: ['markdown'] }),
                   });
                   
-                  if (fcResponse.ok) {
+                  const fcSuccess = fcResponse.ok;
+                  let fcText = '';
+                  
+                  if (fcSuccess) {
                     const fcData = await fcResponse.json() as any;
-                    const text = fcData.data?.markdown || '';
-                    if (text.length > 100) {
-                      pdfText = text;
+                    fcText = fcData.data?.markdown || '';
+                    if (fcText.length > 100) {
+                      pdfText = fcText;
                       successfulPdfUrl = pdfUrl;
-                      console.log(`[extract_pdf] Success: ${pdfUrl.substring(0, 60)}... (${text.length} chars)`);
+                      console.log(`[extract_pdf] Success: ${pdfUrl.substring(0, 60)}... (${fcText.length} chars)`);
                     }
                   }
+                  
+                  // Firecrawl コスト記録 (1 credit per scrape)
+                  await logFirecrawlCost(db, {
+                    credits: 1,
+                    costUsd: 0.001,
+                    url: pdfUrl,
+                    success: fcSuccess,
+                    httpStatus: fcResponse.status,
+                    subsidyId: subsidy.id,
+                    billing: 'known',
+                    rawUsage: { markdown_length: fcText.length },
+                  });
                 } catch (e) {
                   console.warn(`[extract_pdf] Firecrawl failed for ${pdfUrl}:`, e);
+                  // 失敗時もコスト記録 (Freeze-COST-3)
+                  await logFirecrawlCost(db, {
+                    credits: 1,
+                    costUsd: 0.001,
+                    url: pdfUrl,
+                    success: false,
+                    subsidyId: subsidy.id,
+                    errorMessage: e instanceof Error ? e.message : 'Unknown error',
+                    billing: 'known',
+                  });
                 }
               }
             }
@@ -5219,12 +5260,29 @@ cron.post('/consume-extractions', async (c) => {
             // OpenAI で構造化データ抽出
             if (pdfText && pdfText.length > 100 && openaiKey) {
               try {
-                const { extractSubsidyDataFromPdf, mergeExtractedData } = await import('../services/openai-extractor');
-                const extracted = await extractSubsidyDataFromPdf(pdfText, openaiKey);
+                const { extractSubsidyDataFromPdf, mergeExtractedData, ExtractedResult } = await import('../services/openai-extractor');
+                const extractResult = await extractSubsidyDataFromPdf(pdfText, openaiKey, 'gpt-4o-mini', true) as import('../services/openai-extractor').ExtractedResult;
                 
-                if (extracted) {
+                // OpenAI コスト記録
+                const inputTokens = extractResult.usage?.prompt_tokens || 0;
+                const outputTokens = extractResult.usage?.completion_tokens || 0;
+                // gpt-4o-mini: $0.15/1M input, $0.60/1M output
+                const costUsd = (inputTokens * 0.00000015) + (outputTokens * 0.0000006);
+                
+                await logOpenAICost(db, {
+                  model: extractResult.model,
+                  inputTokens,
+                  outputTokens,
+                  costUsd,
+                  action: 'extract_pdf',
+                  success: extractResult.success,
+                  subsidyId: subsidy.id,
+                  rawUsage: extractResult.usage,
+                });
+                
+                if (extractResult.data) {
                   // 既存データとマージ (mergeExtractedData を使用)
-                  const merged = mergeExtractedData(detail, extracted);
+                  const merged = mergeExtractedData(detail, extractResult.data);
                   merged.extracted_pdf_text = pdfText.substring(0, 5000);
                   merged.extracted_at = new Date().toISOString();
                   merged.extracted_from_pdf = successfulPdfUrl; // どのPDFから抽出したか記録
@@ -5243,6 +5301,17 @@ cron.post('/consume-extractions', async (c) => {
                 }
               } catch (e) {
                 console.warn(`[extract_pdf] OpenAI extraction failed for ${subsidy.id}:`, e);
+                // 失敗時もコスト記録 (推定値)
+                await logOpenAICost(db, {
+                  model: 'gpt-4o-mini',
+                  inputTokens: 0,
+                  outputTokens: 0,
+                  costUsd: 0,
+                  action: 'extract_pdf',
+                  success: false,
+                  subsidyId: subsidy.id,
+                  errorMessage: e instanceof Error ? e.message : 'Unknown error',
+                });
                 // OpenAIが失敗してもFirecrawlの結果は保存
                 if (pdfText.length > 100) {
                   const merged = {
