@@ -638,23 +638,31 @@ adminPages.get('/admin', (c) => {
           </button>
         </div>
         
-        <!-- 全体サマリー -->
-        <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-          <div class="bg-gray-50 rounded-lg p-4 text-center">
-            <p class="text-sm text-gray-500">総数</p>
-            <p id="wcr-total" class="text-2xl font-bold text-gray-700">-</p>
+        <!-- 全体サマリー（Active中心） -->
+        <div class="grid grid-cols-3 md:grid-cols-6 gap-3 mb-6">
+          <div class="bg-gray-50 rounded-lg p-3 text-center">
+            <p class="text-xs text-gray-500">Active</p>
+            <p id="wcr-total" class="text-xl font-bold text-gray-700">-</p>
           </div>
-          <div class="bg-green-50 rounded-lg p-4 text-center">
-            <p class="text-sm text-green-600">Ready</p>
-            <p id="wcr-ready" class="text-2xl font-bold text-green-700">-</p>
+          <div class="bg-green-50 rounded-lg p-3 text-center">
+            <p class="text-xs text-green-600">Ready</p>
+            <p id="wcr-ready" class="text-xl font-bold text-green-700">-</p>
           </div>
-          <div class="bg-blue-50 rounded-lg p-4 text-center">
-            <p class="text-sm text-blue-600">Enriched</p>
-            <p id="wcr-enriched" class="text-2xl font-bold text-blue-700">-</p>
+          <div class="bg-purple-50 rounded-lg p-3 text-center">
+            <p class="text-xs text-purple-600">Ready率</p>
+            <p id="wcr-ready-rate" class="text-xl font-bold text-purple-700">-%</p>
           </div>
-          <div class="bg-purple-50 rounded-lg p-4 text-center">
-            <p class="text-sm text-purple-600">Ready率</p>
-            <p id="wcr-ready-rate" class="text-2xl font-bold text-purple-700">-%</p>
+          <div class="bg-indigo-50 rounded-lg p-3 text-center">
+            <p class="text-xs text-indigo-600">R2 PDF</p>
+            <p id="wcr-r2-pdf" class="text-xl font-bold text-indigo-700">-</p>
+          </div>
+          <div class="bg-blue-50 rounded-lg p-3 text-center">
+            <p class="text-xs text-blue-600">Base64済</p>
+            <p id="wcr-base64" class="text-xl font-bold text-blue-700">-</p>
+          </div>
+          <div class="bg-orange-50 rounded-lg p-3 text-center">
+            <p class="text-xs text-orange-600">Enriched</p>
+            <p id="wcr-enriched" class="text-xl font-bold text-orange-700">-</p>
           </div>
         </div>
         
@@ -1123,27 +1131,43 @@ adminPages.get('/admin', (c) => {
           
           const { summary, by_source, extraction_queue } = data.data;
           
-          // サマリー更新
-          document.getElementById('wcr-total').textContent = summary.total || 0;
-          document.getElementById('wcr-ready').textContent = summary.ready || 0;
+          // サマリー更新（Active中心）
+          document.getElementById('wcr-total').textContent = summary.active || 0;
+          document.getElementById('wcr-ready').textContent = summary.ready_active || summary.ready || 0;
           document.getElementById('wcr-enriched').textContent = summary.enriched || 0;
           document.getElementById('wcr-ready-rate').textContent = summary.ready_rate || '0%';
           
-          // Source別テーブル
+          // 追加KPI（あれば）
+          const base64El = document.getElementById('wcr-base64');
+          if (base64El) base64El.textContent = summary.base64_processed || 0;
+          const r2El = document.getElementById('wcr-r2-pdf');
+          if (r2El) r2El.textContent = summary.has_r2_pdf || 0;
+          
+          // Source別テーブル（Active中心、新しいカラム追加）
           const srcEl = document.getElementById('wcr-by-source');
           if (by_source && by_source.length > 0) {
             const html = '<table class="min-w-full text-sm">' +
-              '<thead class="bg-gray-50"><tr><th class="px-3 py-2 text-left">Source</th><th class="px-3 py-2 text-right">総数</th><th class="px-3 py-2 text-right">Ready</th><th class="px-3 py-2 text-right">Ready率</th><th class="px-3 py-2 text-right">V2</th><th class="px-3 py-2 text-right">受付中</th></tr></thead>' +
+              '<thead class="bg-gray-50"><tr>' +
+              '<th class="px-2 py-2 text-left">Source</th>' +
+              '<th class="px-2 py-2 text-right">Active</th>' +
+              '<th class="px-2 py-2 text-right">Ready</th>' +
+              '<th class="px-2 py-2 text-right">Rate</th>' +
+              '<th class="px-2 py-2 text-right">R2</th>' +
+              '<th class="px-2 py-2 text-right">B64</th>' +
+              '<th class="px-2 py-2 text-right">抽出</th>' +
+              '</tr></thead>' +
               '<tbody>' + by_source.map((r: any) => {
                 const readyPct = parseFloat(r.ready_rate) || 0;
                 const rowBg = readyPct >= 50 ? 'bg-green-50' : readyPct >= 10 ? 'bg-yellow-50' : '';
                 return '<tr class="border-b ' + rowBg + '">' +
-                  '<td class="px-3 py-2 font-medium">' + r.source + '</td>' +
-                  '<td class="px-3 py-2 text-right">' + r.total + '</td>' +
-                  '<td class="px-3 py-2 text-right text-green-600 font-medium">' + r.ready + '</td>' +
-                  '<td class="px-3 py-2 text-right font-bold">' + r.ready_rate + '</td>' +
-                  '<td class="px-3 py-2 text-right text-blue-600">' + r.enriched_v2 + '</td>' +
-                  '<td class="px-3 py-2 text-right">' + r.active + '</td></tr>';
+                  '<td class="px-2 py-2 font-medium">' + r.source + '</td>' +
+                  '<td class="px-2 py-2 text-right">' + (r.active || 0) + '</td>' +
+                  '<td class="px-2 py-2 text-right text-green-600 font-medium">' + (r.ready_active || r.ready || 0) + '</td>' +
+                  '<td class="px-2 py-2 text-right font-bold">' + r.ready_rate + '</td>' +
+                  '<td class="px-2 py-2 text-right text-purple-600">' + (r.has_r2_pdf || 0) + '</td>' +
+                  '<td class="px-2 py-2 text-right text-blue-600">' + (r.base64_processed || 0) + '</td>' +
+                  '<td class="px-2 py-2 text-right text-orange-600">' + (r.extracted || 0) + '</td>' +
+                  '</tr>';
               }).join('') + '</tbody></table>';
             srcEl.innerHTML = html;
           } else {

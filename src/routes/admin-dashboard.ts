@@ -5854,34 +5854,61 @@ adminDashboard.get('/progress/wall-chat-ready', async (c) => {
   const days = parseInt(c.req.query('days') || '60', 10);
   
   try {
-    // Source別の現在の状態
+    // Source別の現在の状態（Active中心）
     const bySource = await db.prepare(`
       SELECT 
         source,
         COUNT(*) as total,
-        SUM(CASE WHEN wall_chat_ready = 1 THEN 1 ELSE 0 END) as ready,
-        SUM(CASE WHEN detail_json LIKE '%"enriched_version":"v2"%' THEN 1 ELSE 0 END) as enriched_v2,
         SUM(CASE WHEN acceptance_end_datetime IS NOT NULL 
-            AND acceptance_end_datetime > datetime('now') THEN 1 ELSE 0 END) as active
+            AND acceptance_end_datetime > datetime('now') THEN 1 ELSE 0 END) as active,
+        SUM(CASE WHEN wall_chat_ready = 1 THEN 1 ELSE 0 END) as ready_all,
+        SUM(CASE WHEN wall_chat_ready = 1 
+            AND acceptance_end_datetime IS NOT NULL 
+            AND acceptance_end_datetime > datetime('now') THEN 1 ELSE 0 END) as ready_active,
+        SUM(CASE WHEN detail_json LIKE '%"enriched_version":"v2"%' THEN 1 ELSE 0 END) as enriched_v2,
+        SUM(CASE WHEN json_extract(detail_json, '$.base64_processed') = 1 THEN 1 ELSE 0 END) as base64_processed,
+        SUM(
+          CASE WHEN EXISTS (
+            SELECT 1 FROM json_each(json_extract(detail_json, '$.pdf_urls'))
+            WHERE value LIKE 'r2://%'
+          ) THEN 1 ELSE 0 END
+        ) as has_r2_pdf,
+        SUM(CASE WHEN json_extract(detail_json, '$.extracted_from_pdf') IS NOT NULL THEN 1 ELSE 0 END) as extracted
       FROM subsidy_cache
       GROUP BY source
-      ORDER BY total DESC
+      ORDER BY active DESC
     `).all<{
       source: string;
       total: number;
-      ready: number;
-      enriched_v2: number;
       active: number;
+      ready_all: number;
+      ready_active: number;
+      enriched_v2: number;
+      base64_processed: number;
+      has_r2_pdf: number;
+      extracted: number;
     }>();
     
-    // 全体サマリー
+    // 全体サマリー（Active中心）
     const totalSummary = await db.prepare(`
       SELECT 
         COUNT(*) as total,
-        SUM(CASE WHEN wall_chat_ready = 1 THEN 1 ELSE 0 END) as ready,
-        SUM(CASE WHEN detail_json LIKE '%"enriched_version"%' THEN 1 ELSE 0 END) as enriched
+        SUM(CASE WHEN acceptance_end_datetime IS NOT NULL 
+            AND acceptance_end_datetime > datetime('now') THEN 1 ELSE 0 END) as active,
+        SUM(CASE WHEN wall_chat_ready = 1 THEN 1 ELSE 0 END) as ready_all,
+        SUM(CASE WHEN wall_chat_ready = 1 
+            AND acceptance_end_datetime IS NOT NULL 
+            AND acceptance_end_datetime > datetime('now') THEN 1 ELSE 0 END) as ready_active,
+        SUM(CASE WHEN detail_json LIKE '%"enriched_version"%' THEN 1 ELSE 0 END) as enriched,
+        SUM(CASE WHEN json_extract(detail_json, '$.base64_processed') = 1 THEN 1 ELSE 0 END) as base64_processed,
+        SUM(
+          CASE WHEN EXISTS (
+            SELECT 1 FROM json_each(json_extract(detail_json, '$.pdf_urls'))
+            WHERE value LIKE 'r2://%'
+          ) THEN 1 ELSE 0 END
+        ) as has_r2_pdf
       FROM subsidy_cache
-    `).first<{ total: number; ready: number; enriched: number }>();
+    `).first<{ total: number; active: number; ready_all: number; ready_active: number; enriched: number; base64_processed: number; has_r2_pdf: number }>();
     
     // cron_runs から日別の enrichment 実績を取得（wall_chat_ready増加の代替指標）
     const dailyEnrichment = await db.prepare(`
@@ -5921,16 +5948,26 @@ adminDashboard.get('/progress/wall-chat-ready', async (c) => {
       data: {
         summary: {
           total: totalSummary?.total || 0,
-          ready: totalSummary?.ready || 0,
+          active: totalSummary?.active || 0,
+          ready_all: totalSummary?.ready_all || 0,
+          ready_active: totalSummary?.ready_active || 0,
           enriched: totalSummary?.enriched || 0,
-          ready_rate: totalSummary?.total 
-            ? ((totalSummary.ready || 0) / totalSummary.total * 100).toFixed(2) + '%' 
+          base64_processed: totalSummary?.base64_processed || 0,
+          has_r2_pdf: totalSummary?.has_r2_pdf || 0,
+          // Active中心のReady率
+          ready_rate: totalSummary?.active 
+            ? ((totalSummary.ready_active || 0) / totalSummary.active * 100).toFixed(1) + '%' 
             : '0%',
+          // 後方互換性
+          ready: totalSummary?.ready_active || 0,
         },
         by_source: bySource.results?.map(r => ({
           ...r,
-          ready_rate: r.total ? ((r.ready / r.total) * 100).toFixed(1) + '%' : '0%',
+          // Active中心のReady率
+          ready_rate: r.active ? ((r.ready_active / r.active) * 100).toFixed(1) + '%' : '0%',
           enriched_rate: r.total ? ((r.enriched_v2 / r.total) * 100).toFixed(1) + '%' : '0%',
+          // 後方互換性
+          ready: r.ready_active,
         })) || [],
         daily_enrichment: dailyEnrichment.results || [],
         extraction_queue: extractionStats.results || [],
