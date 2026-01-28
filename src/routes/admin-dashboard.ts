@@ -203,22 +203,21 @@ adminDashboard.get('/costs', async (c) => {
   try {
     const today = new Date().toISOString().split('T')[0];
     const monthStart = today.slice(0, 7) + '-01';
-    const lastMonthStart = new Date(new Date(monthStart).getTime() - 86400000).toISOString().slice(0, 7) + '-01';
 
-    // OpenAI コスト
+    // OpenAI コスト（api_cost_logs から）
     const openaiCosts = await db.prepare(`
       SELECT 
-        model,
-        feature,
-        SUM(CASE WHEN date(created_at) = ? THEN estimated_cost_usd ELSE 0 END) as today_cost,
-        SUM(CASE WHEN date(created_at) >= ? THEN estimated_cost_usd ELSE 0 END) as month_cost,
-        SUM(CASE WHEN date(created_at) = ? THEN total_tokens ELSE 0 END) as today_tokens,
-        SUM(CASE WHEN date(created_at) >= ? THEN total_tokens ELSE 0 END) as month_tokens,
+        json_extract(metadata_json, '$.model') as model,
+        action as feature,
+        SUM(CASE WHEN date(created_at) = ? THEN cost_usd ELSE 0 END) as today_cost,
+        SUM(CASE WHEN date(created_at) >= ? THEN cost_usd ELSE 0 END) as month_cost,
+        SUM(CASE WHEN date(created_at) = ? THEN units ELSE 0 END) as today_tokens,
+        SUM(CASE WHEN date(created_at) >= ? THEN units ELSE 0 END) as month_tokens,
         COUNT(CASE WHEN date(created_at) = ? THEN 1 END) as today_calls,
         COUNT(CASE WHEN date(created_at) >= ? THEN 1 END) as month_calls
-      FROM usage_events
-      WHERE provider = 'openai'
-      GROUP BY model, feature
+      FROM api_cost_logs
+      WHERE service = 'openai'
+      GROUP BY json_extract(metadata_json, '$.model'), action
     `).bind(today, monthStart, today, monthStart, today, monthStart)
       .all<{
         model: string; feature: string;
@@ -227,19 +226,23 @@ adminDashboard.get('/costs', async (c) => {
         today_calls: number; month_calls: number;
       }>();
 
-    // Firecrawl コスト
+    // Firecrawl コスト（api_cost_logs から、URLからドメインを抽出）
     const firecrawlCosts = await db.prepare(`
       SELECT 
-        domain,
-        SUM(CASE WHEN date(created_at) = ? THEN estimated_cost_usd ELSE 0 END) as today_cost,
-        SUM(CASE WHEN date(created_at) >= ? THEN estimated_cost_usd ELSE 0 END) as month_cost,
-        SUM(CASE WHEN date(created_at) = ? THEN pages_count ELSE 0 END) as today_pages,
-        SUM(CASE WHEN date(created_at) >= ? THEN pages_count ELSE 0 END) as month_pages,
+        CASE 
+          WHEN url LIKE 'https://%' THEN substr(url, 9, instr(substr(url, 9), '/') - 1)
+          WHEN url LIKE 'http://%' THEN substr(url, 8, instr(substr(url, 8), '/') - 1)
+          ELSE 'unknown'
+        END as domain,
+        SUM(CASE WHEN date(created_at) = ? THEN cost_usd ELSE 0 END) as today_cost,
+        SUM(CASE WHEN date(created_at) >= ? THEN cost_usd ELSE 0 END) as month_cost,
+        COUNT(CASE WHEN date(created_at) = ? THEN 1 END) as today_pages,
+        COUNT(CASE WHEN date(created_at) >= ? THEN 1 END) as month_pages,
         COUNT(CASE WHEN date(created_at) = ? THEN 1 END) as today_calls,
         COUNT(CASE WHEN date(created_at) >= ? THEN 1 END) as month_calls,
         SUM(CASE WHEN success = 0 AND date(created_at) >= ? THEN 1 ELSE 0 END) as month_failures
-      FROM usage_events
-      WHERE provider = 'firecrawl'
+      FROM api_cost_logs
+      WHERE service = 'firecrawl'
       GROUP BY domain
       ORDER BY month_cost DESC
       LIMIT 20
@@ -256,24 +259,24 @@ adminDashboard.get('/costs', async (c) => {
     const dailyCosts = await db.prepare(`
       SELECT 
         date(created_at) as date,
-        provider,
-        SUM(estimated_cost_usd) as cost
-      FROM usage_events
-      WHERE provider IN ('openai', 'firecrawl')
+        service as provider,
+        SUM(cost_usd) as cost
+      FROM api_cost_logs
+      WHERE service IN ('openai', 'firecrawl')
         AND created_at >= date('now', '-30 days')
-      GROUP BY date(created_at), provider
+      GROUP BY date(created_at), service
       ORDER BY date DESC
     `).all<{ date: string; provider: string; cost: number }>();
 
-    // 合計
+    // 合計（api_cost_logs から）
     const totals = await db.prepare(`
       SELECT 
-        provider,
-        SUM(CASE WHEN date(created_at) = ? THEN estimated_cost_usd ELSE 0 END) as today,
-        SUM(CASE WHEN date(created_at) >= ? THEN estimated_cost_usd ELSE 0 END) as month
-      FROM usage_events
-      WHERE provider IN ('openai', 'firecrawl', 'aws')
-      GROUP BY provider
+        service as provider,
+        SUM(CASE WHEN date(created_at) = ? THEN cost_usd ELSE 0 END) as today,
+        SUM(CASE WHEN date(created_at) >= ? THEN cost_usd ELSE 0 END) as month
+      FROM api_cost_logs
+      WHERE service IN ('openai', 'firecrawl', 'vision_ocr')
+      GROUP BY service
     `).bind(today, monthStart).all<{ provider: string; today: number; month: number }>();
 
     const totalsByProvider: Record<string, { today: number; month: number }> = {};
@@ -283,19 +286,19 @@ adminDashboard.get('/costs', async (c) => {
 
     // 前日比（急増検知用）
     const yesterdayCost = await db.prepare(`
-      SELECT SUM(estimated_cost_usd) as cost
-      FROM usage_events
+      SELECT SUM(cost_usd) as cost
+      FROM api_cost_logs
       WHERE date(created_at) = date('now', '-1 day')
     `).first<{ cost: number }>();
 
-    const todayCost = await db.prepare(`
-      SELECT SUM(estimated_cost_usd) as cost
-      FROM usage_events
+    const todayCostResult = await db.prepare(`
+      SELECT SUM(cost_usd) as cost
+      FROM api_cost_logs
       WHERE date(created_at) = date('now')
     `).first<{ cost: number }>();
 
     const costRatio = yesterdayCost?.cost && yesterdayCost.cost > 0
-      ? (todayCost?.cost || 0) / yesterdayCost.cost
+      ? (todayCostResult?.cost || 0) / yesterdayCost.cost
       : null;
 
     return c.json<ApiResponse<any>>({
