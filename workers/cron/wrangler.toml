@@ -3,9 +3,11 @@ main = "src/index.ts"
 compatibility_date = "2026-01-21"
 compatibility_flags = ["nodejs_compat"]
 
-# 毎日03:00 JST = 18:00 UTC
+# Cron スケジュール (UTC)
+# 0 18 * * * = 03:00 JST: フルパイプライン (registry/lifecycle + ready-boost)
+# 0 20 * * * = 05:00 JST: Ready Boost のみ（追加実行）
 [triggers]
-crons = ["0 18 * * *"]
+crons = ["0 18 * * *", "0 20 * * *"]
 
 [[d1_databases]]
 binding = "DB"

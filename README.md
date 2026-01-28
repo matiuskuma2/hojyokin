@@ -6,7 +6,78 @@
 - **Version**: 3.4.0
 - **Goal**: 企業情報を登録するだけで、最適な補助金・助成金を自動でマッチング＆申請書ドラフト作成
 
-### 🎉 最新アップデート (v4.0.0) - jGrants V2 + OpenAI PDF抽出 + Cron統合
+### 🎉 最新アップデート (v4.2.0) - Ready率52%達成 + Cron完全自動化 + fallback v2
+
+**v4.2.0 リリース（2026-01-28）:**
+
+| 項目 | 状態 | 詳細 |
+|------|------|------|
+| **Ready率52.2%達成** | ✅ | 1,511件 Ready（目標50%超過達成）|
+| **Cron完全自動化** | ✅ | Cloudflare Workers Cron Triggers で日次実行 |
+| **fallback v2** | ✅ | 品質向上フィールド（target_area_scope, subsidy_rate_v2等）|
+| **3フェーズパイプライン** | ✅ | v1補完 → recalc → v2生成の統合処理 |
+
+**Ready率推移:**
+| 日付 | Ready | Ready率 | 主な施策 |
+|------|-------|---------|----------|
+| 2026-01-26 | 80 | 2.8% | 初期状態 |
+| 2026-01-28 AM | 1,446 | 50.0% | apply-field-fallbacks 実装 |
+| **2026-01-28 PM** | **1,511** | **52.2%** | **fallback v2 + Cron自動化** |
+
+**Cron Workers構成（v4.2）:**
+| Worker | スケジュール | 役割 |
+|--------|------------|------|
+| `hojyokin-cron` | 03:00 JST (18:00 UTC) | フルパイプライン（Registry + Ready Boost 3フェーズ）|
+| `hojyokin-cron` | 05:00 JST (20:00 UTC) | Ready Boost のみ（追加実行）|
+| `hojyokin-cron-feed` | 06:00 JST (21:00 UTC) | J-Net21 + jGrants sync/enrich |
+| `hojyokin-queue-cron` | 5分ごと | extraction_queue enqueue/consume |
+
+**Ready Boost 3フェーズパイプライン:**
+```
+Phase 1: apply-field-fallbacks
+  └─ application_requirements 補完（JGrants APIから）
+  └─ eligible_expenses 補完（タイトルから推定）
+
+Phase 2: recalc-wall-chat-ready
+  └─ required_documents 補完（デフォルト5項目）
+  └─ 除外判定（古い年度、受付終了）
+
+Phase 3: generate-fallback-v2（NEW）
+  └─ target_area_scope/display（workflows SSoT）
+  └─ subsidy_rate_v2（構造化：type/percent/display）
+  └─ subsidy_max_v2（金額フォーマット）
+  └─ eligible_expenses_v2（use_purpose優先）
+  └─ application_requirements_v2（対象者要件中心）
+```
+
+**データ状況（v4.2）:**
+| Metric | Count | Percent | 備考 |
+|--------|-------|---------|------|
+| Total Active | 2,894 | 100% | jGrants受付中制度 |
+| **Ready** | **1,511** | **52.2%** | ✅ 目標達成 |
+| Excluded | 702 | 24.3% | 古い年度/受付終了 |
+| Not Ready | 681 | 23.5% | 情報不足 |
+| **V2 Fallback** | **1,511** | **52.2%** | Ready全件にv2適用 |
+
+### 📋 v4.1.0 - Cron自動化 + apply-field-fallbacks
+
+**v4.1.0 リリース（2026-01-28）:**
+
+| 項目 | 状態 | 詳細 |
+|------|------|------|
+| **apply-field-fallbacks** | ✅ | application_requirements/eligible_expenses の自動補完 |
+| **daily-ready-boost** | ✅ | 統合Cronエンドポイント（Pages API）|
+| **Ready Boost Worker** | ✅ | hojyokin-cron に統合、日次自動実行 |
+| **Ready率50%達成** | ✅ | 80件 → 1,469件 (+1,389件) |
+
+**fallback補完ルール:**
+| フィールド | ソース | ロジック |
+|-----------|--------|----------|
+| application_requirements | JGrants API | target_number_of_employees + target_industry + 基本要件 |
+| eligible_expenses | タイトル推定 | 設備系/IT系/環境系/人材系/販路系/創業系/その他 |
+| required_documents | デフォルト | 公募要領/申請書/事業計画書/見積書/会社概要 |
+
+### 📋 v4.0.0 - jGrants V2 + OpenAI PDF抽出 + Cron統合
 
 **v4.0.0 リリース（2026-01-26）:**
 
@@ -16,22 +87,6 @@
 | **OpenAI PDF抽出** | ✅ | Firecrawl + GPT-4o-miniで構造化データ抽出 |
 | **extract_pdf ハンドラー** | ✅ | consume-extractions で PDF→構造化データ変換 |
 | **Cron Workers統合** | ✅ | 重複Worker削除、既存Workerに機能統合 |
-| **subsidy_cache修正** | ✅ | updated_at → cached_at カラム参照修正 |
-
-**Cron Workers構成（v4.0）:**
-| Worker | スケジュール | 役割 |
-|--------|------------|------|
-| `hojyokin-cron-feed` | 21:00 UTC (06:00 JST) | J-Net21 + jGrants sync/enrich |
-| `hojyokin-queue-cron` | 5分ごと | extraction_queue enqueue/consume |
-| `hojyokin-cron` (workers/cron) | 18:00 UTC (03:00 JST) | source_registry/subsidy_lifecycle 処理 |
-
-**データ状況（v4.0）:**
-| Source | Total | Wall Chat Ready | V2 Enriched |
-|--------|-------|-----------------|-------------|
-| jgrants | 2,894 | 5 | 125 |
-| tokyo-kosha | 23 | 23 | - |
-| tokyo-hataraku | 15 | 15 | - |
-| manual | 8 | 3 | - |
 
 ### 📋 v3.4.0 - APIコスト会計凍結
 
