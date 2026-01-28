@@ -1100,8 +1100,8 @@ adminPages.get('/admin', (c) => {
             NEEDS_MANUAL: { color: 'bg-red-500', icon: 'fas fa-star' },
           };
           
-          const maxCount = Math.max(...Object.values(buckets).map((b: any) => b.count || 0), 1);
-          const barsHtml = Object.entries(buckets).map(([key, bucket]: [string, any]) => {
+          const maxCount = Math.max(...Object.values(buckets).map(b => b.count || 0), 1);
+          const barsHtml = Object.entries(buckets).map(([key, bucket]) => {
             const cfg = bucketConfigs[key] || { color: 'bg-gray-500', icon: 'fas fa-question' };
             const pct = Math.round((bucket.count / maxCount) * 100);
             return '<div class="flex items-center gap-3">' +
@@ -1122,7 +1122,7 @@ adminPages.get('/admin', (c) => {
           if (manualSamples.length > 0) {
             const html = '<table class="min-w-full text-sm">' +
               '<thead class="bg-red-50"><tr><th class="px-3 py-2 text-left">ID</th><th class="px-3 py-2 text-left">タイトル</th><th class="px-3 py-2 text-right">締切</th><th class="px-3 py-2 text-center">URL</th></tr></thead>' +
-              '<tbody>' + manualSamples.map((r: any) => {
+              '<tbody>' + manualSamples.map(r => {
                 const deadline = r.acceptance_end_datetime ? new Date(r.acceptance_end_datetime).toLocaleDateString('ja-JP') : '-';
                 const hasUrl = r.related_url ? '<i class="fas fa-check text-green-500"></i>' : '<i class="fas fa-times text-red-400"></i>';
                 return '<tr class="border-b hover:bg-red-50">' +
@@ -1176,7 +1176,7 @@ adminPages.get('/admin', (c) => {
               '<th class="px-2 py-2 text-right">B64</th>' +
               '<th class="px-2 py-2 text-right">抽出</th>' +
               '</tr></thead>' +
-              '<tbody>' + by_source.map((r: any) => {
+              '<tbody>' + by_source.map(r => {
                 const readyPct = parseFloat(r.ready_rate) || 0;
                 const rowBg = readyPct >= 50 ? 'bg-green-50' : readyPct >= 10 ? 'bg-yellow-50' : '';
                 return '<tr class="border-b ' + rowBg + '">' +
@@ -1203,7 +1203,7 @@ adminPages.get('/admin', (c) => {
               done: 'bg-green-100 text-green-800',
               failed: 'bg-red-100 text-red-800',
             };
-            const html = extraction_queue.map((q: any) => {
+            const html = extraction_queue.map(q => {
               const color = statusColors[q.status] || 'bg-gray-100 text-gray-800';
               return '<span class="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium ' + color + '">' +
                 q.job_type + ' (' + q.status + '): ' + q.count +
