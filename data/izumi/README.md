@@ -14,8 +14,10 @@
 | izumi_support_urls_2500.csv | 499件 | 28,600 ~ 36,471 | 115KB |
 | izumi_support_urls_3000.csv | 499件 | 36,472 ~ 41,790 | 94KB |
 | izumi_support_urls_3500.csv | 499件 | 41,791 ~ 46,600 | 105KB |
+| izumi_support_urls_4000.csv | 499件 | 46,601 ~ 50,347 | 100KB |
+| izumi_support_urls_4500.csv | 499件 | 50,348 ~ 53,857 | 105KB |
 
-**合計: 約2,994件の補助金URL**
+**合計: 約3,992件の補助金URL**
 
 ## データ形式
 
@@ -35,9 +37,63 @@ policy_id,primary_url,all_urls
 - **PDF**: 補助金の詳細資料、申請書類など
 - **HTML**: 自治体の補助金案内ページ
 
+## 推奨データ抽出アーキテクチャ
+
+### フェーズ1: jGrants API（優先）
+現在実装済み。国の補助金データをAPIで取得。
+
+### フェーズ2: 情報の泉（Playwright + Firecrawl）
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  別サーバー (AWS Lambda / EC2 / 専用サーバー)                │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  1. Playwright: 情報の泉にログイン                          │
+│     ├─ /search-subsidy?per_page=100 GET                    │
+│     ├─ meta[name="csrf-token"] を取得                       │
+│     └─ Cookie維持                                           │
+│                                                             │
+│  2. Playwright: POST /policy/detail ループ                  │
+│     ├─ form-urlencoded形式                                  │
+│     ├─ JSONの html をパース                                 │
+│     └─ 「支援URL」を抽出                                    │
+│                                                             │
+│  3. Firecrawl: 支援URLの本文取得                            │
+│     ├─ 自治体サイトのHTML取得                               │
+│     ├─ PDF URLの場合は Vision API へ                       │
+│     └─ 補助金詳細情報を抽出                                 │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+                          │
+                          ▼
+┌─────────────────────────────────────────────────────────────┐
+│  Cloudflare Workers API                                     │
+├─────────────────────────────────────────────────────────────┤
+│  POST /api/admin-ops/izumi/ingest                          │
+│  └─ subsidy_cache に格納                                    │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### なぜ Playwright + Firecrawl の組み合わせか
+
+| 処理 | ツール | 理由 |
+|------|--------|------|
+| ログイン・セッション維持 | **Playwright** | Cookie管理が得意、フォーム操作が安定 |
+| CSRF対策ページ取得 | **Playwright** | 動的トークン取得が必要 |
+| POST APIループ | **Playwright** | セッション維持が必要 |
+| 自治体サイト本文取得 | **Firecrawl** | 静的HTML取得が高速 |
+| PDF解析 | **Vision API** | 構造化データ抽出 |
+
+### 注意点
+
+- Firecrawlは「ログインフォーム→セッション維持→POST連打」は苦手
+- Playwrightは得意（セッション・Cookie維持が簡単）
+- 役割分担が重要
+
 ## 活用方法
 
-1. **データ抽出パイプライン**: `primary_url`からFirecrawl/Vision APIで情報抽出
+1. **このCSVの支援URLを直接Firecrawlで取得** → 情報の泉へのログイン不要
 2. **source_registry登録**: 新しいsourceとして`izumi`を追加
 3. **subsidy_cache格納**: 抽出したデータを正規化して格納
 
@@ -49,4 +105,5 @@ policy_id,primary_url,all_urls
 
 ## 更新履歴
 
+- 2026-01-29: 追加インポート（4000, 4500 → 約4,000件に）
 - 2026-01-29: 初回インポート（約3,000件）
