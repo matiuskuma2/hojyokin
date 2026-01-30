@@ -899,4 +899,204 @@ auth.post('/change-password', requireAuth, async (c) => {
   }
 });
 
+/**
+ * 招待経由の新規登録
+ * - 新規ユーザー登録 + 招待受諾を1つのリクエストで実行
+ * - スタッフ招待時、アカウントがない人のためのエンドポイント
+ */
+auth.post('/register-with-invite', async (c) => {
+  const db = c.env.DB;
+  const requestIp = c.req.header('cf-connecting-ip') || c.req.header('x-forwarded-for') || null;
+  const userAgent = c.req.header('user-agent') || null;
+  const requestId = c.req.header('x-request-id') || null;
+  
+  try {
+    const body = await c.req.json();
+    const { email, password, name, inviteCode, inviteToken } = body;
+    
+    // バリデーション
+    if (!email || !password || !inviteCode || !inviteToken) {
+      return c.json<ApiResponse<null>>({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'email, password, inviteCode, inviteToken are required',
+        },
+      }, 400);
+    }
+    
+    // メールアドレス形式チェック
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      return c.json<ApiResponse<null>>({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Invalid email format',
+        },
+      }, 400);
+    }
+    
+    // パスワード強度チェック
+    const passwordErrors = validatePasswordStrength(password);
+    if (passwordErrors.length > 0) {
+      return c.json<ApiResponse<null>>({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: passwordErrors.join(', '),
+          details: passwordErrors,
+        },
+      }, 400);
+    }
+    
+    // 招待を検索
+    const tokenHash = await sha256Hash(inviteToken);
+    const invite = await db.prepare(`
+      SELECT * FROM agency_member_invites
+      WHERE invite_code = ? AND invite_token_hash = ?
+        AND accepted_at IS NULL 
+        AND revoked_at IS NULL
+        AND expires_at > datetime('now')
+    `).bind(inviteCode, tokenHash).first<any>();
+    
+    if (!invite) {
+      return c.json<ApiResponse<null>>({
+        success: false,
+        error: { code: 'INVALID_INVITE', message: 'Invalid or expired invite' },
+      }, 400);
+    }
+    
+    // メールアドレスが招待先と一致するか確認
+    if (invite.email.toLowerCase() !== email.toLowerCase()) {
+      return c.json<ApiResponse<null>>({
+        success: false,
+        error: { 
+          code: 'EMAIL_MISMATCH', 
+          message: `この招待は ${invite.email} 宛てに送信されました。招待メールアドレスで登録してください。` 
+        },
+      }, 403);
+    }
+    
+    // 既存ユーザーチェック
+    const existingUser = await db
+      .prepare('SELECT id FROM users WHERE email = ?')
+      .bind(email.toLowerCase())
+      .first();
+    
+    if (existingUser) {
+      return c.json<ApiResponse<null>>({
+        success: false,
+        error: {
+          code: 'EMAIL_EXISTS',
+          message: 'このメールアドレスは既に登録されています。ログインして招待を受諾してください。',
+        },
+      }, 409);
+    }
+    
+    // パスワードハッシュ化
+    const passwordHash = await hashPassword(password);
+    
+    // ユーザー作成（roleは'agency'）
+    const userId = uuidv4();
+    const now = new Date().toISOString();
+    
+    await db
+      .prepare(`
+        INSERT INTO users (id, email, password_hash, name, role, created_at, updated_at, created_ip)
+        VALUES (?, ?, ?, ?, 'agency', ?, ?, ?)
+      `)
+      .bind(userId, email.toLowerCase(), passwordHash, name || null, now, now, requestIp)
+      .run();
+    
+    // 既にメンバーでないか確認
+    const existingMember = await db.prepare(`
+      SELECT id FROM agency_members
+      WHERE agency_id = ? AND user_id = ?
+    `).bind(invite.agency_id, userId).first();
+    
+    if (!existingMember) {
+      // 新規メンバー追加
+      const memberId = uuidv4();
+      
+      await db.prepare(`
+        INSERT INTO agency_members (
+          id, agency_id, user_id, role_in_agency, invited_at, accepted_at, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).bind(
+        memberId, invite.agency_id, userId, invite.role_in_agency,
+        invite.created_at, now, now
+      ).run();
+    }
+    
+    // 招待を受諾済みに更新
+    await db.prepare(`
+      UPDATE agency_member_invites
+      SET accepted_at = ?, accepted_by_user_id = ?
+      WHERE id = ?
+    `).bind(now, userId, invite.id).run();
+    
+    // 事務所情報を取得
+    const agency = await db.prepare('SELECT * FROM agencies WHERE id = ?')
+      .bind(invite.agency_id).first<any>();
+    
+    // 監査ログ記録
+    await writeAuditLog(db, {
+      targetUserId: userId,
+      action: 'REGISTER_WITH_INVITE',
+      actionCategory: 'auth',
+      severity: 'info',
+      detailsJson: { 
+        email: email.toLowerCase(), 
+        agency_id: invite.agency_id,
+        role_in_agency: invite.role_in_agency 
+      },
+      ip: requestIp,
+      userAgent,
+      requestId,
+    });
+    
+    // JWT発行
+    const token = await signJWT(
+      { id: userId, email: email.toLowerCase(), role: 'agency' },
+      c.env
+    );
+    
+    // レスポンス
+    const user: UserPublic = {
+      id: userId,
+      email: email.toLowerCase(),
+      name: name || null,
+      role: 'agency',
+      email_verified_at: null,
+      created_at: now,
+    };
+    
+    return c.json<ApiResponse<{
+      user: UserPublic;
+      token: string;
+      agency: { id: string; name: string };
+      role_in_agency: string;
+    }>>({
+      success: true,
+      data: { 
+        user, 
+        token, 
+        agency: { id: agency?.id, name: agency?.name },
+        role_in_agency: invite.role_in_agency,
+      },
+    }, 201);
+  } catch (error) {
+    console.error('Register with invite error:', error);
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: 'INTERNAL_ERROR',
+        message: `Registration failed: ${errorMessage}`,
+      },
+    }, 500);
+  }
+});
+
 export default auth;

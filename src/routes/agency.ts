@@ -716,6 +716,326 @@ agencyRoutes.post('/clients', async (c) => {
 });
 
 /**
+ * POST /api/agency/clients/import-csv - 顧客CSVインポート
+ * CSVの列順序: 顧客名, 会社名, メール, 電話, 都道府県, 業種, 従業員数, 備考
+ */
+agencyRoutes.post('/clients/import-csv', async (c) => {
+  const db = c.env.DB;
+  const user = getCurrentUser(c);
+  
+  const agencyInfo = await getUserAgency(db, user.id);
+  if (!agencyInfo) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'NOT_AGENCY', message: 'Agency account required' },
+    }, 403);
+  }
+  
+  // P1-9: JSON parse例外ハンドリング
+  const parseResult = await safeParseJsonBody<{
+    csvData?: string;
+    skipHeader?: boolean;
+    updateExisting?: boolean; // 既存顧客の更新を許可するか
+  }>(c);
+  
+  if (!parseResult.ok) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'INVALID_JSON', message: parseResult.error },
+    }, 400);
+  }
+  
+  const { csvData, skipHeader = true, updateExisting = false } = parseResult.data;
+  
+  if (!csvData) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'VALIDATION_ERROR', message: 'csvData is required' },
+    }, 400);
+  }
+  
+  const agencyId = agencyInfo.agency.id;
+  const now = new Date().toISOString();
+  
+  // CSV解析
+  const lines = csvData.split(/\r?\n/).filter(line => line.trim());
+  const dataLines = skipHeader && lines.length > 0 ? lines.slice(1) : lines;
+  
+  if (dataLines.length === 0) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'VALIDATION_ERROR', message: 'No data rows in CSV' },
+    }, 400);
+  }
+  
+  // 制限: 一度に最大100件
+  if (dataLines.length > 100) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'VALIDATION_ERROR', message: 'Maximum 100 rows per import. Please split your CSV file.' },
+    }, 400);
+  }
+  
+  // CSVカラム解析ヘルパー
+  function parseCSVLine(line: string): string[] {
+    const result: string[] = [];
+    let current = '';
+    let inQuotes = false;
+    
+    for (let i = 0; i < line.length; i++) {
+      const char = line[i];
+      const nextChar = line[i + 1];
+      
+      if (inQuotes) {
+        if (char === '"') {
+          if (nextChar === '"') {
+            current += '"';
+            i++; // skip escaped quote
+          } else {
+            inQuotes = false;
+          }
+        } else {
+          current += char;
+        }
+      } else {
+        if (char === '"') {
+          inQuotes = true;
+        } else if (char === ',') {
+          result.push(current.trim());
+          current = '';
+        } else {
+          current += char;
+        }
+      }
+    }
+    result.push(current.trim());
+    return result;
+  }
+  
+  // 都道府県名→コード変換（逆引き）
+  const PREFECTURE_NAME_TO_CODE: Record<string, string> = {};
+  for (const [code, name] of Object.entries(PREFECTURE_CODES)) {
+    PREFECTURE_NAME_TO_CODE[name] = code;
+    // 「都」「府」「県」を省略した形式も対応
+    const shortName = name.replace(/(都|府|県)$/, '');
+    PREFECTURE_NAME_TO_CODE[shortName] = code;
+  }
+  
+  // 業種マッピング（一般的な業種名→標準化）
+  const INDUSTRY_MAP: Record<string, string> = {
+    '製造業': 'manufacturing', '製造': 'manufacturing',
+    '建設業': 'construction', '建設': 'construction',
+    '情報通信業': 'information', 'IT': 'information', 'IT業': 'information', 
+    '情報サービス': 'information', 'ソフトウェア': 'information',
+    '卸売業': 'wholesale', '卸売': 'wholesale',
+    '小売業': 'retail', '小売': 'retail',
+    '飲食業': 'food_service', '飲食': 'food_service', '飲食店': 'food_service',
+    'サービス業': 'service', 'サービス': 'service',
+    '医療': 'medical', '医療業': 'medical', 'ヘルスケア': 'medical',
+    '福祉': 'welfare', '介護': 'welfare',
+    '教育': 'education', '教育業': 'education',
+    '不動産業': 'real_estate', '不動産': 'real_estate',
+    '金融業': 'finance', '金融': 'finance', '保険': 'finance',
+    '運輸業': 'transportation', '運輸': 'transportation', '物流': 'transportation',
+    '農業': 'agriculture', '農林水産': 'agriculture',
+    'その他': 'other',
+  };
+  
+  const results: {
+    success: number;
+    failed: number;
+    updated: number;
+    errors: Array<{ row: number; message: string }>;
+    created: Array<{ row: number; clientName: string; companyName: string; clientId: string }>;
+  } = {
+    success: 0,
+    failed: 0,
+    updated: 0,
+    errors: [],
+    created: [],
+  };
+  
+  for (let i = 0; i < dataLines.length; i++) {
+    const rowNum = skipHeader ? i + 2 : i + 1; // ヘッダー行を考慮した行番号
+    const line = dataLines[i];
+    
+    try {
+      const cols = parseCSVLine(line);
+      
+      // 最低2カラム必要（顧客名、会社名）
+      if (cols.length < 2) {
+        results.errors.push({ row: rowNum, message: '顧客名と会社名は必須です' });
+        results.failed++;
+        continue;
+      }
+      
+      const clientName = cols[0]?.trim();
+      const companyName = cols[1]?.trim();
+      const clientEmail = cols[2]?.trim() || null;
+      const clientPhone = cols[3]?.trim() || null;
+      const prefectureInput = cols[4]?.trim() || null;
+      const industryInput = cols[5]?.trim() || null;
+      const employeeCountInput = cols[6]?.trim() || null;
+      const notes = cols[7]?.trim() || null;
+      
+      if (!clientName) {
+        results.errors.push({ row: rowNum, message: '顧客名が空です' });
+        results.failed++;
+        continue;
+      }
+      
+      if (!companyName) {
+        results.errors.push({ row: rowNum, message: '会社名が空です' });
+        results.failed++;
+        continue;
+      }
+      
+      // 都道府県変換
+      let prefecture: string | null = null;
+      if (prefectureInput) {
+        prefecture = PREFECTURE_NAME_TO_CODE[prefectureInput] || prefectureInput;
+        // 2桁コードかチェック
+        if (prefecture && !/^\d{1,2}$/.test(prefecture)) {
+          results.errors.push({ row: rowNum, message: `不正な都道府県: ${prefectureInput}` });
+          results.failed++;
+          continue;
+        }
+      }
+      
+      // 業種変換
+      let industry: string | null = null;
+      if (industryInput) {
+        industry = INDUSTRY_MAP[industryInput] || industryInput;
+      }
+      
+      // 従業員数変換
+      const normalizedEmployeeCount = employeeCountInput 
+        ? Math.max(0, parseInt(employeeCountInput.replace(/[,人名]/g, ''), 10) || 0)
+        : 0;
+      
+      // updateExistingがtrueの場合、同じ会社名の既存顧客を探す
+      if (updateExisting) {
+        const existingClient = await db.prepare(`
+          SELECT ac.id, ac.company_id FROM agency_clients ac
+          JOIN companies c ON ac.company_id = c.id
+          WHERE ac.agency_id = ? AND c.name = ?
+        `).bind(agencyId, companyName).first<{ id: string; company_id: string }>();
+        
+        if (existingClient) {
+          // 既存顧客を更新
+          await db.prepare(`
+            UPDATE agency_clients SET
+              client_name = ?,
+              client_email = COALESCE(?, client_email),
+              client_phone = COALESCE(?, client_phone),
+              notes = COALESCE(?, notes),
+              updated_at = ?
+            WHERE id = ?
+          `).bind(
+            clientName,
+            clientEmail,
+            clientPhone,
+            notes,
+            now,
+            existingClient.id
+          ).run();
+          
+          // 会社情報も更新
+          await db.prepare(`
+            UPDATE companies SET
+              prefecture = COALESCE(?, prefecture),
+              industry_major = COALESCE(?, industry_major),
+              employee_count = CASE WHEN ? > 0 THEN ? ELSE employee_count END,
+              employee_band = CASE WHEN ? > 0 THEN ? ELSE employee_band END,
+              updated_at = ?
+            WHERE id = ?
+          `).bind(
+            prefecture,
+            industry,
+            normalizedEmployeeCount,
+            normalizedEmployeeCount,
+            normalizedEmployeeCount,
+            calculateEmployeeBand(normalizedEmployeeCount),
+            now,
+            existingClient.company_id
+          ).run();
+          
+          results.updated++;
+          continue;
+        }
+      }
+      
+      // 新規作成
+      const companyId = generateId();
+      const clientId = generateId();
+      
+      await db.prepare(`
+        INSERT INTO companies (id, name, prefecture, industry_major, employee_count, employee_band, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).bind(
+        companyId,
+        companyName,
+        prefecture,
+        industry,
+        normalizedEmployeeCount,
+        calculateEmployeeBand(normalizedEmployeeCount),
+        now,
+        now
+      ).run();
+      
+      await db.prepare(`
+        INSERT INTO company_profile (company_id, created_at, updated_at)
+        VALUES (?, ?, ?)
+      `).bind(companyId, now, now).run();
+      
+      await db.prepare(`
+        INSERT INTO agency_clients (id, agency_id, company_id, client_name, client_email, client_phone, notes, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).bind(
+        clientId,
+        agencyId,
+        companyId,
+        clientName,
+        clientEmail,
+        clientPhone,
+        notes,
+        now,
+        now
+      ).run();
+      
+      results.success++;
+      results.created.push({ row: rowNum, clientName, companyName, clientId });
+      
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      results.errors.push({ row: rowNum, message: `処理エラー: ${errorMessage}` });
+      results.failed++;
+    }
+  }
+  
+  return c.json<ApiResponse<typeof results>>({
+    success: true,
+    data: results,
+  }, results.failed > 0 && results.success === 0 ? 400 : 201);
+});
+
+/**
+ * GET /api/agency/clients/import-template - CSVテンプレートダウンロード
+ */
+agencyRoutes.get('/clients/import-template', async (c) => {
+  const csvContent = `顧客名,会社名,メールアドレス,電話番号,都道府県,業種,従業員数,備考
+山田太郎,株式会社サンプル,yamada@example.com,03-1234-5678,東京都,製造業,50,重要顧客
+鈴木花子,有限会社テスト,suzuki@test.co.jp,06-9876-5432,大阪府,IT業,20,`;
+
+  return new Response(csvContent, {
+    headers: {
+      'Content-Type': 'text/csv; charset=utf-8',
+      'Content-Disposition': 'attachment; filename="clients_import_template.csv"',
+    },
+  });
+});
+
+/**
  * GET /api/agency/clients/:id - 顧客詳細
  */
 agencyRoutes.get('/clients/:id', async (c) => {

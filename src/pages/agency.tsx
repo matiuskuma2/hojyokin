@@ -860,9 +860,14 @@ agencyPages.get('/agency/clients', (c) => {
         <h1 class="text-2xl font-bold text-gray-900">
           <i class="fas fa-building mr-2"></i>顧客企業
         </h1>
-        <button onclick="showAddClientModal()" class="bg-emerald-600 text-white px-4 py-2 rounded-lg hover:bg-emerald-700 transition">
-          <i class="fas fa-plus mr-2"></i>顧客を追加
-        </button>
+        <div class="flex gap-2">
+          <button onclick="showCsvImportModal()" class="border border-emerald-600 text-emerald-600 px-4 py-2 rounded-lg hover:bg-emerald-50 transition">
+            <i class="fas fa-file-csv mr-2"></i>CSVインポート
+          </button>
+          <button onclick="showAddClientModal()" class="bg-emerald-600 text-white px-4 py-2 rounded-lg hover:bg-emerald-700 transition">
+            <i class="fas fa-plus mr-2"></i>顧客を追加
+          </button>
+        </div>
       </div>
       
       <!-- Filters -->
@@ -948,8 +953,288 @@ agencyPages.get('/agency/clients', (c) => {
       </div>
     </div>
     
+    <!-- CSV Import Modal -->
+    <div id="csv-import-modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center hidden z-50">
+      <div class="bg-white rounded-lg shadow-xl w-full max-w-2xl mx-4 max-h-[90vh] overflow-y-auto">
+        <div class="p-6">
+          <div class="flex items-center justify-between mb-4">
+            <h2 class="text-xl font-bold">CSVインポート</h2>
+            <button onclick="hideCsvImportModal()" class="text-gray-500 hover:text-gray-700">
+              <i class="fas fa-times text-xl"></i>
+            </button>
+          </div>
+          
+          <!-- テンプレート説明 -->
+          <div class="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-4">
+            <h3 class="font-semibold text-blue-800 mb-2">
+              <i class="fas fa-info-circle mr-1"></i>CSVフォーマット
+            </h3>
+            <p class="text-sm text-blue-700 mb-2">以下の列順序でCSVファイルを作成してください：</p>
+            <div class="bg-white rounded p-2 font-mono text-xs overflow-x-auto">
+              顧客名, 会社名, メール, 電話, 都道府県, 業種, 従業員数, 備考
+            </div>
+            <p class="text-xs text-blue-600 mt-2">
+              ※「顧客名」と「会社名」は必須です。その他は任意です。
+            </p>
+            <a href="/api/agency/clients/import-template" download class="inline-block mt-2 text-sm text-blue-600 hover:text-blue-800 underline">
+              <i class="fas fa-download mr-1"></i>テンプレートをダウンロード
+            </a>
+          </div>
+          
+          <form id="csv-import-form" class="space-y-4">
+            <!-- ファイル選択 -->
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">CSVファイルを選択</label>
+              <div class="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center hover:border-emerald-500 transition cursor-pointer"
+                   onclick="document.getElementById('csv-file-input').click()">
+                <input type="file" id="csv-file-input" accept=".csv,text/csv" class="hidden" onchange="handleCsvFileSelect(event)">
+                <i class="fas fa-cloud-upload-alt text-4xl text-gray-400 mb-2"></i>
+                <p id="csv-file-name" class="text-gray-600">クリックしてファイルを選択</p>
+                <p class="text-xs text-gray-500 mt-1">または、CSVファイルをドラッグ&ドロップ</p>
+              </div>
+            </div>
+            
+            <!-- テキストエリア（直接入力） -->
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">または、CSVデータを直接入力</label>
+              <textarea id="csv-data-input" rows="6" 
+                class="w-full border rounded-lg px-3 py-2 font-mono text-sm focus:ring-2 focus:ring-emerald-500"
+                placeholder="顧客名,会社名,メール,電話,都道府県,業種,従業員数,備考&#10;山田太郎,株式会社サンプル,yamada@example.com,03-1234-5678,東京都,製造業,50,重要顧客"></textarea>
+            </div>
+            
+            <!-- オプション -->
+            <div class="space-y-2">
+              <label class="flex items-center gap-2">
+                <input type="checkbox" id="csv-skip-header" checked class="rounded text-emerald-600 focus:ring-emerald-500">
+                <span class="text-sm text-gray-700">1行目をヘッダーとして無視する</span>
+              </label>
+              <label class="flex items-center gap-2">
+                <input type="checkbox" id="csv-update-existing" class="rounded text-emerald-600 focus:ring-emerald-500">
+                <span class="text-sm text-gray-700">同じ会社名の既存顧客を更新する</span>
+              </label>
+            </div>
+            
+            <!-- プレビュー -->
+            <div id="csv-preview" class="hidden">
+              <label class="block text-sm font-medium text-gray-700 mb-1">プレビュー（最初の5件）</label>
+              <div class="border rounded-lg overflow-x-auto">
+                <table class="min-w-full text-sm">
+                  <thead class="bg-gray-50">
+                    <tr>
+                      <th class="px-3 py-2 text-left">顧客名</th>
+                      <th class="px-3 py-2 text-left">会社名</th>
+                      <th class="px-3 py-2 text-left">メール</th>
+                      <th class="px-3 py-2 text-left">都道府県</th>
+                      <th class="px-3 py-2 text-left">業種</th>
+                      <th class="px-3 py-2 text-left">従業員数</th>
+                    </tr>
+                  </thead>
+                  <tbody id="csv-preview-body" class="divide-y divide-gray-200">
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            
+            <!-- 結果表示 -->
+            <div id="csv-import-result" class="hidden">
+              <div id="csv-result-success" class="hidden p-4 bg-emerald-50 border border-emerald-200 rounded-lg">
+                <h4 class="font-semibold text-emerald-800 mb-2">
+                  <i class="fas fa-check-circle mr-1"></i>インポート完了
+                </h4>
+                <p id="csv-result-message" class="text-sm text-emerald-700"></p>
+              </div>
+              <div id="csv-result-errors" class="hidden mt-2 p-4 bg-red-50 border border-red-200 rounded-lg max-h-48 overflow-y-auto">
+                <h4 class="font-semibold text-red-800 mb-2">
+                  <i class="fas fa-exclamation-circle mr-1"></i>エラー
+                </h4>
+                <ul id="csv-error-list" class="text-sm text-red-700 space-y-1"></ul>
+              </div>
+            </div>
+            
+            <div class="flex gap-2 pt-4">
+              <button type="button" onclick="hideCsvImportModal()" class="flex-1 border border-gray-300 text-gray-700 px-4 py-2 rounded-lg hover:bg-gray-50">
+                閉じる
+              </button>
+              <button type="submit" id="csv-import-btn" class="flex-1 bg-emerald-600 text-white px-4 py-2 rounded-lg hover:bg-emerald-700">
+                <i class="fas fa-upload mr-2"></i>インポート
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+    
     <script>
       let clients = [];
+      let csvData = '';
+      
+      // CSV関連関数
+      function showCsvImportModal() {
+        document.getElementById('csv-import-modal').classList.remove('hidden');
+        // リセット
+        document.getElementById('csv-data-input').value = '';
+        document.getElementById('csv-file-name').textContent = 'クリックしてファイルを選択';
+        document.getElementById('csv-preview').classList.add('hidden');
+        document.getElementById('csv-import-result').classList.add('hidden');
+        csvData = '';
+      }
+      
+      function hideCsvImportModal() {
+        document.getElementById('csv-import-modal').classList.add('hidden');
+      }
+      
+      function handleCsvFileSelect(event) {
+        const file = event.target.files[0];
+        if (!file) return;
+        
+        document.getElementById('csv-file-name').textContent = file.name;
+        
+        const reader = new FileReader();
+        reader.onload = function(e) {
+          csvData = e.target.result;
+          document.getElementById('csv-data-input').value = csvData;
+          updateCsvPreview();
+        };
+        reader.readAsText(file, 'UTF-8');
+      }
+      
+      function parseCSVLine(line) {
+        const result = [];
+        let current = '';
+        let inQuotes = false;
+        
+        for (let i = 0; i < line.length; i++) {
+          const char = line[i];
+          const nextChar = line[i + 1];
+          
+          if (inQuotes) {
+            if (char === '"') {
+              if (nextChar === '"') {
+                current += '"';
+                i++;
+              } else {
+                inQuotes = false;
+              }
+            } else {
+              current += char;
+            }
+          } else {
+            if (char === '"') {
+              inQuotes = true;
+            } else if (char === ',') {
+              result.push(current.trim());
+              current = '';
+            } else {
+              current += char;
+            }
+          }
+        }
+        result.push(current.trim());
+        return result;
+      }
+      
+      function updateCsvPreview() {
+        const input = document.getElementById('csv-data-input').value.trim();
+        const skipHeader = document.getElementById('csv-skip-header').checked;
+        
+        if (!input) {
+          document.getElementById('csv-preview').classList.add('hidden');
+          return;
+        }
+        
+        const lines = input.split(/\\r?\\n/).filter(l => l.trim());
+        const dataLines = skipHeader ? lines.slice(1) : lines;
+        const previewLines = dataLines.slice(0, 5);
+        
+        const tbody = document.getElementById('csv-preview-body');
+        tbody.innerHTML = previewLines.map(line => {
+          const cols = parseCSVLine(line);
+          return '<tr>' +
+            '<td class="px-3 py-2">' + (cols[0] || '-') + '</td>' +
+            '<td class="px-3 py-2">' + (cols[1] || '-') + '</td>' +
+            '<td class="px-3 py-2">' + (cols[2] || '-') + '</td>' +
+            '<td class="px-3 py-2">' + (cols[4] || '-') + '</td>' +
+            '<td class="px-3 py-2">' + (cols[5] || '-') + '</td>' +
+            '<td class="px-3 py-2">' + (cols[6] || '-') + '</td>' +
+          '</tr>';
+        }).join('');
+        
+        document.getElementById('csv-preview').classList.remove('hidden');
+      }
+      
+      document.getElementById('csv-data-input').addEventListener('input', updateCsvPreview);
+      document.getElementById('csv-skip-header').addEventListener('change', updateCsvPreview);
+      
+      document.getElementById('csv-import-form').addEventListener('submit', async function(e) {
+        e.preventDefault();
+        
+        const csvInput = document.getElementById('csv-data-input').value.trim();
+        if (!csvInput) {
+          alert('CSVデータを入力してください');
+          return;
+        }
+        
+        const skipHeader = document.getElementById('csv-skip-header').checked;
+        const updateExisting = document.getElementById('csv-update-existing').checked;
+        
+        const btn = document.getElementById('csv-import-btn');
+        btn.disabled = true;
+        btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>処理中...';
+        
+        try {
+          const data = await apiCall('/api/agency/clients/import-csv', {
+            method: 'POST',
+            body: JSON.stringify({
+              csvData: csvInput,
+              skipHeader: skipHeader,
+              updateExisting: updateExisting,
+            }),
+          });
+          
+          const resultDiv = document.getElementById('csv-import-result');
+          const successDiv = document.getElementById('csv-result-success');
+          const errorsDiv = document.getElementById('csv-result-errors');
+          
+          resultDiv.classList.remove('hidden');
+          
+          if (data.success) {
+            const result = data.data;
+            successDiv.classList.remove('hidden');
+            
+            let message = '';
+            if (result.success > 0) message += result.success + '件を新規登録しました。';
+            if (result.updated > 0) message += result.updated + '件を更新しました。';
+            if (result.failed > 0) message += result.failed + '件が失敗しました。';
+            if (!message) message = '処理が完了しました。';
+            
+            document.getElementById('csv-result-message').textContent = message;
+            
+            if (result.errors && result.errors.length > 0) {
+              errorsDiv.classList.remove('hidden');
+              document.getElementById('csv-error-list').innerHTML = result.errors.map(err => 
+                '<li>行' + err.row + ': ' + err.message + '</li>'
+              ).join('');
+            } else {
+              errorsDiv.classList.add('hidden');
+            }
+            
+            // 顧客リストを更新
+            if (result.success > 0 || result.updated > 0) {
+              loadClients();
+            }
+          } else {
+            successDiv.classList.add('hidden');
+            errorsDiv.classList.remove('hidden');
+            document.getElementById('csv-error-list').innerHTML = 
+              '<li>' + (data.error?.message || '不明なエラー') + '</li>';
+          }
+        } catch (err) {
+          alert('通信エラーが発生しました');
+        } finally {
+          btn.disabled = false;
+          btn.innerHTML = '<i class="fas fa-upload mr-2"></i>インポート';
+        }
+      });
       
       async function loadClients() {
         const search = document.getElementById('search-input').value;
@@ -2676,6 +2961,7 @@ agencyPages.get('/agency/members', (c) => {
 
 /**
  * GET /agency/join - 招待受諾ページ
+ * 未ログインでも表示可能（登録フォームを表示）
  */
 agencyPages.get('/agency/join', (c) => {
   const code = c.req.query('code') || '';
@@ -2692,53 +2978,143 @@ agencyPages.get('/agency/join', (c) => {
           <p class="text-gray-600 mt-2">招待を受諾して事務所に参加しましょう</p>
         </div>
         
-        <!-- 現在ログイン中のユーザー情報 -->
-        <div id="current-user-info" class="mb-6 p-4 bg-gray-50 rounded-lg border border-gray-200">
-          <p class="text-sm text-gray-600">
-            <i class="fas fa-user mr-2"></i>現在ログイン中:
-            <strong id="current-user-email" class="text-gray-800"></strong>
-          </p>
-        </div>
-        
         <div id="join-status" class="hidden mb-6 p-4 rounded-lg"></div>
         
-        <!-- メールアドレス不一致時の案内 -->
-        <div id="email-mismatch-guide" class="hidden mb-6">
-          <div class="p-4 bg-yellow-50 border border-yellow-300 rounded-lg">
-            <p class="text-yellow-800 font-semibold mb-2">
-              <i class="fas fa-exclamation-triangle mr-2"></i>アカウントを切り替えてください
+        <!-- ==============================
+             ログイン済みユーザー向け表示
+             ============================== -->
+        <div id="logged-in-section" class="hidden">
+          <!-- 現在ログイン中のユーザー情報 -->
+          <div id="current-user-info" class="mb-6 p-4 bg-gray-50 rounded-lg border border-gray-200">
+            <p class="text-sm text-gray-600">
+              <i class="fas fa-user mr-2"></i>現在ログイン中:
+              <strong id="current-user-email" class="text-gray-800"></strong>
             </p>
-            <p class="text-yellow-700 text-sm mb-3" id="mismatch-message"></p>
-            <div class="space-y-2">
-              <button onclick="switchAccount()" class="w-full bg-yellow-600 text-white px-4 py-2 rounded-lg hover:bg-yellow-700 font-medium text-sm">
-                <i class="fas fa-sign-out-alt mr-2"></i>ログアウトして招待メールアドレスでログイン
-              </button>
-              <p class="text-xs text-yellow-600 text-center">
-                ※ログアウト後、このページに自動で戻ります
+          </div>
+          
+          <!-- メールアドレス不一致時の案内 -->
+          <div id="email-mismatch-guide" class="hidden mb-6">
+            <div class="p-4 bg-yellow-50 border border-yellow-300 rounded-lg">
+              <p class="text-yellow-800 font-semibold mb-2">
+                <i class="fas fa-exclamation-triangle mr-2"></i>アカウントを切り替えてください
               </p>
+              <p class="text-yellow-700 text-sm mb-3" id="mismatch-message"></p>
+              <div class="space-y-2">
+                <button onclick="switchAccount()" class="w-full bg-yellow-600 text-white px-4 py-2 rounded-lg hover:bg-yellow-700 font-medium text-sm">
+                  <i class="fas fa-sign-out-alt mr-2"></i>ログアウトして別アカウントでログイン
+                </button>
+                <p class="text-xs text-yellow-600 text-center">
+                  ※ログアウト後、このページに自動で戻ります
+                </p>
+              </div>
+            </div>
+          </div>
+          
+          <div id="join-form-container">
+            <form id="join-form" class="space-y-4">
+              <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">招待コード</label>
+                <input type="text" name="code" value="${code}" required 
+                  class="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+                  placeholder="招待コードを入力">
+              </div>
+              <input type="hidden" name="token" value="${token}">
+              <button type="submit" class="w-full bg-emerald-600 text-white px-4 py-3 rounded-lg hover:bg-emerald-700 font-medium">
+                <i class="fas fa-check mr-2"></i>招待を受諾する
+              </button>
+            </form>
+            
+            <div class="mt-4 pt-4 border-t border-gray-200 text-center">
+              <button onclick="switchAccount()" class="text-sm text-gray-500 hover:text-gray-700">
+                <i class="fas fa-exchange-alt mr-1"></i>別のアカウントで参加
+              </button>
             </div>
           </div>
         </div>
         
-        <div id="join-form-container">
-          <form id="join-form" class="space-y-4">
-            <div>
-              <label class="block text-sm font-medium text-gray-700 mb-1">招待コード</label>
-              <input type="text" name="code" value="${code}" required 
-                class="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
-                placeholder="招待コードを入力">
-            </div>
-            <input type="hidden" name="token" value="${token}">
-            <button type="submit" class="w-full bg-emerald-600 text-white px-4 py-3 rounded-lg hover:bg-emerald-700 font-medium">
-              <i class="fas fa-check mr-2"></i>招待を受諾する
+        <!-- ==============================
+             未ログインユーザー向け表示
+             ============================== -->
+        <div id="not-logged-in-section" class="hidden">
+          <!-- タブ切り替え -->
+          <div class="flex border-b border-gray-200 mb-6">
+            <button id="tab-register" onclick="switchTab('register')" class="flex-1 py-3 text-center font-medium border-b-2 border-emerald-500 text-emerald-600">
+              <i class="fas fa-user-plus mr-1"></i>新規登録
             </button>
-          </form>
+            <button id="tab-login" onclick="switchTab('login')" class="flex-1 py-3 text-center font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700">
+              <i class="fas fa-sign-in-alt mr-1"></i>ログイン
+            </button>
+          </div>
           
-          <p class="text-sm text-gray-500 mt-4 text-center">
-            まだアカウントをお持ちでない場合は、<a href="/register" class="text-emerald-600 hover:underline">新規登録</a>してからこのページに戻ってください。
-          </p>
+          <!-- 新規登録フォーム -->
+          <div id="register-section">
+            <p class="text-sm text-gray-600 mb-4">
+              アカウントを作成して、招待を受諾します。
+            </p>
+            <form id="register-invite-form" class="space-y-4">
+              <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">お名前</label>
+                <input type="text" name="name" required 
+                  class="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+                  placeholder="山田 太郎">
+              </div>
+              <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">メールアドレス</label>
+                <input type="email" name="email" required 
+                  class="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+                  placeholder="招待されたメールアドレス">
+                <p class="text-xs text-gray-500 mt-1">招待されたメールアドレスを入力してください</p>
+              </div>
+              <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">パスワード</label>
+                <input type="password" name="password" required minlength="8"
+                  class="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+                  placeholder="8文字以上">
+                <p class="text-xs text-gray-500 mt-1">8文字以上、大文字・小文字・数字を含めてください</p>
+              </div>
+              <input type="hidden" name="inviteCode" value="${code}">
+              <input type="hidden" name="inviteToken" value="${token}">
+              <button type="submit" class="w-full bg-emerald-600 text-white px-4 py-3 rounded-lg hover:bg-emerald-700 font-medium">
+                <i class="fas fa-user-plus mr-2"></i>登録して参加
+              </button>
+            </form>
+          </div>
+          
+          <!-- ログインフォーム -->
+          <div id="login-section" class="hidden">
+            <p class="text-sm text-gray-600 mb-4">
+              既存のアカウントでログインして、招待を受諾します。
+            </p>
+            <form id="login-invite-form" class="space-y-4">
+              <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">メールアドレス</label>
+                <input type="email" name="email" required 
+                  class="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+                  placeholder="example@company.com">
+              </div>
+              <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">パスワード</label>
+                <input type="password" name="password" required
+                  class="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+                  placeholder="パスワード">
+              </div>
+              <input type="hidden" name="inviteCode" value="${code}">
+              <input type="hidden" name="inviteToken" value="${token}">
+              <button type="submit" class="w-full bg-emerald-600 text-white px-4 py-3 rounded-lg hover:bg-emerald-700 font-medium">
+                <i class="fas fa-sign-in-alt mr-2"></i>ログインして参加
+              </button>
+            </form>
+            <div class="mt-4 text-center">
+              <a href="/forgot" class="text-sm text-gray-500 hover:text-gray-700">
+                パスワードを忘れた方
+              </a>
+            </div>
+          </div>
         </div>
         
+        <!-- ==============================
+             成功画面（共通）
+             ============================== -->
         <div id="join-success" class="hidden text-center">
           <div class="w-16 h-16 bg-emerald-100 rounded-full flex items-center justify-center mx-auto mb-4">
             <i class="fas fa-check text-emerald-600 text-2xl"></i>
@@ -2754,9 +3130,10 @@ agencyPages.get('/agency/join', (c) => {
     
     <script>
       (function() {
-        var token = localStorage.getItem('token');
+        var authToken = localStorage.getItem('token');
         var userStr = localStorage.getItem('user');
         var user = null;
+        var currentUserEmail = '';
         
         try {
           user = userStr ? JSON.parse(userStr) : null;
@@ -2764,98 +3141,224 @@ agencyPages.get('/agency/join', (c) => {
           user = null;
         }
         
-        if (!token || !user) {
-          // 未ログインの場合は、ログインページにリダイレクト（戻りURLを保存）
-          var currentUrl = window.location.href;
-          localStorage.setItem('redirect_after_login', currentUrl);
-          window.location.href = '/login';
-          return;
-        }
-        
-        // 現在ログイン中のユーザーメールアドレスを表示
-        var currentUserEmail = user.email || '(メールアドレス不明)';
-        document.getElementById('current-user-email').textContent = currentUserEmail;
+        // タブ切り替え関数
+        window.switchTab = function(tab) {
+          var tabRegister = document.getElementById('tab-register');
+          var tabLogin = document.getElementById('tab-login');
+          var registerSection = document.getElementById('register-section');
+          var loginSection = document.getElementById('login-section');
+          
+          if (tab === 'register') {
+            tabRegister.classList.add('border-emerald-500', 'text-emerald-600');
+            tabRegister.classList.remove('border-transparent', 'text-gray-500');
+            tabLogin.classList.remove('border-emerald-500', 'text-emerald-600');
+            tabLogin.classList.add('border-transparent', 'text-gray-500');
+            registerSection.classList.remove('hidden');
+            loginSection.classList.add('hidden');
+          } else {
+            tabLogin.classList.add('border-emerald-500', 'text-emerald-600');
+            tabLogin.classList.remove('border-transparent', 'text-gray-500');
+            tabRegister.classList.remove('border-emerald-500', 'text-emerald-600');
+            tabRegister.classList.add('border-transparent', 'text-gray-500');
+            loginSection.classList.remove('hidden');
+            registerSection.classList.add('hidden');
+          }
+        };
         
         // アカウント切替関数
         window.switchAccount = function() {
-          // 現在のURLを保存してログアウト
-          var currentUrl = window.location.href;
-          localStorage.setItem('redirect_after_login', currentUrl);
           localStorage.removeItem('token');
           localStorage.removeItem('user');
-          window.location.href = '/login';
+          window.location.reload();
         };
         
-        document.getElementById('join-form').addEventListener('submit', async function(e) {
-          e.preventDefault();
-          var form = e.target;
-          var formData = new FormData(form);
-          
+        // 成功表示関数
+        function showSuccess(agencyName, role) {
+          document.getElementById('logged-in-section').classList.add('hidden');
+          document.getElementById('not-logged-in-section').classList.add('hidden');
+          document.getElementById('join-success').classList.remove('hidden');
+          document.getElementById('success-message').textContent = 
+            '「' + (agencyName || '事務所') + '」に' + 
+            (role === 'admin' ? '管理者' : 'スタッフ') + 'として参加しました。';
+        }
+        
+        // ステータス表示関数
+        function showStatus(message, isError) {
           var statusDiv = document.getElementById('join-status');
-          var mismatchGuide = document.getElementById('email-mismatch-guide');
+          statusDiv.classList.remove('hidden', 'bg-red-100', 'text-red-700', 'bg-blue-100', 'text-blue-700', 'bg-emerald-100', 'text-emerald-700');
+          if (isError) {
+            statusDiv.classList.add('bg-red-100', 'text-red-700');
+            statusDiv.innerHTML = '<i class="fas fa-exclamation-circle mr-2"></i>' + message;
+          } else {
+            statusDiv.classList.add('bg-blue-100', 'text-blue-700');
+            statusDiv.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>' + message;
+          }
+        }
+        
+        function hideStatus() {
+          document.getElementById('join-status').classList.add('hidden');
+        }
+        
+        // ログイン済みかどうかで表示を切り替え
+        if (authToken && user) {
+          // ログイン済み
+          document.getElementById('logged-in-section').classList.remove('hidden');
+          currentUserEmail = user.email || '(メールアドレス不明)';
+          document.getElementById('current-user-email').textContent = currentUserEmail;
           
-          // 状態をリセット
-          statusDiv.classList.remove('hidden', 'bg-red-100', 'text-red-700', 'bg-emerald-100', 'text-emerald-700');
-          statusDiv.classList.add('bg-blue-100', 'text-blue-700');
-          statusDiv.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>処理中...';
-          mismatchGuide.classList.add('hidden');
-          
-          try {
-            var response = await fetch('/api/agency/members/join', {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'Authorization': 'Bearer ' + token,
-              },
-              body: JSON.stringify({
-                code: formData.get('code'),
-                token: formData.get('token'),
-              }),
-            });
+          // 既存ユーザー用フォーム送信
+          document.getElementById('join-form').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            var form = e.target;
+            var formData = new FormData(form);
+            var mismatchGuide = document.getElementById('email-mismatch-guide');
             
-            var data = await response.json();
+            showStatus('処理中...', false);
+            mismatchGuide.classList.add('hidden');
             
-            if (data.success) {
-              statusDiv.classList.add('hidden');
-              document.getElementById('join-form-container').classList.add('hidden');
-              document.getElementById('join-success').classList.remove('hidden');
-              document.getElementById('success-message').textContent = 
-                '「' + (data.data.agency?.name || '事務所') + '」に' + 
-                (data.data.role === 'admin' ? '管理者' : 'スタッフ') + 'として参加しました。';
+            try {
+              var response = await fetch('/api/agency/members/join', {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'Authorization': 'Bearer ' + authToken,
+                },
+                body: JSON.stringify({
+                  code: formData.get('code'),
+                  token: formData.get('token'),
+                }),
+              });
               
-              // ユーザー情報を更新（roleがagencyに変わった可能性）
-              if (user) {
+              var data = await response.json();
+              
+              if (data.success) {
+                // ユーザー情報を更新
                 user.role = 'agency';
                 localStorage.setItem('user', JSON.stringify(user));
-              }
-            } else {
-              statusDiv.classList.remove('bg-blue-100', 'text-blue-700');
-              
-              // EMAIL_MISMATCH エラーの場合は特別な案内を表示
-              if (data.error?.code === 'EMAIL_MISMATCH') {
-                statusDiv.classList.add('hidden');
-                mismatchGuide.classList.remove('hidden');
-                
-                // 招待先メールアドレスを抽出（メッセージから）
-                var inviteEmail = data.error.message.match(/([a-zA-Z0-9._-]+@[a-zA-Z0-9._-]+\\.[a-zA-Z0-9_-]+)/);
-                inviteEmail = inviteEmail ? inviteEmail[0] : '招待先メールアドレス';
-                
-                document.getElementById('mismatch-message').innerHTML = 
-                  'この招待は <strong>' + inviteEmail + '</strong> 宛てです。<br>' +
-                  '現在は <strong>' + currentUserEmail + '</strong> でログインしています。<br>' +
-                  '招待を受諾するには、招待先のメールアドレスでログインしてください。';
+                showSuccess(data.data.agency?.name, data.data.role);
               } else {
-                statusDiv.classList.add('bg-red-100', 'text-red-700');
-                statusDiv.innerHTML = '<i class="fas fa-exclamation-circle mr-2"></i>' + 
-                  (data.error?.message || '招待の受諾に失敗しました');
+                hideStatus();
+                if (data.error?.code === 'EMAIL_MISMATCH') {
+                  mismatchGuide.classList.remove('hidden');
+                  var inviteEmail = data.error.message.match(/([a-zA-Z0-9._-]+@[a-zA-Z0-9._-]+\\.[a-zA-Z0-9_-]+)/);
+                  inviteEmail = inviteEmail ? inviteEmail[0] : '招待先メールアドレス';
+                  document.getElementById('mismatch-message').innerHTML = 
+                    'この招待は <strong>' + inviteEmail + '</strong> 宛てです。<br>' +
+                    '現在は <strong>' + currentUserEmail + '</strong> でログインしています。<br>' +
+                    '招待を受諾するには、招待先のメールアドレスでログインしてください。';
+                } else {
+                  showStatus(data.error?.message || '招待の受諾に失敗しました', true);
+                }
               }
+            } catch (err) {
+              showStatus('通信エラーが発生しました', true);
             }
-          } catch (err) {
-            statusDiv.classList.remove('bg-blue-100', 'text-blue-700');
-            statusDiv.classList.add('bg-red-100', 'text-red-700');
-            statusDiv.innerHTML = '<i class="fas fa-exclamation-circle mr-2"></i>通信エラーが発生しました';
-          }
-        });
+          });
+        } else {
+          // 未ログイン - 新規登録/ログインフォームを表示
+          document.getElementById('not-logged-in-section').classList.remove('hidden');
+          
+          // 新規登録＋招待受諾フォーム
+          document.getElementById('register-invite-form').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            var form = e.target;
+            var formData = new FormData(form);
+            
+            showStatus('アカウントを作成中...', false);
+            
+            try {
+              var response = await fetch('/api/auth/register-with-invite', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  name: formData.get('name'),
+                  email: formData.get('email'),
+                  password: formData.get('password'),
+                  inviteCode: formData.get('inviteCode'),
+                  inviteToken: formData.get('inviteToken'),
+                }),
+              });
+              
+              var data = await response.json();
+              
+              if (data.success) {
+                // トークンとユーザー情報を保存
+                localStorage.setItem('token', data.data.token);
+                localStorage.setItem('user', JSON.stringify(data.data.user));
+                showSuccess(data.data.agency?.name, data.data.role_in_agency);
+              } else {
+                showStatus(data.error?.message || '登録に失敗しました', true);
+              }
+            } catch (err) {
+              showStatus('通信エラーが発生しました', true);
+            }
+          });
+          
+          // ログイン＋招待受諾フォーム
+          document.getElementById('login-invite-form').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            var form = e.target;
+            var formData = new FormData(form);
+            
+            showStatus('ログイン中...', false);
+            
+            try {
+              // まずログイン
+              var loginResponse = await fetch('/api/auth/login', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  email: formData.get('email'),
+                  password: formData.get('password'),
+                }),
+              });
+              
+              var loginData = await loginResponse.json();
+              
+              if (!loginData.success) {
+                showStatus(loginData.error?.message || 'ログインに失敗しました', true);
+                return;
+              }
+              
+              // ログイン成功 - トークンを保存
+              var newToken = loginData.data.token;
+              var newUser = loginData.data.user;
+              localStorage.setItem('token', newToken);
+              localStorage.setItem('user', JSON.stringify(newUser));
+              
+              showStatus('招待を受諾中...', false);
+              
+              // 招待受諾
+              var joinResponse = await fetch('/api/agency/members/join', {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'Authorization': 'Bearer ' + newToken,
+                },
+                body: JSON.stringify({
+                  code: formData.get('inviteCode'),
+                  token: formData.get('inviteToken'),
+                }),
+              });
+              
+              var joinData = await joinResponse.json();
+              
+              if (joinData.success) {
+                newUser.role = 'agency';
+                localStorage.setItem('user', JSON.stringify(newUser));
+                showSuccess(joinData.data.agency?.name, joinData.data.role);
+              } else {
+                if (joinData.error?.code === 'EMAIL_MISMATCH') {
+                  showStatus('この招待は別のメールアドレス宛てです。招待されたメールアドレスでログインしてください。', true);
+                } else {
+                  showStatus(joinData.error?.message || '招待の受諾に失敗しました', true);
+                }
+              }
+            } catch (err) {
+              showStatus('通信エラーが発生しました', true);
+            }
+          });
+        }
       })();
     </script>
   `;
