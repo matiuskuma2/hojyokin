@@ -127,8 +127,9 @@ policy_id,primary_url,all_urls
 | izumi_detail_1000.csv | 199件 | 19,865 ~ 22,954 | 80KB |
 | izumi_detail_1400.csv | 199件 | 22,958 ~ 24,532 | 79KB |
 | izumi_detail_1600.csv | 199件 | 24,534 ~ 26,065 | 77KB |
+| izumi_detail_1800.csv | 199件 | 26,078 ~ 27,752 | 80KB |
 
-**合計: 1,393件の詳細データ（継続取得中）**
+**合計: 1,592件の詳細データ（継続取得中）**
 
 ### データ形式
 
@@ -278,6 +279,8 @@ INSERT INTO discovery_items (
 ## 5. 更新履歴
 
 ### 2026-01-30
+- **詳細データ追加**: `details/izumi_detail_1800.csv`（199件）
+  - policy_id: 26,078 ~ 27,752 の範囲
 - **詳細データ追加**: `details/izumi_detail_1600.csv`（199件）
   - policy_id: 24,534 ~ 26,065 の範囲
 - **詳細データ追加**: `details/izumi_detail_1400.csv`（199件）
@@ -292,7 +295,7 @@ INSERT INTO discovery_items (
   - policy_id: 3,700 ~ 10,081 の範囲
 - **詳細データ追加**: `details/izumi_detail_200.csv`（199件）
   - policy_id: 28 ~ 3,699 の範囲
-- **合計1,393件の詳細データ**を取得完了
+- **合計1,592件の詳細データ**を取得完了
 - **README大幅更新**: PDF問題、データソース別戦略、Firecrawl限界と代替案を追記
 
 ### 2026-01-29
@@ -318,7 +321,34 @@ INSERT INTO discovery_items (
 |--------|---------|----------|--------|
 | **jGrants** | ✅ あり | API定期取得（自動化済み） | 高 |
 | **情報の泉** | ❌ なし | Playwright + スクレイピング | 高 |
-| **J-Net21** | ✅ RSS | RSS定期取得（実装済み） | 中 |
+| **J-Net21** | ✅ RSS | RSS定期取得（**実装済み**） | 中 |
+
+### J-Net21 RSSフィードについて
+
+**URL**: `https://j-net21.smrj.go.jp/snavi/support/support.xml`
+
+**特徴**:
+- 補助金・助成金・融資の最新情報をRSSで配信
+- 都道府県コード付き（`dc:coverage` で `JP-01`=北海道, `JP-13`=東京都 等）
+- 更新頻度: 毎日
+- 運営: 中小企業基盤整備機構
+
+**データ例**:
+```xml
+<item>
+  <title>【茅野市】補助金・助成金：「製造業等の労務環境改善...」</title>
+  <link>https://j-net21.smrj.go.jp/snavi/articles/174825</link>
+  <dc:coverage>
+    <rdf:value>JP-20</rdf:value>
+    <rdf:label>長野県</rdf:label>
+  </dc:coverage>
+</item>
+```
+
+**情報の泉との関係**:
+- J-Net21は「ニュースサイト」ではなく「補助金情報ポータル」
+- 情報の泉と一部重複する可能性あり（同じ補助金を収録）
+- RSSなので自動取得が容易（スクレイピング不要）
 | **自治体個別** | ❌ なし | 個別対応（手動/半自動） | 低 |
 
 ### jGrants との関係
@@ -357,7 +387,7 @@ INSERT INTO discovery_items (
 
 #### Phase 1: 現状把握（完了）
 - [x] izumi_support_urls_*.csv: 約17,000件のURL収集
-- [x] izumi_detail_*.csv: 796件の詳細取得（継続中）
+- [x] izumi_detail_*.csv: 1,592件の詳細取得（継続中）
 
 #### Phase 2: 差分検知システム
 - [ ] 情報の泉の最新 `policy_id` を定期チェック
@@ -451,7 +481,7 @@ INSERT INTO discovery_items (
 
 ## 7. 次のステップ
 
-1. **詳細データの継続取得**: policy_id 26,065 以降のデータを順次取得
+1. **詳細データの継続取得**: policy_id 27,752 以降のデータを順次取得
 2. **support_url のパターン分析**: HTML/PDF の比率と特徴を調査
 3. **jGrants重複チェック**: 既存796件とjGrantsデータの照合
 4. **親HTML監視の仕組み**: PDF直リンクではなく案内ページを監視
