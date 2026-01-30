@@ -125,6 +125,8 @@ export function performScreening(
 
 /**
  * 地域マッチング
+ * 
+ * P0-2: company.prefecture が null/undefined の場合の対応追加
  */
 function checkAreaMatch(company: Company, subsidy: JGrantsSearchResult): {
   reason: MatchReason;
@@ -141,6 +143,18 @@ function checkAreaMatch(company: Company, subsidy: JGrantsSearchResult): {
         reason: '全国対象の補助金です',
       },
       scoreAdjustment: 10,
+    };
+  }
+  
+  // P0-2: 企業の都道府県が未設定の場合
+  if (!company.prefecture) {
+    return {
+      reason: {
+        field: 'target_area',
+        matched: false,
+        reason: '企業の所在地が未設定のため、地域マッチングができません',
+      },
+      scoreAdjustment: -10, // 未設定の場合は軽度のペナルティ（-30ほど厳しくない）
     };
   }
   
@@ -162,6 +176,8 @@ function checkAreaMatch(company: Company, subsidy: JGrantsSearchResult): {
 
 /**
  * 業種マッチング
+ * 
+ * P0-2: company.industry_major が null/undefined の場合の対応追加
  */
 function checkIndustryMatch(company: Company, subsidy: JGrantsSearchResult): {
   reason: MatchReason;
@@ -178,6 +194,18 @@ function checkIndustryMatch(company: Company, subsidy: JGrantsSearchResult): {
         reason: '全業種対象の補助金です',
       },
       scoreAdjustment: 5,
+    };
+  }
+  
+  // P0-2: 企業の業種が未設定の場合
+  if (!company.industry_major) {
+    return {
+      reason: {
+        field: 'target_industry',
+        matched: false,
+        reason: '企業の業種が未設定のため、業種マッチングができません',
+      },
+      scoreAdjustment: -10, // 未設定の場合は軽度のペナルティ
     };
   }
   
@@ -199,6 +227,8 @@ function checkIndustryMatch(company: Company, subsidy: JGrantsSearchResult): {
 
 /**
  * 従業員規模マッチング
+ * 
+ * P0-1: company.employee_count が 0/null/undefined の場合の対応追加
  */
 function checkEmployeeMatch(company: Company, subsidy: JGrantsSearchResult): {
   reason: MatchReason;
@@ -218,8 +248,24 @@ function checkEmployeeMatch(company: Company, subsidy: JGrantsSearchResult): {
     };
   }
   
+  // P0-1: 従業員数を数値として正規化（文字列/undefined/null対応）
+  const employeeCount = typeof company.employee_count === 'number' 
+    ? company.employee_count 
+    : Number(company.employee_count) || 0;
+  
+  // P0-1: 企業の従業員数が未設定（0以下）の場合
+  if (employeeCount <= 0) {
+    return {
+      reason: {
+        field: 'target_number_of_employees',
+        matched: false,
+        reason: '企業の従業員数が未設定のため、従業員規模マッチングができません',
+      },
+      scoreAdjustment: -10, // 未設定の場合は軽度のペナルティ
+    };
+  }
+  
   // 「小規模」「中小企業」などのキーワードマッチング
-  const employeeCount = company.employee_count;
   let isMatch = false;
   
   if (targetEmployees.includes('小規模') && employeeCount <= 20) {

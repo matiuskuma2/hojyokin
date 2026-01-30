@@ -643,6 +643,7 @@ agencyRoutes.post('/clients', async (c) => {
     companyName?: string;
     prefecture?: string;
     industry?: string;
+    employeeCount?: number | string;
     notes?: string;
     tags?: string[];
   }>(c);
@@ -654,7 +655,7 @@ agencyRoutes.post('/clients', async (c) => {
     }, 400);
   }
   
-  const { clientName, clientEmail, clientPhone, companyName, prefecture, industry, notes, tags } = parseResult.data;
+  const { clientName, clientEmail, clientPhone, companyName, prefecture, industry, employeeCount, notes, tags } = parseResult.data;
   
   if (!clientName || !companyName) {
     return c.json<ApiResponse<null>>({
@@ -663,12 +664,19 @@ agencyRoutes.post('/clients', async (c) => {
     }, 400);
   }
   
+  // P0-1: employee_count の正規化（文字列→数値変換）
+  // 入力がない場合は null（completeness チェックで BLOCKED になる）
+  const normalizedEmployeeCount = employeeCount !== undefined && employeeCount !== null && employeeCount !== ''
+    ? Math.max(0, Number(employeeCount) || 0)
+    : 0;
+  
   const agencyId = agencyInfo.agency.id;
   const now = new Date().toISOString();
   
   // 会社を作成
   const companyId = generateId();
   // 必須カラム: name, prefecture, industry_major, employee_count, employee_band
+  // P0-2: prefecture デフォルトを null に変更（東京都を勝手に設定しない）
   // P0-4: calculateEmployeeBand使用
   await db.prepare(`
     INSERT INTO companies (id, name, prefecture, industry_major, employee_count, employee_band, created_at, updated_at)
@@ -676,10 +684,10 @@ agencyRoutes.post('/clients', async (c) => {
   `).bind(
     companyId, 
     companyName, 
-    prefecture || '13', // デフォルト: 東京都
-    industry || '情報通信業', 
-    0, // デフォルト従業員数
-    calculateEmployeeBand(0),
+    prefecture || null, // P0-2: デフォルトを null に変更（completeness で BLOCKED になる）
+    industry || null, // P0-2: デフォルトを null に変更
+    normalizedEmployeeCount, // P0-1: 正規化された従業員数
+    calculateEmployeeBand(normalizedEmployeeCount),
     now, 
     now
   ).run();
@@ -1423,6 +1431,13 @@ agencyRoutes.post('/submissions/:id/approve', async (c) => {
         updateValues.push(payload[payloadKey]);
         processedFields.add(dbField);
       }
+    }
+    
+    // P1-2: employee_count が更新される場合は employee_band も自動計算
+    if (processedFields.has('employee_count')) {
+      const empCount = payload.employee_count || payload.employeeCount || 0;
+      updateFields.push('employee_band = ?');
+      updateValues.push(calculateEmployeeBand(empCount));
     }
     
     if (updateFields.length > 0) {

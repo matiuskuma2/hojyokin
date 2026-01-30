@@ -914,19 +914,22 @@ agencyPages.get('/agency/clients', (c) => {
             </div>
             <div class="grid grid-cols-2 gap-4">
               <div>
-                <label class="block text-sm font-medium text-gray-700 mb-1">都道府県</label>
-                <select name="prefecture" class="w-full border rounded-lg px-3 py-2">
+                <label class="block text-sm font-medium text-gray-700 mb-1">都道府県 <span class="text-red-500">*</span></label>
+                <select name="prefecture" id="add-client-prefecture" required class="w-full border rounded-lg px-3 py-2">
                   <option value="">選択してください</option>
-                  <option value="東京都">東京都</option>
-                  <option value="大阪府">大阪府</option>
-                  <option value="愛知県">愛知県</option>
-                  <!-- 他の都道府県も追加 -->
                 </select>
               </div>
               <div>
-                <label class="block text-sm font-medium text-gray-700 mb-1">業種</label>
-                <input type="text" name="industry" class="w-full border rounded-lg px-3 py-2">
+                <label class="block text-sm font-medium text-gray-700 mb-1">業種 <span class="text-red-500">*</span></label>
+                <select name="industry" id="add-client-industry" required class="w-full border rounded-lg px-3 py-2">
+                  <option value="">選択してください</option>
+                </select>
               </div>
+            </div>
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">従業員数 <span class="text-red-500">*</span></label>
+              <input type="number" name="employeeCount" id="add-client-employees" required min="1" class="w-full border rounded-lg px-3 py-2" placeholder="例: 10">
+              <p class="text-xs text-gray-500 mt-1">補助金マッチングの精度向上のため必須です</p>
             </div>
             <div>
               <label class="block text-sm font-medium text-gray-700 mb-1">メモ</label>
@@ -1032,7 +1035,59 @@ agencyPages.get('/agency/clients', (c) => {
         }
       }
       
+      // P0-3: 都道府県・業種リスト（顧客追加用）
+      const addClientPrefectures = [
+        {code: '01', name: '北海道'}, {code: '02', name: '青森県'}, {code: '03', name: '岩手県'},
+        {code: '04', name: '宮城県'}, {code: '05', name: '秋田県'}, {code: '06', name: '山形県'},
+        {code: '07', name: '福島県'}, {code: '08', name: '茨城県'}, {code: '09', name: '栃木県'},
+        {code: '10', name: '群馬県'}, {code: '11', name: '埼玉県'}, {code: '12', name: '千葉県'},
+        {code: '13', name: '東京都'}, {code: '14', name: '神奈川県'}, {code: '15', name: '新潟県'},
+        {code: '16', name: '富山県'}, {code: '17', name: '石川県'}, {code: '18', name: '福井県'},
+        {code: '19', name: '山梨県'}, {code: '20', name: '長野県'}, {code: '21', name: '岐阜県'},
+        {code: '22', name: '静岡県'}, {code: '23', name: '愛知県'}, {code: '24', name: '三重県'},
+        {code: '25', name: '滋賀県'}, {code: '26', name: '京都府'}, {code: '27', name: '大阪府'},
+        {code: '28', name: '兵庫県'}, {code: '29', name: '奈良県'}, {code: '30', name: '和歌山県'},
+        {code: '31', name: '鳥取県'}, {code: '32', name: '島根県'}, {code: '33', name: '岡山県'},
+        {code: '34', name: '広島県'}, {code: '35', name: '山口県'}, {code: '36', name: '徳島県'},
+        {code: '37', name: '香川県'}, {code: '38', name: '愛媛県'}, {code: '39', name: '高知県'},
+        {code: '40', name: '福岡県'}, {code: '41', name: '佐賀県'}, {code: '42', name: '長崎県'},
+        {code: '43', name: '熊本県'}, {code: '44', name: '大分県'}, {code: '45', name: '宮崎県'},
+        {code: '46', name: '鹿児島県'}, {code: '47', name: '沖縄県'}
+      ];
+      
+      const addClientIndustries = [
+        '農業、林業', '漁業', '鉱業、採石業、砂利採取業', '建設業', '製造業',
+        '電気・ガス・熱供給・水道業', '情報通信業', '運輸業、郵便業', '卸売業、小売業',
+        '金融業、保険業', '不動産業、物品賃貸業', '学術研究、専門・技術サービス業',
+        '宿泊業、飲食サービス業', '生活関連サービス業、娯楽業', '教育、学習支援業',
+        '医療、福祉', '複合サービス事業', 'サービス業（他に分類されないもの）', 'その他'
+      ];
+      
+      function initAddClientSelects() {
+        const prefSelect = document.getElementById('add-client-prefecture');
+        const indSelect = document.getElementById('add-client-industry');
+        
+        // 既存のオプションをクリア（最初の「選択してください」以外）
+        while (prefSelect.options.length > 1) prefSelect.remove(1);
+        while (indSelect.options.length > 1) indSelect.remove(1);
+        
+        addClientPrefectures.forEach(p => {
+          const opt = document.createElement('option');
+          opt.value = p.code;
+          opt.textContent = p.name;
+          prefSelect.appendChild(opt);
+        });
+        
+        addClientIndustries.forEach(ind => {
+          const opt = document.createElement('option');
+          opt.value = ind;
+          opt.textContent = ind;
+          indSelect.appendChild(opt);
+        });
+      }
+      
       function showAddClientModal() {
+        initAddClientSelects(); // P0-3: セレクトボックス初期化
         document.getElementById('add-client-modal').classList.remove('hidden');
       }
       
@@ -1045,6 +1100,13 @@ agencyPages.get('/agency/clients', (c) => {
         const form = e.target;
         const formData = new FormData(form);
         
+        // P0-3: 必須項目チェック
+        const employeeCount = parseInt(formData.get('employeeCount') || '0', 10);
+        if (!employeeCount || employeeCount < 1) {
+          alert('従業員数は1以上の数値を入力してください');
+          return;
+        }
+        
         const data = await apiCall('/api/agency/clients', {
           method: 'POST',
           body: JSON.stringify({
@@ -1054,6 +1116,7 @@ agencyPages.get('/agency/clients', (c) => {
             clientPhone: formData.get('clientPhone'),
             prefecture: formData.get('prefecture'),
             industry: formData.get('industry'),
+            employeeCount: employeeCount, // P0-1: 従業員数追加
             notes: formData.get('notes'),
           }),
         });
@@ -1063,7 +1126,13 @@ agencyPages.get('/agency/clients', (c) => {
           form.reset();
           loadClients();
         } else {
-          alert('エラー: ' + (data.error?.message || '不明なエラー'));
+          // P1-1: フィールド別エラー表示対応
+          if (data.error?.fields) {
+            const msgs = Object.entries(data.error.fields).map(([k, v]) => k + ': ' + v).join('\\n');
+            alert('入力エラー:\\n' + msgs);
+          } else {
+            alert('エラー: ' + (data.error?.message || '不明なエラー'));
+          }
         }
       });
       

@@ -32,13 +32,15 @@ export interface UserPublic {
 }
 
 // 企業
+// P0-2: prefecture, industry_major, employee_count を nullable に変更
+// agency経由で登録された顧客は必須項目が未設定の状態で保存される可能性がある
 export interface Company {
   id: string;
   name: string;
   postal_code: string | null;
-  prefecture: string;
+  prefecture: string | null;
   city: string | null;
-  industry_major: string;
+  industry_major: string | null;
   industry_minor: string | null;
   employee_count: number;
   employee_band: EmployeeBand;
@@ -51,14 +53,15 @@ export interface Company {
 
 export type EmployeeBand = '1-5' | '6-20' | '21-50' | '51-100' | '101-300' | '301+';
 
+// P0-2: CompanyCreateInput でも nullable 許容（agency経由の登録用）
 export interface CompanyCreateInput {
   name: string;
   postal_code?: string;
-  prefecture: string;
+  prefecture?: string | null;
   city?: string;
-  industry_major: string;
+  industry_major?: string | null;
   industry_minor?: string;
-  employee_count: number;
+  employee_count?: number;
   capital?: number;
   established_date?: string;
   annual_revenue?: number;
