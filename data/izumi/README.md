@@ -139,8 +139,10 @@ policy_id,primary_url,all_urls
 | izumi_detail_3600.csv | 199件 | 45,652 ~ 47,451 | 73KB |
 | izumi_detail_3800.csv | 199件 | 47,453 ~ 48,768 | 73KB |
 | izumi_detail_4000.csv | 199件 | 48,801 ~ 50,347 | 71KB |
+| izumi_detail_4200.csv | 199件 | 50,368 ~ 52,063 | 78KB |
+| izumi_detail_4400.csv | 199件 | 52,066 ~ 53,306 | 76KB |
 
-**合計: 3,781件の詳細データ（継続取得中）**
+**合計: 4,179件の詳細データ（継続取得中）**
 
 ### データ形式
 
