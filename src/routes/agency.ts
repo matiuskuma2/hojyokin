@@ -821,24 +821,23 @@ agencyRoutes.post('/clients/import-csv', async (c) => {
     PREFECTURE_NAME_TO_CODE[shortName] = code;
   }
   
-  // 業種マッピング（一般的な業種名→標準化）
+  // 業種マッピング（略称・表記揺れを標準形式に正規化）
+  // 注意: 補助金マッチングは日本語でtarget_industryと比較するため、日本語のまま保持
   const INDUSTRY_MAP: Record<string, string> = {
-    '製造業': 'manufacturing', '製造': 'manufacturing',
-    '建設業': 'construction', '建設': 'construction',
-    '情報通信業': 'information', 'IT': 'information', 'IT業': 'information', 
-    '情報サービス': 'information', 'ソフトウェア': 'information',
-    '卸売業': 'wholesale', '卸売': 'wholesale',
-    '小売業': 'retail', '小売': 'retail',
-    '飲食業': 'food_service', '飲食': 'food_service', '飲食店': 'food_service',
-    'サービス業': 'service', 'サービス': 'service',
-    '医療': 'medical', '医療業': 'medical', 'ヘルスケア': 'medical',
-    '福祉': 'welfare', '介護': 'welfare',
-    '教育': 'education', '教育業': 'education',
-    '不動産業': 'real_estate', '不動産': 'real_estate',
-    '金融業': 'finance', '金融': 'finance', '保険': 'finance',
-    '運輸業': 'transportation', '運輸': 'transportation', '物流': 'transportation',
-    '農業': 'agriculture', '農林水産': 'agriculture',
-    'その他': 'other',
+    '製造': '製造業',
+    '建設': '建設業',
+    'IT': '情報通信業', 'IT業': '情報通信業', '情報サービス': '情報通信業', 'ソフトウェア': '情報通信業',
+    '卸売': '卸売業、小売業', '卸売業': '卸売業、小売業',
+    '小売': '卸売業、小売業', '小売業': '卸売業、小売業',
+    '飲食': '宿泊業、飲食サービス業', '飲食業': '宿泊業、飲食サービス業', '飲食店': '宿泊業、飲食サービス業',
+    'サービス': 'サービス業（他に分類されないもの）', 'サービス業': 'サービス業（他に分類されないもの）',
+    '医療': '医療、福祉', '医療業': '医療、福祉', 'ヘルスケア': '医療、福祉',
+    '福祉': '医療、福祉', '介護': '医療、福祉',
+    '教育': '教育、学習支援業', '教育業': '教育、学習支援業',
+    '不動産': '不動産業、物品賃貸業', '不動産業': '不動産業、物品賃貸業',
+    '金融': '金融業、保険業', '金融業': '金融業、保険業', '保険': '金融業、保険業',
+    '運輸': '運輸業、郵便業', '運輸業': '運輸業、郵便業', '物流': '運輸業、郵便業',
+    '農業': '農業、林業', '農林水産': '農業、林業',
   };
   
   const results: {
@@ -3039,22 +3038,24 @@ agencyRoutes.post('/suggestions/generate', async (c) => {
   
   // 3. 各顧客に対してスコアリング
   const allSuggestions: any[] = [];
-  const prefectureMap: Record<string, string> = {
-    '北海道': '01', '青森県': '02', '岩手県': '03', '宮城県': '04', '秋田県': '05',
-    '山形県': '06', '福島県': '07', '茨城県': '08', '栃木県': '09', '群馬県': '10',
-    '埼玉県': '11', '千葉県': '12', '東京都': '13', '神奈川県': '14', '新潟県': '15',
-    '富山県': '16', '石川県': '17', '福井県': '18', '山梨県': '19', '長野県': '20',
-    '岐阜県': '21', '静岡県': '22', '愛知県': '23', '三重県': '24', '滋賀県': '25',
-    '京都府': '26', '大阪府': '27', '兵庫県': '28', '奈良県': '29', '和歌山県': '30',
-    '鳥取県': '31', '島根県': '32', '岡山県': '33', '広島県': '34', '山口県': '35',
-    '徳島県': '36', '香川県': '37', '愛媛県': '38', '高知県': '39', '福岡県': '40',
-    '佐賀県': '41', '長崎県': '42', '熊本県': '43', '大分県': '44', '宮崎県': '45',
-    '鹿児島県': '46', '沖縄県': '47',
+  
+  // コード→名前のマッピング（DBにはコードで保存されている）
+  const prefectureCodeToName: Record<string, string> = {
+    '01': '北海道', '02': '青森県', '03': '岩手県', '04': '宮城県', '05': '秋田県',
+    '06': '山形県', '07': '福島県', '08': '茨城県', '09': '栃木県', '10': '群馬県',
+    '11': '埼玉県', '12': '千葉県', '13': '東京都', '14': '神奈川県', '15': '新潟県',
+    '16': '富山県', '17': '石川県', '18': '福井県', '19': '山梨県', '20': '長野県',
+    '21': '岐阜県', '22': '静岡県', '23': '愛知県', '24': '三重県', '25': '滋賀県',
+    '26': '京都府', '27': '大阪府', '28': '兵庫県', '29': '奈良県', '30': '和歌山県',
+    '31': '鳥取県', '32': '島根県', '33': '岡山県', '34': '広島県', '35': '山口県',
+    '36': '徳島県', '37': '香川県', '38': '愛媛県', '39': '高知県', '40': '福岡県',
+    '41': '佐賀県', '42': '長崎県', '43': '熊本県', '44': '大分県', '45': '宮崎県',
+    '46': '鹿児島県', '47': '沖縄県',
   };
   
   for (const client of clients as any[]) {
-    const clientPrefecture = client.prefecture || '';
-    const clientPrefCode = prefectureMap[clientPrefecture] || clientPrefecture;
+    const clientPrefCode = client.prefecture || ''; // DBには '13' のようなコードで保存
+    const clientPrefectureName = prefectureCodeToName[clientPrefCode] || clientPrefCode; // '13' → '東京都'
     const clientIndustry = (client.industry_major || '').toLowerCase();
     
     // 従業員数の正規化（文字列 "1-5" → 数値 3）
@@ -3078,15 +3079,17 @@ agencyRoutes.post('/suggestions/generate', async (c) => {
       const scoreBreakdown: Record<string, number> = {};
       
       // 地域スコア
-      const targetArea = (subsidy.target_area_search || '').toLowerCase();
-      if (targetArea.includes('全国') || targetArea === '') {
+      const targetArea = subsidy.target_area_search || '';
+      const targetAreaLower = targetArea.toLowerCase();
+      if (targetAreaLower.includes('全国') || targetArea === '') {
         score += 20;
         scoreBreakdown.area = 20;
         matchReasons.push('全国対象');
-      } else if (targetArea.includes(clientPrefecture) || targetArea.includes(clientPrefCode)) {
+      } else if (targetArea.includes(clientPrefectureName) || targetArea.includes(clientPrefCode)) {
+        // 都道府県名（東京都）またはコード（13）でマッチング
         score += 40;
         scoreBreakdown.area = 40;
-        matchReasons.push(`${clientPrefecture}が対象地域`);
+        matchReasons.push(`${clientPrefectureName}が対象地域`);
       } else {
         scoreBreakdown.area = 0;
         riskFlags.push('対象地域外の可能性');
@@ -3188,7 +3191,7 @@ agencyRoutes.post('/suggestions/generate', async (c) => {
         agency_id: agencyId,
         company_id: client.company_id,
         company_name: client.company_name,
-        company_prefecture: client.prefecture,
+        company_prefecture: clientPrefectureName, // 都道府県名で保存（表示用）
         company_industry: client.industry_major,
         company_employee_count: clientEmployeeCount,
         rank: index + 1,

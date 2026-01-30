@@ -994,6 +994,21 @@ auth.post('/register-with-invite', async (c) => {
       }, 409);
     }
     
+    // レースコンディション対策: 招待を先にマーク（楽観的ロック）
+    // accepted_at が NULL の場合のみ更新し、影響行数で判定
+    const lockResult = await db.prepare(`
+      UPDATE agency_member_invites
+      SET accepted_at = ?
+      WHERE id = ? AND accepted_at IS NULL
+    `).bind(new Date().toISOString(), invite.id).run();
+    
+    if (!lockResult.meta?.changes || lockResult.meta.changes === 0) {
+      return c.json<ApiResponse<null>>({
+        success: false,
+        error: { code: 'INVITE_ALREADY_USED', message: 'この招待は既に使用されています' },
+      }, 409);
+    }
+    
     // パスワードハッシュ化
     const passwordHash = await hashPassword(password);
     
@@ -1029,12 +1044,12 @@ auth.post('/register-with-invite', async (c) => {
       ).run();
     }
     
-    // 招待を受諾済みに更新
+    // 招待にユーザー情報を紐付け（accepted_atは楽観的ロック時に設定済み）
     await db.prepare(`
       UPDATE agency_member_invites
-      SET accepted_at = ?, accepted_by_user_id = ?
+      SET accepted_by_user_id = ?
       WHERE id = ?
-    `).bind(now, userId, invite.id).run();
+    `).bind(userId, invite.id).run();
     
     // 事務所情報を取得
     const agency = await db.prepare('SELECT * FROM agencies WHERE id = ?')
@@ -1087,13 +1102,13 @@ auth.post('/register-with-invite', async (c) => {
       },
     }, 201);
   } catch (error) {
+    // エラー詳細はログに記録（本番環境ではユーザーに詳細を見せない）
     console.error('Register with invite error:', error);
-    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
     return c.json<ApiResponse<null>>({
       success: false,
       error: {
         code: 'INTERNAL_ERROR',
-        message: `Registration failed: ${errorMessage}`,
+        message: '登録処理中にエラーが発生しました。しばらくしてから再度お試しください。',
       },
     }, 500);
   }
