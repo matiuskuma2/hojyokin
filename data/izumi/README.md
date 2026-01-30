@@ -132,9 +132,10 @@ policy_id,primary_url,all_urls
 | izumi_detail_2200.csv | 199件 | 28,599 ~ 31,818 | 80KB |
 | izumi_detail_2400.csv | 199件 | 31,825 ~ 34,813 | 83KB |
 | izumi_detail_2600.csv | 199件 | 34,823 ~ 37,968 | 73KB |
+| izumi_detail_2800.csv | 199件 | 37,975 ~ 39,925 | 70KB |
 | izumi_detail_3000.csv | 199件 | 39,927 ~ 41,790 | 73KB |
 
-**合計: 2,587件の詳細データ（継続取得中）**
+**合計: 2,786件の詳細データ（継続取得中）**
 
 ### データ形式
 
@@ -284,6 +285,8 @@ INSERT INTO discovery_items (
 ## 5. 更新履歴
 
 ### 2026-01-30
+- **詳細データ追加**: `details/izumi_detail_2800.csv`（199件）
+  - policy_id: 37,975 ~ 39,925 の範囲（欠番補完）
 - **詳細データ追加**: `details/izumi_detail_3000.csv`（199件）
   - policy_id: 39,927 ~ 41,790 の範囲
 - **詳細データ追加**: `details/izumi_detail_2600.csv`（199件）
@@ -310,7 +313,7 @@ INSERT INTO discovery_items (
   - policy_id: 3,700 ~ 10,081 の範囲
 - **詳細データ追加**: `details/izumi_detail_200.csv`（199件）
   - policy_id: 28 ~ 3,699 の範囲
-- **合計2,587件の詳細データ**を取得完了
+- **合計2,786件の詳細データ**を取得完了
 - **README大幅更新**: PDF問題、データソース別戦略、Firecrawl限界と代替案を追記
 
 ### 2026-01-29
@@ -402,7 +405,7 @@ INSERT INTO discovery_items (
 
 #### Phase 1: 現状把握（完了）
 - [x] izumi_support_urls_*.csv: 約17,000件のURL収集
-- [x] izumi_detail_*.csv: 2,587件の詳細取得（継続中）
+- [x] izumi_detail_*.csv: 2,786件の詳細取得（継続中）
 
 #### Phase 2: 差分検知システム
 - [ ] 情報の泉の最新 `policy_id` を定期チェック
