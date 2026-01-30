@@ -124,8 +124,9 @@ policy_id,primary_url,all_urls
 | izumi_detail_400.csv | 199件 | 3,700 ~ 10,081 | 83KB |
 | izumi_detail_600.csv | 199件 | 10,095 ~ 14,449 | 81KB |
 | izumi_detail_800.csv | 199件 | 14,488 ~ 17,941 | 76KB |
+| izumi_detail_1000.csv | 199件 | 19,865 ~ 22,954 | 80KB |
 
-**合計: 796件の詳細データ（継続取得中）**
+**合計: 995件の詳細データ（継続取得中）**
 
 ### データ形式
 
@@ -275,6 +276,8 @@ INSERT INTO discovery_items (
 ## 5. 更新履歴
 
 ### 2026-01-30
+- **詳細データ追加**: `details/izumi_detail_1000.csv`（199件）
+  - policy_id: 19,865 ~ 22,954 の範囲
 - **詳細データ追加**: `details/izumi_detail_800.csv`（199件）
   - policy_id: 14,488 ~ 17,941 の範囲
 - **詳細データ追加**: `details/izumi_detail_600.csv`（199件）
@@ -283,7 +286,7 @@ INSERT INTO discovery_items (
   - policy_id: 3,700 ~ 10,081 の範囲
 - **詳細データ追加**: `details/izumi_detail_200.csv`（199件）
   - policy_id: 28 ~ 3,699 の範囲
-- **合計796件の詳細データ**を取得完了
+- **合計995件の詳細データ**を取得完了
 - **README大幅更新**: PDF問題、データソース別戦略、Firecrawl限界と代替案を追記
 
 ### 2026-01-29
@@ -442,7 +445,7 @@ INSERT INTO discovery_items (
 
 ## 7. 次のステップ
 
-1. **詳細データの継続取得**: policy_id 17,941 以降のデータを順次取得
+1. **詳細データの継続取得**: policy_id 22,954 以降のデータを順次取得
 2. **support_url のパターン分析**: HTML/PDF の比率と特徴を調査
 3. **jGrants重複チェック**: 既存796件とjGrantsデータの照合
 4. **親HTML監視の仕組み**: PDF直リンクではなく案内ページを監視
