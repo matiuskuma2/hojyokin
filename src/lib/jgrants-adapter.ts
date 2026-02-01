@@ -150,11 +150,13 @@ export class JGrantsAdapter {
   /**
    * SSOT検索（canonical + latest_snapshot）
    * P0: 検索の母集団を SSOT に切替、デフォルトは受付中のみ
+   * P1: source_link複数問題のガード（1 canonical につき 1 source_link のみ取得）
    */
   private async searchFromSSOT(params: AdapterSearchParams): Promise<AdapterSearchResponse> {
     try {
       // 基本クエリ: canonical → latest_snapshot（必須JOIN）
       // 表示補助: LEFT JOIN subsidy_cache
+      // P1ガード: source_link は MIN(id) で1件に限定（複数登録時の重複防止）
       let query = `
         SELECT 
           c.id AS canonical_id,
@@ -187,9 +189,16 @@ export class JGrantsAdapter {
           sc.target_number_of_employees
         FROM subsidy_canonical c
         JOIN subsidy_snapshot s ON s.id = c.latest_snapshot_id
-        JOIN subsidy_source_link l ON l.canonical_id = c.id
+        JOIN (
+          SELECT canonical_id, source_type, source_id
+          FROM subsidy_source_link
+          WHERE id IN (
+            SELECT MIN(id) FROM subsidy_source_link GROUP BY canonical_id
+          )
+        ) l ON l.canonical_id = c.id
         LEFT JOIN subsidy_cache sc ON sc.id = c.latest_cache_id
         WHERE c.is_active = 1
+          AND c.latest_snapshot_id IS NOT NULL
       `;
       const bindings: any[] = [];
       
@@ -211,14 +220,15 @@ export class JGrantsAdapter {
         bindings.push(`%${params.target_area_search}%`, `%${params.target_area_search}%`);
       }
       
-      // ソート
+      // ソート（P1: NULL締切のガード - 常に最後に表示）
       if (params.sort === 'acceptance_end_datetime') {
         // 締切が近い順（NULL は最後）
         query += ` ORDER BY CASE WHEN s.acceptance_end IS NULL THEN 1 ELSE 0 END, s.acceptance_end ${params.order || 'ASC'}`;
       } else if (params.sort === 'subsidy_max_limit') {
-        query += ` ORDER BY s.subsidy_max_limit ${params.order || 'DESC'} NULLS LAST`;
+        // 金額順（NULL は最後）
+        query += ` ORDER BY CASE WHEN s.subsidy_max_limit IS NULL THEN 1 ELSE 0 END, s.subsidy_max_limit ${params.order || 'DESC'}`;
       } else {
-        // デフォルト: 締切が近い順
+        // デフォルト: 締切が近い順（NULL は最後）
         query += ` ORDER BY CASE WHEN s.acceptance_end IS NULL THEN 1 ELSE 0 END, s.acceptance_end ASC`;
       }
       
@@ -258,9 +268,20 @@ export class JGrantsAdapter {
         backend: 'ssot',
       };
     } catch (error) {
-      console.error('SSOT search error:', error);
+      // P1: SSOT_SEARCH_ERROR ログ（フォールバック検知用）
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      console.error('[SSOT_SEARCH_ERROR]', JSON.stringify({
+        timestamp: new Date().toISOString(),
+        error_message: errorMessage,
+        fallback_used: true,
+        request_params: {
+          keyword: params.keyword || null,
+          limit: params.limit || 20,
+          offset: params.offset || 0,
+          target_area_search: params.target_area_search || null,
+        },
+      }));
       // SSOTエラー時はcacheにフォールバック（事故防止）
-      console.warn('SSOT search failed, falling back to cache');
       return this.searchFromCacheBackend(params);
     }
   }
