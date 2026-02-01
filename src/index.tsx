@@ -52,13 +52,23 @@ app.use('*', securityHeaders);
 // API ルート
 // ============================================================
 
-// ヘルスチェック
+// ヘルスチェック（SEARCH_BACKEND 状態を含む）
 app.get('/api/health', (c) => {
-  return c.json<ApiResponse<{ status: string; timestamp: string }>>({
+  const searchBackend = (c.env as any).SEARCH_BACKEND || 'ssot';
+  const jgrantsMode = (c.env as any).JGRANTS_MODE || 'cached-only';
+  
+  return c.json<ApiResponse<{ 
+    status: string; 
+    timestamp: string;
+    search_backend: string;
+    jgrants_mode: string;
+  }>>({
     success: true,
     data: {
       status: 'ok',
       timestamp: new Date().toISOString(),
+      search_backend: searchBackend,
+      jgrants_mode: jgrantsMode,
     },
   });
 });
