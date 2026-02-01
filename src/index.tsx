@@ -69,11 +69,17 @@ app.get('/api/health', async (c) => {
     `).first<{ count: number }>();
     ssotAcceptingCount = ssotResult?.count || 0;
     
+    // cache受付中: SSOTと同じ「今この瞬間の受付中」定義に揃える
+    // - source='jgrants' に限定（izumi等を混ぜない）
+    // - request_reception_display_flag = 1
+    // - acceptance_end_datetime が今より未来（NULL や過去は除外）
     const cacheResult = await c.env.DB.prepare(`
       SELECT COUNT(*) as count
       FROM subsidy_cache
-      WHERE request_reception_display_flag = 1
-        AND expires_at > datetime('now')
+      WHERE source = 'jgrants'
+        AND request_reception_display_flag = 1
+        AND acceptance_end_datetime IS NOT NULL
+        AND acceptance_end_datetime > datetime('now')
     `).first<{ count: number }>();
     cacheAcceptingCount = cacheResult?.count || 0;
   } catch (e) {
