@@ -114,6 +114,17 @@ curl https://hojyokin.pages.dev/api/health | jq .
 - UI上の検索結果が約173件レンジになるのは正常
 - 関係者に事前共有しておくこと
 
+### 📊 ssot vs cache の差分（2件）の正体
+
+| jgrants_id | タイトル | acceptance_start | acceptance_end | 状態 |
+|------------|----------|------------------|----------------|------|
+| a0WJ200000CDUUzMAP | 脱炭素成長型経済構造移行推進対策費補助金... | 2026-02-16 | 2026-02-20 | **募集開始前** |
+| a0WJ200000CDWZYMA5 | [２次公募]中小企業成長加速化補助金 | 2026-02-24 | 2026-03-26 | **募集開始前** |
+
+**結論**: cache は `request_reception_display_flag=1`（jGrants API のフラグ）で判定しているため「募集開始前」も含む。
+SSOT は `acceptance_start <= now <= acceptance_end` で判定しているため「本当に今この瞬間受付中」のみ。
+→ **SSOTが正しい**。この差分は想定内であり、事故ではない。
+
 ---
 
 ## 5. ログ収集テンプレート（24時間後に報告）
