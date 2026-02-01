@@ -2,19 +2,28 @@
 /**
  * import-izumi.mjs
  * 
- * izumi詳細CSV（約18,655件）をD1の izumi_subsidies テーブルに投入
+ * izumi詳細CSV（約18,7xx行）を raw保全しつつ izumi_subsidies へUPSERT
  * 
  * 使用方法:
  *   node scripts/import-izumi.mjs --local
  *   node scripts/import-izumi.mjs --local --dry-run
+ *   node scripts/import-izumi.mjs --local --limit=100
+ *   node scripts/import-izumi.mjs --local --resume
+ *   node scripts/import-izumi.mjs --local --fail-fast
  *   node scripts/import-izumi.mjs --local --file=data/izumi/details/izumi_detail_200.csv
  */
 
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import crypto from 'crypto';
-import { execSync } from 'child_process';
+import { 
+  ScriptRunner, 
+  sha256, 
+  escapeSQL, 
+  sqlValue, 
+  normalizeWhitespace, 
+  normalizeUrl 
+} from './lib/script-runner.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, '..');
@@ -23,12 +32,8 @@ const PROJECT_ROOT = path.resolve(__dirname, '..');
 // 設定
 // =============================================================================
 
-const CONFIG = {
-  csvDir: path.join(PROJECT_ROOT, 'data/izumi/details'),
-  csvPattern: /^izumi_detail_.*\.csv$/,
-  batchSize: 50,
-  d1Database: 'subsidy-matching-production'
-};
+const CSV_DIR = path.join(PROJECT_ROOT, 'data/izumi/details');
+const CSV_PATTERN = /^izumi_detail_.*\.csv$/;
 
 // =============================================================================
 // 金額パース
@@ -36,15 +41,30 @@ const CONFIG = {
 
 /**
  * 金額テキストを数値に変換
+ * 事故防止：単位/期間/人数が混ざる場合はNULL
+ * 
  * @param {string} text - 元のテキスト（例: "30万円", "1億円", "5000円/回"）
- * @returns {number|null} - パース後の数値（円）
+ * @returns {{value: number|null, parsed: boolean}} - パース結果
  */
 function parseMaxAmount(text) {
-  if (!text || text === '') return null;
+  if (!text || text === '') return { value: null, parsed: false };
   
-  // 特殊パターン除外
-  if (text.includes('要相談') || text.includes('なし') || text.includes('N/A')) {
-    return null;
+  // 推測で整数化しないパターン（単位/期間/人数混在）
+  const ambiguousPatterns = [
+    /\/[人月年回件日時]/,   // 5000円/回、3万円/人
+    /1人あたり/,
+    /上限なし/,
+    /要相談/,
+    /なし/,
+    /N\/A/i,
+    /未定/,
+    /要確認/
+  ];
+  
+  for (const pattern of ambiguousPatterns) {
+    if (pattern.test(text)) {
+      return { value: null, parsed: false };
+    }
   }
   
   // 単位変換マップ（大きい単位から順に）
@@ -57,43 +77,47 @@ function parseMaxAmount(text) {
   ];
   
   // カンマ除去、全角→半角
-  let value = text
+  let normalized = text
     .replace(/[,，]/g, '')
     .replace(/[０-９]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0));
   
   // 単位付き数値を検出
   for (const [unit, multiplier] of unitMap) {
     const regex = new RegExp(`([0-9.]+)\\s*${unit}`);
-    const match = value.match(regex);
+    const match = normalized.match(regex);
     if (match) {
-      return Math.round(parseFloat(match[1]) * multiplier);
+      const num = parseFloat(match[1]);
+      if (!isNaN(num)) {
+        return { value: Math.round(num * multiplier), parsed: true };
+      }
     }
   }
   
   // 単位なしの数値（円）
-  const numMatch = value.match(/([0-9,]+)\s*円/);
+  const numMatch = normalized.match(/([0-9,]+)\s*円/);
   if (numMatch) {
-    return parseInt(numMatch[1].replace(/,/g, ''), 10);
+    const num = parseInt(numMatch[1].replace(/,/g, ''), 10);
+    if (!isNaN(num)) {
+      return { value: num, parsed: true };
+    }
   }
   
   // 純粋な数値のみ
-  const pureNum = value.match(/^([0-9,]+)$/);
+  const pureNum = normalized.match(/^([0-9,]+)$/);
   if (pureNum) {
-    return parseInt(pureNum[1].replace(/,/g, ''), 10);
+    const num = parseInt(pureNum[1].replace(/,/g, ''), 10);
+    if (!isNaN(num)) {
+      return { value: num, parsed: true };
+    }
   }
   
-  return null;
+  return { value: null, parsed: false };
 }
 
 // =============================================================================
 // 難易度変換
 // =============================================================================
 
-/**
- * 難易度テキストを数値に変換
- * @param {string} text - 元のテキスト（例: "★☆☆☆☆"）
- * @returns {number} - 1-5 の数値
- */
 function parseDifficulty(text) {
   if (!text) return 1;
   const stars = (text.match(/★/g) || []).length;
@@ -104,44 +128,35 @@ function parseDifficulty(text) {
 // 都道府県推定
 // =============================================================================
 
-// 市区町村→都道府県マッピング（主要なもの）
+// 市区町村→都道府県マッピング
 const CITY_TO_PREF = {
-  // 北海道
-  'sapporo': '01', 'hakodate': '01', 'asahikawa': '01', 'obihiro': '01',
-  // 東北
+  'sapporo': '01', 'hakodate': '01', 'asahikawa': '01',
   'aomori': '02', 'hirosaki': '02',
   'morioka': '03', 'sendai': '04', 'akita': '05', 'yamagata': '06',
   'fukushima': '07', 'koriyama': '07', 'sukagawa': '07',
-  // 関東
   'mito': '08', 'ibaraki': '08', 'daigo': '08',
   'utsunomiya': '09', 'maebashi': '10', 'takasaki': '10', 'kiryu': '10', 'fujioka': '10',
   'saitama': '11', 'kawaguchi': '11',
   'chiba': '12', 'narita': '12', 'minamiboso': '12',
-  'adachi': '13', 'shibuya': '13', 'shinjuku': '13', 'chuo': '13', 'koto': '13', 'fuchu': '13',
-  'tokyo': '13', 'minato': '13', 'ota': '13', 'setagaya': '13', 'meguro': '13', 'nakano': '13',
-  'yokohama': '14', 'kawasaki': '14', 'sagamihara': '14',
-  // 中部
+  'adachi': '13', 'shibuya': '13', 'shinjuku': '13', 'chuo': '13', 'koto': '13', 
+  'fuchu': '13', 'tokyo': '13', 'minato': '13', 'ota': '13', 'setagaya': '13',
+  'yokohama': '14', 'kawasaki': '14',
   'niigata': '15', 'toyama': '16', 'kanazawa': '17', 'kahoku': '17',
   'fukui': '18', 'kofu': '19', 'nagano': '20', 'suzaka': '20',
   'gifu': '21', 'shizuoka': '22', 'hamamatsu': '22',
   'nagoya': '23', 'aichi': '23', 'hekinan': '23', 'seto': '23', 'komaki': '23',
-  // 近畿
   'tsu': '24', 'shiga': '25', 'kyoto': '26',
-  'osaka': '27', 'ibaraki': '27',  // 大阪の茨木市
+  'osaka': '27',
   'kobe': '28', 'miki': '28', 'hyogo': '28',
   'nara': '29', 'wakayama': '30',
-  // 中国
-  'tottori': '31', 'matsue': '32', 'okayama': '33', 'hiroshima': '34', 'fuchu': '34',
+  'tottori': '31', 'matsue': '32', 'okayama': '33', 'hiroshima': '34',
   'yamaguchi': '35',
-  // 四国
   'tokushima': '36', 'takamatsu': '37', 'matsuyama': '38', 'kochi': '39',
-  // 九州
   'fukuoka': '40', 'kitakyushu': '40',
   'saga': '41', 'nagasaki': '42', 'kumamoto': '43', 'oita': '44',
   'miyazaki': '45', 'kagoshima': '46', 'naha': '47', 'okinawa': '47'
 };
 
-// ドメインの都道府県マッピング
 const PREF_DOMAIN_MAP = {
   'hokkaido': '01', 'aomori': '02', 'iwate': '03', 'miyagi': '04',
   'akita': '05', 'yamagata': '06', 'fukushima': '07', 'ibaraki': '08',
@@ -157,100 +172,67 @@ const PREF_DOMAIN_MAP = {
   'miyazaki': '45', 'kagoshima': '46', 'okinawa': '47'
 };
 
-/**
- * URLまたはissuerから都道府県コードを推定
- * @param {string} url - support_url
- * @param {string} issuer - 実施機関名
- * @returns {string|null} - 都道府県コード（01-47）
- */
-function extractPrefectureCode(url, issuer) {
+function extractPrefectureCode(url) {
   if (!url) return null;
   
   try {
-    // URLドメインから市区町村を抽出
     const cityMatch = url.match(/\.city\.([a-z]+)\./);
     if (cityMatch && CITY_TO_PREF[cityMatch[1]]) {
       return CITY_TO_PREF[cityMatch[1]];
     }
     
-    // town.xxx パターン
     const townMatch = url.match(/\.town\.([a-z]+)\./);
     if (townMatch && CITY_TO_PREF[townMatch[1]]) {
       return CITY_TO_PREF[townMatch[1]];
     }
     
-    // pref.xxx パターン
     const prefMatch = url.match(/\.pref\.([a-z]+)\./);
     if (prefMatch && PREF_DOMAIN_MAP[prefMatch[1]]) {
       return PREF_DOMAIN_MAP[prefMatch[1]];
     }
     
-    // metro.tokyo パターン
-    if (url.includes('metro.tokyo') || url.includes('tokyo.lg.jp')) {
-      return '13';
-    }
-    
-    // 大阪の茨木市 (ibaraki.osaka)
-    if (url.includes('.ibaraki.osaka.jp')) {
-      return '27';
-    }
-    
-    // 広島の府中市
-    if (url.includes('.fuchu.hiroshima.jp')) {
-      return '34';
-    }
-    
-    // 東京の府中市
-    if (url.includes('.fuchu.tokyo.jp')) {
-      return '13';
-    }
-  } catch {
-    // URLパースエラーは無視
-  }
+    if (url.includes('metro.tokyo') || url.includes('tokyo.lg.jp')) return '13';
+    if (url.includes('.ibaraki.osaka.jp')) return '27';  // 大阪の茨木市
+    if (url.includes('.fuchu.hiroshima.jp')) return '34';
+    if (url.includes('.fuchu.tokyo.jp')) return '13';
+  } catch {}
   
   return null;
 }
 
 // =============================================================================
-// ハッシュ生成
+// row_hash生成
 // =============================================================================
 
 /**
- * 行データのハッシュを生成（変更検知用）
- * @param {object} row - CSV行データ
- * @returns {string} - MD5ハッシュ
+ * 正規化済みフィールドからSHA256ハッシュを生成
  */
 function generateRowHash(row) {
-  const hashSource = [
+  const normalized = [
     row.policy_id,
-    row.title,
-    row.issuer || '',
-    row.max_amount || '',
-    row.support_url || ''
+    normalizeWhitespace(row.title),
+    normalizeWhitespace(row.issuer || ''),
+    normalizeWhitespace(row.area || ''),
+    normalizeWhitespace(row.max_amount || ''),
+    normalizeUrl(row.support_url || '')
   ].join('|');
   
-  return crypto.createHash('md5').update(hashSource).digest('hex');
+  return sha256(normalized);
 }
 
 // =============================================================================
 // CSVパース
 // =============================================================================
 
-/**
- * CSVファイルをパース
- * @param {string} filePath - CSVファイルパス
- * @returns {object[]} - パース済み行データの配列
- */
 function parseCSV(filePath) {
   const content = fs.readFileSync(filePath, 'utf-8');
   const lines = content.split('\n');
   
   if (lines.length < 2) return [];
   
-  // ヘッダー行をパース
   const headers = parseCSVLine(lines[0]);
-  
   const rows = [];
+  
   for (let i = 1; i < lines.length; i++) {
     const line = lines[i].trim();
     if (!line) continue;
@@ -262,10 +244,7 @@ function parseCSV(filePath) {
       row[h] = values[idx] || '';
     });
     
-    // 必須項目チェック
-    if (!row.policy_id || !row.title) {
-      continue;
-    }
+    if (!row.policy_id || !row.title) continue;
     
     rows.push(row);
   }
@@ -273,9 +252,6 @@ function parseCSV(filePath) {
   return rows;
 }
 
-/**
- * CSV行をパース（ダブルクォート対応）
- */
 function parseCSVLine(line) {
   const values = [];
   let current = '';
@@ -304,217 +280,214 @@ function parseCSVLine(line) {
 }
 
 // =============================================================================
-// D1操作
-// =============================================================================
-
-/**
- * wrangler d1 execute でSQLを実行
- */
-function executeD1(sql, isLocal) {
-  const localFlag = isLocal ? '--local' : '';
-  const cmd = `cd "${PROJECT_ROOT}" && npx wrangler d1 execute ${CONFIG.d1Database} ${localFlag} --command="${sql.replace(/"/g, '\\"')}"`;
-  
-  try {
-    const result = execSync(cmd, { encoding: 'utf-8', maxBuffer: 50 * 1024 * 1024 });
-    return { success: true, result };
-  } catch (error) {
-    return { success: false, error: error.message };
-  }
-}
-
-/**
- * バッチUPSERT実行
- */
-function executeBatchUpsert(rows, isLocal, dryRun) {
-  if (rows.length === 0) return { inserted: 0, errors: [] };
-  
-  const errors = [];
-  let inserted = 0;
-  
-  for (const row of rows) {
-    const id = `izumi-${row.policy_id}`;
-    const policyId = parseInt(row.policy_id, 10);
-    const title = row.title.replace(/'/g, "''");
-    const issuer = (row.issuer || '').replace(/'/g, "''");
-    const area = (row.area || '').replace(/'/g, "''");
-    const prefCode = extractPrefectureCode(row.support_url, row.issuer);
-    const publishDate = row.publish_date || null;
-    const period = (row.period || '').replace(/'/g, "''");
-    const maxAmountText = (row.max_amount || '').replace(/'/g, "''");
-    const maxAmountValue = parseMaxAmount(row.max_amount);
-    const difficulty = row.difficulty || '';
-    const difficultyLevel = parseDifficulty(row.difficulty);
-    const startFee = (row.start_fee || '').replace(/'/g, "''");
-    const successFee = (row.success_fee || '').replace(/'/g, "''");
-    const supportUrl = (row.support_url || '').replace(/'/g, "''");
-    const supportUrlsAll = (row.support_urls_all || '').replace(/'/g, "''");
-    
-    const sql = `
-      INSERT INTO izumi_subsidies (
-        id, policy_id, detail_url, title, issuer, area, prefecture_code,
-        publish_date, period, max_amount_text, max_amount_value,
-        difficulty, difficulty_level, start_fee, success_fee,
-        support_url, support_urls_all, imported_at, updated_at
-      ) VALUES (
-        '${id}', ${policyId}, '${row.detail_url}', '${title}', '${issuer}', '${area}', ${prefCode ? `'${prefCode}'` : 'NULL'},
-        ${publishDate ? `'${publishDate}'` : 'NULL'}, '${period}', '${maxAmountText}', ${maxAmountValue !== null ? maxAmountValue : 'NULL'},
-        '${difficulty}', ${difficultyLevel}, '${startFee}', '${successFee}',
-        '${supportUrl}', '${supportUrlsAll}', datetime('now'), datetime('now')
-      )
-      ON CONFLICT(policy_id) DO UPDATE SET
-        detail_url = excluded.detail_url,
-        title = excluded.title,
-        issuer = excluded.issuer,
-        area = excluded.area,
-        prefecture_code = excluded.prefecture_code,
-        publish_date = excluded.publish_date,
-        period = excluded.period,
-        max_amount_text = excluded.max_amount_text,
-        max_amount_value = excluded.max_amount_value,
-        difficulty = excluded.difficulty,
-        difficulty_level = excluded.difficulty_level,
-        start_fee = excluded.start_fee,
-        success_fee = excluded.success_fee,
-        support_url = excluded.support_url,
-        support_urls_all = excluded.support_urls_all,
-        updated_at = datetime('now')
-    `.trim().replace(/\n/g, ' ').replace(/\s+/g, ' ');
-    
-    if (dryRun) {
-      console.log(`[DRY-RUN] Would execute: policy_id=${policyId}, title=${title.substring(0, 30)}...`);
-      inserted++;
-      continue;
-    }
-    
-    const result = executeD1(sql, isLocal);
-    if (result.success) {
-      inserted++;
-    } else {
-      errors.push({ policy_id: policyId, error: result.error });
-      console.error(`[ERROR] policy_id=${policyId}: ${result.error}`);
-    }
-  }
-  
-  return { inserted, errors };
-}
-
-// =============================================================================
 // メイン処理
 // =============================================================================
 
-async function main() {
-  const args = process.argv.slice(2);
-  const isLocal = args.includes('--local');
-  const isProduction = args.includes('--production');
-  const dryRun = args.includes('--dry-run');
-  const specificFile = args.find(a => a.startsWith('--file='))?.split('=')[1];
-  
-  if (!isLocal && !isProduction) {
-    console.error('Error: Specify --local or --production');
-    process.exit(1);
-  }
-  
-  console.log('='.repeat(60));
-  console.log('import-izumi.mjs');
-  console.log('='.repeat(60));
-  console.log(`Mode: ${isLocal ? 'LOCAL' : 'PRODUCTION'}`);
-  console.log(`Dry Run: ${dryRun}`);
-  console.log(`CSV Directory: ${CONFIG.csvDir}`);
-  console.log('');
-  
-  const startTime = Date.now();
+const runner = new ScriptRunner('import-izumi', process.argv.slice(2));
+
+runner.run(async (ctx) => {
+  const { args, logger, db, stats, resumeState, updateStats, saveCheckpoint, handleError } = ctx;
   
   // CSVファイル列挙
   let csvFiles;
-  if (specificFile) {
-    csvFiles = [path.resolve(PROJECT_ROOT, specificFile)];
+  if (args.file) {
+    csvFiles = [path.resolve(PROJECT_ROOT, args.file)];
   } else {
-    if (!fs.existsSync(CONFIG.csvDir)) {
-      console.error(`Error: CSV directory not found: ${CONFIG.csvDir}`);
-      process.exit(1);
+    if (!fs.existsSync(CSV_DIR)) {
+      throw new Error(`CSV directory not found: ${CSV_DIR}`);
     }
-    csvFiles = fs.readdirSync(CONFIG.csvDir)
-      .filter(f => CONFIG.csvPattern.test(f))
-      .map(f => path.join(CONFIG.csvDir, f))
+    csvFiles = fs.readdirSync(CSV_DIR)
+      .filter(f => CSV_PATTERN.test(f))
+      .map(f => path.join(CSV_DIR, f))
       .sort();
   }
   
-  console.log(`Found ${csvFiles.length} CSV files`);
+  logger.info('CSV files found', { count: csvFiles.length });
   
+  // 再開ポイント以降のファイルから処理
+  let startFileIdx = 0;
+  let startPolicyId = null;
+  if (resumeState && resumeState.last_file_idx !== undefined) {
+    startFileIdx = resumeState.last_file_idx;
+    startPolicyId = resumeState.last_processed_id;
+  }
+  
+  // 統計
+  let parseAmountSuccess = 0;
+  let parseAmountFailed = 0;
+  let updatedChangedHash = 0;
+  let updatedLastSeenOnly = 0;
   let totalRows = 0;
-  let totalInserted = 0;
-  let totalErrors = [];
   
   // ファイルごとに処理
-  for (let i = 0; i < csvFiles.length; i++) {
-    const filePath = csvFiles[i];
+  for (let fileIdx = startFileIdx; fileIdx < csvFiles.length; fileIdx++) {
+    const filePath = csvFiles[fileIdx];
     const fileName = path.basename(filePath);
     
-    console.log(`\n[${i + 1}/${csvFiles.length}] Processing: ${fileName}`);
+    logger.info(`Processing file`, { file: fileName, idx: fileIdx });
     
-    // CSVパース
     const rows = parseCSV(filePath);
-    console.log(`  Parsed ${rows.length} rows`);
+    logger.info(`Parsed rows`, { count: rows.length });
     
-    if (rows.length === 0) continue;
+    // policy_idでソート（再開性のため）
+    rows.sort((a, b) => parseInt(a.policy_id) - parseInt(b.policy_id));
     
-    totalRows += rows.length;
-    
-    // バッチ処理
-    for (let j = 0; j < rows.length; j += CONFIG.batchSize) {
-      const batch = rows.slice(j, j + CONFIG.batchSize);
-      const { inserted, errors } = executeBatchUpsert(batch, isLocal, dryRun);
-      totalInserted += inserted;
-      totalErrors.push(...errors);
+    for (const row of rows) {
+      const policyId = parseInt(row.policy_id, 10);
       
-      process.stdout.write(`\r  Progress: ${Math.min(j + CONFIG.batchSize, rows.length)}/${rows.length}`);
+      // 再開時: 前回処理済みIDはスキップ
+      if (startPolicyId && policyId <= startPolicyId) {
+        continue;
+      }
+      startPolicyId = null;  // 最初の該当行以降は通常処理
+      
+      // limit チェック
+      if (args.limit && totalRows >= args.limit) {
+        logger.info('Limit reached', { limit: args.limit });
+        return;
+      }
+      
+      totalRows++;
+      
+      try {
+        // 金額パース
+        const amountResult = parseMaxAmount(row.max_amount);
+        if (amountResult.parsed) parseAmountSuccess++;
+        else parseAmountFailed++;
+        
+        // row_hash生成
+        const rowHash = generateRowHash(row);
+        
+        // raw_json（CSV行全体をJSON保存）
+        const rawJson = JSON.stringify(row);
+        
+        // 都道府県推定
+        const prefCode = extractPrefectureCode(row.support_url);
+        
+        // 既存レコード確認
+        const existing = db.query(`SELECT row_hash, first_seen_at FROM izumi_subsidies WHERE policy_id = ${policyId}`);
+        const existingRow = existing.success && existing.rows.length > 0 ? existing.rows[0] : null;
+        
+        let sql;
+        if (!existingRow) {
+          // 新規INSERT
+          const id = `izumi-${policyId}`;
+          sql = `
+            INSERT INTO izumi_subsidies (
+              id, policy_id, detail_url, title, issuer, area, prefecture_code,
+              publish_date, period, max_amount_text, max_amount_value,
+              difficulty, difficulty_level, start_fee, success_fee,
+              support_url, support_urls_all,
+              raw_json, row_hash, first_seen_at, last_seen_at, is_visible,
+              imported_at, updated_at
+            ) VALUES (
+              ${sqlValue(id)}, ${policyId}, ${sqlValue(row.detail_url)}, ${sqlValue(row.title)},
+              ${sqlValue(row.issuer)}, ${sqlValue(row.area)}, ${sqlValue(prefCode)},
+              ${sqlValue(row.publish_date || null)}, ${sqlValue(row.period)},
+              ${sqlValue(row.max_amount)}, ${amountResult.value !== null ? amountResult.value : 'NULL'},
+              ${sqlValue(row.difficulty)}, ${parseDifficulty(row.difficulty)},
+              ${sqlValue(row.start_fee)}, ${sqlValue(row.success_fee)},
+              ${sqlValue(row.support_url)}, ${sqlValue(row.support_urls_all)},
+              ${sqlValue(rawJson)}, ${sqlValue(rowHash)}, datetime('now'), datetime('now'), 1,
+              datetime('now'), datetime('now')
+            )
+          `;
+          
+          if (!args.dryRun) {
+            const result = db.execute(sql);
+            if (!result.success) {
+              handleError(result.error, { policy_id: policyId, file: fileName });
+              continue;
+            }
+          }
+          
+          updateStats({ inserted: stats.inserted + 1 });
+          
+        } else if (existingRow.row_hash !== rowHash) {
+          // row_hashが変わった → 更新
+          sql = `
+            UPDATE izumi_subsidies SET
+              detail_url = ${sqlValue(row.detail_url)},
+              title = ${sqlValue(row.title)},
+              issuer = ${sqlValue(row.issuer)},
+              area = ${sqlValue(row.area)},
+              prefecture_code = ${sqlValue(prefCode)},
+              publish_date = ${sqlValue(row.publish_date || null)},
+              period = ${sqlValue(row.period)},
+              max_amount_text = ${sqlValue(row.max_amount)},
+              max_amount_value = ${amountResult.value !== null ? amountResult.value : 'NULL'},
+              difficulty = ${sqlValue(row.difficulty)},
+              difficulty_level = ${parseDifficulty(row.difficulty)},
+              start_fee = ${sqlValue(row.start_fee)},
+              success_fee = ${sqlValue(row.success_fee)},
+              support_url = ${sqlValue(row.support_url)},
+              support_urls_all = ${sqlValue(row.support_urls_all)},
+              raw_json = ${sqlValue(rawJson)},
+              row_hash = ${sqlValue(rowHash)},
+              last_seen_at = datetime('now'),
+              updated_at = datetime('now')
+            WHERE policy_id = ${policyId}
+          `;
+          
+          if (!args.dryRun) {
+            const result = db.execute(sql);
+            if (!result.success) {
+              handleError(result.error, { policy_id: policyId, file: fileName });
+              continue;
+            }
+          }
+          
+          updatedChangedHash++;
+          updateStats({ updated: stats.updated + 1 });
+          
+        } else {
+          // row_hashが同じ → last_seen_atだけ更新
+          sql = `UPDATE izumi_subsidies SET last_seen_at = datetime('now') WHERE policy_id = ${policyId}`;
+          
+          if (!args.dryRun) {
+            db.execute(sql);
+          }
+          
+          updatedLastSeenOnly++;
+          updateStats({ skipped: stats.skipped + 1 });
+        }
+        
+        updateStats({ 
+          processed: stats.processed + 1,
+          last_processed_id: policyId,
+          last_file_idx: fileIdx
+        });
+        
+        // 進捗表示
+        if (stats.processed % 50 === 0) {
+          logger.progress(stats.processed, totalRows, { lastId: policyId });
+          saveCheckpoint();
+        }
+        
+      } catch (error) {
+        handleError(error, { policy_id: policyId, file: fileName });
+      }
     }
-    
-    console.log(''); // 改行
   }
   
-  const duration = Date.now() - startTime;
+  // 最終統計
+  updateStats({
+    parse_amount_success: parseAmountSuccess,
+    parse_amount_failed: parseAmountFailed,
+    updated_changed_hash: updatedChangedHash,
+    updated_last_seen_only: updatedLastSeenOnly,
+    total_rows_read: totalRows
+  });
   
-  // 結果サマリー
-  console.log('\n' + '='.repeat(60));
-  console.log('Summary');
-  console.log('='.repeat(60));
-  console.log(`Total Files:    ${csvFiles.length}`);
-  console.log(`Total Rows:     ${totalRows}`);
-  console.log(`Inserted:       ${totalInserted}`);
-  console.log(`Errors:         ${totalErrors.length}`);
-  console.log(`Duration:       ${(duration / 1000).toFixed(1)}s`);
+  console.log('');
+  logger.info('Import completed', {
+    parse_amount_success: parseAmountSuccess,
+    parse_amount_failed: parseAmountFailed,
+    updated_changed_hash: updatedChangedHash,
+    updated_last_seen_only: updatedLastSeenOnly
+  });
   
-  if (totalErrors.length > 0) {
-    console.log('\nErrors:');
-    totalErrors.slice(0, 10).forEach(e => {
-      console.log(`  - policy_id=${e.policy_id}: ${e.error.substring(0, 100)}`);
-    });
-    if (totalErrors.length > 10) {
-      console.log(`  ... and ${totalErrors.length - 10} more`);
-    }
-  }
-  
-  // 結果JSON出力
-  const result = {
-    totalFiles: csvFiles.length,
-    totalRows,
-    inserted: totalInserted,
-    errors: totalErrors.length,
-    errorDetails: totalErrors.slice(0, 20),
-    duration,
-    timestamp: new Date().toISOString(),
-    mode: isLocal ? 'local' : 'production',
-    dryRun
-  };
-  
-  console.log('\nResult JSON:');
-  console.log(JSON.stringify(result, null, 2));
-  
-  process.exit(totalErrors.length > 0 ? 1 : 0);
-}
-
-main().catch(err => {
+}).catch(err => {
   console.error('Fatal error:', err);
   process.exit(1);
 });

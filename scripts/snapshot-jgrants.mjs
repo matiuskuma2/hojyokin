@@ -3,7 +3,7 @@
  * snapshot-jgrants.mjs
  * 
  * subsidy_cache（canonical_id設定済み）から subsidy_snapshot を生成
- * 時点データを保存し、変更検知を行う
+ * 差分検知（diff_json）と変更通知のトリガーにする
  * 
  * 使用方法:
  *   node scripts/snapshot-jgrants.mjs --local
@@ -11,25 +11,23 @@
  *   node scripts/snapshot-jgrants.mjs --local --diff-only
  *   node scripts/snapshot-jgrants.mjs --local --force
  *   node scripts/snapshot-jgrants.mjs --local --canonical-id=jg-12345
+ *   node scripts/snapshot-jgrants.mjs --local --limit=100
+ *   node scripts/snapshot-jgrants.mjs --local --resume
  */
 
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import crypto from 'crypto';
-import { execSync } from 'child_process';
+import { 
+  ScriptRunner, 
+  sha256, 
+  escapeSQL, 
+  sqlValue, 
+  normalizeWhitespace 
+} from './lib/script-runner.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, '..');
-
-// =============================================================================
-// 設定
-// =============================================================================
-
-const CONFIG = {
-  batchSize: 50,
-  d1Database: 'subsidy-matching-production'
-};
 
 // =============================================================================
 // ユーティリティ
@@ -55,7 +53,6 @@ function isCurrentlyAccepting(startDatetime, endDatetime) {
 function parseRateMax(rateText) {
   if (!rateText) return null;
   
-  // パターン: "2/3", "1/2", "50%", "補助率 2/3" など
   const fractionMatch = rateText.match(/(\d+)\s*[\/／]\s*(\d+)/);
   if (fractionMatch) {
     return parseFloat(fractionMatch[1]) / parseFloat(fractionMatch[2]);
@@ -73,7 +70,7 @@ function parseRateMax(rateText) {
  * 地域テキストから地域コード配列を生成
  */
 function extractAreaCodes(areaText) {
-  if (!areaText) return '[]';
+  if (!areaText) return '["00"]';
   
   const prefMap = {
     '北海道': '01', '青森': '02', '岩手': '03', '宮城': '04', '秋田': '05',
@@ -95,21 +92,11 @@ function extractAreaCodes(areaText) {
     }
   }
   
-  // 全国パターン
   if (areaText.includes('全国') || codes.length === 0) {
     return '["00"]';
   }
   
   return JSON.stringify(codes);
-}
-
-/**
- * 業種テキストからコード配列を生成
- */
-function extractIndustryCodes(industryText) {
-  if (!industryText) return '[]';
-  // 簡易実装: テキストをそのまま配列に
-  return JSON.stringify([industryText]);
 }
 
 /**
@@ -119,16 +106,12 @@ function extractRoundKey(detailJson) {
   if (!detailJson) return null;
   
   try {
-    const detail = typeof detailJson === 'string' ? JSON.parse(detailJson) : detailJson;
-    const title = detail.title || '';
-    
-    // パターン: 第N回, 第N次, R6-N など
+    const title = detailJson.title || '';
     const roundMatch = title.match(/第(\d+)[次回期]/);
     if (roundMatch) {
       const year = new Date().getFullYear();
       return `${year}-r${roundMatch[1]}`;
     }
-    
     return null;
   } catch {
     return null;
@@ -136,367 +119,317 @@ function extractRoundKey(detailJson) {
 }
 
 /**
+ * スナップショット用の正規化JSONを生成（キーをソート）
+ */
+function createSnapshotJson(cacheRow, detailJson) {
+  const snapshot = {
+    acceptance_end: cacheRow.acceptance_end_datetime || null,
+    acceptance_start: cacheRow.acceptance_start_datetime || null,
+    area: cacheRow.target_area_search || null,
+    eligible_expenses: detailJson?.eligible_expenses ? 
+      normalizeWhitespace(detailJson.eligible_expenses).substring(0, 500) : null,
+    industry: cacheRow.target_industry || null,
+    max_limit: cacheRow.subsidy_max_limit || null,
+    overview: detailJson?.overview ? 
+      normalizeWhitespace(detailJson.overview).substring(0, 500) : null,
+    rate: cacheRow.subsidy_rate || null,
+    requirements: detailJson?.application_requirements ? 
+      normalizeWhitespace(detailJson.application_requirements).substring(0, 500) : null,
+    title: cacheRow.title || null
+  };
+  
+  // キーをソートしてJSON化
+  const sortedKeys = Object.keys(snapshot).sort();
+  const sorted = {};
+  for (const key of sortedKeys) {
+    sorted[key] = snapshot[key];
+  }
+  
+  return JSON.stringify(sorted);
+}
+
+/**
  * スナップショットのコンテンツハッシュを計算
  */
-function calculateContentHash(cacheRow, detailJson) {
-  const hashSource = JSON.stringify({
-    acceptance_start: cacheRow.acceptance_start_datetime || '',
-    acceptance_end: cacheRow.acceptance_end_datetime || '',
-    max_limit: cacheRow.subsidy_max_limit || 0,
-    rate: cacheRow.subsidy_rate || '',
-    area: cacheRow.target_area_search || '',
-    // detail_jsonの主要項目（長すぎる場合は切り詰め）
-    overview: (detailJson?.overview || '').substring(0, 300),
-    requirements: (detailJson?.application_requirements || '').substring(0, 300),
-    expenses: (detailJson?.eligible_expenses || '').substring(0, 300)
-  });
+function calculateContentHash(snapshotJson) {
+  return sha256(snapshotJson);
+}
+
+/**
+ * 差分を計算
+ */
+function calculateDiff(oldSnapshotJson, newSnapshotJson) {
+  if (!oldSnapshotJson) return null;
   
-  return crypto.createHash('md5').update(hashSource).digest('hex');
+  try {
+    const oldData = JSON.parse(oldSnapshotJson);
+    const newData = JSON.parse(newSnapshotJson);
+    
+    const changes = [];
+    const allKeys = new Set([...Object.keys(oldData), ...Object.keys(newData)]);
+    
+    for (const key of allKeys) {
+      const oldVal = oldData[key];
+      const newVal = newData[key];
+      
+      if (JSON.stringify(oldVal) !== JSON.stringify(newVal)) {
+        changes.push({
+          key,
+          before: oldVal,
+          after: newVal
+        });
+      }
+    }
+    
+    return changes.length > 0 ? JSON.stringify(changes) : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
  * スナップショットIDを生成
  */
-function generateSnapshotId(canonicalId) {
+function generateSnapshotId() {
   const timestamp = Date.now();
   const random = Math.random().toString(36).substring(2, 8);
   return `snap-${timestamp}-${random}`;
 }
 
 // =============================================================================
-// D1操作
-// =============================================================================
-
-/**
- * wrangler d1 execute でSQLを実行
- */
-function executeD1(sql, isLocal) {
-  const localFlag = isLocal ? '--local' : '';
-  const escapedSql = sql.replace(/"/g, '\\"').replace(/\n/g, ' ').replace(/\s+/g, ' ');
-  const cmd = `cd "${PROJECT_ROOT}" && npx wrangler d1 execute ${CONFIG.d1Database} ${localFlag} --command="${escapedSql}"`;
-  
-  try {
-    const result = execSync(cmd, { encoding: 'utf-8', maxBuffer: 50 * 1024 * 1024 });
-    return { success: true, result };
-  } catch (error) {
-    return { success: false, error: error.message };
-  }
-}
-
-/**
- * wrangler d1 execute でSELECTを実行してJSON取得
- */
-function queryD1(sql, isLocal) {
-  const localFlag = isLocal ? '--local' : '';
-  const escapedSql = sql.replace(/"/g, '\\"').replace(/\n/g, ' ').replace(/\s+/g, ' ');
-  const cmd = `cd "${PROJECT_ROOT}" && npx wrangler d1 execute ${CONFIG.d1Database} ${localFlag} --json --command="${escapedSql}"`;
-  
-  try {
-    const result = execSync(cmd, { encoding: 'utf-8', maxBuffer: 50 * 1024 * 1024 });
-    const parsed = JSON.parse(result);
-    if (Array.isArray(parsed) && parsed[0]?.results) {
-      return { success: true, rows: parsed[0].results };
-    }
-    return { success: true, rows: [] };
-  } catch (error) {
-    return { success: false, error: error.message, rows: [] };
-  }
-}
-
-// =============================================================================
-// スナップショット処理
-// =============================================================================
-
-/**
- * 処理対象の件数を取得
- */
-function getTargetCount(isLocal, diffOnly, canonicalIdFilter) {
-  let where = 'WHERE canonical_id IS NOT NULL';
-  if (canonicalIdFilter) {
-    where += ` AND canonical_id = '${canonicalIdFilter}'`;
-  }
-  
-  const result = queryD1(`SELECT COUNT(*) as count FROM subsidy_cache ${where}`, isLocal);
-  
-  if (result.success && result.rows.length > 0) {
-    return result.rows[0].count;
-  }
-  return 0;
-}
-
-/**
- * バッチでsubsidy_cacheを取得
- */
-function getCacheBatch(offset, limit, isLocal, canonicalIdFilter) {
-  let where = 'WHERE canonical_id IS NOT NULL';
-  if (canonicalIdFilter) {
-    where += ` AND canonical_id = '${canonicalIdFilter}'`;
-  }
-  
-  const sql = `
-    SELECT id, canonical_id, source, title, subsidy_max_limit, subsidy_rate,
-           target_area_search, target_industry, target_number_of_employees,
-           acceptance_start_datetime, acceptance_end_datetime,
-           request_reception_display_flag, detail_json, cached_at
-    FROM subsidy_cache
-    ${where}
-    ORDER BY canonical_id
-    LIMIT ${limit} OFFSET ${offset}
-  `;
-  
-  return queryD1(sql, isLocal);
-}
-
-/**
- * 既存スナップショットの最新ハッシュを取得
- */
-function getLatestSnapshotHash(canonicalId, isLocal) {
-  const sql = `
-    SELECT content_hash FROM subsidy_snapshot
-    WHERE canonical_id = '${canonicalId}' AND superseded_by IS NULL
-    ORDER BY snapshot_at DESC LIMIT 1
-  `;
-  
-  const result = queryD1(sql, isLocal);
-  if (result.success && result.rows.length > 0) {
-    return result.rows[0].content_hash;
-  }
-  return null;
-}
-
-/**
- * スナップショットを作成
- */
-function createSnapshot(cacheRow, isLocal, dryRun, force) {
-  let detailJson = null;
-  try {
-    detailJson = cacheRow.detail_json ? JSON.parse(cacheRow.detail_json) : null;
-  } catch {}
-  
-  const contentHash = calculateContentHash(cacheRow, detailJson);
-  
-  // 差分チェック（forceでない場合）
-  if (!force) {
-    const existingHash = getLatestSnapshotHash(cacheRow.canonical_id, isLocal);
-    if (existingHash === contentHash) {
-      return { success: true, skipped: true, reason: 'no_change' };
-    }
-  }
-  
-  const snapshotId = generateSnapshotId(cacheRow.canonical_id);
-  const roundKey = extractRoundKey(detailJson);
-  const fiscalYear = detailJson?.fiscal_year || null;
-  const isAccepting = isCurrentlyAccepting(
-    cacheRow.acceptance_start_datetime,
-    cacheRow.acceptance_end_datetime
-  );
-  const rateMax = parseRateMax(cacheRow.subsidy_rate);
-  const areaCodes = extractAreaCodes(cacheRow.target_area_search);
-  const industryCodes = extractIndustryCodes(cacheRow.target_industry);
-  
-  // 公式URL取得
-  const officialUrl = detailJson?.related_url || detailJson?.official_url || detailJson?.detailUrl || '';
-  const pdfUrls = JSON.stringify(detailJson?.pdfUrls || detailJson?.pdf_urls || []);
-  const attachments = JSON.stringify(detailJson?.attachments || []);
-  
-  if (dryRun) {
-    console.log(`[DRY-RUN] snapshot_id=${snapshotId}, canonical_id=${cacheRow.canonical_id}, hash=${contentHash}`);
-    return { success: true, created: true, snapshotId };
-  }
-  
-  // エスケープ
-  const escape = (s) => (s || '').replace(/'/g, "''");
-  
-  // Step 1: 新snapshot INSERT
-  const insertSql = `
-    INSERT INTO subsidy_snapshot (
-      id, canonical_id, source_link_id, round_key, fiscal_year,
-      acceptance_start, acceptance_end, deadline_text, is_accepting,
-      subsidy_max_limit, subsidy_min_limit, subsidy_rate, subsidy_rate_max,
-      target_area_codes, target_area_text, target_industry_codes, target_employee_text,
-      official_url, pdf_urls, attachments, detail_json,
-      snapshot_at, content_hash, created_at
-    ) VALUES (
-      '${snapshotId}', '${cacheRow.canonical_id}', NULL, 
-      ${roundKey ? `'${roundKey}'` : 'NULL'}, 
-      ${fiscalYear ? `'${escape(fiscalYear)}'` : 'NULL'},
-      ${cacheRow.acceptance_start_datetime ? `'${cacheRow.acceptance_start_datetime}'` : 'NULL'},
-      ${cacheRow.acceptance_end_datetime ? `'${cacheRow.acceptance_end_datetime}'` : 'NULL'},
-      ${detailJson?.deadline ? `'${escape(detailJson.deadline)}'` : 'NULL'},
-      ${isAccepting},
-      ${cacheRow.subsidy_max_limit || 'NULL'},
-      ${detailJson?.subsidy_min_limit || 'NULL'},
-      ${cacheRow.subsidy_rate ? `'${escape(cacheRow.subsidy_rate)}'` : 'NULL'},
-      ${rateMax !== null ? rateMax : 'NULL'},
-      '${areaCodes}',
-      ${cacheRow.target_area_search ? `'${escape(cacheRow.target_area_search)}'` : 'NULL'},
-      '${industryCodes}',
-      ${cacheRow.target_number_of_employees ? `'${escape(cacheRow.target_number_of_employees)}'` : 'NULL'},
-      ${officialUrl ? `'${escape(officialUrl)}'` : 'NULL'},
-      '${escape(pdfUrls)}',
-      '${escape(attachments)}',
-      ${cacheRow.detail_json ? `'${escape(cacheRow.detail_json)}'` : 'NULL'},
-      datetime('now'), '${contentHash}', datetime('now')
-    )
-  `.trim();
-  
-  const insertResult = executeD1(insertSql, isLocal);
-  if (!insertResult.success) {
-    return { success: false, error: `insert: ${insertResult.error}` };
-  }
-  
-  // Step 2: 旧snapshotにsuperseded_by設定
-  const supersedeSql = `
-    UPDATE subsidy_snapshot 
-    SET superseded_by = '${snapshotId}'
-    WHERE canonical_id = '${cacheRow.canonical_id}' 
-      AND id != '${snapshotId}' 
-      AND superseded_by IS NULL
-  `.trim();
-  
-  const supersedeResult = executeD1(supersedeSql, isLocal);
-  // supersede失敗は警告のみ
-  
-  // Step 3: canonical.latest_snapshot_id更新
-  const updateCanonicalSql = `
-    UPDATE subsidy_canonical 
-    SET latest_snapshot_id = '${snapshotId}', last_updated_at = datetime('now')
-    WHERE id = '${cacheRow.canonical_id}'
-  `.trim();
-  
-  const updateResult = executeD1(updateCanonicalSql, isLocal);
-  if (!updateResult.success) {
-    return { success: false, error: `update canonical: ${updateResult.error}` };
-  }
-  
-  return { success: true, created: true, snapshotId };
-}
-
-// =============================================================================
 // メイン処理
 // =============================================================================
 
-async function main() {
-  const args = process.argv.slice(2);
-  const isLocal = args.includes('--local');
-  const isProduction = args.includes('--production');
-  const dryRun = args.includes('--dry-run');
-  const diffOnly = args.includes('--diff-only');
-  const force = args.includes('--force');
-  const canonicalIdArg = args.find(a => a.startsWith('--canonical-id='));
-  const canonicalIdFilter = canonicalIdArg ? canonicalIdArg.split('=')[1] : null;
+const runner = new ScriptRunner('snapshot-jgrants', process.argv.slice(2));
+
+runner.run(async (ctx) => {
+  const { args, logger, db, stats, resumeState, updateStats, saveCheckpoint, handleError } = ctx;
   
-  if (!isLocal && !isProduction) {
-    console.error('Error: Specify --local or --production');
-    process.exit(1);
+  // 対象取得用のWHERE句
+  let whereClause = 'canonical_id IS NOT NULL';
+  if (args.canonicalId) {
+    whereClause += ` AND canonical_id = '${args.canonicalId}'`;
   }
-  
-  console.log('='.repeat(60));
-  console.log('snapshot-jgrants.mjs');
-  console.log('='.repeat(60));
-  console.log(`Mode: ${isLocal ? 'LOCAL' : 'PRODUCTION'}`);
-  console.log(`Dry Run: ${dryRun}`);
-  console.log(`Diff Only: ${diffOnly}`);
-  console.log(`Force: ${force}`);
-  console.log(`Canonical Filter: ${canonicalIdFilter || 'none'}`);
-  console.log('');
-  
-  const startTime = Date.now();
   
   // 対象件数取得
-  const totalCount = getTargetCount(isLocal, diffOnly, canonicalIdFilter);
-  console.log(`Total target rows: ${totalCount}`);
+  const totalCount = db.count('subsidy_cache', whereClause);
+  logger.info('Target rows', { count: totalCount });
   
   if (totalCount === 0) {
-    console.log('No rows to process. Exiting.');
-    process.exit(0);
+    logger.info('No rows to process');
+    return;
   }
   
-  let processed = 0;
+  // 再開ポイント
+  let lastCanonicalId = null;
+  if (resumeState && resumeState.last_processed_id) {
+    lastCanonicalId = resumeState.last_processed_id;
+  }
+  
+  // 統計
   let snapshotsCreated = 0;
   let snapshotsSkipped = 0;
-  let superseded = 0;
-  let errors = [];
-  let offset = 0;
+  let canonicalMissing = 0;
+  let processed = 0;
   
   // バッチ処理
-  while (processed < totalCount) {
-    const batchResult = getCacheBatch(offset, CONFIG.batchSize, isLocal, canonicalIdFilter);
+  let offset = 0;
+  const batchSize = args.batchSize;
+  
+  while (true) {
+    // バッチ取得
+    let sql = `
+      SELECT id, canonical_id, source, title, subsidy_max_limit, subsidy_rate,
+             target_area_search, target_industry, target_number_of_employees,
+             acceptance_start_datetime, acceptance_end_datetime,
+             request_reception_display_flag, detail_json, cached_at
+      FROM subsidy_cache
+      WHERE ${whereClause}
+    `;
+    
+    if (lastCanonicalId) {
+      sql += ` AND canonical_id > '${lastCanonicalId}'`;
+    }
+    
+    sql += ` ORDER BY canonical_id LIMIT ${batchSize}`;
+    
+    const batchResult = db.query(sql);
     
     if (!batchResult.success || batchResult.rows.length === 0) {
-      console.log(`\nBatch fetch failed or empty at offset ${offset}`);
       break;
     }
     
     for (const row of batchResult.rows) {
-      const result = createSnapshot(row, isLocal, dryRun, force);
+      // limit チェック
+      if (args.limit && processed >= args.limit) {
+        logger.info('Limit reached', { limit: args.limit });
+        return;
+      }
+      
       processed++;
       
-      if (result.success) {
-        if (result.skipped) {
-          snapshotsSkipped++;
-        } else if (result.created) {
-          snapshotsCreated++;
+      try {
+        if (!row.canonical_id) {
+          canonicalMissing++;
+          updateStats({ skipped: stats.skipped + 1 });
+          continue;
         }
-      } else {
-        errors.push({ canonical_id: row.canonical_id, error: result.error });
+        
+        // detail_jsonをパース
+        let detailJson = null;
+        try {
+          detailJson = row.detail_json ? JSON.parse(row.detail_json) : null;
+        } catch {}
+        
+        // スナップショット用JSON生成
+        const snapshotJson = createSnapshotJson(row, detailJson);
+        const contentHash = calculateContentHash(snapshotJson);
+        
+        // 既存スナップショット取得（最新）
+        const existingResult = db.query(`
+          SELECT id, content_hash, 
+                 (SELECT id FROM subsidy_snapshot 
+                  WHERE canonical_id = '${row.canonical_id}' 
+                  AND superseded_by IS NULL 
+                  ORDER BY snapshot_at DESC LIMIT 1) as latest_snapshot_id,
+                 (SELECT detail_json FROM subsidy_snapshot 
+                  WHERE canonical_id = '${row.canonical_id}' 
+                  AND superseded_by IS NULL 
+                  ORDER BY snapshot_at DESC LIMIT 1) as latest_snapshot_json
+          FROM subsidy_snapshot
+          WHERE canonical_id = '${row.canonical_id}' AND superseded_by IS NULL
+          ORDER BY snapshot_at DESC LIMIT 1
+        `);
+        
+        const existingSnapshot = existingResult.success && existingResult.rows.length > 0 
+          ? existingResult.rows[0] 
+          : null;
+        
+        // 差分チェック（--forceでない場合）
+        if (!args.force && existingSnapshot && existingSnapshot.content_hash === contentHash) {
+          snapshotsSkipped++;
+          updateStats({ skipped: stats.skipped + 1, last_processed_id: row.canonical_id });
+          
+          if (processed % 100 === 0) {
+            logger.progress(processed, totalCount, { lastId: row.canonical_id });
+          }
+          continue;
+        }
+        
+        // --diff-only: 差分がない場合はスキップ（上でチェック済み）
+        
+        // 差分計算
+        const diffJson = existingSnapshot 
+          ? calculateDiff(existingSnapshot.latest_snapshot_json, row.detail_json)
+          : null;
+        
+        // スナップショット作成
+        const snapshotId = generateSnapshotId();
+        const roundKey = extractRoundKey(detailJson);
+        const fiscalYear = detailJson?.fiscal_year || null;
+        const isAccepting = isCurrentlyAccepting(
+          row.acceptance_start_datetime,
+          row.acceptance_end_datetime
+        );
+        const rateMax = parseRateMax(row.subsidy_rate);
+        const areaCodes = extractAreaCodes(row.target_area_search);
+        const officialUrl = detailJson?.related_url || detailJson?.official_url || '';
+        const pdfUrls = JSON.stringify(detailJson?.pdfUrls || []);
+        const attachments = JSON.stringify(detailJson?.attachments || []);
+        
+        const insertSql = `
+          INSERT INTO subsidy_snapshot (
+            id, canonical_id, source_link_id, round_key, fiscal_year,
+            acceptance_start, acceptance_end, deadline_text, is_accepting,
+            subsidy_max_limit, subsidy_min_limit, subsidy_rate, subsidy_rate_max,
+            target_area_codes, target_area_text, target_industry_codes, target_employee_text,
+            official_url, pdf_urls, attachments, detail_json,
+            snapshot_at, content_hash,
+            diff_against_snapshot_id, diff_json,
+            created_at
+          ) VALUES (
+            ${sqlValue(snapshotId)}, ${sqlValue(row.canonical_id)}, NULL,
+            ${sqlValue(roundKey)}, ${sqlValue(fiscalYear)},
+            ${sqlValue(row.acceptance_start_datetime)}, ${sqlValue(row.acceptance_end_datetime)},
+            ${sqlValue(detailJson?.deadline)}, ${isAccepting},
+            ${row.subsidy_max_limit || 'NULL'}, ${detailJson?.subsidy_min_limit || 'NULL'},
+            ${sqlValue(row.subsidy_rate)}, ${rateMax !== null ? rateMax : 'NULL'},
+            ${sqlValue(areaCodes)}, ${sqlValue(row.target_area_search)},
+            ${sqlValue(JSON.stringify([row.target_industry]))}, ${sqlValue(row.target_number_of_employees)},
+            ${sqlValue(officialUrl)}, ${sqlValue(pdfUrls)}, ${sqlValue(attachments)},
+            ${sqlValue(row.detail_json)},
+            datetime('now'), ${sqlValue(contentHash)},
+            ${sqlValue(existingSnapshot?.id || null)}, ${sqlValue(diffJson)},
+            datetime('now')
+          )
+        `;
+        
+        if (!args.dryRun) {
+          const insertResult = db.execute(insertSql);
+          if (!insertResult.success) {
+            handleError(insertResult.error, { canonical_id: row.canonical_id });
+            continue;
+          }
+          
+          // 旧スナップショットにsuperseded_by設定
+          if (existingSnapshot) {
+            db.execute(`
+              UPDATE subsidy_snapshot 
+              SET superseded_by = ${sqlValue(snapshotId)}
+              WHERE canonical_id = ${sqlValue(row.canonical_id)}
+                AND id != ${sqlValue(snapshotId)}
+                AND superseded_by IS NULL
+            `);
+          }
+          
+          // canonical.latest_snapshot_id更新
+          db.execute(`
+            UPDATE subsidy_canonical 
+            SET latest_snapshot_id = ${sqlValue(snapshotId)}, 
+                last_updated_at = datetime('now')
+            WHERE id = ${sqlValue(row.canonical_id)}
+          `);
+        }
+        
+        snapshotsCreated++;
+        updateStats({ 
+          inserted: stats.inserted + 1,
+          last_processed_id: row.canonical_id
+        });
+        
+        // 進捗表示
+        if (processed % 50 === 0) {
+          logger.progress(processed, totalCount, { lastId: row.canonical_id });
+          saveCheckpoint();
+        }
+        
+      } catch (error) {
+        handleError(error, { canonical_id: row.canonical_id });
       }
       
-      // 進捗表示
-      if (processed % 10 === 0) {
-        process.stdout.write(`\rProgress: ${processed}/${totalCount} (created: ${snapshotsCreated}, skipped: ${snapshotsSkipped})`);
-      }
+      lastCanonicalId = row.canonical_id;
     }
     
-    offset += CONFIG.batchSize;
-    
-    // バッチ間で少し待機
-    if (!dryRun) {
-      await new Promise(resolve => setTimeout(resolve, 100));
-    }
+    offset += batchSize;
   }
   
-  const duration = Date.now() - startTime;
+  // 最終統計
+  updateStats({
+    rows_scanned: processed,
+    snapshots_created: snapshotsCreated,
+    snapshots_skipped_no_change: snapshotsSkipped,
+    canonical_missing: canonicalMissing
+  });
   
-  // 結果サマリー
-  console.log('\n\n' + '='.repeat(60));
-  console.log('Summary');
-  console.log('='.repeat(60));
-  console.log(`Total Processed:      ${processed}`);
-  console.log(`Snapshots Created:    ${snapshotsCreated}`);
-  console.log(`Snapshots Skipped:    ${snapshotsSkipped}`);
-  console.log(`Errors:               ${errors.length}`);
-  console.log(`Duration:             ${(duration / 1000).toFixed(1)}s`);
+  console.log('');
+  logger.info('Snapshot generation completed', {
+    rows_scanned: processed,
+    snapshots_created: snapshotsCreated,
+    snapshots_skipped_no_change: snapshotsSkipped,
+    canonical_missing: canonicalMissing
+  });
   
-  if (errors.length > 0) {
-    console.log('\nErrors (first 10):');
-    errors.slice(0, 10).forEach(e => {
-      console.log(`  - canonical_id=${e.canonical_id}: ${e.error?.substring(0, 80) || 'unknown'}`);
-    });
-  }
-  
-  // 結果JSON出力
-  const result = {
-    totalProcessed: processed,
-    snapshotsCreated,
-    snapshotsSkipped,
-    errors: errors.length,
-    errorDetails: errors.slice(0, 20),
-    duration,
-    timestamp: new Date().toISOString(),
-    mode: isLocal ? 'local' : 'production',
-    dryRun,
-    diffOnly,
-    force
-  };
-  
-  console.log('\nResult JSON:');
-  console.log(JSON.stringify(result, null, 2));
-  
-  process.exit(errors.length > 0 ? 1 : 0);
-}
-
-main().catch(err => {
+}).catch(err => {
   console.error('Fatal error:', err);
   process.exit(1);
 });

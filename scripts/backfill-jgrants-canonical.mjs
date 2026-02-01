@@ -8,26 +8,25 @@
  * 使用方法:
  *   node scripts/backfill-jgrants-canonical.mjs --local
  *   node scripts/backfill-jgrants-canonical.mjs --local --dry-run
+ *   node scripts/backfill-jgrants-canonical.mjs --local --limit=100
+ *   node scripts/backfill-jgrants-canonical.mjs --local --resume
+ *   node scripts/backfill-jgrants-canonical.mjs --local --fail-fast
  *   node scripts/backfill-jgrants-canonical.mjs --production --confirm
  */
 
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import crypto from 'crypto';
-import { execSync } from 'child_process';
+import { 
+  ScriptRunner, 
+  md5, 
+  escapeSQL, 
+  sqlValue, 
+  normalizeWhitespace 
+} from './lib/script-runner.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, '..');
-
-// =============================================================================
-// 設定
-// =============================================================================
-
-const CONFIG = {
-  batchSize: 50,
-  d1Database: 'subsidy-matching-production'
-};
 
 // =============================================================================
 // 機関コードマッピング
@@ -72,14 +71,13 @@ const AGENCY_CODE_MAP = {
  */
 function normalizeTitle(title) {
   if (!title) return '';
-  return title
+  return normalizeWhitespace(title)
     .toLowerCase()
-    .replace(/[（）\(\)\[\]【】「」『』]/g, '')  // 括弧除去
-    .replace(/[　\s\t\n]+/g, '')                  // 空白除去
-    .replace(/令和\d+年度?/g, '')                 // 年度除去
+    .replace(/[（）\(\)\[\]【】「」『』]/g, '')
+    .replace(/令和\d+年度?/g, '')
     .replace(/平成\d+年度?/g, '')
-    .replace(/第\d+[次回期募集]/g, '')            // 回次除去
-    .replace(/[・]/g, '');                        // 中黒除去
+    .replace(/第\d+[次回期募集]/g, '')
+    .replace(/[・]/g, '');
 }
 
 /**
@@ -105,10 +103,7 @@ function extractIssuerCode(detailJson) {
     }
     
     // マッチしない場合はハッシュ
-    return 'org-' + crypto.createHash('md5')
-      .update(agency)
-      .digest('hex')
-      .substring(0, 6);
+    return 'org-' + md5(agency).substring(0, 6);
   } catch {
     return null;
   }
@@ -132,7 +127,7 @@ function extractIssuerName(detailJson) {
  * target_area_searchから都道府県コードを抽出
  */
 function extractPrefectureCode(targetArea) {
-  if (!targetArea) return '00'; // 全国
+  if (!targetArea) return '00';
   
   const prefMap = {
     '北海道': '01', '青森': '02', '岩手': '03', '宮城': '04', '秋田': '05',
@@ -151,7 +146,6 @@ function extractPrefectureCode(targetArea) {
     if (targetArea.includes(pref)) return code;
   }
   
-  // 全国パターン
   if (targetArea.includes('全国') || targetArea.includes('日本全国')) {
     return '00';
   }
@@ -160,9 +154,43 @@ function extractPrefectureCode(targetArea) {
 }
 
 /**
+ * region_scopeを判定
+ */
+function extractRegionScope(detailJson, targetArea) {
+  if (!targetArea && !detailJson) return 'unknown';
+  
+  // detail_jsonのworkflowsをチェック
+  if (detailJson) {
+    try {
+      const detail = typeof detailJson === 'string' ? JSON.parse(detailJson) : detailJson;
+      const workflows = detail.workflows || detail.target_area;
+      if (workflows) {
+        if (typeof workflows === 'string' && workflows.includes('全国')) return 'national';
+      }
+    } catch {}
+  }
+  
+  // target_areaから判定
+  if (targetArea) {
+    if (targetArea.includes('全国')) return 'national';
+    // 単一都道府県なら prefecture
+    const prefs = ['北海道', '青森', '岩手', '宮城', '秋田', '山形', '福島', '茨城', 
+                   '栃木', '群馬', '埼玉', '千葉', '東京', '神奈川', '新潟', '富山',
+                   '石川', '福井', '山梨', '長野', '岐阜', '静岡', '愛知', '三重',
+                   '滋賀', '京都', '大阪', '兵庫', '奈良', '和歌山', '鳥取', '島根',
+                   '岡山', '広島', '山口', '徳島', '香川', '愛媛', '高知', '福岡',
+                   '佐賀', '長崎', '熊本', '大分', '宮崎', '鹿児島', '沖縄'];
+    
+    const matchedPrefs = prefs.filter(p => targetArea.includes(p));
+    if (matchedPrefs.length === 1) return 'prefecture';
+    if (matchedPrefs.length > 1) return 'multi_prefecture';
+  }
+  
+  return 'unknown';
+}
+
+/**
  * canonical_idを生成
- * @param {object} cacheRow - subsidy_cacheの行
- * @returns {string} - canonical_id
  */
 function generateCanonicalId(cacheRow) {
   // jGrantsの場合、IDをそのまま利用
@@ -171,288 +199,209 @@ function generateCanonicalId(cacheRow) {
   }
   
   // その他ソースの場合
-  const normalizedTitle = normalizeTitle(cacheRow.title);
-  const titleHash = crypto.createHash('md5')
-    .update(normalizedTitle)
-    .digest('hex')
-    .substring(0, 8);
-  
+  const normalized = normalizeTitle(cacheRow.title);
+  const titleHash = md5(normalized).substring(0, 8);
   const issuerCode = extractIssuerCode(cacheRow.detail_json) || 'unknown';
   return `${issuerCode}-${titleHash}`;
-}
-
-// =============================================================================
-// D1操作
-// =============================================================================
-
-/**
- * wrangler d1 execute でSQLを実行
- */
-function executeD1(sql, isLocal) {
-  const localFlag = isLocal ? '--local' : '';
-  const escapedSql = sql.replace(/"/g, '\\"').replace(/\n/g, ' ');
-  const cmd = `cd "${PROJECT_ROOT}" && npx wrangler d1 execute ${CONFIG.d1Database} ${localFlag} --command="${escapedSql}"`;
-  
-  try {
-    const result = execSync(cmd, { encoding: 'utf-8', maxBuffer: 50 * 1024 * 1024 });
-    return { success: true, result };
-  } catch (error) {
-    return { success: false, error: error.message };
-  }
-}
-
-/**
- * wrangler d1 execute でSELECTを実行してJSON取得
- */
-function queryD1(sql, isLocal) {
-  const localFlag = isLocal ? '--local' : '';
-  const escapedSql = sql.replace(/"/g, '\\"').replace(/\n/g, ' ');
-  const cmd = `cd "${PROJECT_ROOT}" && npx wrangler d1 execute ${CONFIG.d1Database} ${localFlag} --json --command="${escapedSql}"`;
-  
-  try {
-    const result = execSync(cmd, { encoding: 'utf-8', maxBuffer: 50 * 1024 * 1024 });
-    // JSONパース
-    const parsed = JSON.parse(result);
-    // wrangler d1 execute --json の出力形式: [{ results: [...], success: true, ... }]
-    if (Array.isArray(parsed) && parsed[0]?.results) {
-      return { success: true, rows: parsed[0].results };
-    }
-    return { success: true, rows: [] };
-  } catch (error) {
-    return { success: false, error: error.message, rows: [] };
-  }
-}
-
-// =============================================================================
-// バックフィル処理
-// =============================================================================
-
-/**
- * subsidy_cacheの件数を取得
- */
-function getCacheCount(isLocal, excludeProcessed) {
-  const where = excludeProcessed ? 'WHERE canonical_id IS NULL' : '';
-  const result = queryD1(`SELECT COUNT(*) as count FROM subsidy_cache ${where}`, isLocal);
-  
-  if (result.success && result.rows.length > 0) {
-    return result.rows[0].count;
-  }
-  return 0;
-}
-
-/**
- * バッチでsubsidy_cacheを取得
- */
-function getCacheBatch(offset, limit, isLocal) {
-  const sql = `
-    SELECT id, source, title, subsidy_max_limit, subsidy_rate,
-           target_area_search, target_industry, target_number_of_employees,
-           acceptance_start_datetime, acceptance_end_datetime,
-           request_reception_display_flag, detail_json, cached_at
-    FROM subsidy_cache
-    WHERE canonical_id IS NULL
-    ORDER BY id
-    LIMIT ${limit} OFFSET ${offset}
-  `;
-  
-  return queryD1(sql, isLocal);
-}
-
-/**
- * canonical/link/cache更新を実行
- */
-function processRow(row, isLocal, dryRun) {
-  const canonicalId = generateCanonicalId(row);
-  const issuerCode = extractIssuerCode(row.detail_json);
-  const issuerName = extractIssuerName(row.detail_json);
-  const prefCode = extractPrefectureCode(row.target_area_search);
-  const normalizedTitle = normalizeTitle(row.title);
-  const linkId = `link-jg-${row.id}`;
-  
-  // エスケープ
-  const escapedTitle = (row.title || '').replace(/'/g, "''");
-  const escapedNormTitle = (normalizedTitle || '').replace(/'/g, "''");
-  const escapedIssuerName = (issuerName || '').replace(/'/g, "''");
-  
-  if (dryRun) {
-    console.log(`[DRY-RUN] canonical_id=${canonicalId}, cache_id=${row.id}, title=${escapedTitle.substring(0, 30)}...`);
-    return { success: true, canonicalCreated: true, linkCreated: true };
-  }
-  
-  // Step 1: canonical UPSERT
-  const canonicalSql = `
-    INSERT INTO subsidy_canonical (
-      id, name, name_normalized, issuer_code, issuer_name, prefecture_code,
-      latest_cache_id, first_seen_at, is_active, created_at, updated_at
-    ) VALUES (
-      '${canonicalId}', '${escapedTitle}', '${escapedNormTitle}', 
-      ${issuerCode ? `'${issuerCode}'` : 'NULL'}, 
-      ${issuerName ? `'${escapedIssuerName}'` : 'NULL'}, 
-      '${prefCode}',
-      '${row.id}', datetime('now'), 1, datetime('now'), datetime('now')
-    )
-    ON CONFLICT(id) DO UPDATE SET
-      name = excluded.name,
-      issuer_name = excluded.issuer_name,
-      latest_cache_id = excluded.latest_cache_id,
-      last_updated_at = datetime('now'),
-      updated_at = datetime('now')
-  `.trim();
-  
-  const canonicalResult = executeD1(canonicalSql, isLocal);
-  if (!canonicalResult.success) {
-    return { success: false, error: `canonical: ${canonicalResult.error}` };
-  }
-  
-  // Step 2: source_link INSERT
-  const linkSql = `
-    INSERT INTO subsidy_source_link (
-      id, canonical_id, source_type, source_id, match_type, match_score, verified, created_at
-    ) VALUES (
-      '${linkId}', '${canonicalId}', 'jgrants', '${row.id}', 'system', 1.0, 1, datetime('now')
-    )
-    ON CONFLICT(source_type, source_id) DO NOTHING
-  `.trim();
-  
-  const linkResult = executeD1(linkSql, isLocal);
-  if (!linkResult.success) {
-    return { success: false, error: `link: ${linkResult.error}` };
-  }
-  
-  // Step 3: subsidy_cache.canonical_id更新
-  const updateSql = `
-    UPDATE subsidy_cache SET canonical_id = '${canonicalId}' WHERE id = '${row.id}'
-  `.trim();
-  
-  const updateResult = executeD1(updateSql, isLocal);
-  if (!updateResult.success) {
-    return { success: false, error: `update: ${updateResult.error}` };
-  }
-  
-  return { success: true, canonicalCreated: true, linkCreated: true };
 }
 
 // =============================================================================
 // メイン処理
 // =============================================================================
 
-async function main() {
-  const args = process.argv.slice(2);
-  const isLocal = args.includes('--local');
-  const isProduction = args.includes('--production');
-  const dryRun = args.includes('--dry-run');
-  const confirm = args.includes('--confirm');
-  const batchSizeArg = args.find(a => a.startsWith('--batch-size='));
-  const batchSize = batchSizeArg ? parseInt(batchSizeArg.split('=')[1], 10) : CONFIG.batchSize;
+const runner = new ScriptRunner('backfill-jgrants-canonical', process.argv.slice(2));
+
+runner.run(async (ctx) => {
+  const { args, logger, db, stats, resumeState, updateStats, saveCheckpoint, handleError } = ctx;
   
-  if (!isLocal && !isProduction) {
-    console.error('Error: Specify --local or --production');
-    process.exit(1);
+  // 本番実行時の確認
+  if (args.mode === 'production' && !args.confirm && !args.dryRun) {
+    throw new Error('Production mode requires --confirm flag');
   }
   
-  if (isProduction && !confirm && !dryRun) {
-    console.error('Error: Production mode requires --confirm flag');
-    process.exit(1);
-  }
-  
-  console.log('='.repeat(60));
-  console.log('backfill-jgrants-canonical.mjs');
-  console.log('='.repeat(60));
-  console.log(`Mode: ${isLocal ? 'LOCAL' : 'PRODUCTION'}`);
-  console.log(`Dry Run: ${dryRun}`);
-  console.log(`Batch Size: ${batchSize}`);
-  console.log('');
-  
-  const startTime = Date.now();
-  
-  // 対象件数取得
-  const totalCount = getCacheCount(isLocal, true);
-  console.log(`Total unprocessed rows: ${totalCount}`);
+  // 対象件数取得（canonical_id未設定のもの）
+  const totalCount = db.count('subsidy_cache', 'canonical_id IS NULL');
+  logger.info('Target rows', { count: totalCount });
   
   if (totalCount === 0) {
-    console.log('No rows to process. Exiting.');
-    process.exit(0);
+    logger.info('No rows to process');
+    return;
   }
   
-  let processed = 0;
+  // 再開ポイント
+  let lastCacheId = null;
+  if (resumeState && resumeState.last_processed_id) {
+    lastCacheId = resumeState.last_processed_id;
+  }
+  
+  // 統計
   let canonicalCreated = 0;
+  let canonicalExisting = 0;
   let linksCreated = 0;
-  let errors = [];
-  let offset = 0;
+  let cacheUpdated = 0;
+  let processed = 0;
   
   // バッチ処理
-  while (processed < totalCount) {
-    const batchResult = getCacheBatch(offset, batchSize, isLocal);
+  const batchSize = args.batchSize;
+  
+  while (true) {
+    // バッチ取得
+    let sql = `
+      SELECT id, source, title, subsidy_max_limit, subsidy_rate,
+             target_area_search, target_industry, target_number_of_employees,
+             acceptance_start_datetime, acceptance_end_datetime,
+             request_reception_display_flag, detail_json, cached_at
+      FROM subsidy_cache
+      WHERE canonical_id IS NULL
+    `;
+    
+    if (lastCacheId) {
+      sql += ` AND id > '${lastCacheId}'`;
+    }
+    
+    sql += ` ORDER BY id LIMIT ${batchSize}`;
+    
+    const batchResult = db.query(sql);
     
     if (!batchResult.success || batchResult.rows.length === 0) {
-      console.log(`\nBatch fetch failed or empty at offset ${offset}`);
       break;
     }
     
     for (const row of batchResult.rows) {
-      const result = processRow(row, isLocal, dryRun);
+      // limit チェック
+      if (args.limit && processed >= args.limit) {
+        logger.info('Limit reached', { limit: args.limit });
+        return;
+      }
+      
       processed++;
       
-      if (result.success) {
-        if (result.canonicalCreated) canonicalCreated++;
-        if (result.linkCreated) linksCreated++;
-      } else {
-        errors.push({ cache_id: row.id, error: result.error });
+      try {
+        const canonicalId = generateCanonicalId(row);
+        const issuerCode = extractIssuerCode(row.detail_json);
+        const issuerName = extractIssuerName(row.detail_json);
+        const prefCode = extractPrefectureCode(row.target_area_search);
+        const regionScope = extractRegionScope(row.detail_json, row.target_area_search);
+        const normalizedTitle = normalizeTitle(row.title);
+        const linkId = `link-jg-${row.id}`;
+        
+        // Step 1: canonical確認/作成
+        const existingCanonical = db.query(`SELECT id FROM subsidy_canonical WHERE id = ${sqlValue(canonicalId)}`);
+        const canonicalExists = existingCanonical.success && existingCanonical.rows.length > 0;
+        
+        if (!canonicalExists) {
+          // 新規作成
+          const canonicalSql = `
+            INSERT INTO subsidy_canonical (
+              id, name, name_normalized, issuer_code, issuer_name, prefecture_code,
+              latest_cache_id, first_seen_at, is_active, created_at, updated_at
+            ) VALUES (
+              ${sqlValue(canonicalId)}, ${sqlValue(row.title)}, ${sqlValue(normalizedTitle)},
+              ${sqlValue(issuerCode)}, ${sqlValue(issuerName)}, ${sqlValue(prefCode)},
+              ${sqlValue(row.id)}, datetime('now'), 1, datetime('now'), datetime('now')
+            )
+          `;
+          
+          if (!args.dryRun) {
+            const result = db.execute(canonicalSql);
+            if (!result.success) {
+              handleError(result.error, { cache_id: row.id, action: 'canonical_create' });
+              continue;
+            }
+          }
+          
+          canonicalCreated++;
+        } else {
+          // 既存のcanonicalを更新（latest_cache_idのみ）
+          if (!args.dryRun) {
+            db.execute(`
+              UPDATE subsidy_canonical 
+              SET latest_cache_id = ${sqlValue(row.id)},
+                  last_updated_at = datetime('now'),
+                  updated_at = datetime('now')
+              WHERE id = ${sqlValue(canonicalId)}
+            `);
+          }
+          
+          canonicalExisting++;
+        }
+        
+        // Step 2: source_link作成
+        const existingLink = db.query(`SELECT id FROM subsidy_source_link WHERE source_type = 'jgrants' AND source_id = ${sqlValue(row.id)}`);
+        const linkExists = existingLink.success && existingLink.rows.length > 0;
+        
+        if (!linkExists) {
+          const linkSql = `
+            INSERT INTO subsidy_source_link (
+              id, canonical_id, source_type, source_id, match_type, match_score, verified, created_at
+            ) VALUES (
+              ${sqlValue(linkId)}, ${sqlValue(canonicalId)}, 'jgrants', ${sqlValue(row.id)},
+              'system', 1.0, 1, datetime('now')
+            )
+          `;
+          
+          if (!args.dryRun) {
+            const result = db.execute(linkSql);
+            if (!result.success) {
+              handleError(result.error, { cache_id: row.id, action: 'link_create' });
+              continue;
+            }
+          }
+          
+          linksCreated++;
+        }
+        
+        // Step 3: subsidy_cache.canonical_id更新
+        if (!args.dryRun) {
+          const updateResult = db.execute(`
+            UPDATE subsidy_cache SET canonical_id = ${sqlValue(canonicalId)} WHERE id = ${sqlValue(row.id)}
+          `);
+          
+          if (updateResult.success) {
+            cacheUpdated++;
+          }
+        } else {
+          cacheUpdated++;
+        }
+        
+        updateStats({ 
+          processed: stats.processed + 1,
+          last_processed_id: row.id
+        });
+        
+        // 進捗表示
+        if (processed % 50 === 0) {
+          logger.progress(processed, totalCount, { lastId: row.id });
+          saveCheckpoint();
+        }
+        
+      } catch (error) {
+        handleError(error, { cache_id: row.id });
       }
       
-      // 進捗表示
-      if (processed % 10 === 0) {
-        process.stdout.write(`\rProgress: ${processed}/${totalCount} (${((processed / totalCount) * 100).toFixed(1)}%)`);
-      }
-    }
-    
-    offset += batchSize;
-    
-    // バッチ間で少し待機（APIリミット回避）
-    if (!dryRun) {
-      await new Promise(resolve => setTimeout(resolve, 100));
+      lastCacheId = row.id;
     }
   }
   
-  const duration = Date.now() - startTime;
+  // 最終統計
+  updateStats({
+    jgrants_rows_read: processed,
+    canonical_created: canonicalCreated,
+    canonical_existing: canonicalExisting,
+    links_created: linksCreated,
+    cache_updated_with_canonical_id: cacheUpdated
+  });
   
-  // 結果サマリー
-  console.log('\n\n' + '='.repeat(60));
-  console.log('Summary');
-  console.log('='.repeat(60));
-  console.log(`Total Processed:    ${processed}`);
-  console.log(`Canonical Created:  ${canonicalCreated}`);
-  console.log(`Links Created:      ${linksCreated}`);
-  console.log(`Errors:             ${errors.length}`);
-  console.log(`Duration:           ${(duration / 1000).toFixed(1)}s`);
+  console.log('');
+  logger.info('Backfill completed', {
+    jgrants_rows_read: processed,
+    canonical_created: canonicalCreated,
+    canonical_existing: canonicalExisting,
+    links_created: linksCreated,
+    cache_updated_with_canonical_id: cacheUpdated
+  });
   
-  if (errors.length > 0) {
-    console.log('\nErrors (first 10):');
-    errors.slice(0, 10).forEach(e => {
-      console.log(`  - cache_id=${e.cache_id}: ${e.error?.substring(0, 80) || 'unknown'}`);
-    });
-  }
-  
-  // 結果JSON出力
-  const result = {
-    totalProcessed: processed,
-    canonicalCreated,
-    linksCreated,
-    errors: errors.length,
-    errorDetails: errors.slice(0, 20),
-    duration,
-    timestamp: new Date().toISOString(),
-    mode: isLocal ? 'local' : 'production',
-    dryRun
-  };
-  
-  console.log('\nResult JSON:');
-  console.log(JSON.stringify(result, null, 2));
-  
-  process.exit(errors.length > 0 ? 1 : 0);
-}
-
-main().catch(err => {
+}).catch(err => {
   console.error('Fatal error:', err);
   process.exit(1);
 });
