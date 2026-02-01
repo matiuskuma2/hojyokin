@@ -25,6 +25,7 @@
     "git:status": "git status"
   },
   "dependencies": {
+    "better-sqlite3": "^12.6.2",
     "hono": "^4.11.4",
     "jose": "^6.1.3",
     "jsonwebtoken": "^9.0.3",

@@ -43,3 +43,11 @@ tfplan
 # Internal secrets
 .internal-jwt-secret
 core
+
+# Local testing data
+data/sqlite/
+migrations/local/batches/
+migrations/local/izumi_data_full.sql
+migrations/local/izumi_urls_data.sql
+migrations/local/canonical_data.sql
+migrations/local/snapshot_data.sql
