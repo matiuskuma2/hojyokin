@@ -14,6 +14,26 @@ import { JGrantsClient, JGrantsError } from './jgrants';
 import { MOCK_SUBSIDIES, getMockSubsidyDetail } from './mock-subsidies';
 import { checkSearchableFromJson, checkWallChatReadyFromJson, type WallChatReadyResult } from './wall-chat-ready';
 
+/**
+ * SEARCH_BACKEND モード
+ * - ssot: SSOT検索（canonical + latest_snapshot）← 本番デフォルト
+ * - dual: SSOT検索を返しつつ旧検索も裏で実行し差分ログ（移行検証用）
+ * - cache: 旧 subsidy_cache 検索（緊急ロールバック用）
+ */
+export type SearchBackend = 'ssot' | 'dual' | 'cache';
+
+/**
+ * SEARCH_BACKEND を取得（環境変数から）
+ */
+export function getSearchBackend(env: Env): SearchBackend {
+  const backend = (env as any).SEARCH_BACKEND as string;
+  if (backend === 'ssot' || backend === 'dual' || backend === 'cache') {
+    return backend;
+  }
+  // デフォルト: ssot（SSOT検索を正とする）
+  return 'ssot';
+}
+
 export type JGrantsMode = 'live' | 'mock' | 'cached-only';
 
 export interface AdapterSearchParams {
@@ -34,9 +54,11 @@ export interface AdapterSearchResponse {
   subsidies: JGrantsSearchResult[];
   total_count: number;
   has_more: boolean;
-  source: 'live' | 'mock' | 'cache';
-  /** P0-2-1: 品質ゲート（searchable-only / debug:all） */
-  gate?: 'searchable-only' | 'debug:all';
+  source: 'live' | 'mock' | 'cache' | 'ssot';
+  /** P0-2-1: 品質ゲート（searchable-only / debug:all / ssot:active-only） */
+  gate?: 'searchable-only' | 'debug:all' | 'ssot:active-only';
+  /** SSOT検索で使用されたbackendモード */
+  backend?: SearchBackend;
 }
 
 export interface AdapterDetailResponse extends JGrantsDetailResult {
@@ -78,8 +100,10 @@ export class JGrantsAdapter {
   private mode: JGrantsMode;
   private client: JGrantsClient;
   private db: D1Database;
+  private env: Env;
 
   constructor(env: Env) {
+    this.env = env;
     this.mode = getJGrantsMode(env);
     this.client = new JGrantsClient({
       baseUrl: env.JGRANTS_API_BASE_URL,
@@ -89,43 +113,263 @@ export class JGrantsAdapter {
 
   /**
    * 補助金検索
+   * P0: SEARCH_BACKEND に基づいて SSOT / cache / dual を切替
    */
   async search(params: AdapterSearchParams): Promise<AdapterSearchResponse> {
-    // 1. キャッシュを先に確認（cached-only モードまたはフォールバック用）
-    const cachedResult = await this.searchFromCache(params);
+    const backend = getSearchBackend(this.env);
     
-    switch (this.mode) {
-      case 'mock':
-        return this.searchMock(params);
+    // モックモードの場合は従来通り
+    if (this.mode === 'mock') {
+      return this.searchMock(params);
+    }
+    
+    // SSOT検索を優先（事故ゼロ運用）
+    switch (backend) {
+      case 'ssot':
+        // SSOT検索のみ（本番デフォルト）
+        return this.searchFromSSOT(params);
       
-      case 'cached-only':
-        if (cachedResult.subsidies.length > 0) {
-          return { ...cachedResult, source: 'cache' };
-        }
-        // キャッシュがなければモックにフォールバック
-        console.warn('No cache found, falling back to mock data');
-        return this.searchMock(params);
+      case 'dual':
+        // SSOT検索を返しつつ、旧検索も裏で実行して差分ログ
+        const ssotResult = await this.searchFromSSOT(params);
+        // 非同期で旧検索を実行してログ（結果は返さない）
+        this.logDualSearchDiff(params, ssotResult).catch(e => 
+          console.error('Dual search log error:', e)
+        );
+        return ssotResult;
       
-      case 'live':
-        try {
-          const liveResult = await this.searchLive(params);
-          // 成功したらキャッシュに保存
-          await this.saveToCache(liveResult.subsidies);
-          return { ...liveResult, source: 'live' };
-        } catch (error) {
-          console.error('JGrants API error, falling back to cache:', error);
-          // エラー時はキャッシュにフォールバック
-          if (cachedResult.subsidies.length > 0) {
-            return { ...cachedResult, source: 'cache' };
-          }
-          // キャッシュもなければモックにフォールバック
-          console.warn('No cache found, falling back to mock data');
-          return this.searchMock(params);
-        }
+      case 'cache':
+        // 緊急ロールバック用：旧 subsidy_cache 検索
+        return this.searchFromCacheBackend(params);
       
       default:
-        return this.searchMock(params);
+        return this.searchFromSSOT(params);
     }
+  }
+  
+  /**
+   * SSOT検索（canonical + latest_snapshot）
+   * P0: 検索の母集団を SSOT に切替、デフォルトは受付中のみ
+   */
+  private async searchFromSSOT(params: AdapterSearchParams): Promise<AdapterSearchResponse> {
+    try {
+      // 基本クエリ: canonical → latest_snapshot（必須JOIN）
+      // 表示補助: LEFT JOIN subsidy_cache
+      let query = `
+        SELECT 
+          c.id AS canonical_id,
+          c.name AS title,
+          c.name_normalized,
+          c.issuer_name,
+          c.prefecture_code,
+          c.latest_snapshot_id,
+          c.latest_cache_id,
+          s.is_accepting,
+          s.acceptance_start,
+          s.acceptance_end,
+          s.subsidy_max_limit,
+          s.subsidy_min_limit,
+          s.subsidy_rate,
+          s.subsidy_rate_max,
+          s.target_area_text,
+          s.target_industry_codes,
+          s.target_employee_text,
+          s.official_url,
+          s.detail_json AS snapshot_detail_json,
+          l.source_type,
+          l.source_id,
+          sc.detail_json AS cache_detail_json,
+          sc.wall_chat_mode,
+          sc.wall_chat_ready,
+          sc.wall_chat_excluded,
+          sc.target_area_search,
+          sc.target_industry,
+          sc.target_number_of_employees
+        FROM subsidy_canonical c
+        JOIN subsidy_snapshot s ON s.id = c.latest_snapshot_id
+        JOIN subsidy_source_link l ON l.canonical_id = c.id
+        LEFT JOIN subsidy_cache sc ON sc.id = c.latest_cache_id
+        WHERE c.is_active = 1
+      `;
+      const bindings: any[] = [];
+      
+      // デフォルト: 受付中のみ（is_accepting = 1）
+      // includeUnready = true の場合のみ受付中以外も含める
+      if (!params.includeUnready) {
+        query += ` AND s.is_accepting = 1`;
+      }
+      
+      // キーワード検索
+      if (params.keyword) {
+        query += ` AND (c.name LIKE ? OR c.name_normalized LIKE ?)`;
+        bindings.push(`%${params.keyword}%`, `%${params.keyword}%`);
+      }
+      
+      // 地域フィルタ
+      if (params.target_area_search) {
+        query += ` AND (s.target_area_text IS NULL OR s.target_area_text LIKE ? OR s.target_area_text = '全国' OR sc.target_area_search LIKE ? OR sc.target_area_search = '全国')`;
+        bindings.push(`%${params.target_area_search}%`, `%${params.target_area_search}%`);
+      }
+      
+      // ソート
+      if (params.sort === 'acceptance_end_datetime') {
+        // 締切が近い順（NULL は最後）
+        query += ` ORDER BY CASE WHEN s.acceptance_end IS NULL THEN 1 ELSE 0 END, s.acceptance_end ${params.order || 'ASC'}`;
+      } else if (params.sort === 'subsidy_max_limit') {
+        query += ` ORDER BY s.subsidy_max_limit ${params.order || 'DESC'} NULLS LAST`;
+      } else {
+        // デフォルト: 締切が近い順
+        query += ` ORDER BY CASE WHEN s.acceptance_end IS NULL THEN 1 ELSE 0 END, s.acceptance_end ASC`;
+      }
+      
+      // ページネーション
+      const limit = params.limit || 20;
+      const offset = params.offset || 0;
+      query += ` LIMIT ? OFFSET ?`;
+      bindings.push(limit + 1, offset); // +1 で has_more 判定
+      
+      const result = await this.db.prepare(query).bind(...bindings).all();
+      const rows = result.results || [];
+      
+      // has_more 判定
+      const hasMore = rows.length > limit;
+      const subsidyRows = hasMore ? rows.slice(0, limit) : rows;
+      
+      // SSOT行をSubsidyオブジェクトに変換
+      const subsidies = subsidyRows.map(row => this.ssotRowToSubsidy(row));
+      
+      // 総件数を取得（別クエリ）
+      const countQuery = `
+        SELECT COUNT(*) as count
+        FROM subsidy_canonical c
+        JOIN subsidy_snapshot s ON s.id = c.latest_snapshot_id
+        WHERE c.is_active = 1
+        ${!params.includeUnready ? 'AND s.is_accepting = 1' : ''}
+      `;
+      const countResult = await this.db.prepare(countQuery).first<{ count: number }>();
+      const totalCount = countResult?.count || 0;
+      
+      return {
+        subsidies,
+        total_count: totalCount,
+        has_more: hasMore,
+        source: 'ssot',
+        gate: params.includeUnready ? 'debug:all' : 'ssot:active-only',
+        backend: 'ssot',
+      };
+    } catch (error) {
+      console.error('SSOT search error:', error);
+      // SSOTエラー時はcacheにフォールバック（事故防止）
+      console.warn('SSOT search failed, falling back to cache');
+      return this.searchFromCacheBackend(params);
+    }
+  }
+  
+  /**
+   * SSOT行をSubsidyオブジェクトに変換
+   */
+  private ssotRowToSubsidy(row: any): JGrantsSearchResult {
+    // detail_json から wall_chat 情報を取得
+    const detailJsonStr = row.cache_detail_json || row.snapshot_detail_json;
+    const wallChatResult = checkWallChatReadyFromJson(detailJsonStr);
+    
+    return {
+      // ID は source_id（jGrants ID）を使用（フロント互換性のため）
+      id: row.source_id || row.canonical_id,
+      title: row.title,
+      subsidy_max_limit: row.subsidy_max_limit,
+      subsidy_rate: row.subsidy_rate,
+      // 地域は snapshot.target_area_text または cache.target_area_search
+      target_area_search: row.target_area_text || row.target_area_search || null,
+      target_industry: row.target_industry_codes || row.target_industry || null,
+      target_number_of_employees: row.target_employee_text || row.target_number_of_employees || null,
+      // 日時は snapshot から取得
+      acceptance_start_datetime: row.acceptance_start,
+      acceptance_end_datetime: row.acceptance_end,
+      // 受付中フラグ
+      request_reception_display_flag: row.is_accepting,
+      // 壁打ち情報（拡張フィールド）
+      detail_ready: checkSearchableFromJson(detailJsonStr),
+      wall_chat_ready: row.wall_chat_ready || wallChatResult.ready,
+      wall_chat_missing: wallChatResult.missing,
+      // SSOT固有フィールド
+      canonical_id: row.canonical_id,
+      source_type: row.source_type,
+    } as JGrantsSearchResult & { 
+      detail_ready: boolean;
+      wall_chat_ready: boolean;
+      wall_chat_missing: string[];
+      canonical_id: string;
+      source_type: string;
+    };
+  }
+  
+  /**
+   * dual モード用: SSOT と旧検索の差分をログ
+   */
+  private async logDualSearchDiff(
+    params: AdapterSearchParams,
+    ssotResult: AdapterSearchResponse
+  ): Promise<void> {
+    try {
+      const cacheResult = await this.searchFromCacheBackend(params);
+      
+      const ssotIds = ssotResult.subsidies.slice(0, 10).map(s => s.id);
+      const cacheIds = cacheResult.subsidies.slice(0, 10).map(s => s.id);
+      
+      // 差分タイプの判定
+      const missingInSsot = cacheIds.filter(id => !ssotIds.includes(id));
+      const missingInCache = ssotIds.filter(id => !cacheIds.includes(id));
+      const orderDiff = ssotIds.join(',') !== cacheIds.join(',');
+      
+      const diffType: string[] = [];
+      if (missingInSsot.length > 0) diffType.push('missing_in_ssot');
+      if (missingInCache.length > 0) diffType.push('missing_in_cache');
+      if (orderDiff && missingInSsot.length === 0 && missingInCache.length === 0) diffType.push('order_diff');
+      
+      if (diffType.length > 0) {
+        console.log('[DUAL_SEARCH_DIFF]', JSON.stringify({
+          timestamp: new Date().toISOString(),
+          params_hash: this.hashParams(params),
+          ssot_count: ssotResult.total_count,
+          cache_count: cacheResult.total_count,
+          ssot_ids_top10: ssotIds,
+          cache_ids_top10: cacheIds,
+          diff_type: diffType,
+          missing_in_ssot: missingInSsot,
+          missing_in_cache: missingInCache,
+        }));
+      }
+    } catch (error) {
+      console.error('Dual search diff log error:', error);
+    }
+  }
+  
+  /**
+   * パラメータのハッシュ化（ログ用）
+   */
+  private hashParams(params: AdapterSearchParams): string {
+    const key = `${params.keyword || ''}|${params.target_area_search || ''}|${params.acceptance || ''}|${params.sort || ''}|${params.limit || 20}|${params.offset || 0}`;
+    // 簡易ハッシュ（本格的なハッシュが必要なら crypto を使用）
+    let hash = 0;
+    for (let i = 0; i < key.length; i++) {
+      const char = key.charCodeAt(i);
+      hash = ((hash << 5) - hash) + char;
+      hash = hash & hash;
+    }
+    return Math.abs(hash).toString(16);
+  }
+  
+  /**
+   * 緊急ロールバック用: 旧 subsidy_cache 検索
+   */
+  private async searchFromCacheBackend(params: AdapterSearchParams): Promise<AdapterSearchResponse> {
+    const result = await this.searchFromCache(params);
+    return {
+      ...result,
+      source: 'cache',
+      backend: 'cache',
+    };
   }
 
   /**
