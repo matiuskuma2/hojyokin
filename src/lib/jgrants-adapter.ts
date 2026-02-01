@@ -220,16 +220,17 @@ export class JGrantsAdapter {
         bindings.push(`%${params.target_area_search}%`, `%${params.target_area_search}%`);
       }
       
-      // ソート（P1: NULL締切のガード - 常に最後に表示）
+      // ソート（P1: NULL締切のガード + tie-breaker で順序安定化）
+      // tie-breaker: c.id を追加して同値時の順序を固定（order_diff 事故防止）
       if (params.sort === 'acceptance_end_datetime') {
-        // 締切が近い順（NULL は最後）
-        query += ` ORDER BY CASE WHEN s.acceptance_end IS NULL THEN 1 ELSE 0 END, s.acceptance_end ${params.order || 'ASC'}`;
+        // 締切が近い順（NULL は最後）+ tie-breaker
+        query += ` ORDER BY CASE WHEN s.acceptance_end IS NULL THEN 1 ELSE 0 END, s.acceptance_end ${params.order || 'ASC'}, c.id ASC`;
       } else if (params.sort === 'subsidy_max_limit') {
-        // 金額順（NULL は最後）
-        query += ` ORDER BY CASE WHEN s.subsidy_max_limit IS NULL THEN 1 ELSE 0 END, s.subsidy_max_limit ${params.order || 'DESC'}`;
+        // 金額順（NULL は最後）+ tie-breaker
+        query += ` ORDER BY CASE WHEN s.subsidy_max_limit IS NULL THEN 1 ELSE 0 END, s.subsidy_max_limit ${params.order || 'DESC'}, c.id ASC`;
       } else {
-        // デフォルト: 締切が近い順（NULL は最後）
-        query += ` ORDER BY CASE WHEN s.acceptance_end IS NULL THEN 1 ELSE 0 END, s.acceptance_end ASC`;
+        // デフォルト: 締切が近い順（NULL は最後）+ tie-breaker
+        query += ` ORDER BY CASE WHEN s.acceptance_end IS NULL THEN 1 ELSE 0 END, s.acceptance_end ASC, c.id ASC`;
       }
       
       // ページネーション
@@ -631,13 +632,13 @@ export class JGrantsAdapter {
         bindings.push(`%${params.keyword}%`);
       }
       
-      // ソート
+      // ソート（tie-breaker: id で順序安定化）
       if (params.sort === 'acceptance_end_datetime') {
-        query += ` ORDER BY acceptance_end_datetime ${params.order || 'ASC'}`;
+        query += ` ORDER BY acceptance_end_datetime ${params.order || 'ASC'}, id ASC`;
       } else if (params.sort === 'subsidy_max_limit') {
-        query += ` ORDER BY subsidy_max_limit ${params.order || 'DESC'}`;
+        query += ` ORDER BY subsidy_max_limit ${params.order || 'DESC'}, id ASC`;
       } else {
-        query += ` ORDER BY cached_at DESC`;
+        query += ` ORDER BY cached_at DESC, id ASC`;
       }
       
       // 多めに取得してJS側でフィルタ（SEARCHABLE条件の詳細チェック用）

@@ -52,16 +52,41 @@ app.use('*', securityHeaders);
 // API ルート
 // ============================================================
 
-// ヘルスチェック（SEARCH_BACKEND 状態を含む）
-app.get('/api/health', (c) => {
+// ヘルスチェック（SEARCH_BACKEND 状態 + SSOT受付中件数）
+app.get('/api/health', async (c) => {
   const searchBackend = (c.env as any).SEARCH_BACKEND || 'ssot';
   const jgrantsMode = (c.env as any).JGRANTS_MODE || 'cached-only';
+  
+  // SSOT受付中件数を取得（母数確認用）
+  let ssotAcceptingCount: number | null = null;
+  let cacheAcceptingCount: number | null = null;
+  try {
+    const ssotResult = await c.env.DB.prepare(`
+      SELECT COUNT(*) as count
+      FROM subsidy_canonical c
+      JOIN subsidy_snapshot s ON s.id = c.latest_snapshot_id
+      WHERE c.is_active = 1 AND s.is_accepting = 1
+    `).first<{ count: number }>();
+    ssotAcceptingCount = ssotResult?.count || 0;
+    
+    const cacheResult = await c.env.DB.prepare(`
+      SELECT COUNT(*) as count
+      FROM subsidy_cache
+      WHERE request_reception_display_flag = 1
+        AND expires_at > datetime('now')
+    `).first<{ count: number }>();
+    cacheAcceptingCount = cacheResult?.count || 0;
+  } catch (e) {
+    // DB接続エラーは無視（healthは常に返す）
+  }
   
   return c.json<ApiResponse<{ 
     status: string; 
     timestamp: string;
     search_backend: string;
     jgrants_mode: string;
+    ssot_accepting_count: number | null;
+    cache_accepting_count: number | null;
   }>>({
     success: true,
     data: {
@@ -69,6 +94,8 @@ app.get('/api/health', (c) => {
       timestamp: new Date().toISOString(),
       search_backend: searchBackend,
       jgrants_mode: jgrantsMode,
+      ssot_accepting_count: ssotAcceptingCount,
+      cache_accepting_count: cacheAcceptingCount,
     },
   });
 });
