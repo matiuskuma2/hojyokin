@@ -6145,4 +6145,309 @@ adminDashboard.get('/ssot-diagnosis', async (c) => {
   }
 });
 
+// ============================================================
+// 泉(izumi)→canonical 紐付けAPI（super_admin限定）
+// ============================================================
+
+/**
+ * 泉→canonical 紐付け処理
+ * D1のLIKE制限を回避するため、アプリケーション側で処理
+ */
+adminDashboard.post('/izumi-link', async (c) => {
+  const user = getCurrentUser(c);
+  if (user?.role !== 'super_admin') {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'FORBIDDEN', message: 'super_admin only' },
+    }, 403);
+  }
+
+  const db = c.env.DB;
+  
+  try {
+    const { mode = 'dry_run', limit = 100 } = await c.req.json().catch(() => ({}));
+    
+    // 1. 受付中のjGrants補助金を取得（検索対象）
+    const acceptingSubsidies = await db.prepare(`
+      SELECT 
+        c.id as canonical_id,
+        c.name as jgrants_title,
+        s.subsidy_max_limit
+      FROM subsidy_canonical c
+      INNER JOIN subsidy_snapshot s ON c.latest_snapshot_id = s.id
+      WHERE c.is_active = 1 AND s.is_accepting = 1
+    `).all<{
+      canonical_id: string;
+      jgrants_title: string;
+      subsidy_max_limit: number | null;
+    }>();
+    
+    // 2. 未紐付けの泉データを取得
+    const unlinkedIzumi = await db.prepare(`
+      SELECT 
+        id,
+        policy_id,
+        title,
+        max_amount_value,
+        prefecture_code
+      FROM izumi_subsidies
+      WHERE is_active = 1 AND canonical_id IS NULL
+      LIMIT ?
+    `).bind(Math.min(limit, 1000)).all<{
+      id: string;
+      policy_id: number;
+      title: string;
+      max_amount_value: number | null;
+      prefecture_code: string | null;
+    }>();
+    
+    const matches: Array<{
+      izumi_id: string;
+      policy_id: number;
+      izumi_title: string;
+      canonical_id: string;
+      jgrants_title: string;
+      match_type: 'strong' | 'medium' | 'weak';
+      match_score: number;
+      match_reason: string;
+    }> = [];
+    
+    // 3. マッチング処理（アプリケーション側で実行）
+    for (const izumi of unlinkedIzumi.results || []) {
+      let bestMatch: typeof matches[0] | null = null;
+      
+      for (const jgrants of acceptingSubsidies.results || []) {
+        // 完全一致（既にDBで処理済みだが念のため）
+        if (izumi.title === jgrants.jgrants_title) {
+          bestMatch = {
+            izumi_id: izumi.id,
+            policy_id: izumi.policy_id,
+            izumi_title: izumi.title,
+            canonical_id: jgrants.canonical_id,
+            jgrants_title: jgrants.jgrants_title,
+            match_type: 'strong',
+            match_score: 0.95,
+            match_reason: 'title_exact',
+          };
+          break;
+        }
+        
+        // jGrantsタイトルが泉タイトルを含む（例: 東京都XXX → XXX）
+        if (jgrants.jgrants_title.includes(izumi.title) && izumi.title.length >= 5) {
+          const score = 0.80 + (izumi.title.length / jgrants.jgrants_title.length) * 0.1;
+          if (!bestMatch || score > bestMatch.match_score) {
+            bestMatch = {
+              izumi_id: izumi.id,
+              policy_id: izumi.policy_id,
+              izumi_title: izumi.title,
+              canonical_id: jgrants.canonical_id,
+              jgrants_title: jgrants.jgrants_title,
+              match_type: score >= 0.85 ? 'strong' : 'medium',
+              match_score: Math.min(score, 0.90),
+              match_reason: 'title_contains',
+            };
+          }
+        }
+        
+        // 泉タイトルがjGrantsタイトルを含む
+        if (izumi.title.includes(jgrants.jgrants_title) && jgrants.jgrants_title.length >= 5) {
+          const score = 0.75 + (jgrants.jgrants_title.length / izumi.title.length) * 0.1;
+          if (!bestMatch || score > bestMatch.match_score) {
+            bestMatch = {
+              izumi_id: izumi.id,
+              policy_id: izumi.policy_id,
+              izumi_title: izumi.title,
+              canonical_id: jgrants.canonical_id,
+              jgrants_title: jgrants.jgrants_title,
+              match_type: 'medium',
+              match_score: Math.min(score, 0.85),
+              match_reason: 'title_reverse_contains',
+            };
+          }
+        }
+        
+        // 金額一致 + 部分一致（強化）
+        if (izumi.max_amount_value && jgrants.subsidy_max_limit && 
+            izumi.max_amount_value === jgrants.subsidy_max_limit) {
+          // タイトルの一部が一致するか確認（5文字以上の共通部分）
+          const izumiWords = izumi.title.split(/[（）()・\s]/);
+          const jgrantsWords = jgrants.jgrants_title.split(/[（）()・\s]/);
+          const commonWord = izumiWords.find(w => 
+            w.length >= 5 && jgrantsWords.some(jw => jw.includes(w) || w.includes(jw))
+          );
+          
+          if (commonWord) {
+            const score = 0.85;
+            if (!bestMatch || score > bestMatch.match_score) {
+              bestMatch = {
+                izumi_id: izumi.id,
+                policy_id: izumi.policy_id,
+                izumi_title: izumi.title,
+                canonical_id: jgrants.canonical_id,
+                jgrants_title: jgrants.jgrants_title,
+                match_type: 'strong',
+                match_score: score,
+                match_reason: `amount_match+partial_title(${commonWord})`,
+              };
+            }
+          }
+        }
+      }
+      
+      if (bestMatch) {
+        matches.push(bestMatch);
+      }
+    }
+    
+    // 4. 実際の更新（mode=execute の場合のみ）
+    let updated = 0;
+    if (mode === 'execute' && matches.length > 0) {
+      for (const match of matches) {
+        await db.prepare(`
+          UPDATE izumi_subsidies 
+          SET 
+            canonical_id = ?,
+            match_method = ?,
+            match_score = ?,
+            updated_at = datetime('now')
+          WHERE id = ?
+        `).bind(
+          match.canonical_id,
+          match.match_reason,
+          match.match_score,
+          match.izumi_id
+        ).run();
+        updated++;
+      }
+    }
+    
+    return c.json<ApiResponse<{
+      mode: string;
+      jgrants_accepting_count: number;
+      izumi_unlinked_checked: number;
+      matches_found: number;
+      matches_by_type: { strong: number; medium: number; weak: number };
+      updated: number;
+      matches_preview: typeof matches;
+    }>>({
+      success: true,
+      data: {
+        mode,
+        jgrants_accepting_count: acceptingSubsidies.results?.length || 0,
+        izumi_unlinked_checked: unlinkedIzumi.results?.length || 0,
+        matches_found: matches.length,
+        matches_by_type: {
+          strong: matches.filter(m => m.match_type === 'strong').length,
+          medium: matches.filter(m => m.match_type === 'medium').length,
+          weak: matches.filter(m => m.match_type === 'weak').length,
+        },
+        updated,
+        matches_preview: matches.slice(0, 20), // プレビュー用に20件まで
+      },
+    });
+    
+  } catch (error) {
+    console.error('Izumi link error:', error);
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: 'INTERNAL_ERROR',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      },
+    }, 500);
+  }
+});
+
+/**
+ * 泉紐付け状況確認
+ */
+adminDashboard.get('/izumi-link-status', async (c) => {
+  const user = getCurrentUser(c);
+  if (user?.role !== 'super_admin') {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'FORBIDDEN', message: 'super_admin only' },
+    }, 403);
+  }
+
+  const db = c.env.DB;
+  
+  try {
+    // 紐付け状況
+    const linkStatus = await db.prepare(`
+      SELECT 
+        COUNT(*) as total,
+        SUM(CASE WHEN canonical_id IS NOT NULL THEN 1 ELSE 0 END) as linked,
+        SUM(CASE WHEN canonical_id IS NULL THEN 1 ELSE 0 END) as not_linked
+      FROM izumi_subsidies 
+      WHERE is_active = 1
+    `).first<{ total: number; linked: number; not_linked: number }>();
+    
+    // マッチタイプ別
+    const byMatchMethod = await db.prepare(`
+      SELECT 
+        match_method,
+        COUNT(*) as count,
+        AVG(match_score) as avg_score
+      FROM izumi_subsidies 
+      WHERE is_active = 1 AND canonical_id IS NOT NULL
+      GROUP BY match_method
+    `).all<{ match_method: string; count: number; avg_score: number }>();
+    
+    // 紐付け済みの上位10件
+    const linkedSamples = await db.prepare(`
+      SELECT 
+        i.title as izumi_title,
+        c.name as jgrants_title,
+        i.match_method,
+        i.match_score,
+        i.max_amount_value as izumi_amount,
+        s.subsidy_max_limit as jgrants_amount
+      FROM izumi_subsidies i
+      INNER JOIN subsidy_canonical c ON i.canonical_id = c.id
+      LEFT JOIN subsidy_snapshot s ON c.latest_snapshot_id = s.id
+      WHERE i.is_active = 1 AND i.canonical_id IS NOT NULL
+      ORDER BY i.match_score DESC
+      LIMIT 10
+    `).all<{
+      izumi_title: string;
+      jgrants_title: string;
+      match_method: string;
+      match_score: number;
+      izumi_amount: number | null;
+      jgrants_amount: number | null;
+    }>();
+    
+    return c.json<ApiResponse<{
+      summary: { total: number; linked: number; not_linked: number; link_rate: string };
+      by_match_method: typeof byMatchMethod.results;
+      linked_samples: typeof linkedSamples.results;
+    }>>({
+      success: true,
+      data: {
+        summary: {
+          total: linkStatus?.total || 0,
+          linked: linkStatus?.linked || 0,
+          not_linked: linkStatus?.not_linked || 0,
+          link_rate: linkStatus?.total 
+            ? ((linkStatus.linked / linkStatus.total) * 100).toFixed(2) + '%'
+            : '0%',
+        },
+        by_match_method: byMatchMethod.results || [],
+        linked_samples: linkedSamples.results || [],
+      },
+    });
+    
+  } catch (error) {
+    console.error('Izumi link status error:', error);
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: 'INTERNAL_ERROR',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      },
+    }, 500);
+  }
+});
+
 export default adminDashboard;
