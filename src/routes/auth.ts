@@ -208,6 +208,8 @@ auth.post('/register', async (c) => {
 
 /**
  * ログイン
+ * - 通常ユーザー: usersテーブルで認証
+ * - スタッフ: agency_staff_credentialsで認証 → エージェンシーオーナーのアカウントでログイン
  */
 auth.post('/login', async (c) => {
   const db = c.env.DB;
@@ -229,7 +231,103 @@ auth.post('/login', async (c) => {
       }, 400);
     }
     
-    // ユーザー検索
+    // ==========================================
+    // 1. スタッフ認証を先にチェック
+    // ==========================================
+    const staffCred = await db.prepare(`
+      SELECT 
+        sc.*,
+        a.owner_user_id,
+        a.name as agency_name
+      FROM agency_staff_credentials sc
+      JOIN agencies a ON a.id = sc.agency_id
+      WHERE sc.staff_email = ? 
+        AND sc.is_active = 1
+        AND sc.staff_password_hash IS NOT NULL
+    `).bind(email.toLowerCase()).first<any>();
+    
+    if (staffCred) {
+      // スタッフとしてログイン試行
+      const isValidStaff = await verifyPassword(password, staffCred.staff_password_hash);
+      
+      if (isValidStaff) {
+        // スタッフ認証成功 → エージェンシーオーナーのアカウント情報を取得
+        const ownerUser = await db
+          .prepare('SELECT * FROM users WHERE id = ?')
+          .bind(staffCred.owner_user_id)
+          .first<User>();
+        
+        if (!ownerUser) {
+          return c.json<ApiResponse<null>>({
+            success: false,
+            error: { code: 'INTERNAL_ERROR', message: 'Agency owner not found' },
+          }, 500);
+        }
+        
+        // スタッフの最終ログイン更新
+        const now = new Date().toISOString();
+        await db.prepare(`
+          UPDATE agency_staff_credentials 
+          SET last_login_at = ?, last_login_ip = ?, updated_at = ?
+          WHERE id = ?
+        `).bind(now, requestIp, now, staffCred.id).run();
+        
+        // 監査ログ
+        await writeAuditLog(db, {
+          targetUserId: ownerUser.id,
+          action: 'STAFF_LOGIN_SUCCESS',
+          actionCategory: 'auth',
+          severity: 'info',
+          detailsJson: { 
+            staff_email: staffCred.staff_email, 
+            staff_name: staffCred.staff_name,
+            staff_role: staffCred.role,
+            agency_id: staffCred.agency_id,
+            agency_name: staffCred.agency_name,
+          },
+          ip: requestIp,
+          userAgent,
+          requestId,
+        });
+        
+        // JWT発行（オーナーのuser_idで発行）
+        const token = await signJWT(
+          { id: ownerUser.id, email: ownerUser.email, role: ownerUser.role },
+          c.env
+        );
+        
+        // レスポンス（スタッフ情報も含める）
+        const userPublic: UserPublic = {
+          id: ownerUser.id,
+          email: ownerUser.email,
+          name: ownerUser.name,
+          role: ownerUser.role,
+          email_verified_at: ownerUser.email_verified_at,
+          created_at: ownerUser.created_at,
+        };
+        
+        return c.json<ApiResponse<{ user: UserPublic; token: string; staff?: any }>>({
+          success: true,
+          data: { 
+            user: userPublic, 
+            token,
+            staff: {
+              staff_id: staffCred.id,
+              staff_email: staffCred.staff_email,
+              staff_name: staffCred.staff_name,
+              staff_role: staffCred.role,
+              agency_id: staffCred.agency_id,
+              agency_name: staffCred.agency_name,
+            },
+          },
+        });
+      }
+      // スタッフのパスワードが不正 → 通常ユーザー認証へフォールスルー（同じメールの通常ユーザーがいるかも）
+    }
+    
+    // ==========================================
+    // 2. 通常ユーザー認証
+    // ==========================================
     const user = await db
       .prepare('SELECT * FROM users WHERE email = ?')
       .bind(email.toLowerCase())

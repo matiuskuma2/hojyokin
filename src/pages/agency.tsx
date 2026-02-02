@@ -2960,7 +2960,230 @@ agencyPages.get('/agency/members', (c) => {
 });
 
 /**
- * GET /agency/join - 招待受諾ページ
+ * GET /staff/setup - スタッフパスワード設定ページ
+ * 認証不要 - 招待リンクからパスワードを設定
+ */
+agencyPages.get('/staff/setup', (c) => {
+  const code = c.req.query('code') || '';
+  const token = c.req.query('token') || '';
+  
+  const content = `
+    <div class="max-w-md mx-auto">
+      <div class="bg-white rounded-lg shadow-lg p-8">
+        <div class="text-center mb-6">
+          <div class="w-16 h-16 bg-emerald-100 rounded-full flex items-center justify-center mx-auto mb-4">
+            <i class="fas fa-user-shield text-emerald-600 text-2xl"></i>
+          </div>
+          <h1 class="text-2xl font-bold text-gray-900">スタッフアカウント設定</h1>
+          <p class="text-gray-600 mt-2">パスワードを設定してログインできるようにします</p>
+        </div>
+        
+        <div id="setup-status" class="hidden mb-6 p-4 rounded-lg"></div>
+        
+        <!-- ローディング -->
+        <div id="loading-section" class="text-center py-8">
+          <i class="fas fa-spinner fa-spin text-3xl text-emerald-600 mb-4"></i>
+          <p class="text-gray-600">招待を確認中...</p>
+        </div>
+        
+        <!-- 招待情報表示 -->
+        <div id="invite-info" class="hidden mb-6 p-4 bg-gray-50 rounded-lg border">
+          <p class="text-sm text-gray-600 mb-2">
+            <i class="fas fa-building mr-2"></i>事務所: <strong id="agency-name-display" class="text-gray-900"></strong>
+          </p>
+          <p class="text-sm text-gray-600 mb-2">
+            <i class="fas fa-envelope mr-2"></i>メール: <strong id="staff-email-display" class="text-gray-900"></strong>
+          </p>
+          <p class="text-sm text-gray-600">
+            <i class="fas fa-user-tag mr-2"></i>役割: <strong id="staff-role-display" class="text-gray-900"></strong>
+          </p>
+        </div>
+        
+        <!-- パスワード設定フォーム -->
+        <div id="setup-form-section" class="hidden">
+          <form id="setup-form" class="space-y-4">
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">お名前</label>
+              <input type="text" name="name" id="staff-name-input"
+                class="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+                placeholder="山田 太郎">
+            </div>
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">パスワード</label>
+              <input type="password" name="password" required minlength="8"
+                class="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+                placeholder="8文字以上">
+              <p class="text-xs text-gray-500 mt-1">8文字以上、大文字・小文字・数字を含めてください</p>
+            </div>
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">パスワード確認</label>
+              <input type="password" name="password_confirm" required minlength="8"
+                class="w-full border rounded-lg px-3 py-2 focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+                placeholder="パスワードを再入力">
+            </div>
+            <input type="hidden" name="code" value="${code}">
+            <input type="hidden" name="token" value="${token}">
+            <button type="submit" class="w-full bg-emerald-600 text-white px-4 py-3 rounded-lg hover:bg-emerald-700 font-medium">
+              <i class="fas fa-check mr-2"></i>設定を完了してログイン
+            </button>
+          </form>
+        </div>
+        
+        <!-- 設定済み表示 -->
+        <div id="already-setup-section" class="hidden text-center">
+          <p class="text-gray-600 mb-4">パスワードは既に設定されています。</p>
+          <a href="/login" class="inline-block bg-emerald-600 text-white px-6 py-3 rounded-lg hover:bg-emerald-700 font-medium">
+            <i class="fas fa-sign-in-alt mr-2"></i>ログインへ
+          </a>
+        </div>
+        
+        <!-- エラー表示 -->
+        <div id="error-section" class="hidden text-center">
+          <div class="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-4">
+            <i class="fas fa-exclamation-triangle text-red-600 text-2xl"></i>
+          </div>
+          <p id="error-message" class="text-red-600 mb-4"></p>
+          <a href="/login" class="text-emerald-600 hover:text-emerald-800">
+            ログインページへ
+          </a>
+        </div>
+        
+        <!-- 成功表示 -->
+        <div id="success-section" class="hidden text-center">
+          <div class="w-16 h-16 bg-emerald-100 rounded-full flex items-center justify-center mx-auto mb-4">
+            <i class="fas fa-check text-emerald-600 text-2xl"></i>
+          </div>
+          <h2 class="text-xl font-bold text-gray-900 mb-2">設定完了！</h2>
+          <p class="text-gray-600 mb-6">スタッフアカウントの設定が完了しました。</p>
+          <a href="/agency" class="inline-block bg-emerald-600 text-white px-6 py-3 rounded-lg hover:bg-emerald-700 font-medium">
+            <i class="fas fa-arrow-right mr-2"></i>事務所ダッシュボードへ
+          </a>
+        </div>
+      </div>
+    </div>
+    
+    <script>
+      (function() {
+        var code = '${code}';
+        var token = '${token}';
+        
+        function showStatus(message, isError) {
+          var statusDiv = document.getElementById('setup-status');
+          statusDiv.classList.remove('hidden', 'bg-red-100', 'text-red-700', 'bg-blue-100', 'text-blue-700');
+          if (isError) {
+            statusDiv.classList.add('bg-red-100', 'text-red-700');
+            statusDiv.innerHTML = '<i class="fas fa-exclamation-circle mr-2"></i>' + message;
+          } else {
+            statusDiv.classList.add('bg-blue-100', 'text-blue-700');
+            statusDiv.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>' + message;
+          }
+        }
+        
+        function hideStatus() {
+          document.getElementById('setup-status').classList.add('hidden');
+        }
+        
+        // 招待を検証
+        async function verifyInvite() {
+          if (!code || !token) {
+            document.getElementById('loading-section').classList.add('hidden');
+            document.getElementById('error-section').classList.remove('hidden');
+            document.getElementById('error-message').textContent = '招待リンクが無効です。';
+            return;
+          }
+          
+          try {
+            var response = await fetch('/api/agency/staff/verify-invite', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ code: code, token: token }),
+            });
+            
+            var data = await response.json();
+            document.getElementById('loading-section').classList.add('hidden');
+            
+            if (data.success) {
+              if (data.data.status === 'already_setup') {
+                document.getElementById('already-setup-section').classList.remove('hidden');
+              } else {
+                document.getElementById('invite-info').classList.remove('hidden');
+                document.getElementById('setup-form-section').classList.remove('hidden');
+                document.getElementById('agency-name-display').textContent = data.data.agency_name;
+                document.getElementById('staff-email-display').textContent = data.data.staff_email;
+                document.getElementById('staff-role-display').textContent = data.data.role === 'admin' ? '管理者' : 'スタッフ';
+                document.getElementById('staff-name-input').value = data.data.staff_name || '';
+              }
+            } else {
+              document.getElementById('error-section').classList.remove('hidden');
+              document.getElementById('error-message').textContent = data.error?.message || '招待の検証に失敗しました';
+            }
+          } catch (err) {
+            document.getElementById('loading-section').classList.add('hidden');
+            document.getElementById('error-section').classList.remove('hidden');
+            document.getElementById('error-message').textContent = '通信エラーが発生しました';
+          }
+        }
+        
+        // フォーム送信
+        document.getElementById('setup-form').addEventListener('submit', async function(e) {
+          e.preventDefault();
+          var form = e.target;
+          var formData = new FormData(form);
+          var password = formData.get('password');
+          var passwordConfirm = formData.get('password_confirm');
+          
+          if (password !== passwordConfirm) {
+            showStatus('パスワードが一致しません', true);
+            return;
+          }
+          
+          showStatus('設定中...', false);
+          
+          try {
+            var response = await fetch('/api/agency/staff/setup-password', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                code: formData.get('code'),
+                token: formData.get('token'),
+                password: password,
+                name: formData.get('name'),
+              }),
+            });
+            
+            var data = await response.json();
+            
+            if (data.success) {
+              // トークンとユーザー情報を保存
+              localStorage.setItem('token', data.data.token);
+              localStorage.setItem('user', JSON.stringify(data.data.user));
+              if (data.data.staff) {
+                localStorage.setItem('staff', JSON.stringify(data.data.staff));
+              }
+              
+              hideStatus();
+              document.getElementById('invite-info').classList.add('hidden');
+              document.getElementById('setup-form-section').classList.add('hidden');
+              document.getElementById('success-section').classList.remove('hidden');
+            } else {
+              showStatus(data.error?.message || '設定に失敗しました', true);
+            }
+          } catch (err) {
+            showStatus('通信エラーが発生しました', true);
+          }
+        });
+        
+        // 初期化
+        verifyInvite();
+      })();
+    </script>
+  `;
+  
+  return c.html(agencyLayout('スタッフアカウント設定', content, ''));
+});
+
+/**
+ * GET /agency/join - 招待受諾ページ（旧方式 - 互換性のため残す）
  * 未ログインでも表示可能（登録フォームを表示）
  */
 agencyPages.get('/agency/join', (c) => {

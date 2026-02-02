@@ -20,6 +20,8 @@ import { Hono } from 'hono';
 import type { Env, Variables, ApiResponse } from '../types';
 import { requireAuth, getCurrentUser } from '../middleware/auth';
 import { sendStaffInviteEmail, sendClientInviteEmail } from '../services/email';
+import { hashPassword, validatePasswordStrength } from '../lib/password';
+import { signJWT } from '../lib/jwt';
 
 // =====================================================
 // 型定義（P2-10: any型排除）
@@ -1969,7 +1971,12 @@ agencyRoutes.get('/members', async (c) => {
 });
 
 /**
- * POST /api/agency/members/invite - スタッフ招待
+ * POST /api/agency/members/invite - スタッフ招待（新設計）
+ * 
+ * スタッフ = 同じエージェンシーアカウントにログインできる追加の認証情報
+ * - 新しいユーザーアカウントは作成しない
+ * - agency_staff_credentials に招待情報を保存
+ * - 招待リンクからパスワードを設定して完了
  */
 agencyRoutes.post('/members/invite', async (c) => {
   const db = c.env.DB;
@@ -1994,6 +2001,7 @@ agencyRoutes.post('/members/invite', async (c) => {
   // P1-9: JSON parse例外ハンドリング
   const parseResult = await safeParseJsonBody<{
     email?: string;
+    name?: string;
     role?: string;
     sendEmail?: boolean;
   }>(c);
@@ -2005,7 +2013,7 @@ agencyRoutes.post('/members/invite', async (c) => {
     }, 400);
   }
   
-  const { email, role = 'staff', sendEmail = false } = parseResult.data;
+  const { email, name = '', role = 'staff', sendEmail = false } = parseResult.data;
   
   if (!email) {
     return c.json<ApiResponse<null>>({
@@ -2024,65 +2032,75 @@ agencyRoutes.post('/members/invite', async (c) => {
   
   const agencyId = agencyInfo.agency.id;
   
-  // 既にメンバーか確認
-  const existingMember = await db.prepare(`
-    SELECT am.id FROM agency_members am
-    JOIN users u ON am.user_id = u.id
-    WHERE am.agency_id = ? AND u.email = ? AND am.accepted_at IS NOT NULL
-  `).bind(agencyId, email).first();
+  // 既にスタッフとして登録されているか確認
+  const existingStaff = await db.prepare(`
+    SELECT id, is_active, staff_password_hash FROM agency_staff_credentials
+    WHERE staff_email = ?
+  `).bind(email.toLowerCase()).first<any>();
   
-  if (existingMember) {
-    return c.json<ApiResponse<null>>({
-      success: false,
-      error: { code: 'ALREADY_MEMBER', message: 'This email is already a member' },
-    }, 400);
-  }
-  
-  // 既に保留中の招待があるか確認
-  const existingInvite = await db.prepare(`
-    SELECT id FROM agency_member_invites
-    WHERE agency_id = ? AND email = ? 
-      AND accepted_at IS NULL 
-      AND revoked_at IS NULL
-      AND expires_at > datetime('now')
-  `).bind(agencyId, email).first();
-  
-  if (existingInvite) {
-    return c.json<ApiResponse<null>>({
-      success: false,
-      error: { code: 'ALREADY_INVITED', message: 'A pending invite already exists for this email' },
-    }, 400);
+  if (existingStaff) {
+    if (existingStaff.is_active && existingStaff.staff_password_hash) {
+      return c.json<ApiResponse<null>>({
+        success: false,
+        error: { code: 'ALREADY_STAFF', message: 'このメールアドレスは既にスタッフとして登録されています' },
+      }, 400);
+    }
+    // 招待中（パスワード未設定）の場合は再招待可能 → 既存レコードを更新
   }
   
   // 招待トークン生成
   const inviteToken = generateToken();
   const inviteTokenHash = await hashToken(inviteToken);
   const inviteCode = generateShortCode();
-  const inviteId = generateId();
+  const staffId = existingStaff?.id || generateId();
   const now = new Date().toISOString();
   const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(); // 7日後
   
-  await db.prepare(`
-    INSERT INTO agency_member_invites (
-      id, agency_id, email, role_in_agency, invite_token_hash, invite_code,
-      invited_by_user_id, expires_at, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).bind(
-    inviteId, agencyId, email, role, inviteTokenHash, inviteCode,
-    user.id, expiresAt, now
-  ).run();
+  if (existingStaff) {
+    // 既存レコードを更新（再招待）
+    await db.prepare(`
+      UPDATE agency_staff_credentials SET
+        agency_id = ?,
+        staff_name = ?,
+        role = ?,
+        invite_token_hash = ?,
+        invite_code = ?,
+        invite_expires_at = ?,
+        invited_by_user_id = ?,
+        invited_at = ?,
+        is_active = 1,
+        updated_at = ?
+      WHERE id = ?
+    `).bind(
+      agencyId, name || email.split('@')[0], role, inviteTokenHash, inviteCode,
+      expiresAt, user.id, now, now, staffId
+    ).run();
+  } else {
+    // 新規レコード作成
+    await db.prepare(`
+      INSERT INTO agency_staff_credentials (
+        id, agency_id, staff_email, staff_name, role,
+        invite_token_hash, invite_code, invite_expires_at,
+        invited_by_user_id, invited_at, is_active, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+    `).bind(
+      staffId, agencyId, email.toLowerCase(), name || email.split('@')[0], role,
+      inviteTokenHash, inviteCode, expiresAt,
+      user.id, now, now, now
+    ).run();
+  }
   
-  // 招待URLを生成（実際の本番URLを使用）
+  // 招待URLを生成（パスワード設定画面へ）
   const baseUrl = c.req.header('origin') || 'https://hojyokin.pages.dev';
-  const inviteUrl = `${baseUrl}/agency/join?code=${inviteCode}&token=${inviteToken}`;
+  const inviteUrl = `${baseUrl}/staff/setup?code=${inviteCode}&token=${inviteToken}`;
   
   // メール送信（オプション）
   let emailSent = false;
   let emailError: string | undefined;
-  console.log('[Invite] sendEmail flag:', sendEmail, 'type:', typeof sendEmail);
+  console.log('[Staff Invite] sendEmail flag:', sendEmail, 'type:', typeof sendEmail);
   
   if (sendEmail) {
-    console.log('[Invite] Attempting to send invite email to:', email);
+    console.log('[Staff Invite] Attempting to send invite email to:', email);
     const inviterUser = await db.prepare('SELECT name FROM users WHERE id = ?')
       .bind(user.id).first<{ name: string }>();
     
@@ -2096,24 +2114,25 @@ agencyRoutes.post('/members/invite', async (c) => {
     });
     emailSent = emailResult.success;
     emailError = emailResult.error;
-    console.log('[Invite] Email result:', { sent: emailSent, error: emailError });
+    console.log('[Staff Invite] Email result:', { sent: emailSent, error: emailError });
   } else {
-    console.log('[Invite] Email sending skipped - sendEmail is false or falsy');
+    console.log('[Staff Invite] Email sending skipped - sendEmail is false or falsy');
   }
   
   return c.json<ApiResponse<any>>({
     success: true,
     data: {
-      invite_id: inviteId,
+      staff_id: staffId,
       email,
+      name: name || email.split('@')[0],
       role,
       invite_code: inviteCode,
       invite_url: inviteUrl,
       expires_at: expiresAt,
       email_sent: emailSent,
       message: sendEmail && emailSent 
-        ? 'Invite created and email sent.'
-        : 'Invite created. Share the invite URL with the user.',
+        ? 'スタッフ招待を送信しました。招待メールからパスワードを設定してもらってください。'
+        : 'スタッフ招待を作成しました。招待URLを共有してパスワードを設定してもらってください。',
     },
   }, 201);
 });
@@ -3257,6 +3276,313 @@ agencyRoutes.post('/suggestions/generate', async (c) => {
       suggestions_generated: insertCount,
       generated_at: now,
     },
+  });
+});
+
+// =====================================================
+// スタッフ関連API（認証不要）
+// =====================================================
+
+/**
+ * POST /api/agency/staff/verify-invite - 招待トークン検証
+ * 認証不要 - 招待リンクの有効性を確認
+ */
+agencyRoutes.post('/staff/verify-invite', async (c) => {
+  const db = c.env.DB;
+  
+  const parseResult = await safeParseJsonBody<{
+    code?: string;
+    token?: string;
+  }>(c);
+  
+  if (!parseResult.ok) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'INVALID_JSON', message: parseResult.error },
+    }, 400);
+  }
+  
+  const { code, token } = parseResult.data;
+  
+  if (!code || !token) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'VALIDATION_ERROR', message: 'code and token are required' },
+    }, 400);
+  }
+  
+  const tokenHash = await hashToken(token);
+  
+  // 招待を検証
+  const staff = await db.prepare(`
+    SELECT 
+      sc.id, sc.agency_id, sc.staff_email, sc.staff_name, sc.role,
+      sc.staff_password_hash, sc.invite_expires_at,
+      a.name as agency_name
+    FROM agency_staff_credentials sc
+    JOIN agencies a ON a.id = sc.agency_id
+    WHERE sc.invite_code = ? AND sc.invite_token_hash = ?
+      AND sc.is_active = 1
+  `).bind(code, tokenHash).first<any>();
+  
+  if (!staff) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'INVALID_INVITE', message: '招待が見つかりません。リンクが無効か期限切れです。' },
+    }, 400);
+  }
+  
+  // 期限チェック
+  if (staff.invite_expires_at && new Date(staff.invite_expires_at) < new Date()) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'INVITE_EXPIRED', message: '招待の有効期限が切れています。管理者に再招待を依頼してください。' },
+    }, 400);
+  }
+  
+  // パスワード設定済みかチェック
+  if (staff.staff_password_hash) {
+    return c.json<ApiResponse<any>>({
+      success: true,
+      data: {
+        status: 'already_setup',
+        message: 'パスワードは既に設定済みです。ログインしてください。',
+        staff_email: staff.staff_email,
+        agency_name: staff.agency_name,
+      },
+    });
+  }
+  
+  return c.json<ApiResponse<any>>({
+    success: true,
+    data: {
+      status: 'pending_setup',
+      staff_id: staff.id,
+      staff_email: staff.staff_email,
+      staff_name: staff.staff_name,
+      role: staff.role,
+      agency_name: staff.agency_name,
+    },
+  });
+});
+
+/**
+ * POST /api/agency/staff/setup-password - スタッフパスワード設定
+ * 認証不要 - 招待からパスワードを設定
+ */
+agencyRoutes.post('/staff/setup-password', async (c) => {
+  const db = c.env.DB;
+  const requestIp = c.req.header('cf-connecting-ip') || c.req.header('x-forwarded-for') || null;
+  
+  const parseResult = await safeParseJsonBody<{
+    code?: string;
+    token?: string;
+    password?: string;
+    name?: string;
+  }>(c);
+  
+  if (!parseResult.ok) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'INVALID_JSON', message: parseResult.error },
+    }, 400);
+  }
+  
+  const { code, token, password, name } = parseResult.data;
+  
+  if (!code || !token || !password) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'VALIDATION_ERROR', message: 'code, token, and password are required' },
+    }, 400);
+  }
+  
+  // パスワード強度チェック
+  const passwordErrors = validatePasswordStrength(password);
+  if (passwordErrors.length > 0) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: 'WEAK_PASSWORD',
+        message: passwordErrors.join(', '),
+        details: passwordErrors,
+      },
+    }, 400);
+  }
+  
+  const tokenHash = await hashToken(token);
+  
+  // 招待を検証
+  const staff = await db.prepare(`
+    SELECT 
+      sc.id, sc.agency_id, sc.staff_email, sc.staff_name, sc.role,
+      sc.staff_password_hash, sc.invite_expires_at,
+      a.name as agency_name, a.owner_user_id
+    FROM agency_staff_credentials sc
+    JOIN agencies a ON a.id = sc.agency_id
+    WHERE sc.invite_code = ? AND sc.invite_token_hash = ?
+      AND sc.is_active = 1
+  `).bind(code, tokenHash).first<any>();
+  
+  if (!staff) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'INVALID_INVITE', message: '招待が見つかりません。リンクが無効か期限切れです。' },
+    }, 400);
+  }
+  
+  // 期限チェック
+  if (staff.invite_expires_at && new Date(staff.invite_expires_at) < new Date()) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'INVITE_EXPIRED', message: '招待の有効期限が切れています。' },
+    }, 400);
+  }
+  
+  // パスワード設定済みチェック
+  if (staff.staff_password_hash) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'ALREADY_SETUP', message: 'パスワードは既に設定済みです。ログインしてください。' },
+    }, 400);
+  }
+  
+  // パスワードをハッシュ化して保存
+  const passwordHash = await hashPassword(password);
+  const now = new Date().toISOString();
+  
+  await db.prepare(`
+    UPDATE agency_staff_credentials SET
+      staff_password_hash = ?,
+      staff_name = COALESCE(?, staff_name),
+      password_set_at = ?,
+      invite_token_hash = NULL,
+      invite_code = NULL,
+      invite_expires_at = NULL,
+      updated_at = ?
+    WHERE id = ?
+  `).bind(passwordHash, name, now, now, staff.id).run();
+  
+  // エージェンシーオーナーの情報を取得してJWT発行
+  const ownerUser = await db.prepare('SELECT * FROM users WHERE id = ?')
+    .bind(staff.owner_user_id).first<any>();
+  
+  if (!ownerUser) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'INTERNAL_ERROR', message: 'Agency owner not found' },
+    }, 500);
+  }
+  
+  // 最終ログイン更新
+  await db.prepare(`
+    UPDATE agency_staff_credentials 
+    SET last_login_at = ?, last_login_ip = ?
+    WHERE id = ?
+  `).bind(now, requestIp, staff.id).run();
+  
+  // JWT発行（オーナーのuser_idで発行）
+  const jwtToken = await signJWT(
+    { id: ownerUser.id, email: ownerUser.email, role: ownerUser.role },
+    c.env
+  );
+  
+  return c.json<ApiResponse<any>>({
+    success: true,
+    data: {
+      message: 'パスワード設定が完了しました。ログインしました。',
+      token: jwtToken,
+      user: {
+        id: ownerUser.id,
+        email: ownerUser.email,
+        name: ownerUser.name,
+        role: ownerUser.role,
+      },
+      staff: {
+        staff_id: staff.id,
+        staff_email: staff.staff_email,
+        staff_name: name || staff.staff_name,
+        staff_role: staff.role,
+        agency_id: staff.agency_id,
+        agency_name: staff.agency_name,
+      },
+    },
+  });
+});
+
+/**
+ * GET /api/agency/staff - スタッフ一覧取得
+ */
+agencyRoutes.get('/staff', async (c) => {
+  const db = c.env.DB;
+  const user = getCurrentUser(c);
+  
+  const agencyInfo = await getUserAgency(db, user.id);
+  if (!agencyInfo) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'NOT_AGENCY', message: 'Agency account required' },
+    }, 403);
+  }
+  
+  const staffList = await db.prepare(`
+    SELECT 
+      id, staff_email, staff_name, role,
+      CASE WHEN staff_password_hash IS NOT NULL THEN 1 ELSE 0 END as is_setup,
+      invited_at, password_set_at, last_login_at, is_active
+    FROM agency_staff_credentials
+    WHERE agency_id = ?
+    ORDER BY created_at DESC
+  `).bind(agencyInfo.agency.id).all<any>();
+  
+  return c.json<ApiResponse<any>>({
+    success: true,
+    data: {
+      staff: staffList.results || [],
+    },
+  });
+});
+
+/**
+ * DELETE /api/agency/staff/:id - スタッフ削除
+ */
+agencyRoutes.delete('/staff/:id', async (c) => {
+  const db = c.env.DB;
+  const user = getCurrentUser(c);
+  const staffId = c.req.param('id');
+  
+  const agencyInfo = await getUserAgency(db, user.id);
+  if (!agencyInfo) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'NOT_AGENCY', message: 'Agency account required' },
+    }, 403);
+  }
+  
+  // オーナーのみ削除可能
+  if (agencyInfo.role !== 'owner') {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'FORBIDDEN', message: 'Only owner can delete staff' },
+    }, 403);
+  }
+  
+  const result = await db.prepare(`
+    UPDATE agency_staff_credentials 
+    SET is_active = 0, updated_at = ?
+    WHERE id = ? AND agency_id = ?
+  `).bind(new Date().toISOString(), staffId, agencyInfo.agency.id).run();
+  
+  if (!result.meta?.changes) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'NOT_FOUND', message: 'Staff not found' },
+    }, 404);
+  }
+  
+  return c.json<ApiResponse<any>>({
+    success: true,
+    data: { message: 'スタッフを削除しました' },
   });
 });
 
