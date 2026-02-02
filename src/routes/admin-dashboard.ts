@@ -5991,4 +5991,158 @@ adminDashboard.get('/progress/wall-chat-ready', async (c) => {
   }
 });
 
+// ============================================================
+// P1: SSOT検索診断API（24時間監視用）
+// ============================================================
+
+/**
+ * SSOT検索診断API（super_admin限定）
+ * 差分を「募集開始前」「欠損」「その他」に自動分類してJSONで返す
+ * 
+ * GET /api/admin-ops/ssot-diagnosis
+ */
+adminDashboard.get('/ssot-diagnosis', async (c) => {
+  const user = getCurrentUser(c);
+  if (user?.role !== 'super_admin') {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'FORBIDDEN', message: 'super_admin only' },
+    }, 403);
+  }
+  
+  const db = c.env.DB;
+  
+  try {
+    // 1) /api/health相当の基本カウント
+    const ssotCount = await db.prepare(`
+      SELECT COUNT(*) as count
+      FROM subsidy_canonical c
+      JOIN subsidy_snapshot s ON s.id = c.latest_snapshot_id
+      WHERE c.is_active = 1 AND s.is_accepting = 1
+    `).first<{ count: number }>();
+    
+    const cacheCount = await db.prepare(`
+      SELECT COUNT(*) as count
+      FROM subsidy_cache
+      WHERE source = 'jgrants'
+        AND request_reception_display_flag = 1
+        AND acceptance_end_datetime IS NOT NULL
+        AND acceptance_end_datetime > datetime('now')
+    `).first<{ count: number }>();
+    
+    // 2) cache > ssot の差分（cacheにあってSSOTにない）を抽出
+    //    「募集開始前」（acceptance_start > now）かどうかで分類
+    const diffItems = await db.prepare(`
+      SELECT
+        sc.id,
+        sc.title,
+        sc.acceptance_start_datetime,
+        sc.acceptance_end_datetime,
+        CASE 
+          WHEN sc.acceptance_start_datetime > datetime('now') THEN 'pre_start'
+          ELSE 'other'
+        END as diff_reason
+      FROM subsidy_cache sc
+      LEFT JOIN subsidy_source_link l
+        ON l.source_type='jgrants' AND l.source_id=sc.id
+      LEFT JOIN subsidy_canonical c
+        ON c.id=l.canonical_id
+      LEFT JOIN subsidy_snapshot s
+        ON s.id=c.latest_snapshot_id
+      WHERE sc.source='jgrants'
+        AND sc.request_reception_display_flag=1
+        AND sc.acceptance_end_datetime > datetime('now')
+        AND (s.is_accepting IS NULL OR s.is_accepting != 1)
+      ORDER BY sc.acceptance_start_datetime ASC
+      LIMIT 50
+    `).all<{
+      id: string;
+      title: string;
+      acceptance_start_datetime: string | null;
+      acceptance_end_datetime: string | null;
+      diff_reason: 'pre_start' | 'other';
+    }>();
+    
+    const diffResults = diffItems.results || [];
+    const preStartCount = diffResults.filter(d => d.diff_reason === 'pre_start').length;
+    const otherCount = diffResults.filter(d => d.diff_reason === 'other').length;
+    
+    // 3) 整合性チェック（P1検証用）
+    const integrityCheck = await db.prepare(`
+      SELECT 
+        COUNT(*) as total,
+        SUM(CASE WHEN latest_cache_id IS NOT NULL THEN 1 ELSE 0 END) as has_latest_cache_id,
+        SUM(CASE WHEN latest_snapshot_id IS NOT NULL THEN 1 ELSE 0 END) as has_latest_snapshot_id
+      FROM subsidy_canonical
+    `).first<{ total: number; has_latest_cache_id: number; has_latest_snapshot_id: number }>();
+    
+    // 4) 合格判定
+    const passStatus = {
+      // 必須: SSOT_SEARCH_ERROR = 0件 → ログベースなのでここでは判定不可
+      // 必須: missing_in_ssot = 0件（other が 0）
+      missing_in_ssot_zero: otherCount === 0,
+      // 許容: cache > ssot の差分が全て「募集開始前」
+      diff_explained: otherCount === 0,
+      // 整合性: latest_cache_id と latest_snapshot_id が 100%
+      integrity_ok: 
+        integrityCheck?.has_latest_cache_id === integrityCheck?.total &&
+        integrityCheck?.has_latest_snapshot_id === integrityCheck?.total,
+    };
+    
+    const overallPass = passStatus.missing_in_ssot_zero && passStatus.integrity_ok;
+    
+    return c.json<ApiResponse<any>>({
+      success: true,
+      data: {
+        // 基本カウント
+        counts: {
+          ssot_accepting_count: ssotCount?.count || 0,
+          cache_accepting_count: cacheCount?.count || 0,
+          diff: (cacheCount?.count || 0) - (ssotCount?.count || 0),
+        },
+        // 差分分類
+        diff_classification: {
+          pre_start: preStartCount,  // 許容（募集開始前）
+          other: otherCount,         // NG（要調査）
+          total: diffResults.length,
+        },
+        // 差分詳細（上位10件）
+        diff_items_top10: diffResults.slice(0, 10).map(d => ({
+          id: d.id,
+          title: d.title?.substring(0, 50) + (d.title && d.title.length > 50 ? '...' : ''),
+          acceptance_start: d.acceptance_start_datetime,
+          acceptance_end: d.acceptance_end_datetime,
+          reason: d.diff_reason,
+        })),
+        // 整合性
+        integrity: {
+          canonical_total: integrityCheck?.total || 0,
+          has_latest_cache_id: integrityCheck?.has_latest_cache_id || 0,
+          has_latest_snapshot_id: integrityCheck?.has_latest_snapshot_id || 0,
+        },
+        // 合格判定
+        pass_status: passStatus,
+        overall_pass: overallPass,
+        // 推奨アクション
+        recommendation: overallPass 
+          ? 'PASS: SEARCH_BACKEND=ssot に切替可能'
+          : otherCount > 0 
+            ? `FAIL: other=${otherCount}件を要調査（募集開始前以外の差分あり）`
+            : 'FAIL: 整合性チェックを確認してください',
+        generated_at: new Date().toISOString(),
+      },
+    });
+    
+  } catch (error) {
+    console.error('SSOT diagnosis error:', error);
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: 'INTERNAL_ERROR',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      },
+    }, 500);
+  }
+});
+
 export default adminDashboard;
