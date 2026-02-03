@@ -1413,7 +1413,8 @@ agencyRoutes.post('/links', async (c) => {
   ).run();
   
   // 生成されたURLを返す（tokenは一度だけ）
-  const baseUrl = new URL(c.req.url).origin;
+  // 注意: c.req.url は信頼できないため、本番URLを固定
+  const baseUrl = (c.env as any).APP_URL || 'https://hojyokin.pages.dev';
   const linkUrl = `${baseUrl}/${type}?code=${shortCode}`;
   
   // メール送信（オプション）
@@ -2091,7 +2092,8 @@ agencyRoutes.post('/members/invite', async (c) => {
   }
   
   // 招待URLを生成（パスワード設定画面へ）
-  const baseUrl = c.req.header('origin') || 'https://hojyokin.pages.dev';
+  // 注意: origin ヘッダーは信頼できないため、本番URLを固定
+  const baseUrl = (c.env as any).APP_URL || 'https://hojyokin.pages.dev';
   const inviteUrl = `${baseUrl}/staff/setup?code=${inviteCode}&token=${inviteToken}`;
   
   // メール送信（オプション）

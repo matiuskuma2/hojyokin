@@ -602,7 +602,9 @@ auth.post('/password-reset/request', async (c) => {
     });
     
     // SendGrid でメール送信
-    const baseUrl = c.req.header('origin') || 'https://hojyokin.pages.dev';
+    // 注意: origin ヘッダーは信頼できないため、本番URLを固定
+    // サンドボックスやプロキシ経由でアクセスした場合に不正なURLになる問題を防止
+    const baseUrl = (c.env as any).APP_URL || 'https://hojyokin.pages.dev';
     const resetUrl = `${baseUrl}/reset-password?token=${rawToken}`;
     
     // ユーザー名を取得
