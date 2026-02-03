@@ -496,12 +496,15 @@ subsidies.get('/evaluations/:company_id', requireCompanyAccess(), async (c) => {
 
 /**
  * 補助金の申請要件取得
+ * - eligibility_rules テーブルから取得（従来）
+ * - detail_json.eligibility_requirements から取得（手動登録補助金）
  */
 subsidies.get('/:subsidy_id/eligibility', async (c) => {
   const db = c.env.DB;
   const subsidyId = c.req.param('subsidy_id');
   
   try {
+    // 1. eligibility_rules テーブルから取得
     const rules = await db
       .prepare(`
         SELECT 
@@ -514,12 +517,119 @@ subsidies.get('/:subsidy_id/eligibility', async (c) => {
       .bind(subsidyId)
       .all();
     
+    // 従来のルールがある場合はそのまま返す
+    if (rules.results && rules.results.length > 0) {
+      return c.json<ApiResponse<unknown[]>>({
+        success: true,
+        data: rules.results.map((rule: any) => ({
+          ...rule,
+          parameters: rule.parameters ? JSON.parse(rule.parameters) : null,
+        })),
+      });
+    }
+    
+    // 2. detail_json から eligibility_requirements を取得（手動登録補助金用）
+    const cache = await db
+      .prepare(`
+        SELECT detail_json FROM subsidy_cache WHERE id = ?
+      `)
+      .bind(subsidyId)
+      .first<{ detail_json: string | null }>();
+    
+    if (cache?.detail_json) {
+      try {
+        const detail = JSON.parse(cache.detail_json);
+        const eligibility = detail.eligibility_requirements;
+        
+        if (eligibility) {
+          const generatedRules: any[] = [];
+          
+          // basic requirements
+          if (eligibility.basic && Array.isArray(eligibility.basic)) {
+            eligibility.basic.forEach((req: string, idx: number) => {
+              generatedRules.push({
+                id: `${subsidyId}-basic-${idx}`,
+                subsidy_id: subsidyId,
+                category: '基本要件',
+                rule_text: req,
+                check_type: 'MANUAL',
+                source_text: '公募要領より',
+              });
+            });
+          }
+          
+          // mandatory_commitments (必須コミットメント)
+          if (eligibility.mandatory_commitments && Array.isArray(eligibility.mandatory_commitments)) {
+            eligibility.mandatory_commitments.forEach((commit: any, idx: number) => {
+              generatedRules.push({
+                id: `${subsidyId}-mandatory-${idx}`,
+                subsidy_id: subsidyId,
+                category: '必須要件',
+                rule_text: `${commit.item}: ${commit.requirement}${commit.verification ? ` (確認方法: ${commit.verification})` : ''}`,
+                check_type: 'AUTO',
+                source_text: '公募要領より',
+              });
+            });
+          }
+          
+          // creation_requirements (創業型用)
+          if (eligibility.creation_requirements && Array.isArray(eligibility.creation_requirements)) {
+            eligibility.creation_requirements.forEach((req: any, idx: number) => {
+              generatedRules.push({
+                id: `${subsidyId}-creation-${idx}`,
+                subsidy_id: subsidyId,
+                category: '創業要件',
+                rule_text: `${req.item}: ${req.requirement}${req.note ? ` (${req.note})` : ''}`,
+                check_type: 'MANUAL',
+                source_text: '公募要領より',
+              });
+            });
+          }
+          
+          // scale_requirements (規模要件)
+          if (eligibility.scale_requirements && Array.isArray(eligibility.scale_requirements)) {
+            eligibility.scale_requirements.forEach((scale: any, idx: number) => {
+              generatedRules.push({
+                id: `${subsidyId}-scale-${idx}`,
+                subsidy_id: subsidyId,
+                category: '規模要件',
+                rule_text: `${scale.industry}: 従業員${scale.max_employees}人以下`,
+                check_type: 'AUTO',
+                source_text: '公募要領より',
+              });
+            });
+          }
+          
+          // exclusions (除外条件)
+          if (eligibility.exclusions && Array.isArray(eligibility.exclusions)) {
+            eligibility.exclusions.forEach((excl: string, idx: number) => {
+              generatedRules.push({
+                id: `${subsidyId}-excl-${idx}`,
+                subsidy_id: subsidyId,
+                category: '対象外',
+                rule_text: excl,
+                check_type: 'MANUAL',
+                source_text: '公募要領より',
+              });
+            });
+          }
+          
+          if (generatedRules.length > 0) {
+            return c.json<ApiResponse<unknown[]>>({
+              success: true,
+              data: generatedRules,
+            });
+          }
+        }
+      } catch (e) {
+        console.warn('Failed to parse detail_json for eligibility:', e);
+      }
+    }
+    
+    // データがない場合は空配列
     return c.json<ApiResponse<unknown[]>>({
       success: true,
-      data: rules.results.map((rule: any) => ({
-        ...rule,
-        parameters: rule.parameters ? JSON.parse(rule.parameters) : null,
-      })),
+      data: [],
     });
   } catch (error) {
     console.error('Get eligibility rules error:', error);
@@ -535,12 +645,15 @@ subsidies.get('/:subsidy_id/eligibility', async (c) => {
 
 /**
  * 補助金の必要書類取得
+ * - required_documents_by_subsidy テーブルから取得（従来）
+ * - detail_json.required_documents から取得（手動登録補助金）
  */
 subsidies.get('/:subsidy_id/documents', async (c) => {
   const db = c.env.DB;
   const subsidyId = c.req.param('subsidy_id');
   
   try {
+    // 1. required_documents_by_subsidy テーブルから取得
     const docs = await db
       .prepare(`
         SELECT 
@@ -555,9 +668,166 @@ subsidies.get('/:subsidy_id/documents', async (c) => {
       .bind(subsidyId)
       .all();
     
+    // 従来の書類データがある場合はそのまま返す
+    if (docs.results && docs.results.length > 0) {
+      return c.json<ApiResponse<unknown[]>>({
+        success: true,
+        data: docs.results,
+      });
+    }
+    
+    // 2. detail_json から required_documents を取得（手動登録補助金用）
+    const cache = await db
+      .prepare(`
+        SELECT detail_json FROM subsidy_cache WHERE id = ?
+      `)
+      .bind(subsidyId)
+      .first<{ detail_json: string | null }>();
+    
+    if (cache?.detail_json) {
+      try {
+        const detail = JSON.parse(cache.detail_json);
+        const reqDocs = detail.required_documents;
+        
+        if (reqDocs) {
+          const generatedDocs: any[] = [];
+          let sortOrder = 0;
+          
+          // common documents
+          if (reqDocs.common && Array.isArray(reqDocs.common)) {
+            reqDocs.common.forEach((doc: any, idx: number) => {
+              generatedDocs.push({
+                id: `${subsidyId}-common-${idx}`,
+                subsidy_id: subsidyId,
+                doc_code: doc.name,
+                name: doc.name,
+                required_level: 'required',
+                description: doc.description || doc.period || '',
+                notes: doc.requirement || doc.deadline || '',
+                phase: '共通',
+                sort_order: sortOrder++,
+              });
+            });
+          }
+          
+          // main_forms (主要様式)
+          if (reqDocs.main_forms && Array.isArray(reqDocs.main_forms)) {
+            reqDocs.main_forms.forEach((doc: any, idx: number) => {
+              generatedDocs.push({
+                id: `${subsidyId}-form-${idx}`,
+                subsidy_id: subsidyId,
+                doc_code: doc.name,
+                name: doc.name,
+                required_level: 'required',
+                description: doc.description || '',
+                notes: doc.deadline || '',
+                phase: '申請様式',
+                sort_order: sortOrder++,
+              });
+            });
+          }
+          
+          // corporation documents
+          if (reqDocs.corporation && Array.isArray(reqDocs.corporation)) {
+            reqDocs.corporation.forEach((doc: any, idx: number) => {
+              generatedDocs.push({
+                id: `${subsidyId}-corp-${idx}`,
+                subsidy_id: subsidyId,
+                doc_code: doc.name,
+                name: doc.name,
+                required_level: 'conditional',
+                description: doc.period || doc.requirement || '',
+                notes: '法人のみ',
+                phase: '法人向け',
+                sort_order: sortOrder++,
+              });
+            });
+          }
+          
+          // individual documents
+          if (reqDocs.individual && Array.isArray(reqDocs.individual)) {
+            reqDocs.individual.forEach((doc: any, idx: number) => {
+              generatedDocs.push({
+                id: `${subsidyId}-ind-${idx}`,
+                subsidy_id: subsidyId,
+                doc_code: doc.name,
+                name: doc.name,
+                required_level: 'conditional',
+                description: doc.period || '',
+                notes: '個人事業主のみ',
+                phase: '個人向け',
+                sort_order: sortOrder++,
+              });
+            });
+          }
+          
+          // optional documents
+          if (reqDocs.optional && Array.isArray(reqDocs.optional)) {
+            reqDocs.optional.forEach((doc: any, idx: number) => {
+              generatedDocs.push({
+                id: `${subsidyId}-opt-${idx}`,
+                subsidy_id: subsidyId,
+                doc_code: doc.name,
+                name: doc.name,
+                required_level: 'optional',
+                description: doc.condition || '',
+                notes: '該当者のみ',
+                phase: '任意',
+                sort_order: sortOrder++,
+              });
+            });
+          }
+          
+          // special_optional (特例用書類)
+          if (reqDocs.special_optional && Array.isArray(reqDocs.special_optional)) {
+            reqDocs.special_optional.forEach((doc: any, idx: number) => {
+              generatedDocs.push({
+                id: `${subsidyId}-special-${idx}`,
+                subsidy_id: subsidyId,
+                doc_code: doc.name,
+                name: doc.name,
+                required_level: 'conditional',
+                description: doc.condition || '',
+                notes: '特例適用時',
+                phase: '特例',
+                sort_order: sortOrder++,
+              });
+            });
+          }
+          
+          // additional (追加書類)
+          if (reqDocs.additional && Array.isArray(reqDocs.additional)) {
+            reqDocs.additional.forEach((doc: any, idx: number) => {
+              generatedDocs.push({
+                id: `${subsidyId}-add-${idx}`,
+                subsidy_id: subsidyId,
+                doc_code: doc.name,
+                name: doc.name,
+                required_level: doc.requirement === '必須' ? 'required' : 'conditional',
+                description: doc.requirement || '',
+                notes: '',
+                phase: '追加',
+                sort_order: sortOrder++,
+              });
+            });
+          }
+          
+          if (generatedDocs.length > 0) {
+            return c.json<ApiResponse<unknown[]>>({
+              success: true,
+              data: generatedDocs,
+            });
+          }
+        }
+      } catch (e) {
+        console.warn('Failed to parse detail_json for documents:', e);
+      }
+    }
+    
+    // データがない場合は空配列
     return c.json<ApiResponse<unknown[]>>({
       success: true,
-      data: docs.results,
+      data: [],
     });
   } catch (error) {
     console.error('Get required documents error:', error);
@@ -566,6 +836,148 @@ subsidies.get('/:subsidy_id/documents', async (c) => {
       error: {
         code: 'INTERNAL_ERROR',
         message: 'Failed to get required documents',
+      },
+    }, 500);
+  }
+});
+
+/**
+ * 補助金の対象経費取得
+ * - detail_json.eligible_expenses から取得（手動登録補助金用）
+ */
+subsidies.get('/:subsidy_id/expenses', async (c) => {
+  const db = c.env.DB;
+  const subsidyId = c.req.param('subsidy_id');
+  
+  try {
+    // detail_json から eligible_expenses を取得
+    const cache = await db
+      .prepare(`
+        SELECT detail_json FROM subsidy_cache WHERE id = ?
+      `)
+      .bind(subsidyId)
+      .first<{ detail_json: string | null }>();
+    
+    if (cache?.detail_json) {
+      try {
+        const detail = JSON.parse(cache.detail_json);
+        const expenses = detail.eligible_expenses;
+        
+        if (expenses) {
+          return c.json<ApiResponse<{
+            required: any;
+            categories: any[];
+            not_eligible: string[];
+          }>>({
+            success: true,
+            data: {
+              required: expenses.required || null,
+              categories: expenses.categories || expenses.optional || [],
+              not_eligible: expenses.not_eligible || [],
+            },
+          });
+        }
+      } catch (e) {
+        console.warn('Failed to parse detail_json for expenses:', e);
+      }
+    }
+    
+    // データがない場合
+    return c.json<ApiResponse<null>>({
+      success: true,
+      data: null,
+    });
+  } catch (error) {
+    console.error('Get eligible expenses error:', error);
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: 'INTERNAL_ERROR',
+        message: 'Failed to get eligible expenses',
+      },
+    }, 500);
+  }
+});
+
+/**
+ * 補助金の加点項目取得
+ * - detail_json.bonus_points / evaluation_criteria.bonus_review から取得
+ */
+subsidies.get('/:subsidy_id/bonus-points', async (c) => {
+  const db = c.env.DB;
+  const subsidyId = c.req.param('subsidy_id');
+  
+  try {
+    const cache = await db
+      .prepare(`
+        SELECT detail_json FROM subsidy_cache WHERE id = ?
+      `)
+      .bind(subsidyId)
+      .first<{ detail_json: string | null }>();
+    
+    if (cache?.detail_json) {
+      try {
+        const detail = JSON.parse(cache.detail_json);
+        
+        // bonus_points（省力化投資補助金形式）
+        if (detail.bonus_points && Array.isArray(detail.bonus_points)) {
+          return c.json<ApiResponse<any[]>>({
+            success: true,
+            data: detail.bonus_points,
+          });
+        }
+        
+        // evaluation_criteria.bonus_review（持続化補助金形式）
+        if (detail.evaluation_criteria?.bonus_review) {
+          const bonusReview = detail.evaluation_criteria.bonus_review;
+          const bonusPoints: any[] = [];
+          
+          // 重点政策加点
+          if (bonusReview['重点政策加点']?.options) {
+            bonusReview['重点政策加点'].options.forEach((opt: any) => {
+              bonusPoints.push({
+                category: '重点政策加点',
+                name: typeof opt === 'string' ? opt : opt.name,
+                description: typeof opt === 'object' ? opt.description : '',
+              });
+            });
+          }
+          
+          // 政策加点
+          if (bonusReview['政策加点']?.options) {
+            bonusReview['政策加点'].options.forEach((opt: any) => {
+              bonusPoints.push({
+                category: '政策加点',
+                name: typeof opt === 'string' ? opt : opt.name,
+                description: typeof opt === 'object' ? opt.description : '',
+              });
+            });
+          }
+          
+          if (bonusPoints.length > 0) {
+            return c.json<ApiResponse<any[]>>({
+              success: true,
+              data: bonusPoints,
+              meta: { note: bonusReview.note || '' },
+            });
+          }
+        }
+      } catch (e) {
+        console.warn('Failed to parse detail_json for bonus points:', e);
+      }
+    }
+    
+    return c.json<ApiResponse<any[]>>({
+      success: true,
+      data: [],
+    });
+  } catch (error) {
+    console.error('Get bonus points error:', error);
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: 'INTERNAL_ERROR',
+        message: 'Failed to get bonus points',
       },
     }, 500);
   }
