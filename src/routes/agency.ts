@@ -2206,9 +2206,30 @@ agencyRoutes.post('/members/join', async (c) => {
   const { code, token } = parseResult.data;
   
   if (!code || !token) {
+    // tokenがない場合、招待が存在するか確認して適切なメッセージを返す
+    if (code && !token) {
+      const inviteExists = await db.prepare(`
+        SELECT id, email FROM agency_member_invites
+        WHERE invite_code = ?
+          AND accepted_at IS NULL 
+          AND revoked_at IS NULL
+          AND expires_at > datetime('now')
+      `).bind(code).first<{ id: string; email: string }>();
+      
+      if (inviteExists) {
+        return c.json<ApiResponse<null>>({
+          success: false,
+          error: { 
+            code: 'TOKEN_REQUIRED', 
+            message: `招待リンクが不完全です。招待メールに記載されている完全なリンクをクリックしてください。招待メールは ${inviteExists.email} 宛てに送信されています。` 
+          },
+        }, 400);
+      }
+    }
+    
     return c.json<ApiResponse<null>>({
       success: false,
-      error: { code: 'VALIDATION_ERROR', message: 'code and token are required' },
+      error: { code: 'VALIDATION_ERROR', message: '招待コードまたはトークンが不足しています。招待メールのリンクを再度クリックしてください。' },
     }, 400);
   }
   
