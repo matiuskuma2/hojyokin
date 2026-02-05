@@ -2223,6 +2223,17 @@ subsidyPages.get('/subsidies/:id', (c) => {
         const s = data.subsidy;
         const e = data.evaluation;
         
+        // デバッグログ: どのフィールドが存在するか確認
+        console.log('[renderDetail] subsidy fields:', {
+          title: s.title,
+          name: s.name,
+          subsidy_summary: s.subsidy_summary?.substring(0, 50),
+          outline: s.outline?.substring(0, 50),
+          overview: s.overview?.substring(0, 50),
+          target: s.target?.substring(0, 50),
+          subsidy_executing_organization: s.subsidy_executing_organization
+        });
+        
         document.getElementById('loading-detail').classList.add('hidden');
         document.getElementById('subsidy-detail').classList.remove('hidden');
         

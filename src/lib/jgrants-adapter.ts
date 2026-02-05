@@ -405,6 +405,11 @@ export class JGrantsAdapter {
     const cachedRow = await this.getDetailFromCacheRaw(id);
     const cached = cachedRow ? this.parseDetailRow(cachedRow) : null;
     
+    // デバッグログ
+    if (cached) {
+      console.log(`[Adapter.getDetail] id=${id}, cached.title=${cached.title}, cached.subsidy_summary=${cached.subsidy_summary?.substring(0, 50)}...`);
+    }
+    
     // 判定用のヘルパー
     const buildResponse = (detail: JGrantsDetailResult, source: 'live' | 'mock' | 'cache', detailJsonStr?: string | null): AdapterDetailResponse => {
       const jsonStr = detailJsonStr || JSON.stringify(detail);
