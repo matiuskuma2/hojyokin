@@ -6,7 +6,70 @@
 - **Version**: 3.4.0
 - **Goal**: 企業情報を登録するだけで、最適な補助金・助成金を自動でマッチング＆申請書ドラフト作成
 
-### 🎉 最新アップデート (v4.2.0) - Ready率52%達成 + Cron完全自動化 + fallback v2
+### 🎉 最新アップデート (v4.3.0) - NormalizedSubsidyDetail v1.0 Freeze + Phase A完了
+
+**v4.3.0 リリース（2026-02-05）:**
+
+| 項目 | 状態 | 詳細 |
+|------|------|------|
+| **Phase A-1 完了** | ✅ | resolveSubsidyRef.ts（SSOT ID解決）+ normalizeSubsidyDetail.ts（5制度マッピング） |
+| **Phase A-2 完了** | ✅ | フロントエンド normalized 完全参照へ切替 |
+| **NormalizedSubsidyDetail v1.0** | ✅ Freeze | 詳細API `/api/subsidies/:id` に normalized 追加（互換維持） |
+| **resolveSubsidyRef** | ✅ Freeze | canonical_id/cache_id 問題の根絶、唯一の入口として凍結 |
+
+**Phase A-1/A-2 成果物:**
+| ファイル | 役割 |
+|----------|------|
+| `src/lib/ssot/resolveSubsidyRef.ts` | SSOT ID解決（canonical_id/cache_id 両対応） |
+| `src/lib/ssot/normalizeSubsidyDetail.ts` | 5制度マッピング（IT導入/省力化/持続化/業務改善/ものづくり） |
+| `src/lib/ssot/index.ts` | SSOT モジュール エクスポート |
+
+**NormalizedSubsidyDetail 構造（v1.0 Freeze）:**
+```typescript
+interface NormalizedSubsidyDetail {
+  schema_version: '1.0';
+  ids: { input_id, canonical_id, cache_id, snapshot_id };
+  source: { primary_source_type, primary_source_id, links };
+  acceptance: { is_accepting, acceptance_start, acceptance_end };
+  display: { title, issuer_name, target_area_text, subsidy_max_limit, subsidy_rate_text };
+  overview: { summary, purpose, target_business };
+  electronic_application: { is_electronic_application, portal_name, portal_url };
+  wall_chat: { mode, ready, missing, questions };
+  content: { eligibility_rules, eligible_expenses, required_documents, bonus_points, required_forms, attachments };
+  provenance: { koubo_source_urls, pdf_urls, pdf_hashes, last_normalized_at };
+}
+```
+
+**APIレスポンス変更点:**
+```json
+{
+  "success": true,
+  "data": {
+    "normalized": { /* NormalizedSubsidyDetail v1.0 */ },
+    "subsidy": { /* legacy（互換用、将来削除予定）*/ },
+    "attachments": [...],
+    "evaluation": {...},
+    "meta": {
+      "resolved_canonical_id": "...",
+      "resolved_cache_id": "...",
+      "schema_version": "1.0"
+    }
+  }
+}
+```
+
+**フロントエンド変更点（Phase A-2）:**
+- `renderDetail()`: normalized.display/acceptance/overview 優先参照
+- 基本情報（締切、上限、補助率、対象地域）を normalized 優先に変更
+- 概要・対象事業を normalized.overview 優先に変更
+- 添付ファイルを normalized.content.attachments 優先に変更
+- legacy `data.subsidy` は fallback として維持（互換期間）
+
+**Phase A-3（保留）:** 他API（eligibility/documents/expenses/bonus）を normalized 経由へ統一
+
+---
+
+### 🎉 過去アップデート (v4.2.0) - Ready率52%達成 + Cron完全自動化 + fallback v2
 
 **v4.2.0 リリース（2026-01-28）:**
 
@@ -1030,6 +1093,7 @@ Private
 
 ## 🔄 更新履歴
 
+- **2026-02-05 (v4.3.0)**: NormalizedSubsidyDetail v1.0 Freeze + Phase A-1/A-2 完了 - resolveSubsidyRef.ts（SSOT ID解決）、normalizeSubsidyDetail.ts（5制度マッピング）、フロントエンド normalized 完全参照切替
 - **2026-01-24 (v2.2.0)**: P3-2E Sprint完了 - tokyo-hataraku +15件、feed_failures UI 4分類、JGrants enrich-detail API
 - **2026-01-24 (v2.1.0)**: P3-2C/D完了 - required_forms自動生成、主要5制度WALL_CHAT_READY化
 - **2026-01-23 (v1.8.0)**: 士業ダッシュボード v2（情報の泉型）- NEWSフィード5カテゴリ、顧客おすすめAIサジェスト、未処理タスク、KPI
