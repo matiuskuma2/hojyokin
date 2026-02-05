@@ -1887,7 +1887,8 @@ subsidyPages.get('/subsidies/:id', (c) => {
               <p class="text-gray-500">要件情報を読み込み中...</p>
             </div>
             
-            <div class="mt-6 p-4 bg-blue-50 rounded-lg">
+            <!-- 要件読み込みセクション: AWSジョブ設定済みかつdetail_jsonに要件がない場合のみ表示 -->
+            <div id="ingest-section" class="mt-6 p-4 bg-blue-50 rounded-lg hidden">
               <h4 class="font-medium text-blue-800 mb-2">
                 <i class="fas fa-lightbulb mr-1"></i>要件の読み込み
               </h4>
@@ -2414,8 +2415,10 @@ subsidyPages.get('/subsidies/:id', (c) => {
       // 要件読み込み
       async function loadEligibility() {
         try {
+          console.log('[Eligibility] Loading for subsidyId:', subsidyId);
           const res = await api('/api/subsidies/' + subsidyId + '/eligibility');
-          if (res.success && res.data.length > 0) {
+          console.log('[Eligibility] API response:', { success: res.success, dataLength: res.data?.length });
+          if (res.success && res.data && res.data.length > 0) {
             hasEligibilityData = true;
             const html = res.data.map(rule => {
               const typeLabel = rule.check_type === 'AUTO' ? 
@@ -2434,10 +2437,16 @@ subsidyPages.get('/subsidies/:id', (c) => {
               \`;
             }).join('');
             document.getElementById('eligibility-list').innerHTML = html;
+            // 要件データがある場合はingestセクションを非表示のまま
+            document.getElementById('ingest-section')?.classList.add('hidden');
           } else {
             hasEligibilityData = false;
             document.getElementById('eligibility-list').innerHTML = 
-              '<p class="text-gray-500">要件情報がまだ登録されていません。下の「要件を読み込む」ボタンで取り込みを開始できます。</p>';
+              '<p class="text-gray-500">要件情報がまだ登録されていません。</p>';
+            // 要件データがない場合はingestセクションを表示（ただしAWS未設定時のエラーに注意）
+            // 現状AWSジョブAPIが未設定のため、一旦非表示のまま
+            // TODO: AWSジョブAPI設定後に有効化
+            // document.getElementById('ingest-section')?.classList.remove('hidden');
           }
         } catch (e) {
           console.error('Load eligibility error:', e);
@@ -2728,6 +2737,7 @@ subsidyPages.get('/subsidies/:id', (c) => {
       // 要件取り込みジョブ開始
       async function ingestEligibility() {
         const btn = document.getElementById('btn-ingest');
+        if (!btn) return;
         btn.disabled = true;
         btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>取り込み中...';
         
@@ -2736,10 +2746,15 @@ subsidyPages.get('/subsidies/:id', (c) => {
           if (res.success) {
             alert('要件の取り込みジョブを開始しました。数分後に再読み込みしてください。');
           } else {
-            alert('取り込みに失敗しました: ' + (res.error?.message || '不明なエラー'));
+            // AWS APIが未設定の場合の専用メッセージ
+            if (res.error?.code === 'NOT_CONFIGURED') {
+              alert('現在この機能は準備中です。手動登録の補助金については既に要件情報が設定されています。');
+            } else {
+              alert('取り込みに失敗しました: ' + (res.error?.message || '不明なエラー'));
+            }
           }
         } catch (e) {
-          alert('取り込みに失敗しました');
+          alert('取り込みに失敗しました。しばらく経ってから再度お試しください。');
         } finally {
           btn.disabled = false;
           btn.innerHTML = '<i class="fas fa-download mr-1"></i>要件を読み込む';
