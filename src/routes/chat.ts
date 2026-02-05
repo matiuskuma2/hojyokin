@@ -508,13 +508,28 @@ function generateAdditionalQuestions(
             return;
           }
           
-          // 入力タイプを推測
+          // 入力タイプを推測（改善版）
           let inputType: 'boolean' | 'number' | 'text' | 'select' = 'text';
-          const q = wq.question.toLowerCase();
-          if (q.includes('ますか？') || q.includes('ですか？') || q.includes('いますか？') || q.includes('ありますか？')) {
-            inputType = 'boolean';
-          } else if (q.includes('何名') || q.includes('何人') || q.includes('いくら') || q.includes('何円') || q.includes('何時間')) {
+          const q = wq.question;
+          
+          // 「何ですか」「どのような」「どんな」等の疑問詞がある場合はtext
+          const isOpenQuestion = /何(ですか|でしょうか)|どの(ような|程度)|どんな|いくつ|どこ|いつ/.test(q);
+          
+          // 「ますか」「ですか」で終わるが「何ですか」ではない場合のみboolean
+          const endsWithBooleanSuffix = /(ますか|いますか|ありますか|できますか|しますか|されていますか|いただけますか)[\？\?]?\s*$/.test(q);
+          
+          // 数値を問う質問
+          const isNumberQuestion = /(何名|何人|いくら|何円|何時間|何日|何年|何ヶ月|何か月|何回|何%|何パーセント|人数|金額|時間数)/.test(q);
+          
+          if (isOpenQuestion) {
+            // 「何ですか？」「どのようなものですか？」→ text
+            inputType = 'text';
+          } else if (isNumberQuestion) {
+            // 「何名ですか？」「いくらですか？」→ number
             inputType = 'number';
+          } else if (endsWithBooleanSuffix) {
+            // 「～していますか？」「～ありますか？」→ boolean
+            inputType = 'boolean';
           }
           
           const priority = categoryPriority[wq.category] || 3;
@@ -794,6 +809,8 @@ function formatQuestion(item: MissingItem): string {
     question += '\n\n数値でお答えください。';
   } else if (item.input_type === 'select' && item.options) {
     question += `\n\n以下から選択してください：\n${item.options.map((o, i) => `${i + 1}. ${o}`).join('\n')}`;
+  } else if (item.input_type === 'text') {
+    // textタイプは追加の説明なし（質問そのままで自由回答）
   }
   
   return question;
