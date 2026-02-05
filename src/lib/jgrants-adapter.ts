@@ -156,7 +156,8 @@ export class JGrantsAdapter {
     try {
       // 基本クエリ: canonical → latest_snapshot（必須JOIN）
       // 表示補助: LEFT JOIN subsidy_cache
-      // P1ガード: source_link は MIN(id) で1件に限定（複数登録時の重複防止）
+      // P1修正: source_link は LEFT JOIN（検索の必須条件にしない）
+      // ※source_linkは出典トラッキング用の補助情報であり、検索母集団の条件にしてはいけない
       let query = `
         SELECT 
           c.id AS canonical_id,
@@ -189,7 +190,7 @@ export class JGrantsAdapter {
           sc.target_number_of_employees
         FROM subsidy_canonical c
         JOIN subsidy_snapshot s ON s.id = c.latest_snapshot_id
-        JOIN (
+        LEFT JOIN (
           SELECT canonical_id, source_type, source_id
           FROM subsidy_source_link
           WHERE id IN (
