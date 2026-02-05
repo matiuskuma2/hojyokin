@@ -304,6 +304,19 @@ subsidies.get('/:subsidy_id', async (c) => {
     const adapter = createJGrantsAdapter(c.env);
     
     const detailResponse = await adapter.getDetail(subsidyId);
+    
+    // デバッグログ: API が返すフィールドを確認
+    console.log(`[API /subsidies/${subsidyId}] detailResponse fields:`, {
+      id: detailResponse.id,
+      title: detailResponse.title,
+      name: detailResponse.name,
+      subsidy_summary: detailResponse.subsidy_summary?.substring(0, 50),
+      overview: detailResponse.overview?.substring(0, 50),
+      subsidy_executing_organization: detailResponse.subsidy_executing_organization,
+      target_area: detailResponse.target_area,
+      source: detailResponse.source,
+    });
+    
     const subsidyDetail = detailResponse;
     const source = detailResponse.source;
     
