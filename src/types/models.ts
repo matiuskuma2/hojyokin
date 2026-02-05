@@ -199,7 +199,22 @@ export interface JGrantsAttachment {
 }
 
 // API レスポンス型
-export interface ApiResponse<T> {
+// Freeze: meta フィールドを正式サポート（A-3 安全パッチ）
+export interface ApiResponseMeta {
+  total?: number;
+  page?: number;
+  limit?: number;
+  has_more?: boolean;
+  // A-3: SSOT 追加メタ情報
+  resolved_canonical_id?: string;
+  resolved_cache_id?: string | null;
+  resolved_snapshot_id?: string | null;
+  schema_version?: string;
+  source?: string;
+  gate?: string;
+}
+
+export interface ApiResponse<T, M extends ApiResponseMeta = ApiResponseMeta> {
   success: boolean;
   data?: T;
   error?: {
@@ -207,12 +222,7 @@ export interface ApiResponse<T> {
     message: string;
     details?: unknown;
   };
-  meta?: {
-    total?: number;
-    page?: number;
-    limit?: number;
-    has_more?: boolean;
-  };
+  meta?: M;
 }
 
 // 検索パラメータ

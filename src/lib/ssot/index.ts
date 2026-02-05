@@ -6,7 +6,7 @@
 
 export {
   resolveSubsidyRef,
-  resolveSubsidyRefOrThrow,
+  // resolveSubsidyRefOrThrow は内部用途のみ（throw は外部API向けに非推奨）
   type ResolveSubsidyRefResult,
   type SourceType,
   type MatchType,
@@ -42,6 +42,6 @@ export {
 // A-3-0: 共通読み取り関数（全APIで使用）
 export {
   getNormalizedSubsidyDetail,
-  getNormalizedSubsidyDetailOrThrow,
+  // getNormalizedSubsidyDetailOrThrow は内部用途のみ（throw は外部API向けに非推奨）
   type GetNormalizedSubsidyDetailResult,
 } from './getNormalizedSubsidyDetail';
