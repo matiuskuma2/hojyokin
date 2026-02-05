@@ -2137,6 +2137,17 @@ subsidyPages.get('/subsidies/:id', (c) => {
       const backUrl = urlParams.get('back');
       let subsidyData = null;
       
+      // HTMLエスケープ関数（XSS対策）- 詳細ページ用
+      function escapeHtml(str) {
+        if (str === null || str === undefined) return '';
+        return String(str)
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&#039;');
+      }
+      
       // P0-1凍結: fromパラメータに応じてパンくずリストを動的に変更
       (function updateBreadcrumb() {
         const breadcrumbNav = document.querySelector('nav.mb-4.text-sm ol');
