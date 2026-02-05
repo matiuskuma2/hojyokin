@@ -129,12 +129,28 @@ chat.post('/precheck', async (c) => {
       }, 404);
     }
     
-    // 補助金情報取得（subsidy_cache から、なければモックデータ）
+    // 補助金情報取得（SSOT対応: canonical_id → latest_cache_id → subsidy_cache）
+    // Step 1: subsidy_id で直接 subsidy_cache を検索
     let subsidyInfo = await c.env.DB.prepare(`
       SELECT * FROM subsidy_cache WHERE id = ?
     `).bind(subsidy_id).first() as Record<string, any> | null;
     
-    // DBにない場合はモックデータからフォールバック
+    // Step 2: 見つからない場合、canonical_id として扱い latest_cache_id 経由で検索
+    if (!subsidyInfo) {
+      const canonical = await c.env.DB.prepare(`
+        SELECT c.*, sc.*
+        FROM subsidy_canonical c
+        LEFT JOIN subsidy_cache sc ON sc.id = c.latest_cache_id
+        WHERE c.id = ?
+      `).bind(subsidy_id).first() as Record<string, any> | null;
+      
+      if (canonical && canonical.latest_cache_id) {
+        subsidyInfo = canonical;
+        console.log(`[Chat] Resolved canonical_id ${subsidy_id} → cache_id ${canonical.latest_cache_id}`);
+      }
+    }
+    
+    // Step 3: それでも見つからない場合はモックデータからフォールバック
     if (!subsidyInfo) {
       const mockDetail = getMockSubsidyDetail(subsidy_id);
       if (mockDetail) {
@@ -581,12 +597,28 @@ chat.post('/sessions', async (c) => {
       WHERE c.id = ?
     `).bind(targetCompanyId).first() as Record<string, any> | null;
     
-    // 補助金情報取得（subsidy_cache から、なければモックデータ）
+    // 補助金情報取得（SSOT対応: canonical_id → latest_cache_id → subsidy_cache）
+    // Step 1: subsidy_id で直接 subsidy_cache を検索
     let subsidyInfo = await c.env.DB.prepare(`
       SELECT * FROM subsidy_cache WHERE id = ?
     `).bind(subsidy_id).first() as Record<string, any> | null;
     
-    // DBにない場合はモックデータからフォールバック
+    // Step 2: 見つからない場合、canonical_id として扱い latest_cache_id 経由で検索
+    if (!subsidyInfo) {
+      const canonical = await c.env.DB.prepare(`
+        SELECT c.*, sc.*
+        FROM subsidy_canonical c
+        LEFT JOIN subsidy_cache sc ON sc.id = c.latest_cache_id
+        WHERE c.id = ?
+      `).bind(subsidy_id).first() as Record<string, any> | null;
+      
+      if (canonical && canonical.latest_cache_id) {
+        subsidyInfo = canonical;
+        console.log(`[Chat Session] Resolved canonical_id ${subsidy_id} → cache_id ${canonical.latest_cache_id}`);
+      }
+    }
+    
+    // Step 3: それでも見つからない場合はモックデータからフォールバック
     if (!subsidyInfo) {
       const mockDetail = getMockSubsidyDetail(subsidy_id);
       if (mockDetail) {

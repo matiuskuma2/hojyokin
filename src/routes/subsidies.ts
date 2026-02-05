@@ -529,12 +529,26 @@ subsidies.get('/:subsidy_id/eligibility', async (c) => {
     }
     
     // 2. detail_json から eligibility_requirements を取得（手動登録補助金用）
-    const cache = await db
+    // SSOT対応: canonical_id → latest_cache_id → subsidy_cache
+    let cache = await db
       .prepare(`
         SELECT detail_json FROM subsidy_cache WHERE id = ?
       `)
       .bind(subsidyId)
       .first<{ detail_json: string | null }>();
+    
+    // canonical_id として扱い latest_cache_id 経由で検索
+    if (!cache) {
+      cache = await db
+        .prepare(`
+          SELECT sc.detail_json
+          FROM subsidy_canonical c
+          JOIN subsidy_cache sc ON sc.id = c.latest_cache_id
+          WHERE c.id = ?
+        `)
+        .bind(subsidyId)
+        .first<{ detail_json: string | null }>();
+    }
     
     if (cache?.detail_json) {
       try {
@@ -677,12 +691,26 @@ subsidies.get('/:subsidy_id/documents', async (c) => {
     }
     
     // 2. detail_json から required_documents を取得（手動登録補助金用）
-    const cache = await db
+    // SSOT対応: canonical_id → latest_cache_id → subsidy_cache
+    let cache = await db
       .prepare(`
         SELECT detail_json FROM subsidy_cache WHERE id = ?
       `)
       .bind(subsidyId)
       .first<{ detail_json: string | null }>();
+    
+    // canonical_id として扱い latest_cache_id 経由で検索
+    if (!cache) {
+      cache = await db
+        .prepare(`
+          SELECT sc.detail_json
+          FROM subsidy_canonical c
+          JOIN subsidy_cache sc ON sc.id = c.latest_cache_id
+          WHERE c.id = ?
+        `)
+        .bind(subsidyId)
+        .first<{ detail_json: string | null }>();
+    }
     
     if (cache?.detail_json) {
       try {
@@ -851,12 +879,26 @@ subsidies.get('/:subsidy_id/expenses', async (c) => {
   
   try {
     // detail_json から eligible_expenses を取得
-    const cache = await db
+    // SSOT対応: canonical_id → latest_cache_id → subsidy_cache
+    let cache = await db
       .prepare(`
         SELECT detail_json FROM subsidy_cache WHERE id = ?
       `)
       .bind(subsidyId)
       .first<{ detail_json: string | null }>();
+    
+    // canonical_id として扱い latest_cache_id 経由で検索
+    if (!cache) {
+      cache = await db
+        .prepare(`
+          SELECT sc.detail_json
+          FROM subsidy_canonical c
+          JOIN subsidy_cache sc ON sc.id = c.latest_cache_id
+          WHERE c.id = ?
+        `)
+        .bind(subsidyId)
+        .first<{ detail_json: string | null }>();
+    }
     
     if (cache?.detail_json) {
       try {
@@ -908,12 +950,26 @@ subsidies.get('/:subsidy_id/bonus-points', async (c) => {
   const subsidyId = c.req.param('subsidy_id');
   
   try {
-    const cache = await db
+    // SSOT対応: canonical_id → latest_cache_id → subsidy_cache
+    let cache = await db
       .prepare(`
         SELECT detail_json FROM subsidy_cache WHERE id = ?
       `)
       .bind(subsidyId)
       .first<{ detail_json: string | null }>();
+    
+    // canonical_id として扱い latest_cache_id 経由で検索
+    if (!cache) {
+      cache = await db
+        .prepare(`
+          SELECT sc.detail_json
+          FROM subsidy_canonical c
+          JOIN subsidy_cache sc ON sc.id = c.latest_cache_id
+          WHERE c.id = ?
+        `)
+        .bind(subsidyId)
+        .first<{ detail_json: string | null }>();
+    }
     
     if (cache?.detail_json) {
       try {

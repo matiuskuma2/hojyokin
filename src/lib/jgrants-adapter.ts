@@ -481,14 +481,37 @@ export class JGrantsAdapter {
   
   /**
    * D1キャッシュから生行データ取得（detail_ready判定用）
+   * SSOT対応: canonical_id → latest_cache_id → subsidy_cache
    */
   private async getDetailFromCacheRaw(id: string): Promise<any | null> {
     try {
-      const row = await this.db
+      // Step 1: id で直接 subsidy_cache を検索
+      let row = await this.db
         .prepare(`SELECT * FROM subsidy_cache WHERE id = ? AND expires_at > datetime('now')`)
         .bind(id)
         .first();
-      return row || null;
+      
+      if (row) {
+        return row;
+      }
+      
+      // Step 2: canonical_id として扱い latest_cache_id 経由で検索
+      const canonical = await this.db
+        .prepare(`
+          SELECT c.latest_cache_id, sc.*
+          FROM subsidy_canonical c
+          LEFT JOIN subsidy_cache sc ON sc.id = c.latest_cache_id
+          WHERE c.id = ? AND sc.expires_at > datetime('now')
+        `)
+        .bind(id)
+        .first();
+      
+      if (canonical) {
+        console.log(`[Adapter] Resolved canonical_id ${id} → cache_id ${canonical.latest_cache_id}`);
+        return canonical;
+      }
+      
+      return null;
     } catch (error) {
       console.error('Cache detail raw error:', error);
       return null;
