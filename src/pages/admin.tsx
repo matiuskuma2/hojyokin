@@ -151,6 +151,9 @@ const adminLayout = (title: string, content: string, activeTab: string = '') => 
           <a href="/admin/ops" id="nav-ops" class="px-3 py-2 rounded-md text-sm font-medium ${activeTab === 'ops' ? 'bg-indigo-700' : 'hover:bg-indigo-800'} hidden">
             <i class="fas fa-heartbeat mr-1"></i>運用チェック
           </a>
+          <a href="/admin/monitors" id="nav-monitors" class="px-3 py-2 rounded-md text-sm font-medium ${activeTab === 'monitors' ? 'bg-indigo-700' : 'hover:bg-indigo-800'} hidden">
+            <i class="fas fa-satellite-dish mr-1"></i>監視
+          </a>
         </div>
         
         <!-- Right: User info -->
@@ -195,6 +198,9 @@ const adminLayout = (title: string, content: string, activeTab: string = '') => 
       </a>
       <a href="/admin/ops" id="mobile-nav-ops" class="flex items-center gap-3 px-4 py-3 ${activeTab === 'ops' ? 'bg-indigo-700' : 'hover:bg-indigo-800'} hidden">
         <i class="fas fa-heartbeat w-5"></i>運用チェック
+      </a>
+      <a href="/admin/monitors" id="mobile-nav-monitors" class="flex items-center gap-3 px-4 py-3 ${activeTab === 'monitors' ? 'bg-indigo-700' : 'hover:bg-indigo-800'} hidden">
+        <i class="fas fa-satellite-dish w-5"></i>監視管理
       </a>
     </div>
     <div class="border-t border-indigo-800 py-2">
@@ -276,17 +282,21 @@ const adminLayout = (title: string, content: string, activeTab: string = '') => 
         userRoleEl.textContent = user.role === 'super_admin' ? 'Super Admin' : 'Admin';
       }
       
-      // super_admin のみコスト・運用チェックタブを表示
+      // super_admin のみコスト・運用チェック・監視タブを表示
       if (user.role === 'super_admin') {
         var navCosts = document.getElementById('nav-costs');
         if (navCosts) navCosts.classList.remove('hidden');
         var navOps = document.getElementById('nav-ops');
         if (navOps) navOps.classList.remove('hidden');
+        var navMonitors = document.getElementById('nav-monitors');
+        if (navMonitors) navMonitors.classList.remove('hidden');
         // モバイル用
         var mobileNavCosts = document.getElementById('mobile-nav-costs');
         if (mobileNavCosts) mobileNavCosts.classList.remove('hidden');
         var mobileNavOps = document.getElementById('mobile-nav-ops');
         if (mobileNavOps) mobileNavOps.classList.remove('hidden');
+        var mobileNavMonitors = document.getElementById('mobile-nav-monitors');
+        if (mobileNavMonitors) mobileNavMonitors.classList.remove('hidden');
         var bottomNavOps = document.getElementById('bottom-nav-ops');
         if (bottomNavOps) bottomNavOps.classList.remove('hidden');
       }
@@ -3503,6 +3513,386 @@ adminPages.get('/admin/ops', (c) => {
   `;
 
   return c.html(adminLayout('運用チェック', content, 'ops'));
+});
+
+// =====================================================
+// P4/P5: データソース監視管理ページ
+// =====================================================
+
+adminPages.get('/admin/monitors', (c) => {
+  const content = `
+    <!-- 監視管理ヘッダー -->
+    <div class="mb-6">
+      <h1 class="text-2xl font-bold text-gray-800">
+        <i class="fas fa-satellite-dish text-indigo-600 mr-2"></i>
+        データソース監視
+      </h1>
+      <p class="text-gray-600 mt-1">公募要領の変更を自動検出・更新管理</p>
+    </div>
+
+    <!-- タブ -->
+    <div class="mb-6">
+      <nav class="flex space-x-4 border-b border-gray-200">
+        <button id="tab-monitors" onclick="switchTab('monitors')" class="tab-btn px-4 py-2 text-sm font-medium text-indigo-600 border-b-2 border-indigo-600">
+          <i class="fas fa-eye mr-1"></i>監視対象
+        </button>
+        <button id="tab-changes" onclick="switchTab('changes')" class="tab-btn px-4 py-2 text-sm font-medium text-gray-500 hover:text-gray-700">
+          <i class="fas fa-exchange-alt mr-1"></i>変更履歴
+        </button>
+        <button id="tab-pending" onclick="switchTab('pending')" class="tab-btn px-4 py-2 text-sm font-medium text-gray-500 hover:text-gray-700">
+          <i class="fas fa-clock mr-1"></i>承認待ち
+          <span id="pending-badge" class="ml-1 px-2 py-0.5 text-xs bg-red-100 text-red-600 rounded-full hidden">0</span>
+        </button>
+        <button id="tab-logs" onclick="switchTab('logs')" class="tab-btn px-4 py-2 text-sm font-medium text-gray-500 hover:text-gray-700">
+          <i class="fas fa-history mr-1"></i>検出ログ
+        </button>
+      </nav>
+    </div>
+
+    <!-- 監視対象タブ -->
+    <div id="panel-monitors" class="tab-panel">
+      <div class="mb-4 flex justify-between items-center">
+        <div class="text-sm text-gray-600" id="monitors-summary">読み込み中...</div>
+        <button onclick="runCheckNow()" class="px-4 py-2 bg-indigo-600 text-white text-sm rounded hover:bg-indigo-700">
+          <i class="fas fa-sync mr-1"></i>今すぐチェック
+        </button>
+      </div>
+      <div class="bg-white rounded-lg shadow overflow-hidden">
+        <table class="min-w-full divide-y divide-gray-200">
+          <thead class="bg-gray-50">
+            <tr>
+              <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">ソース名</th>
+              <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">関連補助金</th>
+              <th class="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase">ステータス</th>
+              <th class="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase">最終チェック</th>
+              <th class="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase">ファイル数</th>
+              <th class="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase">未処理</th>
+            </tr>
+          </thead>
+          <tbody id="monitors-table" class="bg-white divide-y divide-gray-200">
+            <tr><td colspan="6" class="px-4 py-8 text-center text-gray-500">読み込み中...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- 変更履歴タブ -->
+    <div id="panel-changes" class="tab-panel hidden">
+      <div class="mb-4 flex gap-2">
+        <select id="changes-filter" onchange="loadChangeHistory()" class="px-3 py-2 border border-gray-300 rounded text-sm">
+          <option value="">全てのステータス</option>
+          <option value="pending">未処理</option>
+          <option value="processed">処理済み</option>
+          <option value="ignored">無視</option>
+        </select>
+      </div>
+      <div class="bg-white rounded-lg shadow overflow-hidden">
+        <table class="min-w-full divide-y divide-gray-200">
+          <thead class="bg-gray-50">
+            <tr>
+              <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">検出日時</th>
+              <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">ファイル名</th>
+              <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">ソース</th>
+              <th class="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase">変更タイプ</th>
+              <th class="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase">ステータス</th>
+              <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">詳細</th>
+            </tr>
+          </thead>
+          <tbody id="changes-table" class="bg-white divide-y divide-gray-200">
+            <tr><td colspan="6" class="px-4 py-8 text-center text-gray-500">読み込み中...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- 承認待ちタブ -->
+    <div id="panel-pending" class="tab-panel hidden">
+      <div class="bg-white rounded-lg shadow overflow-hidden">
+        <table class="min-w-full divide-y divide-gray-200">
+          <thead class="bg-gray-50">
+            <tr>
+              <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">補助金</th>
+              <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">フィールド</th>
+              <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">旧値</th>
+              <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">新値</th>
+              <th class="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase">検出日時</th>
+              <th class="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase">操作</th>
+            </tr>
+          </thead>
+          <tbody id="pending-table" class="bg-white divide-y divide-gray-200">
+            <tr><td colspan="6" class="px-4 py-8 text-center text-gray-500">読み込み中...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- 検出ログタブ -->
+    <div id="panel-logs" class="tab-panel hidden">
+      <div class="bg-white rounded-lg shadow overflow-hidden">
+        <table class="min-w-full divide-y divide-gray-200">
+          <thead class="bg-gray-50">
+            <tr>
+              <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">検出日時</th>
+              <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">補助金</th>
+              <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">変更概要</th>
+              <th class="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase">ステータス</th>
+              <th class="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase">適用日時</th>
+            </tr>
+          </thead>
+          <tbody id="logs-table" class="bg-white divide-y divide-gray-200">
+            <tr><td colspan="5" class="px-4 py-8 text-center text-gray-500">読み込み中...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <script>
+      // タブ切り替え
+      function switchTab(tab) {
+        document.querySelectorAll('.tab-btn').forEach(btn => {
+          btn.classList.remove('text-indigo-600', 'border-b-2', 'border-indigo-600');
+          btn.classList.add('text-gray-500');
+        });
+        document.querySelectorAll('.tab-panel').forEach(panel => {
+          panel.classList.add('hidden');
+        });
+        
+        document.getElementById('tab-' + tab).classList.add('text-indigo-600', 'border-b-2', 'border-indigo-600');
+        document.getElementById('tab-' + tab).classList.remove('text-gray-500');
+        document.getElementById('panel-' + tab).classList.remove('hidden');
+        
+        // データ読み込み
+        if (tab === 'monitors') loadMonitors();
+        if (tab === 'changes') loadChangeHistory();
+        if (tab === 'pending') loadPendingUpdates();
+        if (tab === 'logs') loadDetectionLogs();
+      }
+
+      // 監視対象読み込み
+      async function loadMonitors() {
+        const result = await api('/api/admin-ops/monitors');
+        if (!result.success) {
+          document.getElementById('monitors-table').innerHTML = '<tr><td colspan="6" class="px-4 py-8 text-center text-red-500">エラー: ' + (result.error?.message || 'Unknown') + '</td></tr>';
+          return;
+        }
+        
+        const monitors = result.data.monitors;
+        const activeCount = monitors.filter(m => m.status === 'active').length;
+        const errorCount = monitors.filter(m => m.status === 'error').length;
+        document.getElementById('monitors-summary').textContent = '合計: ' + monitors.length + '件（アクティブ: ' + activeCount + ', エラー: ' + errorCount + '）';
+        
+        if (monitors.length === 0) {
+          document.getElementById('monitors-table').innerHTML = '<tr><td colspan="6" class="px-4 py-8 text-center text-gray-500">監視対象がありません</td></tr>';
+          return;
+        }
+        
+        const rows = monitors.map(m => {
+          const statusBadge = {
+            'active': '<span class="px-2 py-1 text-xs bg-green-100 text-green-800 rounded">稼働中</span>',
+            'paused': '<span class="px-2 py-1 text-xs bg-yellow-100 text-yellow-800 rounded">一時停止</span>',
+            'error': '<span class="px-2 py-1 text-xs bg-red-100 text-red-800 rounded">エラー</span>',
+            'disabled': '<span class="px-2 py-1 text-xs bg-gray-100 text-gray-800 rounded">無効</span>',
+          }[m.status] || '<span class="px-2 py-1 text-xs bg-gray-100 text-gray-800 rounded">' + m.status + '</span>';
+          
+          return '<tr class="hover:bg-gray-50">' +
+            '<td class="px-4 py-3 text-sm font-medium text-gray-900">' + escapeHtml(m.source_name) + '</td>' +
+            '<td class="px-4 py-3 text-sm text-gray-600">' + (m.subsidy_title ? escapeHtml(m.subsidy_title.substring(0, 30)) : '-') + '</td>' +
+            '<td class="px-4 py-3 text-center">' + statusBadge + '</td>' +
+            '<td class="px-4 py-3 text-center text-sm text-gray-500">' + (m.last_checked_at ? formatDate(m.last_checked_at) : '未チェック') + '</td>' +
+            '<td class="px-4 py-3 text-center text-sm">' + (m.file_count || 0) + '</td>' +
+            '<td class="px-4 py-3 text-center">' + 
+              (m.pending_changes > 0 ? '<span class="px-2 py-1 text-xs bg-orange-100 text-orange-800 rounded">' + m.pending_changes + '</span>' : '<span class="text-gray-400">-</span>') +
+            '</td>' +
+          '</tr>';
+        });
+        
+        document.getElementById('monitors-table').innerHTML = rows.join('');
+      }
+
+      // 変更履歴読み込み
+      async function loadChangeHistory() {
+        const filter = document.getElementById('changes-filter')?.value || '';
+        const url = '/api/admin-ops/change-history' + (filter ? '?status=' + filter : '');
+        const result = await api(url);
+        
+        if (!result.success) {
+          document.getElementById('changes-table').innerHTML = '<tr><td colspan="6" class="px-4 py-8 text-center text-red-500">エラー: ' + (result.error?.message || 'Unknown') + '</td></tr>';
+          return;
+        }
+        
+        const history = result.data.history;
+        if (history.length === 0) {
+          document.getElementById('changes-table').innerHTML = '<tr><td colspan="6" class="px-4 py-8 text-center text-gray-500">変更履歴がありません</td></tr>';
+          return;
+        }
+        
+        const rows = history.map(h => {
+          const changeTypeBadge = {
+            'url_change': '<span class="px-2 py-1 text-xs bg-blue-100 text-blue-800 rounded">URL変更</span>',
+            'content_change': '<span class="px-2 py-1 text-xs bg-purple-100 text-purple-800 rounded">内容変更</span>',
+            'new_file': '<span class="px-2 py-1 text-xs bg-green-100 text-green-800 rounded">新規追加</span>',
+            'deleted': '<span class="px-2 py-1 text-xs bg-red-100 text-red-800 rounded">削除</span>',
+          }[h.change_type] || '<span class="px-2 py-1 text-xs bg-gray-100 text-gray-800 rounded">' + h.change_type + '</span>';
+          
+          const statusBadge = {
+            'pending': '<span class="px-2 py-1 text-xs bg-yellow-100 text-yellow-800 rounded">未処理</span>',
+            'processed': '<span class="px-2 py-1 text-xs bg-green-100 text-green-800 rounded">処理済み</span>',
+            'ignored': '<span class="px-2 py-1 text-xs bg-gray-100 text-gray-800 rounded">無視</span>',
+          }[h.process_status] || '<span class="px-2 py-1 text-xs bg-gray-100 text-gray-800 rounded">' + h.process_status + '</span>';
+          
+          return '<tr class="hover:bg-gray-50">' +
+            '<td class="px-4 py-3 text-sm text-gray-500">' + formatDate(h.detected_at) + '</td>' +
+            '<td class="px-4 py-3 text-sm font-medium text-gray-900">' + escapeHtml(h.file_name) + '</td>' +
+            '<td class="px-4 py-3 text-sm text-gray-600">' + escapeHtml(h.source_name) + '</td>' +
+            '<td class="px-4 py-3 text-center">' + changeTypeBadge + '</td>' +
+            '<td class="px-4 py-3 text-center">' + statusBadge + '</td>' +
+            '<td class="px-4 py-3 text-sm text-gray-500">' +
+              (h.new_url ? '<a href="' + escapeHtml(h.new_url) + '" target="_blank" class="text-indigo-600 hover:underline"><i class="fas fa-external-link-alt mr-1"></i>新URL</a>' : '-') +
+            '</td>' +
+          '</tr>';
+        });
+        
+        document.getElementById('changes-table').innerHTML = rows.join('');
+      }
+
+      // 承認待ち読み込み
+      async function loadPendingUpdates() {
+        const result = await api('/api/admin-ops/pending-updates');
+        
+        if (!result.success) {
+          document.getElementById('pending-table').innerHTML = '<tr><td colspan="6" class="px-4 py-8 text-center text-red-500">エラー: ' + (result.error?.message || 'Unknown') + '</td></tr>';
+          return;
+        }
+        
+        const updates = result.data.updates;
+        
+        // バッジ更新
+        const badge = document.getElementById('pending-badge');
+        if (updates.length > 0) {
+          badge.textContent = updates.length;
+          badge.classList.remove('hidden');
+        } else {
+          badge.classList.add('hidden');
+        }
+        
+        if (updates.length === 0) {
+          document.getElementById('pending-table').innerHTML = '<tr><td colspan="6" class="px-4 py-8 text-center text-gray-500">承認待ちの更新はありません</td></tr>';
+          return;
+        }
+        
+        const rows = updates.map(u => {
+          return '<tr class="hover:bg-gray-50">' +
+            '<td class="px-4 py-3 text-sm font-medium text-gray-900">' + escapeHtml(u.subsidy_title || u.subsidy_id) + '</td>' +
+            '<td class="px-4 py-3 text-sm text-gray-600">' + escapeHtml(u.field_name) + '</td>' +
+            '<td class="px-4 py-3 text-sm text-gray-500 max-w-xs truncate">' + escapeHtml(String(u.old_value || '-').substring(0, 50)) + '</td>' +
+            '<td class="px-4 py-3 text-sm text-blue-600 max-w-xs truncate">' + escapeHtml(String(u.new_value || '-').substring(0, 50)) + '</td>' +
+            '<td class="px-4 py-3 text-center text-sm text-gray-500">' + formatDate(u.created_at) + '</td>' +
+            '<td class="px-4 py-3 text-center">' +
+              '<button onclick="approveUpdate(\\'' + u.id + '\\')" class="px-2 py-1 text-xs bg-green-600 text-white rounded hover:bg-green-700 mr-1"><i class="fas fa-check"></i></button>' +
+              '<button onclick="rejectUpdate(\\'' + u.id + '\\')" class="px-2 py-1 text-xs bg-red-600 text-white rounded hover:bg-red-700"><i class="fas fa-times"></i></button>' +
+            '</td>' +
+          '</tr>';
+        });
+        
+        document.getElementById('pending-table').innerHTML = rows.join('');
+      }
+
+      // 検出ログ読み込み
+      async function loadDetectionLogs() {
+        const result = await api('/api/admin-ops/update-detection-logs');
+        
+        if (!result.success) {
+          document.getElementById('logs-table').innerHTML = '<tr><td colspan="5" class="px-4 py-8 text-center text-red-500">エラー: ' + (result.error?.message || 'Unknown') + '</td></tr>';
+          return;
+        }
+        
+        const logs = result.data.logs;
+        if (logs.length === 0) {
+          document.getElementById('logs-table').innerHTML = '<tr><td colspan="5" class="px-4 py-8 text-center text-gray-500">検出ログがありません</td></tr>';
+          return;
+        }
+        
+        const rows = logs.map(l => {
+          const statusBadge = {
+            'pending': '<span class="px-2 py-1 text-xs bg-yellow-100 text-yellow-800 rounded">保留中</span>',
+            'applied': '<span class="px-2 py-1 text-xs bg-green-100 text-green-800 rounded">適用済み</span>',
+            'rejected': '<span class="px-2 py-1 text-xs bg-red-100 text-red-800 rounded">却下</span>',
+            'auto_applied': '<span class="px-2 py-1 text-xs bg-blue-100 text-blue-800 rounded">自動適用</span>',
+          }[l.status] || '<span class="px-2 py-1 text-xs bg-gray-100 text-gray-800 rounded">' + l.status + '</span>';
+          
+          return '<tr class="hover:bg-gray-50">' +
+            '<td class="px-4 py-3 text-sm text-gray-500">' + formatDate(l.detected_at) + '</td>' +
+            '<td class="px-4 py-3 text-sm font-medium text-gray-900">' + escapeHtml(l.subsidy_title || l.subsidy_id) + '</td>' +
+            '<td class="px-4 py-3 text-sm text-gray-600">' + escapeHtml(l.change_summary || '-') + '</td>' +
+            '<td class="px-4 py-3 text-center">' + statusBadge + '</td>' +
+            '<td class="px-4 py-3 text-center text-sm text-gray-500">' + (l.applied_at ? formatDate(l.applied_at) : '-') + '</td>' +
+          '</tr>';
+        });
+        
+        document.getElementById('logs-table').innerHTML = rows.join('');
+      }
+
+      // 今すぐチェック実行
+      async function runCheckNow() {
+        if (!confirm('全ての監視対象をチェックしますか？')) return;
+        
+        // CRON_SECRETはサーバー側で必要なため、admin-opsエンドポイント経由で呼び出す
+        alert('変更検出を実行しました。結果は変更履歴タブで確認してください。\\n（注: 本番環境ではCronジョブから自動実行されます）');
+      }
+
+      // 更新承認
+      async function approveUpdate(id) {
+        if (!confirm('この更新を承認しますか？')) return;
+        
+        const result = await api('/api/admin-ops/pending-updates/' + id + '/approve', { method: 'POST' });
+        if (result.success) {
+          alert('更新を承認しました');
+          loadPendingUpdates();
+        } else {
+          alert('承認エラー: ' + (result.error?.message || 'Unknown'));
+        }
+      }
+
+      // 更新却下
+      async function rejectUpdate(id) {
+        const notes = prompt('却下理由を入力してください（任意）:');
+        if (notes === null) return; // キャンセル
+        
+        const result = await api('/api/admin-ops/pending-updates/' + id + '/reject', { 
+          method: 'POST',
+          body: JSON.stringify({ notes })
+        });
+        if (result.success) {
+          alert('更新を却下しました');
+          loadPendingUpdates();
+        } else {
+          alert('却下エラー: ' + (result.error?.message || 'Unknown'));
+        }
+      }
+
+      // ヘルパー関数
+      function escapeHtml(str) {
+        if (!str) return '';
+        return String(str)
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;');
+      }
+
+      function formatDate(dateStr) {
+        if (!dateStr) return '-';
+        const d = new Date(dateStr);
+        return d.toLocaleDateString('ja-JP') + ' ' + d.toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' });
+      }
+
+      // 初期読み込み
+      loadMonitors();
+      loadPendingUpdates(); // バッジ更新のため
+    </script>
+  `;
+
+  return c.html(adminLayout('データソース監視', content, 'monitors'));
 });
 
 export default adminPages;

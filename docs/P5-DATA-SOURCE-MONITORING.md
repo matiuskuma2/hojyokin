@@ -373,10 +373,31 @@ INSERT INTO data_source_monitors (
 
 ## 次のアクション
 
-1. [ ] DBマイグレーション作成（data_source_monitors, monitored_files, file_change_history）
-2. [ ] 監視ワーカー実装
-3. [ ] 管理画面での変更履歴表示
-4. [ ] Slack通知連携
+1. [x] DBマイグレーション作成（data_source_monitors, monitored_files, file_change_history）✅ 2026-02-05
+2. [x] 監視ワーカー実装 ✅ 2026-02-05
+3. [x] 管理画面での変更履歴表示 ✅ 2026-02-05
+4. [x] Slack通知連携 ✅ 2026-02-05
+
+## 実装状況
+
+### 完了（2026-02-05）
+
+#### DBマイグレーション
+- `migrations/0120a_auto_update_tables.sql` - テーブル作成
+- `migrations/0120b_monitor_seed_data.sql` - 初期データ（業務改善助成金、省力化投資補助金、持続化補助金の監視設定）
+
+#### 監視ワーカー
+- `src/routes/cron.ts` に `/api/cron/check-updates` エンドポイント追加
+- 毎日09:00 JSTに外部Cronサービスから呼び出し
+- ページハッシュ比較で変更検出を高速化
+- URLパターンマッチングでファイル変更検出
+
+#### 管理画面
+- `/admin/monitors` - 監視対象一覧、変更履歴、承認待ち、検出ログの4タブ構成
+- super_admin限定アクセス
+
+#### Slack通知
+- 変更検出時に自動通知（SLACK_WEBHOOK_URL環境変数で設定）
 
 ---
 

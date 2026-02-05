@@ -325,10 +325,44 @@ export default {
 ## 次のアクション
 
 1. [x] 設計書作成
-2. [ ] P4-1: DBマイグレーション作成
-3. [ ] P4-2: 変更検出ワーカー実装
-4. [ ] P4-3: 差分抽出ロジック実装
-5. [ ] P4-4: 管理画面実装
+2. [x] P4-1: DBマイグレーション作成 ✅ 2026-02-05
+3. [x] P4-2: 変更検出ワーカー実装 ✅ 2026-02-05
+4. [ ] P4-3: 差分抽出ロジック実装（Claude API連携）
+5. [x] P4-4: 管理画面実装 ✅ 2026-02-05
+
+## 実装状況
+
+### 完了（2026-02-05）
+
+#### P4-1: DBマイグレーション
+- `migrations/0120a_auto_update_tables.sql` 作成・適用済み
+- テーブル: `update_detection_log`, `pending_updates`, `update_notifications`, `data_source_monitors`, `monitored_files`, `file_change_history`, `auto_update_rules`
+- デフォルトルール: 締切日変更（自動適用）、補助率変更（手動確認）など9件
+
+#### P4-2: 変更検出ワーカー
+- `src/routes/cron.ts` に `/api/cron/check-updates` エンドポイント追加
+- ページ変更検出（SHA-256ハッシュ）
+- ファイルURL変更検出
+- Slack通知連携（SLACK_WEBHOOK_URL環境変数で設定）
+- エラーカウント・自動停止機能
+
+#### P4-4: 管理画面
+- `src/pages/admin.tsx` に `/admin/monitors` ページ追加
+- `src/routes/admin-dashboard.ts` に管理API追加
+  - GET `/api/admin-ops/monitors` - 監視対象一覧
+  - GET `/api/admin-ops/monitors/:id/files` - 監視ファイル一覧
+  - GET `/api/admin-ops/change-history` - 変更履歴
+  - GET `/api/admin-ops/pending-updates` - 承認待ち一覧
+  - POST `/api/admin-ops/pending-updates/:id/approve` - 承認
+  - POST `/api/admin-ops/pending-updates/:id/reject` - 却下
+  - GET `/api/admin-ops/update-detection-logs` - 検出ログ
+
+### 保留
+
+#### P4-3: 差分抽出ロジック
+- Claude API連携でPDF内容解析
+- 既存detail_jsonとの差分計算
+- 自動/手動判定ルール適用
 
 ---
 

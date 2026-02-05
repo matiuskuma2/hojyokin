@@ -6450,4 +6450,409 @@ adminDashboard.get('/izumi-link-status', async (c) => {
   }
 });
 
+// =====================================================
+// P4/P5: データソース監視・自動更新管理
+// =====================================================
+
+/**
+ * GET /api/admin-ops/monitors
+ * 
+ * 監視対象一覧
+ */
+adminDashboard.get('/monitors', async (c) => {
+  const user = getCurrentUser(c);
+  if (user?.role !== 'super_admin') {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'FORBIDDEN', message: 'super_admin only' },
+    }, 403);
+  }
+
+  const db = c.env.DB;
+  
+  try {
+    const monitors = await db.prepare(`
+      SELECT 
+        m.id,
+        m.subsidy_cache_id,
+        m.source_name,
+        m.source_url,
+        m.monitor_type,
+        m.status,
+        m.last_checked_at,
+        m.last_changed_at,
+        m.error_count,
+        m.consecutive_errors,
+        m.last_error,
+        sc.title as subsidy_title,
+        (SELECT COUNT(*) FROM monitored_files mf WHERE mf.monitor_id = m.id) as file_count,
+        (SELECT COUNT(*) FROM file_change_history fch WHERE fch.monitor_id = m.id AND fch.process_status = 'pending') as pending_changes
+      FROM data_source_monitors m
+      LEFT JOIN subsidy_cache sc ON sc.id = m.subsidy_cache_id
+      ORDER BY m.status, m.source_name
+    `).all();
+    
+    return c.json<ApiResponse<{ monitors: any[] }>>({
+      success: true,
+      data: {
+        monitors: monitors.results || [],
+      },
+    });
+    
+  } catch (error) {
+    console.error('Monitors list error:', error);
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: 'INTERNAL_ERROR',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      },
+    }, 500);
+  }
+});
+
+/**
+ * GET /api/admin-ops/monitors/:id/files
+ * 
+ * 監視対象のファイル一覧
+ */
+adminDashboard.get('/monitors/:id/files', async (c) => {
+  const user = getCurrentUser(c);
+  if (user?.role !== 'super_admin') {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'FORBIDDEN', message: 'super_admin only' },
+    }, 403);
+  }
+
+  const db = c.env.DB;
+  const monitorId = c.req.param('id');
+  
+  try {
+    const files = await db.prepare(`
+      SELECT 
+        mf.*,
+        (SELECT COUNT(*) FROM file_change_history fch WHERE fch.monitored_file_id = mf.id) as change_count
+      FROM monitored_files mf
+      WHERE mf.monitor_id = ?
+      ORDER BY mf.importance DESC, mf.file_name
+    `).bind(monitorId).all();
+    
+    return c.json<ApiResponse<{ files: any[] }>>({
+      success: true,
+      data: {
+        files: files.results || [],
+      },
+    });
+    
+  } catch (error) {
+    console.error('Monitor files list error:', error);
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: 'INTERNAL_ERROR',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      },
+    }, 500);
+  }
+});
+
+/**
+ * GET /api/admin-ops/change-history
+ * 
+ * ファイル変更履歴
+ */
+adminDashboard.get('/change-history', async (c) => {
+  const user = getCurrentUser(c);
+  if (user?.role !== 'super_admin') {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'FORBIDDEN', message: 'super_admin only' },
+    }, 403);
+  }
+
+  const db = c.env.DB;
+  const limit = Math.min(parseInt(c.req.query('limit') || '50'), 100);
+  const status = c.req.query('status');
+  
+  try {
+    let query = `
+      SELECT 
+        fch.*,
+        mf.file_name,
+        mf.file_type,
+        dsm.source_name,
+        sc.title as subsidy_title
+      FROM file_change_history fch
+      JOIN monitored_files mf ON mf.id = fch.monitored_file_id
+      JOIN data_source_monitors dsm ON dsm.id = fch.monitor_id
+      LEFT JOIN subsidy_cache sc ON sc.id = fch.subsidy_id
+    `;
+    
+    const params: any[] = [];
+    if (status) {
+      query += ' WHERE fch.process_status = ?';
+      params.push(status);
+    }
+    
+    query += ' ORDER BY fch.detected_at DESC LIMIT ?';
+    params.push(limit);
+    
+    const history = await db.prepare(query).bind(...params).all();
+    
+    return c.json<ApiResponse<{ history: any[] }>>({
+      success: true,
+      data: {
+        history: history.results || [],
+      },
+    });
+    
+  } catch (error) {
+    console.error('Change history error:', error);
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: 'INTERNAL_ERROR',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      },
+    }, 500);
+  }
+});
+
+/**
+ * GET /api/admin-ops/pending-updates
+ * 
+ * 保留中の更新一覧
+ */
+adminDashboard.get('/pending-updates', async (c) => {
+  const user = getCurrentUser(c);
+  if (user?.role !== 'super_admin') {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'FORBIDDEN', message: 'super_admin only' },
+    }, 403);
+  }
+
+  const db = c.env.DB;
+  
+  try {
+    const updates = await db.prepare(`
+      SELECT 
+        pu.*,
+        udl.source_url,
+        udl.change_summary,
+        sc.title as subsidy_title
+      FROM pending_updates pu
+      JOIN update_detection_log udl ON udl.id = pu.detection_log_id
+      LEFT JOIN subsidy_cache sc ON sc.id = pu.subsidy_id
+      WHERE pu.status = 'pending'
+      ORDER BY pu.created_at DESC
+    `).all();
+    
+    return c.json<ApiResponse<{ updates: any[] }>>({
+      success: true,
+      data: {
+        updates: updates.results || [],
+      },
+    });
+    
+  } catch (error) {
+    console.error('Pending updates error:', error);
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: 'INTERNAL_ERROR',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      },
+    }, 500);
+  }
+});
+
+/**
+ * POST /api/admin-ops/pending-updates/:id/approve
+ * 
+ * 更新を承認
+ */
+adminDashboard.post('/pending-updates/:id/approve', async (c) => {
+  const user = getCurrentUser(c);
+  if (user?.role !== 'super_admin') {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'FORBIDDEN', message: 'super_admin only' },
+    }, 403);
+  }
+
+  const db = c.env.DB;
+  const updateId = c.req.param('id');
+  
+  try {
+    const body = await c.req.json().catch(() => ({}));
+    const { notes } = body as { notes?: string };
+    
+    // 更新を取得
+    const update = await db.prepare(`
+      SELECT * FROM pending_updates WHERE id = ?
+    `).bind(updateId).first();
+    
+    if (!update) {
+      return c.json<ApiResponse<null>>({
+        success: false,
+        error: { code: 'NOT_FOUND', message: 'Update not found' },
+      }, 404);
+    }
+    
+    // subsidy_cache を更新（field_path に基づく）
+    const subsidy = await db.prepare(`
+      SELECT detail_json FROM subsidy_cache WHERE id = ?
+    `).bind((update as any).subsidy_id).first<{ detail_json: string }>();
+    
+    if (subsidy && subsidy.detail_json) {
+      try {
+        const detail = JSON.parse(subsidy.detail_json);
+        const fieldPath = (update as any).field_path.replace('detail_json.', '').split('.');
+        let current = detail;
+        
+        // ネストされたフィールドを辿る
+        for (let i = 0; i < fieldPath.length - 1; i++) {
+          if (!current[fieldPath[i]]) current[fieldPath[i]] = {};
+          current = current[fieldPath[i]];
+        }
+        
+        // 値を更新
+        const newValue = JSON.parse((update as any).new_value);
+        current[fieldPath[fieldPath.length - 1]] = newValue;
+        
+        await db.prepare(`
+          UPDATE subsidy_cache SET detail_json = ?, updated_at = datetime('now') WHERE id = ?
+        `).bind(JSON.stringify(detail), (update as any).subsidy_id).run();
+        
+      } catch (e) {
+        console.error('Failed to apply update:', e);
+        return c.json<ApiResponse<null>>({
+          success: false,
+          error: { code: 'APPLY_ERROR', message: `Failed to apply update: ${e}` },
+        }, 500);
+      }
+    }
+    
+    // ステータス更新
+    await db.prepare(`
+      UPDATE pending_updates 
+      SET status = 'approved', reviewed_at = datetime('now'), reviewed_by = ?, review_notes = ?
+      WHERE id = ?
+    `).bind(user.id, notes || null, updateId).run();
+    
+    return c.json<ApiResponse<{ message: string }>>({
+      success: true,
+      data: {
+        message: 'Update approved and applied',
+      },
+    });
+    
+  } catch (error) {
+    console.error('Approve update error:', error);
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: 'INTERNAL_ERROR',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      },
+    }, 500);
+  }
+});
+
+/**
+ * POST /api/admin-ops/pending-updates/:id/reject
+ * 
+ * 更新を却下
+ */
+adminDashboard.post('/pending-updates/:id/reject', async (c) => {
+  const user = getCurrentUser(c);
+  if (user?.role !== 'super_admin') {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'FORBIDDEN', message: 'super_admin only' },
+    }, 403);
+  }
+
+  const db = c.env.DB;
+  const updateId = c.req.param('id');
+  
+  try {
+    const body = await c.req.json().catch(() => ({}));
+    const { notes } = body as { notes?: string };
+    
+    await db.prepare(`
+      UPDATE pending_updates 
+      SET status = 'rejected', reviewed_at = datetime('now'), reviewed_by = ?, review_notes = ?
+      WHERE id = ?
+    `).bind(user.id, notes || null, updateId).run();
+    
+    return c.json<ApiResponse<{ message: string }>>({
+      success: true,
+      data: {
+        message: 'Update rejected',
+      },
+    });
+    
+  } catch (error) {
+    console.error('Reject update error:', error);
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: 'INTERNAL_ERROR',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      },
+    }, 500);
+  }
+});
+
+/**
+ * GET /api/admin-ops/update-detection-logs
+ * 
+ * 更新検出ログ一覧
+ */
+adminDashboard.get('/update-detection-logs', async (c) => {
+  const user = getCurrentUser(c);
+  if (user?.role !== 'super_admin') {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'FORBIDDEN', message: 'super_admin only' },
+    }, 403);
+  }
+
+  const db = c.env.DB;
+  const limit = Math.min(parseInt(c.req.query('limit') || '50'), 100);
+  
+  try {
+    const logs = await db.prepare(`
+      SELECT 
+        udl.*,
+        sc.title as subsidy_title,
+        (SELECT COUNT(*) FROM pending_updates pu WHERE pu.detection_log_id = udl.id) as pending_count
+      FROM update_detection_log udl
+      LEFT JOIN subsidy_cache sc ON sc.id = udl.subsidy_id
+      ORDER BY udl.detected_at DESC
+      LIMIT ?
+    `).bind(limit).all();
+    
+    return c.json<ApiResponse<{ logs: any[] }>>({
+      success: true,
+      data: {
+        logs: logs.results || [],
+      },
+    });
+    
+  } catch (error) {
+    console.error('Update detection logs error:', error);
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: 'INTERNAL_ERROR',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      },
+    }, 500);
+  }
+});
+
 export default adminDashboard;
