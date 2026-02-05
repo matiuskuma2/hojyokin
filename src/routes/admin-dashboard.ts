@@ -6855,4 +6855,12 @@ adminDashboard.get('/update-detection-logs', async (c) => {
   }
 });
 
+// ============================================================
+// Missing Requirements Queue (Freeze Gate v1)
+// - 運用操作系を admin-ops.ts から統合
+// - パス: /api/admin-ops/missing-queue/*, /api/admin-ops/missing-queue/recompute, etc.
+// ============================================================
+import adminOps from './admin-ops';
+adminDashboard.route('/', adminOps);
+
 export default adminDashboard;

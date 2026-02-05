@@ -45,3 +45,11 @@ export {
   // getNormalizedSubsidyDetailOrThrow は内部用途のみ（throw は外部API向けに非推奨）
   type GetNormalizedSubsidyDetailResult,
 } from './getNormalizedSubsidyDetail';
+
+// Freeze Gate v1: 不足チケット化
+export {
+  checkMissingRequirements,
+  type MissingKey,
+  type MissingSeverity,
+  type MissingCheckResult,
+} from './checkMissingRequirements';
