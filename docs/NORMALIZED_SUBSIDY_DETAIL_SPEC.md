@@ -361,8 +361,38 @@ function normalizeEligibilityRules(
 
 ---
 
+## 実装状況
+
+### Phase A-1（完了 ✅）
+| タスク | ステータス | ファイル |
+|--------|----------|---------|
+| resolveSubsidyRef 共通関数 | ✅ 完了 | `src/lib/ssot/resolveSubsidyRef.ts` |
+| normalizeSubsidyDetail 関数 | ✅ 完了 | `src/lib/ssot/normalizeSubsidyDetail.ts` |
+| SSOT モジュール エクスポート | ✅ 完了 | `src/lib/ssot/index.ts` |
+| /api/subsidies/:id に normalized 追加 | ✅ 完了 | `src/routes/subsidies.ts` |
+
+### Phase A-2（完了 ✅）
+| タスク | ステータス | 変更内容 |
+|--------|----------|---------|
+| フロントエンド normalized 参照 | ✅ 完了 | `src/pages/subsidies.tsx` |
+| 基本情報（締切/上限/補助率/地域） | ✅ 完了 | `normalized.display/acceptance` 優先 |
+| 概要・対象事業 | ✅ 完了 | `normalized.overview` 優先 |
+| 添付ファイル | ✅ 完了 | `normalized.content.attachments` 優先 |
+| データ不足警告 | ✅ 完了 | `normalized` 優先参照に変更 |
+
+### Phase A-3（保留）
+| タスク | ステータス | 備考 |
+|--------|----------|------|
+| /api/subsidies/:id/eligibility | ⏳ 保留 | normalized.content.eligibility_rules 経由へ |
+| /api/subsidies/:id/documents | ⏳ 保留 | normalized.content.required_documents 経由へ |
+| /api/subsidies/:id/expenses | ⏳ 保留 | normalized.content.eligible_expenses 経由へ |
+| /api/subsidies/:id/bonus-points | ⏳ 保留 | normalized.content.bonus_points 経由へ |
+
+---
+
 ## 変更履歴
 
 | バージョン | 日付 | 変更内容 |
 |-----------|------|---------|
 | v1.0 | 2026-02-05 | 初版作成 |
+| v1.1 | 2026-02-05 | Phase A-1/A-2 完了、実装状況セクション追加 |
