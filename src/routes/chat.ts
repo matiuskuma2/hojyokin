@@ -395,6 +395,13 @@ function determineInputType(category: string): 'boolean' | 'number' | 'text' | '
  * - normalized.wall_chat.questions のみを参照
  * - 推測禁止: input_type が定義されていなければ text 固定（normalizeSubsidyDetail で処理済み）
  */
+/**
+ * Freeze-WALLCHAT-2: フォールバック質問の多様化
+ * 
+ * - normalized.wall_chat.questions が利用可能な場合はそれを優先
+ * - 無い場合は多様なフォールバック質問を提供（boolean だけでなく text/number も含む）
+ * - input_type は normalizeSubsidyDetail で質問文からパターンマッチ済み
+ */
 function generateAdditionalQuestions(
   company: Record<string, any>,
   normalized: NormalizedSubsidyDetail | null,
@@ -402,42 +409,8 @@ function generateAdditionalQuestions(
 ): MissingItem[] {
   const questions: MissingItem[] = [];
   
-  // 過去の補助金受給歴
-  if (!existingFacts.has('past_subsidy_same_type') && !company.past_subsidies_json) {
-    questions.push({
-      key: 'past_subsidy_same_type',
-      label: '過去3年以内に同種の補助金を受給していますか？',
-      input_type: 'boolean',
-      source: 'profile',
-      priority: 1
-    });
-  }
-  
-  // 税金滞納
-  if (!existingFacts.has('tax_arrears') && company.tax_arrears === null) {
-    questions.push({
-      key: 'tax_arrears',
-      label: '税金の滞納はありませんか？',
-      input_type: 'boolean',
-      source: 'profile',
-      priority: 1
-    });
-  }
-  
-  // 事業計画の有無
-  if (!existingFacts.has('has_business_plan')) {
-    questions.push({
-      key: 'has_business_plan',
-      label: '事業計画書を作成していますか？（または作成予定がありますか？）',
-      input_type: 'boolean',
-      source: 'profile',
-      priority: 2
-    });
-  }
-  
-  // ===== A-3-5: normalized.wall_chat.questions からの質問を追加 =====
-  // input_type 推測ロジック排除: normalized.wall_chat.questions のみを参照
-  // 推測禁止: input_type が定義されていなければ text 固定（normalizeSubsidyDetail で処理済み）
+  // ===== 1. normalized.wall_chat.questions からの質問を最優先 =====
+  // Freeze-WALLCHAT-1: input_type は normalizeSubsidyDetail で質問文からパターンマッチ推測済み
   if (normalized?.wall_chat.questions && normalized.wall_chat.questions.length > 0) {
     const wcQuestions = normalized.wall_chat.questions;
     
@@ -449,8 +422,6 @@ function generateAdditionalQuestions(
         return;
       }
       
-      // A-3-5 Freeze: input_type は normalized から取得（推測禁止）
-      // normalizeSubsidyDetail で未定義は text 固定済み
       questions.push({
         key: factKey,
         label: wq.question,
@@ -459,6 +430,108 @@ function generateAdditionalQuestions(
         source: 'eligibility',
         priority: wq.priority
       });
+    });
+    
+    // 質問が追加できた場合はフォールバックを抑制
+    if (questions.length > 0) {
+      return questions;
+    }
+  }
+  
+  // ===== 2. フォールバック質問（多様化: boolean/number/text） =====
+  // 補助金固有の質問が無い場合の汎用質問
+  
+  // --- 基本確認（boolean） ---
+  if (!existingFacts.has('past_subsidy_same_type') && !company.past_subsidies_json) {
+    questions.push({
+      key: 'past_subsidy_same_type',
+      label: '過去3年以内に同種の補助金を受給していますか？',
+      input_type: 'boolean',
+      source: 'profile',
+      priority: 1
+    });
+  }
+  
+  if (!existingFacts.has('tax_arrears') && company.tax_arrears === null) {
+    questions.push({
+      key: 'tax_arrears',
+      label: '税金の滞納はありませんか？',
+      input_type: 'boolean',
+      source: 'profile',
+      priority: 1
+    });
+  }
+  
+  // --- 数値情報（number） ---
+  if (!existingFacts.has('employee_count') && !company.employee_count) {
+    questions.push({
+      key: 'employee_count',
+      label: '現在の従業員数は何名ですか？（役員を除く）',
+      input_type: 'number',
+      source: 'profile',
+      priority: 2
+    });
+  }
+  
+  if (!existingFacts.has('annual_revenue') && !company.annual_revenue) {
+    questions.push({
+      key: 'annual_revenue',
+      label: '直近1年間の年商（売上高）はいくらですか？（万円単位でお答えください）',
+      input_type: 'number',
+      source: 'profile',
+      priority: 3
+    });
+  }
+  
+  // --- 自由記述（text） ---
+  if (!existingFacts.has('business_purpose')) {
+    questions.push({
+      key: 'business_purpose',
+      label: '今回の補助金で実施したい事業内容を簡単に教えてください。',
+      input_type: 'text',
+      source: 'profile',
+      priority: 4
+    });
+  }
+  
+  if (!existingFacts.has('expected_effect')) {
+    questions.push({
+      key: 'expected_effect',
+      label: '補助金を活用することで期待する効果は何ですか？（例：生産性向上、人手不足解消、売上増加など）',
+      input_type: 'text',
+      source: 'profile',
+      priority: 5
+    });
+  }
+  
+  // --- 追加確認（boolean） ---
+  if (!existingFacts.has('has_business_plan')) {
+    questions.push({
+      key: 'has_business_plan',
+      label: '事業計画書を作成していますか？（または作成予定がありますか？）',
+      input_type: 'boolean',
+      source: 'profile',
+      priority: 6
+    });
+  }
+  
+  if (!existingFacts.has('has_gbiz_id')) {
+    questions.push({
+      key: 'has_gbiz_id',
+      label: 'GビズIDプライムアカウントを取得済みですか？',
+      input_type: 'boolean',
+      source: 'profile',
+      priority: 7
+    });
+  }
+  
+  if (!existingFacts.has('is_wage_raise_planned')) {
+    questions.push({
+      key: 'is_wage_raise_planned',
+      label: '今後1年以内に賃上げを予定していますか？',
+      input_type: 'boolean',
+      source: 'profile',
+      priority: 8
     });
   }
   
@@ -682,6 +755,8 @@ chat.post('/sessions', async (c) => {
 
 /**
  * 質問のフォーマット
+ * 
+ * Freeze-WALLCHAT-3: input_type に応じた適切な回答ガイドを表示
  */
 function formatQuestion(item: MissingItem): string {
   let question = item.label;
@@ -689,11 +764,12 @@ function formatQuestion(item: MissingItem): string {
   if (item.input_type === 'boolean') {
     question += '\n\n「はい」または「いいえ」でお答えください。';
   } else if (item.input_type === 'number') {
-    question += '\n\n数値でお答えください。';
+    question += '\n\n数値でお答えください。（例：10、100、1000）';
   } else if (item.input_type === 'select' && item.options) {
     question += `\n\n以下から選択してください：\n${item.options.map((o, i) => `${i + 1}. ${o}`).join('\n')}`;
   } else if (item.input_type === 'text') {
-    // textタイプは追加の説明なし（質問そのままで自由回答）
+    // textタイプは自由回答を促すメッセージを表示
+    question += '\n\n自由にお答えください。';
   }
   
   return question;

@@ -111,8 +111,15 @@ export async function getNormalizedSubsidyDetail(
           .first<Record<string, unknown>>()
       : null;
 
-    // detail_json パース
-    const detailJson = safeJsonParse(cacheRow?.detail_json as string);
+    // detail_json パース（snapshotRow 優先、fallback で cacheRow）
+    // Freeze-GET-1: snapshotRow.detail_json に wall_chat_questions 等が格納されているため
+    const snapshotDetailJson = safeJsonParse(snapshotRow?.detail_json as string);
+    const cacheDetailJson = safeJsonParse(cacheRow?.detail_json as string);
+    // merge: snapshotDetailJson を優先し、cacheDetailJson を補完
+    const detailJson = {
+      ...cacheDetailJson,
+      ...snapshotDetailJson,
+    };
 
     if (debug) {
       debugLog(`Rows fetched`, {

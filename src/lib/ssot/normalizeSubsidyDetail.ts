@@ -326,20 +326,71 @@ function normalizeWallChat(dj: any, overview: NormalizedOverview): NormalizedWal
 
 /**
  * 壁打ち質問の正規化
- * ⚠️ 推測禁止: input_type が定義に無ければ text 固定
+ * 
+ * Freeze-WALLCHAT-1: input_type 推測ルール
+ * - 明示的に指定されていればそれを使用
+ * - 未指定の場合、質問文からパターンマッチで推測（限定的）
+ * - 推測できない場合は text 固定
  */
 function normalizeWallChatQuestions(questions: any): WallChatQuestion[] {
   if (!questions || !Array.isArray(questions)) return [];
 
-  return questions.map((q: any, idx: number) => ({
-    key: q.key || `q_${idx}`,
-    category: q.category || '一般',
-    question: q.question || '',
-    // ⚠️ Freeze: 推測禁止。定義に無ければ text 固定
-    input_type: validateInputType(q.input_type) ? q.input_type : 'text',
-    options: Array.isArray(q.options) ? q.options : undefined,
-    priority: typeof q.priority === 'number' ? q.priority : 5,
-  }));
+  return questions.map((q: any, idx: number) => {
+    const questionText = q.question || '';
+    let inputType: 'boolean' | 'number' | 'text' | 'select' = 'text';
+
+    // 明示的に指定されていればそれを使用
+    if (validateInputType(q.input_type)) {
+      inputType = q.input_type;
+    } else {
+      // Freeze-WALLCHAT-1: 質問文からのパターンマッチ推測
+      inputType = inferInputTypeFromQuestion(questionText);
+    }
+
+    return {
+      key: q.key || `q_${idx}`,
+      category: q.category || '一般',
+      question: questionText,
+      input_type: inputType,
+      options: Array.isArray(q.options) ? q.options : undefined,
+      priority: typeof q.priority === 'number' ? q.priority : 5,
+    };
+  });
+}
+
+/**
+ * Freeze-WALLCHAT-1: 質問文から input_type を推測
+ * 
+ * ルール:
+ * - boolean: 「ですか？」「ありますか？」「いますか？」で終わる場合
+ * - number: 「何名」「いくら」「何円」「何時間」「何人」を含む場合
+ * - text: 上記以外
+ * 
+ * 注: select は自動推測しない（options が必要なため）
+ */
+function inferInputTypeFromQuestion(question: string): 'boolean' | 'number' | 'text' {
+  // Boolean パターン: 「ですか？」「ありますか？」「いますか？」で終わる
+  // ただし、「何」「いくら」等が含まれる場合は number 優先
+  const hasBooleanEnding = /(ですか？|ありますか？|いますか？|ますか？|済みですか|でしょうか)$/.test(question);
+  
+  // Number パターン: 数値を尋ねる表現
+  const hasNumberPattern = /(何名|何人|いくら|何円|何時間|何日|総額|金額|年齢|年商|年収|売上|利益|平均給与|資本金|従業員数|人数)/.test(question);
+  
+  // Number 最優先
+  if (hasNumberPattern) {
+    return 'number';
+  }
+  
+  // Boolean はシンプルな Yes/No 質問のみ
+  // 「何」「どのような」「どういう」等の詳細を尋ねる表現がある場合は text
+  const hasOpenEndedPattern = /(何を|何が|何ですか|どのような|どういう|どのように|詳細|具体的に|教えて)/.test(question);
+  
+  if (hasBooleanEnding && !hasOpenEndedPattern) {
+    return 'boolean';
+  }
+  
+  // その他は text
+  return 'text';
 }
 
 function validateInputType(type: any): type is 'boolean' | 'number' | 'text' | 'select' {
