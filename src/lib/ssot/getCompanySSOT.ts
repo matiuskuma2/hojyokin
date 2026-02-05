@@ -199,22 +199,37 @@ export async function getCompanySSOT(
       main_customers: string | null;
     }>();
   
+  // ============================================================
   // 3. chat_facts テーブルからファクト情報を取得
+  // 
+  // Freeze-Company-SSOT-1: chat_facts 集約ルール凍結
+  // 
+  // 集約ルール:
+  //   1. ORDER BY updated_at DESC で最新順にソート
+  //   2. 同じ fact_key がある場合は最初の（最新の）値を採用
+  //   3. subsidyId 指定時: subsidy_id = ? OR subsidy_id IS NULL を対象
+  //      → 補助金固有の回答 > 全般的回答の優先順
+  //   4. subsidyId 未指定時: subsidy_id IS NULL のみを対象
+  //
+  // 再現性: 同じ companyId + subsidyId で呼び出せば同じ結果
+  // ============================================================
   const factsQuery = subsidyId
-    ? `SELECT fact_key, fact_value FROM chat_facts 
+    ? `SELECT fact_key, fact_value, updated_at FROM chat_facts 
        WHERE company_id = ? AND (subsidy_id = ? OR subsidy_id IS NULL)
-       ORDER BY updated_at DESC`
-    : `SELECT fact_key, fact_value FROM chat_facts 
+       ORDER BY 
+         CASE WHEN subsidy_id = ? THEN 0 ELSE 1 END,  -- 補助金固有が優先
+         updated_at DESC`
+    : `SELECT fact_key, fact_value, updated_at FROM chat_facts 
        WHERE company_id = ? AND subsidy_id IS NULL
        ORDER BY updated_at DESC`;
   
   const factsResult = subsidyId
-    ? await db.prepare(factsQuery).bind(companyId, subsidyId).all<ChatFact>()
+    ? await db.prepare(factsQuery).bind(companyId, subsidyId, subsidyId).all<ChatFact>()
     : await db.prepare(factsQuery).bind(companyId).all<ChatFact>();
   
+  // Freeze-Company-SSOT-1: 同じキーは最初の（優先度が高い）ものを採用
   const factsMap = new Map<string, string>();
   for (const fact of (factsResult.results || [])) {
-    // 同じキーがある場合は最初の（最新の）ものを使用
     if (!factsMap.has(fact.fact_key)) {
       factsMap.set(fact.fact_key, fact.fact_value);
     }
