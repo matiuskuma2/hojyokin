@@ -3,10 +3,66 @@
 ## 📋 プロジェクト概要
 
 - **Name**: subsidy-matching (hojyokin)
-- **Version**: 3.4.0
+- **Version**: 4.4.0
 - **Goal**: 企業情報を登録するだけで、最適な補助金・助成金を自動でマッチング＆申請書ドラフト作成
 
-### 🎉 最新アップデート (v4.3.0) - NormalizedSubsidyDetail v1.0 Freeze + Phase A完了
+### 🎉 最新アップデート (v4.4.0) - Phase A-3: 他API追随 + SSOT統一
+
+**v4.4.0 リリース（2026-02-05）:**
+
+| 項目 | 状態 | 詳細 |
+|------|------|------|
+| **Phase A-3 完了** | ✅ | 他API（eligibility/documents/expenses/bonus-points）を normalized 経由へ統一 |
+| **getNormalizedSubsidyDetail** | ✅ Freeze | 全APIで共有するSSOT読み取り関数（A-3-0） |
+| **chat.ts normalized対応** | ✅ | input_type 推測ロジック排除、normalized.wall_chat.questions のみ参照 |
+
+**Phase A-3 成果物:**
+| ファイル | 役割 |
+|----------|------|
+| `src/lib/ssot/getNormalizedSubsidyDetail.ts` | SSOT共通読み取り関数（全APIで使用） |
+| `src/routes/subsidies.ts` | eligibility/documents/expenses/bonus-points を normalized 経由に置換 |
+| `src/routes/chat.ts` | normalized のみ参照、input_type 推測排除 |
+
+**A-3 API変更点:**
+| エンドポイント | 変更内容 |
+|----------------|----------|
+| `/api/subsidies/:id/eligibility` | `normalized.content.eligibility_rules` を SSOT として返却 |
+| `/api/subsidies/:id/documents` | `normalized.content.required_documents` を SSOT として返却 |
+| `/api/subsidies/:id/expenses` | `normalized.content.eligible_expenses` を SSOT として返却 |
+| `/api/subsidies/:id/bonus-points` | `normalized.content.bonus_points` を SSOT として返却 |
+
+**APIレスポンス例（eligibility）:**
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "category": "基本要件",
+      "rule_text": "中小企業・小規模事業者であること",
+      "check_type": "MANUAL",
+      "source": "公募要領より"
+    }
+  ],
+  "meta": {
+    "source": "normalized",
+    "canonical_id": "IT-SUBSIDY-2026"
+  }
+}
+```
+
+**chat.ts 変更点（A-3-5）:**
+- `performPrecheck()`: normalized から電子申請情報・補助金情報を取得
+- `generateAdditionalQuestions()`: normalized.wall_chat.questions のみ参照
+- input_type 推測禁止: 定義されていなければ text 固定（normalizeSubsidyDetail で処理済み）
+
+**ガード事項:**
+- DEBUG_SSOT=1 のときのみログ出力
+- adapter 縮退（normalized 成功時は legacy 参照を減らす方向）
+- Fallback 維持: eligibility_rules / required_documents_by_subsidy テーブルにデータがある場合は従来通り返す
+
+---
+
+### 🎉 過去アップデート (v4.3.0) - NormalizedSubsidyDetail v1.0 Freeze + Phase A-1/A-2完了
 
 **v4.3.0 リリース（2026-02-05）:**
 
@@ -64,8 +120,6 @@ interface NormalizedSubsidyDetail {
 - 概要・対象事業を normalized.overview 優先に変更
 - 添付ファイルを normalized.content.attachments 優先に変更
 - legacy `data.subsidy` は fallback として維持（互換期間）
-
-**Phase A-3（保留）:** 他API（eligibility/documents/expenses/bonus）を normalized 経由へ統一
 
 ---
 
@@ -1093,6 +1147,7 @@ Private
 
 ## 🔄 更新履歴
 
+- **2026-02-05 (v4.4.0)**: Phase A-3 完了 - 他API追随（eligibility/documents/expenses/bonus-points）を normalized 経由へ統一、getNormalizedSubsidyDetail.ts（SSOT共通読み取り関数）、chat.ts normalized対応（input_type 推測排除）
 - **2026-02-05 (v4.3.0)**: NormalizedSubsidyDetail v1.0 Freeze + Phase A-1/A-2 完了 - resolveSubsidyRef.ts（SSOT ID解決）、normalizeSubsidyDetail.ts（5制度マッピング）、フロントエンド normalized 完全参照切替
 - **2026-01-24 (v2.2.0)**: P3-2E Sprint完了 - tokyo-hataraku +15件、feed_failures UI 4分類、JGrants enrich-detail API
 - **2026-01-24 (v2.1.0)**: P3-2C/D完了 - required_forms自動生成、主要5制度WALL_CHAT_READY化
