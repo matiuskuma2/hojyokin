@@ -1,8 +1,13 @@
 -- =====================================================
 -- P5: 監視設定の初期データ
+-- 
+-- 監視頻度について:
+-- - 補助金の公募要領は頻繁には更新されないため、週1回（168時間）を基本とする
+-- - 公募締切が近い場合や重要な更新期間は個別に頻度を上げることを検討
+-- - API呼び出しコスト削減のため、毎日チェックは避ける
 -- =====================================================
 
--- 業務改善助成金の監視設定
+-- 業務改善助成金の監視設定（週1回）
 INSERT OR IGNORE INTO data_source_monitors (
   id, subsidy_cache_id, source_name, source_url, monitor_type,
   check_interval_hours, selectors, url_patterns, status
@@ -12,7 +17,7 @@ INSERT OR IGNORE INTO data_source_monitors (
   '厚生労働省 業務改善助成金ページ',
   'https://www.mhlw.go.jp/stf/seisakunitsuite/bunya/koyou_roudou/roudoukijun/zigyonushi/shienjigyou/03.html',
   'webpage',
-  24,
+  168,
   '["a[href$=\".pdf\"]", "a[href$=\".docx\"]", "a[href$=\".xlsx\"]"]',
   '["https://www.mhlw.go.jp/content/11200000/\\d+\\.(pdf|docx?|xlsx?)"]',
   'active'
@@ -26,7 +31,7 @@ INSERT OR IGNORE INTO monitored_files (id, monitor_id, file_name, file_descripti
 ('MF-GK-004', 'MONITOR-GYOMU-KAIZEN', 'リーフレット', '制度概要のリーフレット', 'リーフレット.*\\.pdf', 'pdf', 'medium'),
 ('MF-GK-005', 'MONITOR-GYOMU-KAIZEN', '申請様式', '申請書の様式（Word）', '001555951\\.docx', 'docx', 'high');
 
--- 省力化投資補助金の監視設定
+-- 省力化投資補助金の監視設定（週1回）
 INSERT OR IGNORE INTO data_source_monitors (
   id, subsidy_cache_id, source_name, source_url, monitor_type,
   check_interval_hours, selectors, url_patterns, status
@@ -36,13 +41,13 @@ INSERT OR IGNORE INTO data_source_monitors (
   '中小機構 省力化投資補助金ページ',
   'https://shoryokuka.smrj.go.jp/ippan/download/',
   'webpage',
-  24,
+  168,
   '["a[href$=\".pdf\"]"]',
   '["https://shoryokuka.smrj.go.jp/.*\\.pdf"]',
   'active'
 );
 
--- 持続化補助金（一般型）の監視設定
+-- 持続化補助金（一般型）の監視設定（週1回）
 INSERT OR IGNORE INTO data_source_monitors (
   id, subsidy_cache_id, source_name, source_url, monitor_type,
   check_interval_hours, selectors, url_patterns, status
@@ -52,13 +57,13 @@ INSERT OR IGNORE INTO data_source_monitors (
   '日本商工会議所 持続化補助金ページ',
   'https://r6.jizokukahojokin.info/',
   'webpage',
-  24,
+  168,
   '["a[href$=\".pdf\"]"]',
   '["https://r6.jizokukahojokin.info/doc/.*\\.pdf"]',
   'active'
 );
 
--- 持続化補助金（創業型）の監視設定
+-- 持続化補助金（創業型）の監視設定（週1回）
 INSERT OR IGNORE INTO data_source_monitors (
   id, subsidy_cache_id, source_name, source_url, monitor_type,
   check_interval_hours, selectors, url_patterns, status
@@ -68,7 +73,7 @@ INSERT OR IGNORE INTO data_source_monitors (
   '日本商工会議所 持続化補助金（創業型）ページ',
   'https://r6.jizokukahojokin.info/',
   'webpage',
-  24,
+  168,
   '["a[href$=\".pdf\"]"]',
   '["https://r6.jizokukahojokin.info/doc/.*sogyo.*\\.pdf"]',
   'active'
