@@ -13,8 +13,9 @@
 import { Hono } from "hono";
 import type { Env, Variables, ApiResponse } from "../types";
 import { requireAuth, getCurrentUser } from "../middleware/auth";
-import { getNormalizedSubsidyDetail } from "../lib/ssot";
+import { getNormalizedSubsidyDetail, type NormalizedSubsidyDetail } from "../lib/ssot";
 import { checkMissingRequirements, type MissingKey } from "../lib/ssot/checkMissingRequirements";
+import { logOpenAICost } from "../lib/cost/cost-logger";
 
 // ========================================
 // 型定義
@@ -670,5 +671,321 @@ adminOps.post("/missing-queue/:id/resolve", async (c) => {
 
   return c.json({ success: true, data: { id, status: action } });
 });
+
+// =====================================================
+// 7) POST /missing-queue/:id/extract-diff - P4-3 差分抽出
+// =====================================================
+// 
+// Freeze-P4-3: 変更時のみ差分抽出
+// - PDF取得（最大2本）
+// - OpenAI で構造化抽出
+// - pending_updates に提案保存
+// - 締切のみ auto_applicable = true
+//
+adminOps.post("/missing-queue/:id/extract-diff", async (c) => {
+  const auth = assertSuperAdmin(c);
+  if (!auth.ok) return auth.resp;
+
+  const db = c.env.DB;
+  const id = c.req.param("id");
+  const body = await c.req.json().catch(() => ({}));
+  const forceExtract = body.force === true; // 変更なしでも強制抽出
+
+  // 1. チケット取得
+  const row = await db
+    .prepare(`SELECT * FROM missing_requirements_queue WHERE id = ?`)
+    .bind(id)
+    .first<QueueRow>();
+  if (!row) {
+    return c.json({ success: false, error: { code: "NOT_FOUND", message: "ticket not found" } }, 404);
+  }
+
+  // 2. status チェック
+  if (row.status !== "ready_for_extract" && row.status !== "awaiting_change" && !forceExtract) {
+    return c.json(
+      { success: false, error: { code: "INVALID_STATUS", message: `status must be ready_for_extract or awaiting_change. current: ${row.status}` } },
+      400
+    );
+  }
+
+  // 3. PDF URLs 取得
+  const pdfUrls = safeParseJsonArray(row.pdf_urls_json);
+  if (pdfUrls.length === 0) {
+    return c.json(
+      { success: false, error: { code: "NO_PDF_URLS", message: "pdf_urls is empty. set-urls first." } },
+      400
+    );
+  }
+
+  // 4. 既存の normalized を取得
+  const existingNormalized = await getNormalizedSubsidyDetail(db, row.canonical_id, { debug: false });
+  if (!existingNormalized) {
+    return c.json(
+      { success: false, error: { code: "SUBSIDY_NOT_FOUND", message: "canonical subsidy not found in SSOT" } },
+      404
+    );
+  }
+
+  // 5. PDF テキスト抽出（最大2本、Firecrawl または fetch）
+  const extractedTexts: { url: string; text: string; pages: number }[] = [];
+  const maxPdfs = Math.min(pdfUrls.length, 2); // コストガード: 最大2本
+
+  for (let i = 0; i < maxPdfs; i++) {
+    const pdfUrl = pdfUrls[i];
+    try {
+      // 簡易テキスト抽出（Firecrawl がない場合はスキップ）
+      // TODO: Firecrawl 連携を後で追加
+      // 現時点では placeholder として URL と空テキストを返す
+      extractedTexts.push({
+        url: pdfUrl,
+        text: `[PDF抽出未実装] ${pdfUrl}`,
+        pages: 0,
+      });
+    } catch (e: any) {
+      console.error(`[extract-diff] PDF fetch error for ${pdfUrl}:`, e.message);
+    }
+  }
+
+  // 6. OpenAI で構造化抽出（OPENAI_API_KEY が必要）
+  const openaiApiKey = c.env.OPENAI_API_KEY;
+  if (!openaiApiKey) {
+    return c.json(
+      { success: false, error: { code: "OPENAI_NOT_CONFIGURED", message: "OPENAI_API_KEY is not set" } },
+      500
+    );
+  }
+
+  // 7. 抽出プロンプト構築
+  const oldNormalized = existingNormalized.normalized;
+  const extractionPrompt = buildExtractionPrompt(oldNormalized, extractedTexts);
+
+  // 8. OpenAI API 呼び出し
+  let extractionResult: ExtractedChanges | null = null;
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let costUsd = 0;
+
+  try {
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${openaiApiKey}`,
+      },
+      body: JSON.stringify({
+        model: "gpt-4o-mini", // コスト効率
+        messages: [
+          {
+            role: "system",
+            content: `You are a subsidy information extractor. Extract changes from the provided PDF text and compare with existing data. Output JSON only.`,
+          },
+          { role: "user", content: extractionPrompt },
+        ],
+        response_format: { type: "json_object" },
+        max_tokens: 4000,
+      }),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`OpenAI API error: ${response.status} - ${errorText}`);
+    }
+
+    const data = await response.json() as OpenAIResponse;
+    inputTokens = data.usage?.prompt_tokens || 0;
+    outputTokens = data.usage?.completion_tokens || 0;
+    // gpt-4o-mini: $0.15/1M input, $0.60/1M output
+    costUsd = (inputTokens * 0.00000015) + (outputTokens * 0.0000006);
+
+    const content = data.choices?.[0]?.message?.content || "{}";
+    extractionResult = JSON.parse(content) as ExtractedChanges;
+  } catch (e: any) {
+    // コストログ（失敗時も記録）
+    await logOpenAICost(db, {
+      model: "gpt-4o-mini",
+      inputTokens,
+      outputTokens,
+      costUsd,
+      action: "extract_diff",
+      success: false,
+      errorMessage: e.message,
+      subsidyId: row.canonical_id,
+    });
+
+    return c.json(
+      { success: false, error: { code: "OPENAI_ERROR", message: e.message } },
+      500
+    );
+  }
+
+  // 9. コストログ（成功）
+  await logOpenAICost(db, {
+    model: "gpt-4o-mini",
+    inputTokens,
+    outputTokens,
+    costUsd,
+    action: "extract_diff",
+    success: true,
+    subsidyId: row.canonical_id,
+    rawUsage: { prompt_tokens: inputTokens, completion_tokens: outputTokens },
+  });
+
+  // 10. update_detection_log 作成
+  const detectionLogId = `DET-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
+  const changesDetected = extractionResult?.changes?.map(c => c.field_path) || [];
+  const changeSummary = extractionResult?.summary || "抽出完了";
+
+  await db
+    .prepare(`
+      INSERT INTO update_detection_log (
+        id, subsidy_id, source_url, source_type,
+        changes_detected, change_summary, status, auto_applicable
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `)
+    .bind(
+      detectionLogId,
+      row.canonical_id,
+      pdfUrls[0] || null,
+      "pdf",
+      JSON.stringify(changesDetected),
+      changeSummary,
+      "pending",
+      changesDetected.some(p => p.includes("acceptance")) ? 1 : 0 // 締切関連のみ auto
+    )
+    .run();
+
+  // 11. pending_updates に変更を保存
+  const pendingStatements = (extractionResult?.changes || []).map(change => {
+    const pendingId = `PU-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
+    const isDeadlineChange = change.field_path.includes("acceptance") || change.field_path.includes("deadline");
+    
+    return db.prepare(`
+      INSERT INTO pending_updates (
+        id, detection_log_id, subsidy_id, field_path, field_name,
+        old_value, new_value, change_type, confidence, source_text, status
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).bind(
+      pendingId,
+      detectionLogId,
+      row.canonical_id,
+      change.field_path,
+      change.field_name,
+      change.old_value || null,
+      change.new_value || null,
+      change.change_type || "modify",
+      change.confidence || 0.8,
+      change.source_text || null,
+      isDeadlineChange ? "auto_applied" : "pending" // 締切のみ自動適用
+    );
+  });
+
+  if (pendingStatements.length > 0) {
+    await db.batch(pendingStatements);
+  }
+
+  // 12. チケット status を更新
+  await db
+    .prepare(`
+      UPDATE missing_requirements_queue
+      SET status = 'extracting',
+          updated_at = datetime('now'),
+          updated_by = ?
+      WHERE id = ?
+    `)
+    .bind(auth.user.id, id)
+    .run();
+
+  return c.json({
+    success: true,
+    data: {
+      id,
+      detection_log_id: detectionLogId,
+      changes_count: extractionResult?.changes?.length || 0,
+      cost_usd: costUsd,
+      input_tokens: inputTokens,
+      output_tokens: outputTokens,
+      summary: changeSummary,
+    },
+  });
+});
+
+// =====================================================
+// P4-3 ヘルパー関数
+// =====================================================
+
+interface ExtractedChange {
+  field_path: string;
+  field_name: string;
+  old_value?: string;
+  new_value?: string;
+  change_type: "add" | "modify" | "delete";
+  confidence: number;
+  source_text?: string;
+}
+
+interface ExtractedChanges {
+  changes: ExtractedChange[];
+  summary: string;
+}
+
+interface OpenAIResponse {
+  choices?: Array<{ message?: { content?: string } }>;
+  usage?: { prompt_tokens?: number; completion_tokens?: number };
+}
+
+/**
+ * 抽出プロンプト構築
+ */
+function buildExtractionPrompt(
+  oldNormalized: NormalizedSubsidyDetail,
+  extractedTexts: { url: string; text: string; pages: number }[]
+): string {
+  const existingData = {
+    title: oldNormalized.display.title,
+    acceptance: oldNormalized.acceptance,
+    overview: oldNormalized.overview,
+    eligibility_rules: oldNormalized.content.eligibility_rules.slice(0, 10), // 最初の10件
+    required_documents: oldNormalized.content.required_documents.slice(0, 10),
+    eligible_expenses: oldNormalized.content.eligible_expenses,
+  };
+
+  const pdfTexts = extractedTexts.map((t, i) => `--- PDF ${i + 1}: ${t.url} ---\n${t.text.slice(0, 8000)}`).join("\n\n");
+
+  return `
+## 既存データ（SSOT）
+\`\`\`json
+${JSON.stringify(existingData, null, 2)}
+\`\`\`
+
+## 新しいPDFテキスト
+${pdfTexts || "(PDFテキスト抽出未実装)"}
+
+## 指示
+1. 既存データと新しいPDFテキストを比較し、変更点を抽出してください。
+2. 特に以下のフィールドの変更を検出してください:
+   - acceptance.acceptance_end（申請締切日）
+   - overview.summary（概要）
+   - eligibility_rules（申請要件）
+   - required_documents（必要書類）
+   - eligible_expenses（対象経費）
+3. 変更がない場合は changes を空配列にしてください。
+
+## 出力形式（JSON）
+{
+  "changes": [
+    {
+      "field_path": "acceptance.acceptance_end",
+      "field_name": "申請締切日",
+      "old_value": "2026-03-31",
+      "new_value": "2026-06-30",
+      "change_type": "modify",
+      "confidence": 0.95,
+      "source_text": "申請締切：令和8年6月30日"
+    }
+  ],
+  "summary": "申請締切日が2026年6月30日に延長されました。"
+}
+`;
+}
 
 export default adminOps;

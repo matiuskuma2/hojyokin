@@ -53,6 +53,11 @@ export interface Env {
   GOOGLE_CLOUD_API_KEY?: string;
   
   // ========================================
+  // OpenAI API (P4-3: 差分抽出)
+  // ========================================
+  OPENAI_API_KEY?: string;
+  
+  // ========================================
   // Cron Secret (外部Cronサービス認証)
   // ========================================
   CRON_SECRET?: string;
