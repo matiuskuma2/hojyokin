@@ -1837,6 +1837,10 @@ subsidyPages.get('/subsidies/:id', (c) => {
                     class="tab-btn px-6 py-3 border-b-2 border-transparent text-gray-500 hover:text-gray-700">
               <i class="fas fa-clipboard-check mr-1"></i>申請要件
             </button>
+            <button onclick="switchTab('expenses')" data-tab="expenses"
+                    class="tab-btn px-6 py-3 border-b-2 border-transparent text-gray-500 hover:text-gray-700">
+              <i class="fas fa-yen-sign mr-1"></i>対象経費
+            </button>
             <button onclick="switchTab('bonus')" data-tab="bonus"
                     class="tab-btn px-6 py-3 border-b-2 border-transparent text-gray-500 hover:text-gray-700">
               <i class="fas fa-star mr-1"></i>加点要素
@@ -1897,16 +1901,46 @@ subsidyPages.get('/subsidies/:id', (c) => {
             </div>
           </div>
           
-          <!-- Sprint 3: 加点要素タブ -->
+          <!-- 対象経費タブ -->
+          <div id="tab-expenses" class="tab-content hidden">
+            <div class="mb-4">
+              <h3 class="text-lg font-semibold mb-2">
+                <i class="fas fa-yen-sign text-green-600 mr-1"></i>対象経費
+              </h3>
+              <p class="text-sm text-gray-600">
+                この補助金で補助対象となる経費の一覧です。
+              </p>
+            </div>
+            
+            <div id="expenses-list">
+              <p class="text-gray-500">対象経費情報を読み込み中...</p>
+            </div>
+          </div>
+          
+          <!-- 加点要素タブ（公募要領ベース + 一般的な例） -->
           <div id="tab-bonus" class="tab-content hidden">
             <div class="mb-4">
               <h3 class="text-lg font-semibold mb-2">
-                <i class="fas fa-star text-yellow-500 mr-1"></i>加点要素（参考）
+                <i class="fas fa-star text-yellow-500 mr-1"></i>加点要素
               </h3>
               <p class="text-sm text-gray-600">
-                これらの要素を満たすと審査で有利になる可能性があります。補助金によって加点項目は異なります。
+                これらの要素を満たすと審査で有利になる可能性があります。
               </p>
             </div>
+            
+            <!-- 公募要領からの加点項目（動的に表示） -->
+            <div id="bonus-from-koubo" class="mb-6 hidden">
+              <h4 class="font-medium text-gray-800 mb-3">
+                <i class="fas fa-file-alt text-blue-500 mr-1"></i>この補助金の加点項目
+              </h4>
+              <div id="bonus-list" class="space-y-3"></div>
+            </div>
+            
+            <!-- 一般的な加点要素（参考） -->
+            <div id="bonus-general" class="mt-6">
+              <h4 class="font-medium text-gray-500 mb-3">
+                <i class="fas fa-info-circle mr-1"></i>一般的な加点要素（参考）
+              </h4>
             
             <!-- 一般的な加点要素 -->
             <div class="space-y-4">
@@ -2148,9 +2182,11 @@ subsidyPages.get('/subsidies/:id', (c) => {
           subsidyData = res.data;
           renderDetail(res.data);
           
-          // 要件・必要書類・様式も取得
+          // 要件・必要書類・対象経費・加点項目・様式も取得
           loadEligibility();
           loadDocuments();
+          loadExpenses();
+          loadBonusPoints();
           // P3-2C: res.data全体を渡す（required_formsはres.data直下にある）
           loadForms(res.data);
           
@@ -2524,6 +2560,157 @@ subsidyPages.get('/subsidies/:id', (c) => {
           console.error('Load forms error:', e);
           document.getElementById('forms-list').innerHTML = 
             '<p class="text-red-500">様式情報の読み込みに失敗しました。</p>';
+        }
+      }
+      
+      // 対象経費読み込み
+      async function loadExpenses() {
+        try {
+          const res = await api('/api/subsidies/' + subsidyId + '/expenses');
+          if (res.success && res.data && (
+            (res.data.required_expenses && res.data.required_expenses.length > 0) ||
+            (res.data.categories && res.data.categories.length > 0) ||
+            (res.data.excluded_expenses && res.data.excluded_expenses.length > 0)
+          )) {
+            let html = '';
+            
+            // 必須経費
+            if (res.data.required_expenses && res.data.required_expenses.length > 0) {
+              html += '<div class="mb-6">' +
+                '<h4 class="font-medium text-gray-800 mb-3"><i class="fas fa-check-circle text-green-500 mr-1"></i>必須経費</h4>' +
+                '<div class="space-y-2">' +
+                res.data.required_expenses.map(function(exp) {
+                  var expName = escapeHtml(typeof exp === 'string' ? exp : (exp.name || ''));
+                  var expDesc = exp.description ? '<p class="text-sm text-green-700 mt-1">' + escapeHtml(exp.description) + '</p>' : '';
+                  var expMin = exp.min_amount ? '<p class="text-sm text-green-600 mt-1">最低単価: ' + Number(exp.min_amount).toLocaleString() + '円以上</p>' : '';
+                  return '<div class="p-3 border-l-4 border-green-500 bg-green-50 rounded-r-lg">' +
+                    '<div class="font-medium text-green-800">' + expName + '</div>' +
+                    expDesc + expMin + '</div>';
+                }).join('') +
+                '</div></div>';
+            }
+            
+            // カテゴリ別経費
+            if (res.data.categories && res.data.categories.length > 0) {
+              html += '<div class="mb-6">' +
+                '<h4 class="font-medium text-gray-800 mb-3"><i class="fas fa-folder text-blue-500 mr-1"></i>経費カテゴリ</h4>' +
+                '<div class="grid grid-cols-1 md:grid-cols-2 gap-4">' +
+                res.data.categories.map(function(cat) {
+                  var catName = escapeHtml(typeof cat === 'string' ? cat : (cat.name || ''));
+                  var catDesc = cat.description ? '<p class="text-sm text-gray-600">' + escapeHtml(cat.description) + '</p>' : '';
+                  var itemsHtml = '';
+                  if (cat.items && cat.items.length > 0) {
+                    itemsHtml = '<ul class="mt-2 space-y-1">' +
+                      cat.items.slice(0, 5).map(function(item) {
+                        var itemName = escapeHtml(typeof item === 'string' ? item : (item.name || ''));
+                        return '<li class="text-sm text-gray-700">・' + itemName + '</li>';
+                      }).join('') +
+                      (cat.items.length > 5 ? '<li class="text-xs text-gray-500">他 ' + (cat.items.length - 5) + '件</li>' : '') +
+                      '</ul>';
+                  }
+                  var rateHtml = cat.rate ? '<p class="text-sm text-blue-600 mt-2">補助率: ' + escapeHtml(cat.rate) + '</p>' : '';
+                  var maxHtml = cat.max_amount ? '<p class="text-sm text-blue-600">上限: ' + Number(cat.max_amount).toLocaleString() + '円</p>' : '';
+                  return '<div class="p-4 border rounded-lg bg-white hover:shadow-md transition-shadow">' +
+                    '<div class="font-medium text-gray-800 mb-2">' + catName + '</div>' +
+                    catDesc + itemsHtml + rateHtml + maxHtml + '</div>';
+                }).join('') +
+                '</div></div>';
+            }
+            
+            // 対象外経費
+            if (res.data.excluded_expenses && res.data.excluded_expenses.length > 0) {
+              html += '<div class="mb-6">' +
+                '<h4 class="font-medium text-gray-800 mb-3"><i class="fas fa-ban text-red-500 mr-1"></i>対象外経費</h4>' +
+                '<div class="p-4 bg-red-50 border border-red-200 rounded-lg"><ul class="space-y-1">' +
+                res.data.excluded_expenses.map(function(exp) {
+                  var expName = escapeHtml(typeof exp === 'string' ? exp : (exp.name || ''));
+                  return '<li class="text-sm text-red-700"><i class="fas fa-times text-red-500 mr-1"></i>' + expName + '</li>';
+                }).join('') +
+                '</ul></div></div>';
+            }
+            
+            // 注意事項
+            if (res.data.notes) {
+              html += '<div class="p-4 bg-yellow-50 rounded-lg">' +
+                '<h4 class="font-medium text-yellow-800 mb-2"><i class="fas fa-exclamation-triangle mr-1"></i>注意事項</h4>' +
+                '<p class="text-sm text-yellow-700">' + escapeHtml(res.data.notes) + '</p></div>';
+            }
+            
+            document.getElementById('expenses-list').innerHTML = html;
+          } else {
+            document.getElementById('expenses-list').innerHTML = 
+              '<div class="text-center py-8 text-gray-500">' +
+              '<i class="fas fa-yen-sign text-4xl mb-3 text-gray-300"></i>' +
+              '<p>対象経費情報がまだ登録されていません。</p>' +
+              '<p class="text-sm mt-2">公募要領に記載されている対象経費については、壁打ちチャットでも確認できます。</p></div>';
+          }
+        } catch (e) {
+          console.error('Load expenses error:', e);
+          document.getElementById('expenses-list').innerHTML = 
+            '<p class="text-red-500">対象経費情報の読み込みに失敗しました。</p>';
+        }
+      }
+      
+      // 加点項目読み込み
+      async function loadBonusPoints() {
+        try {
+          const res = await api('/api/subsidies/' + subsidyId + '/bonus-points');
+          if (res.success && res.data && res.data.length > 0) {
+            // 公募要領からの加点項目を表示
+            var kouboSection = document.getElementById('bonus-from-koubo');
+            var bonusList = document.getElementById('bonus-list');
+            var generalSection = document.getElementById('bonus-general');
+            
+            // 公募要領セクションを表示
+            kouboSection.classList.remove('hidden');
+            
+            // 一般的な加点要素の説明を変更
+            var generalTitle = generalSection.querySelector('h4');
+            if (generalTitle) {
+              generalTitle.innerHTML = '<i class="fas fa-info-circle mr-1"></i>その他の一般的な加点要素（参考）';
+            }
+            
+            var html = res.data.map(function(item, idx) {
+              // ポイント表示
+              var pointDisplay = '';
+              if (item.max_points) {
+                pointDisplay = '<span class="px-2 py-1 bg-yellow-100 text-yellow-800 rounded text-xs">+' + item.max_points + '点</span>';
+              } else if (item.points) {
+                pointDisplay = '<span class="px-2 py-1 bg-yellow-100 text-yellow-800 rounded text-xs">+' + item.points + '点</span>';
+              }
+              
+              // カテゴリアイコン
+              var iconClass = 'fa-plus-circle text-blue-500';
+              var category = item.category || '';
+              if (category.includes('賃上げ')) iconClass = 'fa-chart-line text-green-500';
+              else if (category.includes('政策')) iconClass = 'fa-landmark text-blue-500';
+              else if (category.includes('重点')) iconClass = 'fa-star text-purple-500';
+              else if (category.includes('災害')) iconClass = 'fa-exclamation-triangle text-orange-500';
+              else if (category.includes('DX')) iconClass = 'fa-microchip text-indigo-500';
+              else if (category.includes('GX')) iconClass = 'fa-leaf text-green-600';
+              
+              var catHtml = item.category ? '<span class="text-xs text-gray-500 ml-6">' + escapeHtml(item.category) + '</span>' : '';
+              var descHtml = item.description ? '<p class="text-sm text-gray-600 mt-2">' + escapeHtml(item.description) + '</p>' : '';
+              var reqHtml = item.requirements ? '<div class="mt-2 p-2 bg-gray-50 rounded text-sm"><span class="text-gray-600 font-medium">要件:</span> <span class="text-gray-700">' + escapeHtml(item.requirements) + '</span></div>' : '';
+              
+              return '<div class="p-4 border rounded-lg hover:shadow-md transition-shadow bg-white">' +
+                '<div class="flex items-start justify-between">' +
+                '<div class="flex-1">' +
+                '<h4 class="font-medium text-gray-800 flex items-center"><i class="fas ' + iconClass + ' mr-2"></i>' +
+                escapeHtml(item.name || item.title || '加点項目' + (idx + 1)) + '</h4>' +
+                catHtml + descHtml + reqHtml +
+                '</div>' + pointDisplay + '</div></div>';
+            }).join('');
+            
+            bonusList.innerHTML = html;
+          } else {
+            // 加点項目がない場合は公募要領セクションを非表示のまま
+            document.getElementById('bonus-from-koubo').classList.add('hidden');
+          }
+        } catch (e) {
+          console.error('Load bonus points error:', e);
+          // エラー時は公募要領セクションを非表示のまま
+          document.getElementById('bonus-from-koubo').classList.add('hidden');
         }
       }
       

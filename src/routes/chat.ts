@@ -407,7 +407,7 @@ function determineInputType(category: string): 'boolean' | 'number' | 'text' | '
 }
 
 /**
- * 追加質問の生成（company_profileにない項目）
+ * 追加質問の生成（company_profileにない項目 + wall_chat_questions）
  */
 function generateAdditionalQuestions(
   company: Record<string, any>,
@@ -447,6 +447,74 @@ function generateAdditionalQuestions(
       source: 'profile',
       priority: 2
     });
+  }
+  
+  // ===== wall_chat_questions からの質問を追加 =====
+  // detail_json に wall_chat_questions がある場合、公募要領に基づく質問を追加
+  if (subsidy?.detail_json) {
+    try {
+      const detail = typeof subsidy.detail_json === 'string' 
+        ? JSON.parse(subsidy.detail_json) 
+        : subsidy.detail_json;
+      
+      if (detail.wall_chat_questions && Array.isArray(detail.wall_chat_questions)) {
+        const wcQuestions = detail.wall_chat_questions as Array<{
+          category: string;
+          question: string;
+          purpose: string;
+        }>;
+        
+        // カテゴリごとに優先度を設定
+        const categoryPriority: Record<string, number> = {
+          '基本情報': 1,
+          '賃上げ要件': 2,
+          '創業要件': 2,
+          '設備投資': 3,
+          '省力化効果': 3,
+          '事業計画': 3,
+          '経費': 4,
+          'インボイス': 4,
+          'インボイス特例': 4,
+          '賃金引上げ特例': 4,
+          '赤字事業者': 4,
+          '加点項目': 5,
+          '加点': 5,
+          '財務状況': 5,
+          '電子申請': 6,
+          '商工会': 6,
+        };
+        
+        wcQuestions.forEach((wq, idx) => {
+          const factKey = `wc_${subsidy.id}_${idx}`;
+          
+          // 既に回答済みならスキップ
+          if (existingFacts.has(factKey)) {
+            return;
+          }
+          
+          // 入力タイプを推測
+          let inputType: 'boolean' | 'number' | 'text' | 'select' = 'text';
+          const q = wq.question.toLowerCase();
+          if (q.includes('ますか？') || q.includes('ですか？') || q.includes('いますか？') || q.includes('ありますか？')) {
+            inputType = 'boolean';
+          } else if (q.includes('何名') || q.includes('何人') || q.includes('いくら') || q.includes('何円') || q.includes('何時間')) {
+            inputType = 'number';
+          }
+          
+          const priority = categoryPriority[wq.category] || 3;
+          
+          questions.push({
+            key: factKey,
+            label: wq.question,
+            input_type: inputType,
+            source: 'eligibility',
+            priority: priority
+          });
+        });
+      }
+    } catch (e) {
+      console.warn('[Chat] Failed to parse wall_chat_questions from detail_json:', e);
+    }
   }
   
   return questions;
