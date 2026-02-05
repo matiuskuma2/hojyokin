@@ -543,9 +543,16 @@ export class JGrantsAdapter {
         const overviewText = detailData.subsidy_overview || detailData.overview || baseFields.description || '';
         const targetText = detailData.target_businesses || detailData.eligible_businesses || '';
         
+        // ⚠️ 重要: detailData を先に展開し、明示的マッピングを後に配置
+        // これにより、フロントエンド用の変換済みフィールドが優先される
         return {
+          // 1. detailData の全フィールドを展開（生データ）
+          ...detailData,
+          
+          // 2. baseFields で上書き（id, title等の必須フィールド）
           ...baseFields,
-          // detail_json からの詳細フィールドをマージ
+          
+          // 3. フロントエンド用の明示的マッピング（最優先）
           // 概要・説明（フロントエンドは subsidy_summary, outline, overview を使用）
           overview: overviewText,
           subsidy_summary: overviewText, // フロントエンド用エイリアス
@@ -556,15 +563,15 @@ export class JGrantsAdapter {
           target_businesses: targetText,
           target: targetText, // フロントエンド用エイリアス
           
-          // 対象経費
+          // 対象経費（オブジェクトの場合はJSON文字列化）
           eligible_expenses: typeof detailData.eligible_expenses === 'object' 
             ? JSON.stringify(detailData.eligible_expenses) 
             : detailData.eligible_expenses,
-          // 必要書類
+          // 必要書類（オブジェクトの場合はJSON文字列化）
           required_documents: typeof detailData.required_documents === 'object'
             ? JSON.stringify(detailData.required_documents)
             : detailData.required_documents,
-          // 申請要件
+          // 申請要件（オブジェクトの場合はJSON文字列化）
           application_requirements: typeof detailData.eligibility_requirements === 'object'
             ? JSON.stringify(detailData.eligibility_requirements)
             : detailData.eligibility_requirements || detailData.application_requirements,
@@ -579,9 +586,6 @@ export class JGrantsAdapter {
           
           // 添付ファイル
           attachments: detailData.attachments || baseFields.attachments,
-          
-          // その他の detail_json フィールドをそのまま展開（上書きを防ぐため最後に配置）
-          ...detailData,
         };
       } catch (e) {
         console.error('[parseDetailRow] Failed to parse detail_json:', e);
