@@ -520,17 +520,75 @@ export class JGrantsAdapter {
   
   /**
    * 生行データをJGrantsDetailResultにパース
+   * ⚠️ 重要: row の基本フィールド（id, title等）と detail_json をマージして返す
+   * detail_json は subsidy_overview, eligible_expenses 等の詳細フィールドを含む
+   * row は id, title, subsidy_max_limit 等の基本検索フィールドを含む
    */
   private parseDetailRow(row: any): JGrantsDetailResult | null {
     if (!row) return null;
+    
+    // 基本フィールドを取得
+    const baseFields = this.rowToSubsidy(row) as JGrantsDetailResult;
+    
+    // detail_json がある場合はマージ
     if (row.detail_json) {
       try {
-        return JSON.parse(row.detail_json as string);
-      } catch {
-        return this.rowToSubsidy(row) as JGrantsDetailResult;
+        const detailData = JSON.parse(row.detail_json as string);
+        
+        // detail_json の構造を JGrantsDetailResult にマッピング
+        // ⚠️ detail_json は独自構造（subsidy_overview等）を持つ場合がある
+        // ⚠️ フロントエンドとの整合性: フロントが使用するフィールド名に合わせる
+        
+        // 概要テキストの取得（優先順位付き）
+        const overviewText = detailData.subsidy_overview || detailData.overview || baseFields.description || '';
+        const targetText = detailData.target_businesses || detailData.eligible_businesses || '';
+        
+        return {
+          ...baseFields,
+          // detail_json からの詳細フィールドをマージ
+          // 概要・説明（フロントエンドは subsidy_summary, outline, overview を使用）
+          overview: overviewText,
+          subsidy_summary: overviewText, // フロントエンド用エイリアス
+          outline: overviewText, // フロントエンド用エイリアス
+          description: detailData.subsidy_purpose || detailData.description || baseFields.description,
+          
+          // 対象事業（フロントエンドは target, target_businesses を使用）
+          target_businesses: targetText,
+          target: targetText, // フロントエンド用エイリアス
+          
+          // 対象経費
+          eligible_expenses: typeof detailData.eligible_expenses === 'object' 
+            ? JSON.stringify(detailData.eligible_expenses) 
+            : detailData.eligible_expenses,
+          // 必要書類
+          required_documents: typeof detailData.required_documents === 'object'
+            ? JSON.stringify(detailData.required_documents)
+            : detailData.required_documents,
+          // 申請要件
+          application_requirements: typeof detailData.eligibility_requirements === 'object'
+            ? JSON.stringify(detailData.eligibility_requirements)
+            : detailData.eligibility_requirements || detailData.application_requirements,
+          
+          // 実施機関・事務局情報
+          implementing_agency: detailData.issuer || detailData.issuer_department || detailData.implementing_agency,
+          subsidy_executing_organization: detailData.secretariat || detailData.subsidy_executing_organization || 
+            (detailData.issuer ? `${detailData.issuer}${detailData.issuer_department ? ` ${detailData.issuer_department}` : ''}` : ''),
+          
+          // 対象地域（フロントエンドは target_area を使用）
+          target_area: detailData.target_area || baseFields.target_area_search || '全国',
+          
+          // 添付ファイル
+          attachments: detailData.attachments || baseFields.attachments,
+          
+          // その他の detail_json フィールドをそのまま展開（上書きを防ぐため最後に配置）
+          ...detailData,
+        };
+      } catch (e) {
+        console.error('[parseDetailRow] Failed to parse detail_json:', e);
+        return baseFields;
       }
     }
-    return this.rowToSubsidy(row) as JGrantsDetailResult;
+    return baseFields;
   }
 
   /**
@@ -783,10 +841,13 @@ export class JGrantsAdapter {
   /**
    * DBの行をSubsidyオブジェクトに変換
    */
-  private rowToSubsidy(row: any): JGrantsSearchResult {
+  private rowToSubsidy(row: any): JGrantsSearchResult & Partial<JGrantsDetailResult> {
     return {
+      // 必須の基本フィールド
       id: row.id,
       title: row.title,
+      name: row.title, // name も title と同じ値を設定（フォールバック用）
+      // 検索用フィールド
       subsidy_max_limit: row.subsidy_max_limit,
       subsidy_rate: row.subsidy_rate,
       target_area_search: row.target_area_search,
@@ -795,6 +856,10 @@ export class JGrantsAdapter {
       acceptance_start_datetime: row.acceptance_start_datetime,
       acceptance_end_datetime: row.acceptance_end_datetime,
       request_reception_display_flag: row.request_reception_display_flag,
+      // 詳細フィールド（DB行から取得できる場合）
+      description: row.description,
+      overview: row.overview,
+      subsidy_executing_organization: row.subsidy_executing_organization,
     };
   }
 }
