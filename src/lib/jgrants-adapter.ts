@@ -403,11 +403,18 @@ export class JGrantsAdapter {
   async getDetail(id: string): Promise<AdapterDetailResponse> {
     // 1. キャッシュを先に確認
     const cachedRow = await this.getDetailFromCacheRaw(id);
+    
+    // 詳細なデバッグログ
+    console.log(`[Adapter.getDetail] id=${id}, cachedRow found: ${!!cachedRow}`);
+    if (cachedRow) {
+      console.log(`[Adapter.getDetail] cachedRow.id=${cachedRow.id}, cachedRow.title=${cachedRow.title}, has_detail_json=${!!cachedRow.detail_json}`);
+    }
+    
     const cached = cachedRow ? this.parseDetailRow(cachedRow) : null;
     
     // デバッグログ
     if (cached) {
-      console.log(`[Adapter.getDetail] id=${id}, cached.title=${cached.title}, cached.subsidy_summary=${cached.subsidy_summary?.substring(0, 50)}...`);
+      console.log(`[Adapter.getDetail] parsed: title=${cached.title}, subsidy_summary=${cached.subsidy_summary?.substring(0, 50)}...`);
     }
     
     // 判定用のヘルパー
