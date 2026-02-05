@@ -3,10 +3,56 @@
 ## 📋 プロジェクト概要
 
 - **Name**: subsidy-matching (hojyokin)
-- **Version**: 4.4.0
+- **Version**: 4.5.0
 - **Goal**: 企業情報を登録するだけで、最適な補助金・助成金を自動でマッチング＆申請書ドラフト作成
 
-### 🎉 最新アップデート (v4.4.0) - Phase A-3: 他API追随 + SSOT統一
+### 🎉 最新アップデート (v4.5.0) - Freeze-MATCH Gate + 壁打ち機能改善
+
+**v4.5.0 リリース（2026-02-05）:**
+
+| 項目 | 状態 | 詳細 |
+|------|------|------|
+| **Freeze-MATCH Gate A-D** | ✅ | v2スクリーニング統一、canonical_id厳格化、chat_facts凍結、missing_fields→Gate導線 |
+| **Freeze-WALLCHAT** | ✅ | 壁打ち質問の input_type パターンマッチ推測 + 多様な質問タイプ対応 |
+| **ものづくり補助金22次** | ✅ | SSOT追加、監視登録、壁打ち質問12問 |
+| **P4-3 差分抽出** | ✅ | POST /api/admin-ops/missing-queue/:id/extract-diff 実装 |
+| **業務改善助成金** | ✅ | 監視登録完了（awaiting_change） |
+
+**v4.5.0 成果物:**
+| ファイル | 役割 |
+|----------|------|
+| `src/routes/subsidies.ts` | v2 screening + evaluation_runs 拡張（screening_version, subsidy_source_id等） |
+| `src/routes/admin-ops.ts` | P4-3 extract-diff エンドポイント追加 |
+| `src/lib/ssot/getNormalizedSubsidyDetail.ts` | snapshotRow.detail_json 優先読み取り（Freeze-GET-1） |
+| `src/lib/ssot/normalizeSubsidyDetail.ts` | input_type パターンマッチ推測（Freeze-WALLCHAT-1） |
+| `src/routes/chat.ts` | フォールバック質問多様化（Freeze-WALLCHAT-2） |
+
+**Freeze-MATCH 仕様:**
+| 仕様ID | 内容 |
+|--------|------|
+| Freeze-MATCH-0 | マッチング入力は (CompanySSOT, NormalizedSubsidyDetail) のみ |
+| Freeze-MATCH-1 | evaluation_runs.subsidy_id は常に canonical_id |
+| Freeze-MATCH-2 | screening 結果に missing_fields を追加 |
+| Freeze-Company-SSOT-1 | chat_facts 集約: 最新優先、同一キーは初出採用、補助金固有が優先 |
+
+**Freeze-WALLCHAT 仕様:**
+| 仕様ID | 内容 |
+|--------|------|
+| Freeze-WALLCHAT-1 | 質問文から input_type をパターンマッチ推測（boolean/number/text） |
+| Freeze-WALLCHAT-2 | フォールバック質問を多様化（boolean だけでなく text/number も含む） |
+| Freeze-WALLCHAT-3 | input_type に応じた適切な回答ガイドを表示 |
+
+**新規 evaluation_runs カラム:**
+```sql
+screening_version    TEXT  -- 'v1' | 'v2'（追跡用）
+subsidy_source_id    TEXT  -- JGrants ID 等の元ID
+subsidy_cache_id     TEXT  -- 使用した cache_id
+missing_fields_json  TEXT  -- JSON配列 [{ field, source, severity, label, reason }]
+```
+
+---
+
+### 🎉 過去アップデート (v4.4.0) - Phase A-3: 他API追随 + SSOT統一
 
 **v4.4.0 リリース（2026-02-05）:**
 
