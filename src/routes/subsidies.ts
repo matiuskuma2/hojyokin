@@ -13,6 +13,12 @@ import { requireAuth, requireCompanyAccess, getCurrentUser } from '../middleware
 import { createJGrantsAdapter, getJGrantsMode } from '../lib/jgrants-adapter';
 import { JGrantsError } from '../lib/jgrants';
 import { performBatchScreening, sortByStatus, sortByScore } from '../lib/screening';
+import { 
+  resolveSubsidyRef, 
+  normalizeSubsidyDetail, 
+  safeJsonParse,
+  type NormalizedSubsidyDetail 
+} from '../lib/ssot';
 
 const subsidies = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -293,6 +299,10 @@ subsidies.get('/search', requireCompanyAccess(), async (c) => {
  * 
  * Query Parameters:
  * - company_id: 企業ID（任意、指定時は評価結果も返す）
+ * 
+ * レスポンス（v1.0 Freeze）:
+ * - normalized: NormalizedSubsidyDetail v1.0（フロントはこれのみ参照）
+ * - subsidy: legacy（互換用、将来削除）
  */
 subsidies.get('/:subsidy_id', async (c) => {
   const db = c.env.DB;
@@ -300,38 +310,88 @@ subsidies.get('/:subsidy_id', async (c) => {
   const companyId = c.req.query('company_id');
   
   try {
-    // Adapter経由で詳細取得
-    const adapter = createJGrantsAdapter(c.env);
+    // ========================================
+    // Step 1: SSOT ID解決（Freeze-REF-0）
+    // ========================================
+    const ref = await resolveSubsidyRef(db, subsidyId);
     
-    const detailResponse = await adapter.getDetail(subsidyId);
+    if (!ref) {
+      // canonical解決できない → 404（Freeze）
+      return c.json<ApiResponse<null>>({
+        success: false,
+        error: {
+          code: 'NOT_FOUND',
+          message: 'Subsidy not found',
+        },
+      }, 404);
+    }
     
-    // デバッグログ: API が返すフィールドを確認
-    console.log(`[API /subsidies/${subsidyId}] detailResponse fields:`, {
-      id: detailResponse.id,
-      title: detailResponse.title,
-      name: detailResponse.name,
-      subsidy_summary: detailResponse.subsidy_summary?.substring(0, 50),
-      overview: detailResponse.overview?.substring(0, 50),
-      subsidy_executing_organization: detailResponse.subsidy_executing_organization,
-      target_area: detailResponse.target_area,
-      source: detailResponse.source,
+    console.log(`[API /subsidies/${subsidyId}] resolved:`, {
+      input_id: ref.input_id,
+      canonical_id: ref.canonical_id,
+      cache_id: ref.cache_id,
+      snapshot_id: ref.snapshot_id,
+      primary_source_type: ref.primary_source_type,
     });
     
-    const subsidyDetail = detailResponse;
-    const source = detailResponse.source;
+    // ========================================
+    // Step 2: canonical / snapshot / cache 取得
+    // ========================================
+    const canonicalRow = await db
+      .prepare('SELECT * FROM subsidy_canonical WHERE id = ?')
+      .bind(ref.canonical_id)
+      .first();
     
-    // 評価結果取得（company_id が指定されている場合）
+    const snapshotRow = ref.snapshot_id 
+      ? await db.prepare('SELECT * FROM subsidy_snapshot WHERE id = ?').bind(ref.snapshot_id).first()
+      : null;
+    
+    const cacheRow = ref.cache_id
+      ? await db.prepare('SELECT * FROM subsidy_cache WHERE id = ?').bind(ref.cache_id).first()
+      : null;
+    
+    // detail_json パース
+    const detailJson = safeJsonParse(cacheRow?.detail_json as string);
+    
+    // ========================================
+    // Step 3: NormalizedSubsidyDetail 生成（Freeze-NORM-0）
+    // ========================================
+    let normalized: NormalizedSubsidyDetail | null = null;
+    try {
+      normalized = normalizeSubsidyDetail({
+        ref,
+        canonicalRow,
+        snapshotRow,
+        cacheRow,
+        detailJson,
+      });
+      
+      console.log(`[API /subsidies/${subsidyId}] normalized:`, {
+        title: normalized.display.title,
+        summary: normalized.overview.summary?.substring(0, 50),
+        eligibility_rules_count: normalized.content.eligibility_rules.length,
+        wall_chat_ready: normalized.wall_chat.ready,
+      });
+    } catch (normalizeError) {
+      // 正規化失敗してもAPIは返す（互換維持）
+      console.error(`[API /subsidies/${subsidyId}] Normalize error:`, normalizeError);
+    }
+    
+    // ========================================
+    // Step 4: 評価結果取得（company_id 指定時）
+    // ========================================
     let evaluation = null;
     if (companyId) {
+      // canonical_id と cache_id 両方で検索（互換性）
       const evalResult = await db
         .prepare(`
           SELECT status, match_score, match_reasons, risk_flags, explanation, created_at
           FROM evaluation_runs
-          WHERE company_id = ? AND subsidy_id = ?
+          WHERE company_id = ? AND (subsidy_id = ? OR subsidy_id = ?)
           ORDER BY created_at DESC
           LIMIT 1
         `)
-        .bind(companyId, subsidyId)
+        .bind(companyId, ref.canonical_id, ref.cache_id || ref.canonical_id)
         .first();
       
       if (evalResult) {
@@ -346,18 +406,54 @@ subsidies.get('/:subsidy_id', async (c) => {
       }
     }
     
-    // 添付ファイルはメタ情報のみ返す（URLは返すがダウンロードは別ジョブ）
-    const attachments = (subsidyDetail.attachments || []).map((a: any) => ({
+    // ========================================
+    // Step 5: Legacy互換（Adapter経由）
+    // ========================================
+    const adapter = createJGrantsAdapter(c.env);
+    let detailResponse: any = null;
+    try {
+      detailResponse = await adapter.getDetail(subsidyId);
+    } catch {
+      // Adapter失敗時は normalized のみで返す
+      console.warn(`[API /subsidies/${subsidyId}] Adapter fallback failed`);
+    }
+    
+    const subsidyDetail = detailResponse || {
+      id: ref.canonical_id,
+      title: normalized?.display.title || '補助金名未設定',
+      subsidy_max_limit: normalized?.display.subsidy_max_limit,
+      subsidy_rate: normalized?.display.subsidy_rate_text,
+      target_area_search: normalized?.display.target_area_text,
+      // フロントエンド用エイリアス
+      subsidy_summary: normalized?.overview.summary,
+      outline: normalized?.overview.summary,
+      overview: normalized?.overview.summary,
+      target: normalized?.overview.target_business,
+      target_businesses: normalized?.overview.target_business,
+      subsidy_executing_organization: normalized?.display.issuer_name,
+      target_area: normalized?.display.target_area_text,
+      attachments: normalized?.content.attachments || [],
+    };
+    
+    const source = detailResponse?.source || ref.primary_source_type;
+    
+    // 添付ファイルはメタ情報のみ返す
+    const attachments = (subsidyDetail.attachments || normalized?.content.attachments || []).map((a: any) => ({
       id: a.id,
       name: a.name,
       url: a.url,
       file_type: a.file_type,
       file_size: a.file_size,
-      // ダウンロード・変換・テキスト化はAWS側のジョブで行う
       status: 'not_processed',
     }));
     
+    // ========================================
+    // Step 6: レスポンス返却
+    // ========================================
     return c.json<ApiResponse<{
+      // v1.0 Freeze: フロントはこれのみ参照
+      normalized: NormalizedSubsidyDetail | null;
+      // Legacy互換（将来削除予定）
       subsidy: typeof subsidyDetail;
       attachments: typeof attachments;
       evaluation: typeof evaluation;
@@ -366,19 +462,36 @@ subsidies.get('/:subsidy_id', async (c) => {
       wall_chat_ready: boolean;
       wall_chat_missing: string[];
       detail_json?: Record<string, any> | null;
-      required_forms?: typeof detailResponse.required_forms;
+      required_forms?: any;
+      // メタ情報
+      meta?: {
+        resolved_canonical_id: string;
+        resolved_cache_id: string | null;
+        resolved_snapshot_id: string | null;
+        schema_version: string;
+      };
     }>>({
       success: true,
       data: {
+        // v1.0 Freeze: normalized を追加
+        normalized,
+        // Legacy互換
         subsidy: subsidyDetail,
         attachments,
         evaluation,
         source,
-        detail_ready: detailResponse.detail_ready, // P0-2-1: SEARCHABLE条件判定
-        wall_chat_ready: detailResponse.wall_chat_ready ?? false, // WALL_CHAT_READY判定
-        wall_chat_missing: detailResponse.wall_chat_missing || [], // 不足要素リスト
-        detail_json: detailResponse.detail_json, // P3-2C: 様式情報含む詳細JSON
-        required_forms: detailResponse.required_forms, // P3-2C: 必要様式
+        detail_ready: detailResponse?.detail_ready ?? (normalized !== null),
+        wall_chat_ready: normalized?.wall_chat.ready ?? detailResponse?.wall_chat_ready ?? false,
+        wall_chat_missing: normalized?.wall_chat.missing ?? detailResponse?.wall_chat_missing ?? [],
+        detail_json: detailResponse?.detail_json ?? detailJson,
+        required_forms: detailResponse?.required_forms ?? normalized?.content.required_forms,
+        // メタ情報
+        meta: {
+          resolved_canonical_id: ref.canonical_id,
+          resolved_cache_id: ref.cache_id,
+          resolved_snapshot_id: ref.snapshot_id,
+          schema_version: '1.0',
+        },
       },
     });
   } catch (error) {

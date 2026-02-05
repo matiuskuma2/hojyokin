@@ -2210,38 +2210,56 @@ subsidyPages.get('/subsidies/:id', (c) => {
       }
       
       // 詳細描画
-      // ⚠️ XSS対策: API応答は必ずescapeHtml()でエスケープすること
+      // ⚠️ v1.0 Freeze: normalized を優先参照（legacy は互換用）
       function renderDetail(data) {
         // ⚠️ null/undefined チェック
-        if (!data || !data.subsidy) {
+        if (!data) {
           console.error('[補助金詳細] Invalid data:', data);
           document.getElementById('loading-detail').innerHTML = 
             '<div class="text-red-600"><i class="fas fa-exclamation-circle mr-2"></i>データ形式が不正です。</div>';
           return;
         }
         
-        const s = data.subsidy;
+        // v1.0 Freeze: normalized を優先、無ければ legacy fallback
+        const n = data.normalized;
+        const s = data.subsidy; // legacy fallback
         const e = data.evaluation;
         
-        // デバッグログ: どのフィールドが存在するか確認
-        console.log('[renderDetail] subsidy fields:', {
+        // デバッグログ: normalized と legacy の両方を確認
+        console.log('[renderDetail] normalized:', n ? {
+          title: n.display?.title,
+          summary: n.overview?.summary?.substring(0, 50),
+          issuer_name: n.display?.issuer_name,
+          wall_chat_ready: n.wall_chat?.ready,
+        } : 'null');
+        console.log('[renderDetail] legacy subsidy:', s ? {
           title: s.title,
-          name: s.name,
           subsidy_summary: s.subsidy_summary?.substring(0, 50),
-          outline: s.outline?.substring(0, 50),
-          overview: s.overview?.substring(0, 50),
-          target: s.target?.substring(0, 50),
-          subsidy_executing_organization: s.subsidy_executing_organization
-        });
+        } : 'null');
+        
+        // normalized が無い場合は legacy fallback（互換期間）
+        if (!n && !s) {
+          console.error('[補助金詳細] Both normalized and subsidy are null');
+          document.getElementById('loading-detail').innerHTML = 
+            '<div class="text-red-600"><i class="fas fa-exclamation-circle mr-2"></i>データ形式が不正です。</div>';
+          return;
+        }
         
         document.getElementById('loading-detail').classList.add('hidden');
         document.getElementById('subsidy-detail').classList.remove('hidden');
         
-        // タイトル（textContentを使用するためエスケープ不要）
-        document.getElementById('breadcrumb-title').textContent = s.title || s.name || '補助金詳細';
-        document.getElementById('subsidy-title').textContent = s.title || s.name || '補助金名未設定';
-        // ⚠️ XSS対策: innerHTMLを使用する場合はエスケープ
-        document.getElementById('subsidy-org').innerHTML = '<i class="fas fa-building mr-1"></i>' + escapeHtml(s.subsidy_executing_organization || '事務局情報なし');
+        // ========================================
+        // v1.0 Freeze: normalized 優先参照
+        // ========================================
+        
+        // タイトル
+        const title = n?.display?.title || s?.title || s?.name || '補助金詳細';
+        document.getElementById('breadcrumb-title').textContent = title;
+        document.getElementById('subsidy-title').textContent = title || '補助金名未設定';
+        
+        // 実施機関
+        const issuerName = n?.display?.issuer_name || s?.subsidy_executing_organization || '事務局情報なし';
+        document.getElementById('subsidy-org').innerHTML = '<i class="fas fa-building mr-1"></i>' + escapeHtml(issuerName);
         
         // ステータスバッジ
         if (e) {
@@ -2339,25 +2357,45 @@ subsidyPages.get('/subsidies/:id', (c) => {
           \`;
         }
         
-        // 基本情報
-        const endDate = s.acceptance_end_datetime ? new Date(s.acceptance_end_datetime) : null;
-        const daysLeft = endDate ? Math.ceil((endDate - new Date()) / (1000 * 60 * 60 * 24)) : null;
+        // ========================================
+        // v1.0 Freeze: 基本情報も normalized 優先
+        // ========================================
         
-        document.getElementById('info-deadline').innerHTML = endDate 
+        // 締切日（normalized.acceptance 優先）
+        const acceptanceEnd = n?.acceptance?.acceptance_end || s?.acceptance_end_datetime;
+        const endDate = acceptanceEnd ? new Date(acceptanceEnd) : null;
+        const daysLeft = endDate && !isNaN(endDate.getTime()) ? Math.ceil((endDate - new Date()) / (1000 * 60 * 60 * 24)) : null;
+        
+        document.getElementById('info-deadline').innerHTML = (endDate && !isNaN(endDate.getTime()))
           ? endDate.toLocaleDateString('ja-JP') + (daysLeft !== null ? \` <span class="\${daysLeft <= 14 ? 'text-red-600' : 'text-gray-500'}">(あと\${daysLeft}日)</span>\` : '')
           : '情報なし';
-        document.getElementById('info-max-limit').textContent = s.subsidy_max_limit 
-          ? Number(s.subsidy_max_limit).toLocaleString() + '円' : '情報なし';
-        document.getElementById('info-rate').textContent = s.subsidy_rate || '情報なし';
-        document.getElementById('info-area').textContent = s.target_area || '全国';
         
-        // 概要
-        document.getElementById('overview-content').textContent = s.subsidy_summary || s.outline || '概要情報なし';
-        document.getElementById('target-content').textContent = s.target || '対象事業情報なし';
+        // 補助上限（normalized.display 優先）
+        const maxLimit = n?.display?.subsidy_max_limit ?? s?.subsidy_max_limit;
+        document.getElementById('info-max-limit').textContent = maxLimit 
+          ? Number(maxLimit).toLocaleString() + '円' : '情報なし';
+        
+        // 補助率（normalized.display 優先）
+        const subsidyRate = n?.display?.subsidy_rate_text || s?.subsidy_rate;
+        document.getElementById('info-rate').textContent = subsidyRate || '情報なし';
+        
+        // 対象地域（normalized.display 優先）
+        const targetArea = n?.display?.target_area_text || s?.target_area;
+        document.getElementById('info-area').textContent = targetArea || '全国';
+        
+        // ========================================
+        // 概要・対象事業も normalized 優先
+        // ========================================
+        const overviewText = n?.overview?.summary || s?.subsidy_summary || s?.outline || '概要情報なし';
+        document.getElementById('overview-content').textContent = overviewText;
+        
+        const targetText = n?.overview?.target_business || s?.target || s?.target_businesses || '対象事業情報なし';
+        document.getElementById('target-content').textContent = targetText;
         
         // 添付ファイル
+        // v1.0 Freeze: normalized.content.attachments 優先
         // ⚠️ XSS対策: ファイル名とURLをエスケープ
-        const attachments = data.attachments || [];
+        const attachments = n?.content?.attachments || data.attachments || [];
         if (attachments.length > 0) {
           document.getElementById('attachments-list').innerHTML = attachments.map(a => {
             const safeName = escapeHtml(a.name || '不明なファイル');
@@ -2401,15 +2439,21 @@ subsidyPages.get('/subsidies/:id', (c) => {
       let hasDocumentsData = false;
       
       // データ不足警告を表示
+      // v1.0 Freeze: normalized 優先参照
       function checkAndShowDataWarning() {
         const missingItems = [];
         
-        // 補助金基本情報のチェック
-        if (subsidyData && subsidyData.subsidy) {
-          const s = subsidyData.subsidy;
-          if (!s.subsidy_rate) missingItems.push('補助率');
-          if (!s.subsidy_summary && !s.outline) missingItems.push('補助金の概要');
-        }
+        // v1.0 Freeze: normalized 優先で補助金基本情報のチェック
+        const n = subsidyData?.normalized;
+        const s = subsidyData?.subsidy;
+        
+        // 補助率チェック
+        const hasRate = n?.display?.subsidy_rate_text || s?.subsidy_rate;
+        if (!hasRate) missingItems.push('補助率');
+        
+        // 概要チェック
+        const hasSummary = n?.overview?.summary || s?.subsidy_summary || s?.outline;
+        if (!hasSummary) missingItems.push('補助金の概要');
         
         if (!hasEligibilityData) missingItems.push('申請要件');
         if (!hasDocumentsData) missingItems.push('必要書類');
