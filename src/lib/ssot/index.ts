@@ -53,3 +53,12 @@ export {
   type MissingSeverity,
   type MissingCheckResult,
 } from './checkMissingRequirements';
+
+// Freeze-MATCH-0: 会社SSOT（マッチング入力を統一）
+export {
+  getCompanySSOT,
+  type CompanySSOT,
+  type CompanyProfile,
+  type ChatFact,
+  type MissingField,
+} from './getCompanySSOT';

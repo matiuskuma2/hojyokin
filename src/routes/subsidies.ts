@@ -13,6 +13,7 @@ import { requireAuth, requireCompanyAccess, getCurrentUser } from '../middleware
 import { createJGrantsAdapter, getJGrantsMode } from '../lib/jgrants-adapter';
 import { JGrantsError } from '../lib/jgrants';
 import { performBatchScreening, sortByStatus, sortByScore } from '../lib/screening';
+import { getCompanySSOT } from '../lib/ssot/getCompanySSOT';
 import { 
   resolveSubsidyRef, 
   normalizeSubsidyDetail, 
@@ -208,9 +209,35 @@ subsidies.get('/search', requireCompanyAccess(), async (c) => {
     }
     
     // 評価結果をD1に保存（バッチ）
+    // Freeze-MATCH-1: canonical_id に統一
     if (sortedResults.length > 0) {
+      // 1. まず全ての subsidy_id を canonical_id に解決
+      const subsidyIdToCanonical = new Map<string, string>();
+      
+      for (const result of sortedResults) {
+        const subsidyId = result.subsidy.id;
+        // 既に解決済みならスキップ
+        if (subsidyIdToCanonical.has(subsidyId)) continue;
+        
+        // canonical_id を解決（resolveSubsidyRef を使用）
+        try {
+          const ref = await resolveSubsidyRef(db, subsidyId);
+          if (ref) {
+            subsidyIdToCanonical.set(subsidyId, ref.canonical_id);
+          } else {
+            // 解決できない場合は元のIDを使用（fallback）
+            subsidyIdToCanonical.set(subsidyId, subsidyId);
+          }
+        } catch {
+          // エラー時は元のIDを使用
+          subsidyIdToCanonical.set(subsidyId, subsidyId);
+        }
+      }
+      
+      // 2. canonical_id を使って evaluation_runs に保存
       const evaluationStatements = sortedResults.map(result => {
         const evalId = uuidv4();
+        const canonicalId = subsidyIdToCanonical.get(result.subsidy.id) || result.subsidy.id;
         return db.prepare(`
           INSERT OR REPLACE INTO evaluation_runs 
           (id, company_id, subsidy_id, status, match_score, match_reasons, risk_flags, explanation, created_at)
@@ -218,7 +245,7 @@ subsidies.get('/search', requireCompanyAccess(), async (c) => {
         `).bind(
           evalId,
           companyId,
-          result.subsidy.id,
+          canonicalId,  // Freeze-MATCH-1: canonical_id を使用
           result.evaluation.status,
           result.evaluation.score,
           JSON.stringify(result.evaluation.match_reasons),

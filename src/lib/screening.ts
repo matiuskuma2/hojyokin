@@ -555,3 +555,16 @@ export function sortByScore(results: MatchResult[], order: 'ASC' | 'DESC' = 'DES
     return order === 'DESC' ? -diff : diff;
   });
 }
+
+// ============================================================
+// v2 re-export（段階的移行用）
+// ============================================================
+
+export {
+  performScreeningV2,
+  performBatchScreeningV2,
+  sortByStatusV2,
+  sortByScoreV2,
+  type ScreeningResultV2,
+  type MissingFieldResult,
+} from './screening-v2';
