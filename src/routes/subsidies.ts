@@ -558,7 +558,82 @@ subsidies.get('/:subsidy_id/eligibility', async (c) => {
         if (eligibility) {
           const generatedRules: any[] = [];
           
-          // basic requirements
+          // ======== 新構造対応（IT導入補助金2026等）========
+          // basic_requirements（基本要件）
+          if (eligibility.basic_requirements && Array.isArray(eligibility.basic_requirements)) {
+            eligibility.basic_requirements.forEach((req: string, idx: number) => {
+              generatedRules.push({
+                id: `${subsidyId}-basic-${idx}`,
+                subsidy_id: subsidyId,
+                category: '基本要件',
+                rule_text: req,
+                check_type: 'MANUAL',
+                source_text: '公募要領より',
+              });
+            });
+          }
+          
+          // productivity_requirements（生産性向上要件）
+          if (eligibility.productivity_requirements && Array.isArray(eligibility.productivity_requirements)) {
+            eligibility.productivity_requirements.forEach((req: string, idx: number) => {
+              generatedRules.push({
+                id: `${subsidyId}-productivity-${idx}`,
+                subsidy_id: subsidyId,
+                category: '生産性向上要件',
+                rule_text: req,
+                check_type: 'AUTO',
+                source_text: '公募要領より',
+              });
+            });
+          }
+          
+          // wage_requirements_150over（賃金要件 150万円以上）
+          if (eligibility.wage_requirements_150over && Array.isArray(eligibility.wage_requirements_150over)) {
+            eligibility.wage_requirements_150over.forEach((req: string, idx: number) => {
+              generatedRules.push({
+                id: `${subsidyId}-wage150-${idx}`,
+                subsidy_id: subsidyId,
+                category: '賃金引上げ要件（150万円以上）',
+                rule_text: req,
+                check_type: 'AUTO',
+                source_text: '公募要領より',
+              });
+            });
+          }
+          
+          // wage_requirements_past_recipients（賃金要件 過去交付決定者向け）
+          if (eligibility.wage_requirements_past_recipients && Array.isArray(eligibility.wage_requirements_past_recipients)) {
+            eligibility.wage_requirements_past_recipients.forEach((req: string, idx: number) => {
+              generatedRules.push({
+                id: `${subsidyId}-wagepast-${idx}`,
+                subsidy_id: subsidyId,
+                category: '賃金引上げ要件（過去交付決定者）',
+                rule_text: req,
+                check_type: 'AUTO',
+                source_text: '公募要領より',
+              });
+            });
+          }
+          
+          // enterprise_definitions（事業者定義・規模要件）
+          if (eligibility.enterprise_definitions && Array.isArray(eligibility.enterprise_definitions)) {
+            eligibility.enterprise_definitions.forEach((def: any, idx: number) => {
+              const ruleText = def.industry 
+                ? `${def.industry}: 資本金${def.capital || '制限なし'}、従業員${def.employees || '制限なし'}`
+                : `資本金${def.capital || '制限なし'}、従業員${def.employees || '制限なし'}`;
+              generatedRules.push({
+                id: `${subsidyId}-enterprise-${idx}`,
+                subsidy_id: subsidyId,
+                category: '対象事業者（規模定義）',
+                rule_text: ruleText,
+                check_type: 'AUTO',
+                source_text: '公募要領より',
+              });
+            });
+          }
+          
+          // ======== 旧構造対応（ものづくり補助金等）========
+          // basic requirements（旧構造）
           if (eligibility.basic && Array.isArray(eligibility.basic)) {
             eligibility.basic.forEach((req: string, idx: number) => {
               generatedRules.push({
@@ -600,7 +675,7 @@ subsidies.get('/:subsidy_id/eligibility', async (c) => {
             });
           }
           
-          // scale_requirements (規模要件)
+          // scale_requirements (規模要件 - 旧構造)
           if (eligibility.scale_requirements && Array.isArray(eligibility.scale_requirements)) {
             eligibility.scale_requirements.forEach((scale: any, idx: number) => {
               generatedRules.push({
