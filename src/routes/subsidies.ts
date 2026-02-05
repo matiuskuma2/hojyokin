@@ -17,7 +17,12 @@ import {
   resolveSubsidyRef, 
   normalizeSubsidyDetail, 
   safeJsonParse,
-  type NormalizedSubsidyDetail 
+  getNormalizedSubsidyDetail,
+  type NormalizedSubsidyDetail,
+  type EligibilityRule,
+  type RequiredDocument,
+  type EligibleExpenses,
+  type BonusPoint,
 } from '../lib/ssot';
 
 const subsidies = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -622,15 +627,20 @@ subsidies.get('/evaluations/:company_id', requireCompanyAccess(), async (c) => {
 
 /**
  * 補助金の申請要件取得
- * - eligibility_rules テーブルから取得（従来）
- * - detail_json.eligibility_requirements から取得（手動登録補助金）
+ * 
+ * A-3-1: normalized.content.eligibility_rules を SSOT として返却
+ * 
+ * Fallback: eligibility_rules テーブルにデータがある場合は従来通り返す（互換性維持）
  */
 subsidies.get('/:subsidy_id/eligibility', async (c) => {
   const db = c.env.DB;
   const subsidyId = c.req.param('subsidy_id');
+  const debug = c.req.query('debug') === '1';
   
   try {
-    // 1. eligibility_rules テーブルから取得
+    // ========================================
+    // Step 1: eligibility_rules テーブルから取得（Fallback）
+    // ========================================
     const rules = await db
       .prepare(`
         SELECT 
@@ -643,208 +653,50 @@ subsidies.get('/:subsidy_id/eligibility', async (c) => {
       .bind(subsidyId)
       .all();
     
-    // 従来のルールがある場合はそのまま返す
+    // 従来のルールがある場合はそのまま返す（互換性維持）
     if (rules.results && rules.results.length > 0) {
+      if (debug) {
+        console.log(`[A-3-1] /eligibility: Fallback to eligibility_rules table for ${subsidyId}`);
+      }
       return c.json<ApiResponse<unknown[]>>({
         success: true,
         data: rules.results.map((rule: any) => ({
           ...rule,
           parameters: rule.parameters ? JSON.parse(rule.parameters) : null,
         })),
+        meta: { source: 'eligibility_rules_table' },
       });
     }
     
-    // 2. detail_json から eligibility_requirements を取得（手動登録補助金用）
-    // SSOT対応: canonical_id → latest_cache_id → subsidy_cache
-    let cache = await db
-      .prepare(`
-        SELECT detail_json FROM subsidy_cache WHERE id = ?
-      `)
-      .bind(subsidyId)
-      .first<{ detail_json: string | null }>();
+    // ========================================
+    // Step 2: SSOT（getNormalizedSubsidyDetail）から取得
+    // ========================================
+    const result = await getNormalizedSubsidyDetail(db, subsidyId, { debug });
     
-    // canonical_id として扱い latest_cache_id 経由で検索
-    if (!cache) {
-      cache = await db
-        .prepare(`
-          SELECT sc.detail_json
-          FROM subsidy_canonical c
-          JOIN subsidy_cache sc ON sc.id = c.latest_cache_id
-          WHERE c.id = ?
-        `)
-        .bind(subsidyId)
-        .first<{ detail_json: string | null }>();
+    if (!result) {
+      // 補助金が見つからない場合は空配列（404ではない - 互換性維持）
+      return c.json<ApiResponse<EligibilityRule[]>>({
+        success: true,
+        data: [],
+        meta: { source: 'not_found' },
+      });
     }
     
-    if (cache?.detail_json) {
-      try {
-        const detail = JSON.parse(cache.detail_json);
-        const eligibility = detail.eligibility_requirements;
-        
-        if (eligibility) {
-          const generatedRules: any[] = [];
-          
-          // ======== 新構造対応（IT導入補助金2026等）========
-          // basic_requirements（基本要件）
-          if (eligibility.basic_requirements && Array.isArray(eligibility.basic_requirements)) {
-            eligibility.basic_requirements.forEach((req: string, idx: number) => {
-              generatedRules.push({
-                id: `${subsidyId}-basic-${idx}`,
-                subsidy_id: subsidyId,
-                category: '基本要件',
-                rule_text: req,
-                check_type: 'MANUAL',
-                source_text: '公募要領より',
-              });
-            });
-          }
-          
-          // productivity_requirements（生産性向上要件）
-          if (eligibility.productivity_requirements && Array.isArray(eligibility.productivity_requirements)) {
-            eligibility.productivity_requirements.forEach((req: string, idx: number) => {
-              generatedRules.push({
-                id: `${subsidyId}-productivity-${idx}`,
-                subsidy_id: subsidyId,
-                category: '生産性向上要件',
-                rule_text: req,
-                check_type: 'AUTO',
-                source_text: '公募要領より',
-              });
-            });
-          }
-          
-          // wage_requirements_150over（賃金要件 150万円以上）
-          if (eligibility.wage_requirements_150over && Array.isArray(eligibility.wage_requirements_150over)) {
-            eligibility.wage_requirements_150over.forEach((req: string, idx: number) => {
-              generatedRules.push({
-                id: `${subsidyId}-wage150-${idx}`,
-                subsidy_id: subsidyId,
-                category: '賃金引上げ要件（150万円以上）',
-                rule_text: req,
-                check_type: 'AUTO',
-                source_text: '公募要領より',
-              });
-            });
-          }
-          
-          // wage_requirements_past_recipients（賃金要件 過去交付決定者向け）
-          if (eligibility.wage_requirements_past_recipients && Array.isArray(eligibility.wage_requirements_past_recipients)) {
-            eligibility.wage_requirements_past_recipients.forEach((req: string, idx: number) => {
-              generatedRules.push({
-                id: `${subsidyId}-wagepast-${idx}`,
-                subsidy_id: subsidyId,
-                category: '賃金引上げ要件（過去交付決定者）',
-                rule_text: req,
-                check_type: 'AUTO',
-                source_text: '公募要領より',
-              });
-            });
-          }
-          
-          // enterprise_definitions（事業者定義・規模要件）
-          if (eligibility.enterprise_definitions && Array.isArray(eligibility.enterprise_definitions)) {
-            eligibility.enterprise_definitions.forEach((def: any, idx: number) => {
-              const ruleText = def.industry 
-                ? `${def.industry}: 資本金${def.capital || '制限なし'}、従業員${def.employees || '制限なし'}`
-                : `資本金${def.capital || '制限なし'}、従業員${def.employees || '制限なし'}`;
-              generatedRules.push({
-                id: `${subsidyId}-enterprise-${idx}`,
-                subsidy_id: subsidyId,
-                category: '対象事業者（規模定義）',
-                rule_text: ruleText,
-                check_type: 'AUTO',
-                source_text: '公募要領より',
-              });
-            });
-          }
-          
-          // ======== 旧構造対応（ものづくり補助金等）========
-          // basic requirements（旧構造）
-          if (eligibility.basic && Array.isArray(eligibility.basic)) {
-            eligibility.basic.forEach((req: string, idx: number) => {
-              generatedRules.push({
-                id: `${subsidyId}-basic-${idx}`,
-                subsidy_id: subsidyId,
-                category: '基本要件',
-                rule_text: req,
-                check_type: 'MANUAL',
-                source_text: '公募要領より',
-              });
-            });
-          }
-          
-          // mandatory_commitments (必須コミットメント)
-          if (eligibility.mandatory_commitments && Array.isArray(eligibility.mandatory_commitments)) {
-            eligibility.mandatory_commitments.forEach((commit: any, idx: number) => {
-              generatedRules.push({
-                id: `${subsidyId}-mandatory-${idx}`,
-                subsidy_id: subsidyId,
-                category: '必須要件',
-                rule_text: `${commit.item}: ${commit.requirement}${commit.verification ? ` (確認方法: ${commit.verification})` : ''}`,
-                check_type: 'AUTO',
-                source_text: '公募要領より',
-              });
-            });
-          }
-          
-          // creation_requirements (創業型用)
-          if (eligibility.creation_requirements && Array.isArray(eligibility.creation_requirements)) {
-            eligibility.creation_requirements.forEach((req: any, idx: number) => {
-              generatedRules.push({
-                id: `${subsidyId}-creation-${idx}`,
-                subsidy_id: subsidyId,
-                category: '創業要件',
-                rule_text: `${req.item}: ${req.requirement}${req.note ? ` (${req.note})` : ''}`,
-                check_type: 'MANUAL',
-                source_text: '公募要領より',
-              });
-            });
-          }
-          
-          // scale_requirements (規模要件 - 旧構造)
-          if (eligibility.scale_requirements && Array.isArray(eligibility.scale_requirements)) {
-            eligibility.scale_requirements.forEach((scale: any, idx: number) => {
-              generatedRules.push({
-                id: `${subsidyId}-scale-${idx}`,
-                subsidy_id: subsidyId,
-                category: '規模要件',
-                rule_text: `${scale.industry}: 従業員${scale.max_employees}人以下`,
-                check_type: 'AUTO',
-                source_text: '公募要領より',
-              });
-            });
-          }
-          
-          // exclusions (除外条件)
-          if (eligibility.exclusions && Array.isArray(eligibility.exclusions)) {
-            eligibility.exclusions.forEach((excl: string, idx: number) => {
-              generatedRules.push({
-                id: `${subsidyId}-excl-${idx}`,
-                subsidy_id: subsidyId,
-                category: '対象外',
-                rule_text: excl,
-                check_type: 'MANUAL',
-                source_text: '公募要領より',
-              });
-            });
-          }
-          
-          if (generatedRules.length > 0) {
-            return c.json<ApiResponse<unknown[]>>({
-              success: true,
-              data: generatedRules,
-            });
-          }
-        }
-      } catch (e) {
-        console.warn('Failed to parse detail_json for eligibility:', e);
-      }
+    const { normalized } = result;
+    const eligibilityRules = normalized.content.eligibility_rules;
+    
+    if (debug) {
+      console.log(`[A-3-1] /eligibility: SSOT returned ${eligibilityRules.length} rules for ${subsidyId}`);
     }
     
-    // データがない場合は空配列
-    return c.json<ApiResponse<unknown[]>>({
+    // normalized.content.eligibility_rules をそのまま返却
+    return c.json<ApiResponse<EligibilityRule[]>>({
       success: true,
-      data: [],
+      data: eligibilityRules,
+      meta: { 
+        source: 'normalized',
+        canonical_id: result.ref.canonical_id,
+      },
     });
   } catch (error) {
     console.error('Get eligibility rules error:', error);
@@ -860,15 +712,20 @@ subsidies.get('/:subsidy_id/eligibility', async (c) => {
 
 /**
  * 補助金の必要書類取得
- * - required_documents_by_subsidy テーブルから取得（従来）
- * - detail_json.required_documents から取得（手動登録補助金）
+ * 
+ * A-3-2: normalized.content.required_documents を SSOT として返却
+ * 
+ * Fallback: required_documents_by_subsidy テーブルにデータがある場合は従来通り返す（互換性維持）
  */
 subsidies.get('/:subsidy_id/documents', async (c) => {
   const db = c.env.DB;
   const subsidyId = c.req.param('subsidy_id');
+  const debug = c.req.query('debug') === '1';
   
   try {
-    // 1. required_documents_by_subsidy テーブルから取得
+    // ========================================
+    // Step 1: required_documents_by_subsidy テーブルから取得（Fallback）
+    // ========================================
     const docs = await db
       .prepare(`
         SELECT 
@@ -883,180 +740,47 @@ subsidies.get('/:subsidy_id/documents', async (c) => {
       .bind(subsidyId)
       .all();
     
-    // 従来の書類データがある場合はそのまま返す
+    // 従来の書類データがある場合はそのまま返す（互換性維持）
     if (docs.results && docs.results.length > 0) {
+      if (debug) {
+        console.log(`[A-3-2] /documents: Fallback to required_documents_by_subsidy table for ${subsidyId}`);
+      }
       return c.json<ApiResponse<unknown[]>>({
         success: true,
         data: docs.results,
+        meta: { source: 'required_documents_table' },
       });
     }
     
-    // 2. detail_json から required_documents を取得（手動登録補助金用）
-    // SSOT対応: canonical_id → latest_cache_id → subsidy_cache
-    let cache = await db
-      .prepare(`
-        SELECT detail_json FROM subsidy_cache WHERE id = ?
-      `)
-      .bind(subsidyId)
-      .first<{ detail_json: string | null }>();
+    // ========================================
+    // Step 2: SSOT（getNormalizedSubsidyDetail）から取得
+    // ========================================
+    const result = await getNormalizedSubsidyDetail(db, subsidyId, { debug });
     
-    // canonical_id として扱い latest_cache_id 経由で検索
-    if (!cache) {
-      cache = await db
-        .prepare(`
-          SELECT sc.detail_json
-          FROM subsidy_canonical c
-          JOIN subsidy_cache sc ON sc.id = c.latest_cache_id
-          WHERE c.id = ?
-        `)
-        .bind(subsidyId)
-        .first<{ detail_json: string | null }>();
+    if (!result) {
+      // 補助金が見つからない場合は空配列（404ではない - 互換性維持）
+      return c.json<ApiResponse<RequiredDocument[]>>({
+        success: true,
+        data: [],
+        meta: { source: 'not_found' },
+      });
     }
     
-    if (cache?.detail_json) {
-      try {
-        const detail = JSON.parse(cache.detail_json);
-        const reqDocs = detail.required_documents;
-        
-        if (reqDocs) {
-          const generatedDocs: any[] = [];
-          let sortOrder = 0;
-          
-          // common documents
-          if (reqDocs.common && Array.isArray(reqDocs.common)) {
-            reqDocs.common.forEach((doc: any, idx: number) => {
-              generatedDocs.push({
-                id: `${subsidyId}-common-${idx}`,
-                subsidy_id: subsidyId,
-                doc_code: doc.name,
-                name: doc.name,
-                required_level: 'required',
-                description: doc.description || doc.period || '',
-                notes: doc.requirement || doc.deadline || '',
-                phase: '共通',
-                sort_order: sortOrder++,
-              });
-            });
-          }
-          
-          // main_forms (主要様式)
-          if (reqDocs.main_forms && Array.isArray(reqDocs.main_forms)) {
-            reqDocs.main_forms.forEach((doc: any, idx: number) => {
-              generatedDocs.push({
-                id: `${subsidyId}-form-${idx}`,
-                subsidy_id: subsidyId,
-                doc_code: doc.name,
-                name: doc.name,
-                required_level: 'required',
-                description: doc.description || '',
-                notes: doc.deadline || '',
-                phase: '申請様式',
-                sort_order: sortOrder++,
-              });
-            });
-          }
-          
-          // corporation documents
-          if (reqDocs.corporation && Array.isArray(reqDocs.corporation)) {
-            reqDocs.corporation.forEach((doc: any, idx: number) => {
-              generatedDocs.push({
-                id: `${subsidyId}-corp-${idx}`,
-                subsidy_id: subsidyId,
-                doc_code: doc.name,
-                name: doc.name,
-                required_level: 'conditional',
-                description: doc.period || doc.requirement || '',
-                notes: '法人のみ',
-                phase: '法人向け',
-                sort_order: sortOrder++,
-              });
-            });
-          }
-          
-          // individual documents
-          if (reqDocs.individual && Array.isArray(reqDocs.individual)) {
-            reqDocs.individual.forEach((doc: any, idx: number) => {
-              generatedDocs.push({
-                id: `${subsidyId}-ind-${idx}`,
-                subsidy_id: subsidyId,
-                doc_code: doc.name,
-                name: doc.name,
-                required_level: 'conditional',
-                description: doc.period || '',
-                notes: '個人事業主のみ',
-                phase: '個人向け',
-                sort_order: sortOrder++,
-              });
-            });
-          }
-          
-          // optional documents
-          if (reqDocs.optional && Array.isArray(reqDocs.optional)) {
-            reqDocs.optional.forEach((doc: any, idx: number) => {
-              generatedDocs.push({
-                id: `${subsidyId}-opt-${idx}`,
-                subsidy_id: subsidyId,
-                doc_code: doc.name,
-                name: doc.name,
-                required_level: 'optional',
-                description: doc.condition || '',
-                notes: '該当者のみ',
-                phase: '任意',
-                sort_order: sortOrder++,
-              });
-            });
-          }
-          
-          // special_optional (特例用書類)
-          if (reqDocs.special_optional && Array.isArray(reqDocs.special_optional)) {
-            reqDocs.special_optional.forEach((doc: any, idx: number) => {
-              generatedDocs.push({
-                id: `${subsidyId}-special-${idx}`,
-                subsidy_id: subsidyId,
-                doc_code: doc.name,
-                name: doc.name,
-                required_level: 'conditional',
-                description: doc.condition || '',
-                notes: '特例適用時',
-                phase: '特例',
-                sort_order: sortOrder++,
-              });
-            });
-          }
-          
-          // additional (追加書類)
-          if (reqDocs.additional && Array.isArray(reqDocs.additional)) {
-            reqDocs.additional.forEach((doc: any, idx: number) => {
-              generatedDocs.push({
-                id: `${subsidyId}-add-${idx}`,
-                subsidy_id: subsidyId,
-                doc_code: doc.name,
-                name: doc.name,
-                required_level: doc.requirement === '必須' ? 'required' : 'conditional',
-                description: doc.requirement || '',
-                notes: '',
-                phase: '追加',
-                sort_order: sortOrder++,
-              });
-            });
-          }
-          
-          if (generatedDocs.length > 0) {
-            return c.json<ApiResponse<unknown[]>>({
-              success: true,
-              data: generatedDocs,
-            });
-          }
-        }
-      } catch (e) {
-        console.warn('Failed to parse detail_json for documents:', e);
-      }
+    const { normalized } = result;
+    const requiredDocuments = normalized.content.required_documents;
+    
+    if (debug) {
+      console.log(`[A-3-2] /documents: SSOT returned ${requiredDocuments.length} documents for ${subsidyId}`);
     }
     
-    // データがない場合は空配列
-    return c.json<ApiResponse<unknown[]>>({
+    // normalized.content.required_documents をそのまま返却
+    return c.json<ApiResponse<RequiredDocument[]>>({
       success: true,
-      data: [],
+      data: requiredDocuments,
+      meta: { 
+        source: 'normalized',
+        canonical_id: result.ref.canonical_id,
+      },
     });
   } catch (error) {
     console.error('Get required documents error:', error);
@@ -1072,63 +796,48 @@ subsidies.get('/:subsidy_id/documents', async (c) => {
 
 /**
  * 補助金の対象経費取得
- * - detail_json.eligible_expenses から取得（手動登録補助金用）
+ * 
+ * A-3-3: normalized.content.eligible_expenses を SSOT として返却
  */
 subsidies.get('/:subsidy_id/expenses', async (c) => {
   const db = c.env.DB;
   const subsidyId = c.req.param('subsidy_id');
+  const debug = c.req.query('debug') === '1';
   
   try {
-    // detail_json から eligible_expenses を取得
-    // SSOT対応: canonical_id → latest_cache_id → subsidy_cache
-    let cache = await db
-      .prepare(`
-        SELECT detail_json FROM subsidy_cache WHERE id = ?
-      `)
-      .bind(subsidyId)
-      .first<{ detail_json: string | null }>();
+    // ========================================
+    // SSOT（getNormalizedSubsidyDetail）から取得
+    // ========================================
+    const result = await getNormalizedSubsidyDetail(db, subsidyId, { debug });
     
-    // canonical_id として扱い latest_cache_id 経由で検索
-    if (!cache) {
-      cache = await db
-        .prepare(`
-          SELECT sc.detail_json
-          FROM subsidy_canonical c
-          JOIN subsidy_cache sc ON sc.id = c.latest_cache_id
-          WHERE c.id = ?
-        `)
-        .bind(subsidyId)
-        .first<{ detail_json: string | null }>();
+    if (!result) {
+      // 補助金が見つからない場合は null（互換性維持）
+      return c.json<ApiResponse<null>>({
+        success: true,
+        data: null,
+        meta: { source: 'not_found' },
+      });
     }
     
-    if (cache?.detail_json) {
-      try {
-        const detail = JSON.parse(cache.detail_json);
-        const expenses = detail.eligible_expenses;
-        
-        if (expenses) {
-          return c.json<ApiResponse<{
-            required: any;
-            categories: any[];
-            not_eligible: string[];
-          }>>({
-            success: true,
-            data: {
-              required: expenses.required || null,
-              categories: expenses.categories || expenses.optional || [],
-              not_eligible: expenses.not_eligible || [],
-            },
-          });
-        }
-      } catch (e) {
-        console.warn('Failed to parse detail_json for expenses:', e);
-      }
+    const { normalized } = result;
+    const eligibleExpenses = normalized.content.eligible_expenses;
+    
+    if (debug) {
+      console.log(`[A-3-3] /expenses: SSOT returned for ${subsidyId}`, {
+        required_count: eligibleExpenses.required.length,
+        categories_count: eligibleExpenses.categories.length,
+        excluded_count: eligibleExpenses.excluded.length,
+      });
     }
     
-    // データがない場合
-    return c.json<ApiResponse<null>>({
+    // normalized.content.eligible_expenses をそのまま返却
+    return c.json<ApiResponse<EligibleExpenses>>({
       success: true,
-      data: null,
+      data: eligibleExpenses,
+      meta: { 
+        source: 'normalized',
+        canonical_id: result.ref.canonical_id,
+      },
     });
   } catch (error) {
     console.error('Get eligible expenses error:', error);
@@ -1144,89 +853,44 @@ subsidies.get('/:subsidy_id/expenses', async (c) => {
 
 /**
  * 補助金の加点項目取得
- * - detail_json.bonus_points / evaluation_criteria.bonus_review から取得
+ * 
+ * A-3-4: normalized.content.bonus_points を SSOT として返却
  */
 subsidies.get('/:subsidy_id/bonus-points', async (c) => {
   const db = c.env.DB;
   const subsidyId = c.req.param('subsidy_id');
+  const debug = c.req.query('debug') === '1';
   
   try {
-    // SSOT対応: canonical_id → latest_cache_id → subsidy_cache
-    let cache = await db
-      .prepare(`
-        SELECT detail_json FROM subsidy_cache WHERE id = ?
-      `)
-      .bind(subsidyId)
-      .first<{ detail_json: string | null }>();
+    // ========================================
+    // SSOT（getNormalizedSubsidyDetail）から取得
+    // ========================================
+    const result = await getNormalizedSubsidyDetail(db, subsidyId, { debug });
     
-    // canonical_id として扱い latest_cache_id 経由で検索
-    if (!cache) {
-      cache = await db
-        .prepare(`
-          SELECT sc.detail_json
-          FROM subsidy_canonical c
-          JOIN subsidy_cache sc ON sc.id = c.latest_cache_id
-          WHERE c.id = ?
-        `)
-        .bind(subsidyId)
-        .first<{ detail_json: string | null }>();
+    if (!result) {
+      // 補助金が見つからない場合は空配列（互換性維持）
+      return c.json<ApiResponse<BonusPoint[]>>({
+        success: true,
+        data: [],
+        meta: { source: 'not_found' },
+      });
     }
     
-    if (cache?.detail_json) {
-      try {
-        const detail = JSON.parse(cache.detail_json);
-        
-        // bonus_points（省力化投資補助金形式）
-        if (detail.bonus_points && Array.isArray(detail.bonus_points)) {
-          return c.json<ApiResponse<any[]>>({
-            success: true,
-            data: detail.bonus_points,
-          });
-        }
-        
-        // evaluation_criteria.bonus_review（持続化補助金形式）
-        if (detail.evaluation_criteria?.bonus_review) {
-          const bonusReview = detail.evaluation_criteria.bonus_review;
-          const bonusPoints: any[] = [];
-          
-          // 重点政策加点
-          if (bonusReview['重点政策加点']?.options) {
-            bonusReview['重点政策加点'].options.forEach((opt: any) => {
-              bonusPoints.push({
-                category: '重点政策加点',
-                name: typeof opt === 'string' ? opt : opt.name,
-                description: typeof opt === 'object' ? opt.description : '',
-              });
-            });
-          }
-          
-          // 政策加点
-          if (bonusReview['政策加点']?.options) {
-            bonusReview['政策加点'].options.forEach((opt: any) => {
-              bonusPoints.push({
-                category: '政策加点',
-                name: typeof opt === 'string' ? opt : opt.name,
-                description: typeof opt === 'object' ? opt.description : '',
-              });
-            });
-          }
-          
-          if (bonusPoints.length > 0) {
-            return c.json<ApiResponse<any[]>>({
-              success: true,
-              data: bonusPoints,
-              meta: { note: bonusReview.note || '' },
-            });
-          }
-        }
-      } catch (e) {
-        console.warn('Failed to parse detail_json for bonus points:', e);
-      }
+    const { normalized } = result;
+    const bonusPoints = normalized.content.bonus_points;
+    
+    if (debug) {
+      console.log(`[A-3-4] /bonus-points: SSOT returned ${bonusPoints.length} bonus points for ${subsidyId}`);
     }
     
-    return c.json<ApiResponse<any[]>>({
+    // normalized.content.bonus_points をそのまま返却
+    return c.json<ApiResponse<BonusPoint[]>>({
       success: true,
-      data: [],
+      data: bonusPoints,
+      meta: { 
+        source: 'normalized',
+        canonical_id: result.ref.canonical_id,
+      },
     });
   } catch (error) {
     console.error('Get bonus points error:', error);

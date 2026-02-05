@@ -1,5 +1,7 @@
 /**
  * SSOT モジュール エクスポート
+ * 
+ * A-3-0: getNormalizedSubsidyDetail を追加（全API共通のSSOT読み取り関数）
  */
 
 export {
@@ -36,3 +38,10 @@ export {
   type PdfHash,
   type NormalizeInput,
 } from './normalizeSubsidyDetail';
+
+// A-3-0: 共通読み取り関数（全APIで使用）
+export {
+  getNormalizedSubsidyDetail,
+  getNormalizedSubsidyDetailOrThrow,
+  type GetNormalizedSubsidyDetailResult,
+} from './getNormalizedSubsidyDetail';

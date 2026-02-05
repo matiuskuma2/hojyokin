@@ -6,12 +6,19 @@
  * GET  /api/chat/sessions - セッション一覧
  * GET  /api/chat/sessions/:id - セッション詳細
  * POST /api/chat/sessions/:id/message - メッセージ送信
+ * 
+ * A-3-5: normalized のみ参照に変更、input_type 推測ロジック排除
  */
 
 import { Hono } from 'hono';
 import type { Env, Variables, ApiResponse } from '../types';
 import { requireAuth } from '../middleware/auth';
 import { getMockSubsidyDetail, MOCK_SUBSIDIES } from '../lib/mock-subsidies';
+import { 
+  getNormalizedSubsidyDetail,
+  type NormalizedSubsidyDetail,
+  type WallChatQuestion,
+} from '../lib/ssot';
 
 const chat = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -129,58 +136,27 @@ chat.post('/precheck', async (c) => {
       }, 404);
     }
     
-    // 補助金情報取得（SSOT対応: canonical_id → latest_cache_id → subsidy_cache）
-    // Step 1: subsidy_id で直接 subsidy_cache を検索
-    let subsidyInfo = await c.env.DB.prepare(`
-      SELECT * FROM subsidy_cache WHERE id = ?
-    `).bind(subsidy_id).first() as Record<string, any> | null;
+    // A-3-5: SSOT（getNormalizedSubsidyDetail）から補助金情報取得
+    const ssotResult = await getNormalizedSubsidyDetail(c.env.DB, subsidy_id);
+    let normalized: NormalizedSubsidyDetail | null = ssotResult?.normalized || null;
     
-    // Step 2: 見つからない場合、canonical_id として扱い latest_cache_id 経由で検索
-    if (!subsidyInfo) {
-      const canonical = await c.env.DB.prepare(`
-        SELECT c.*, sc.*
-        FROM subsidy_canonical c
-        LEFT JOIN subsidy_cache sc ON sc.id = c.latest_cache_id
-        WHERE c.id = ?
-      `).bind(subsidy_id).first() as Record<string, any> | null;
-      
-      if (canonical && canonical.latest_cache_id) {
-        subsidyInfo = canonical;
-        console.log(`[Chat] Resolved canonical_id ${subsidy_id} → cache_id ${canonical.latest_cache_id}`);
-      }
-    }
-    
-    // Step 3: それでも見つからない場合はモックデータからフォールバック
-    if (!subsidyInfo) {
+    // SSOT で見つからない場合はモックデータからフォールバック
+    if (!normalized) {
       const mockDetail = getMockSubsidyDetail(subsidy_id);
       if (mockDetail) {
-        subsidyInfo = {
-          id: mockDetail.id,
-          title: mockDetail.title || mockDetail.name,
-          name: mockDetail.name,
-          subsidy_max_limit: mockDetail.subsidy_max_limit,
-          subsidy_rate: mockDetail.subsidy_rate,
-          target_area_search: mockDetail.target_area_search,
-          target_industry: mockDetail.target_industry,
-          target_number_of_employees: mockDetail.target_number_of_employees,
-          acceptance_start_datetime: mockDetail.acceptance_start_datetime,
-          acceptance_end_datetime: mockDetail.acceptance_end_datetime,
-          description: mockDetail.description,
-          application_requirements: mockDetail.application_requirements,
-          eligible_expenses: mockDetail.eligible_expenses,
-          required_documents: mockDetail.required_documents,
-          source: 'mock'
-        };
         console.log(`[Chat] Using mock subsidy data for ${subsidy_id}`);
+        // モックデータの場合は normalized を null のまま（performPrecheck で処理）
       }
+    } else {
+      console.log(`[Chat] SSOT resolved: ${subsidy_id} → canonical_id: ${normalized.ids.canonical_id}`);
     }
     
-    // eligibility_rules 取得
+    // eligibility_rules 取得（Fallback用）
     const eligibilityRules = await c.env.DB.prepare(`
       SELECT * FROM eligibility_rules WHERE subsidy_id = ?
     `).bind(subsidy_id).all();
     
-    // required_documents 取得
+    // required_documents 取得（Fallback用）
     const requiredDocs = await c.env.DB.prepare(`
       SELECT rd.*, rdm.name as doc_name, rdm.description as doc_description
       FROM required_documents_by_subsidy rd
@@ -199,8 +175,8 @@ chat.post('/precheck', async (c) => {
       factsMap.set((fact as any).fact_key, (fact as any).fact_value);
     }
     
-    // 判定ロジック
-    const result = performPrecheck(companyInfo, subsidyInfo, eligibilityRules.results || [], requiredDocs.results || [], factsMap);
+    // A-3-5: 判定ロジック（normalized を使用）
+    const result = performPrecheck(companyInfo, normalized, eligibilityRules.results || [], requiredDocs.results || [], factsMap);
     
     return c.json<ApiResponse<PrecheckResult>>({
       success: true,
@@ -218,10 +194,12 @@ chat.post('/precheck', async (c) => {
 
 /**
  * 事前判定ロジック
+ * 
+ * A-3-5: normalized を使用して情報を取得
  */
 function performPrecheck(
   company: Record<string, any>,
-  subsidy: Record<string, any> | null,
+  normalized: NormalizedSubsidyDetail | null,
   rules: any[],
   docs: any[],
   existingFacts: Map<string, string>
@@ -230,7 +208,7 @@ function performPrecheck(
   const missingItems: MissingItem[] = [];
   
   // 補助金情報がない場合
-  if (!subsidy) {
+  if (!normalized) {
     return {
       status: 'OK_WITH_MISSING',
       eligible: true,
@@ -302,8 +280,8 @@ function performPrecheck(
     }
   }
   
-  // 補助金固有の追加質問（company_profileにない項目）
-  const additionalQuestions = generateAdditionalQuestions(company, subsidy, existingFacts);
+  // A-3-5: 補助金固有の追加質問（normalized.wall_chat.questions から取得）
+  const additionalQuestions = generateAdditionalQuestions(company, normalized, existingFacts);
   missingItems.push(...additionalQuestions);
   
   // 優先度でソート
@@ -319,29 +297,17 @@ function performPrecheck(
     status = 'OK';
   }
   
-  // 電子申請情報を取得 (v3)
-  // P1-5: JSON.parse の例外処理強化
+  // A-3-5: 電子申請情報を normalized から取得
   let electronicApplication: PrecheckResult['electronic_application'];
-  try {
-    let detailJson: Record<string, any> = {};
-    if (subsidy.detail_json) {
-      try {
-        detailJson = JSON.parse(subsidy.detail_json);
-      } catch (parseErr) {
-        console.warn('[Precheck] Invalid detail_json format:', parseErr);
-      }
-    }
-    if (detailJson.is_electronic_application) {
-      electronicApplication = {
-        is_electronic: true,
-        system_name: detailJson.electronic_application_system,
-        url: detailJson.electronic_application_url,
-        notice: `この補助金は${detailJson.electronic_application_system || '電子申請システム'}での申請が必要です。` +
-                `壁打ちでは申請前の準備をサポートしますが、実際の申請書類の作成は電子申請システム上で行ってください。`
-      };
-    }
-  } catch (err) {
-    console.warn('[Precheck] Error processing electronic application:', err);
+  if (normalized.electronic_application.is_electronic_application) {
+    electronicApplication = {
+      is_electronic: true,
+      system_name: normalized.electronic_application.portal_name || undefined,
+      url: normalized.electronic_application.portal_url || undefined,
+      notice: normalized.electronic_application.notes || 
+              `この補助金は${normalized.electronic_application.portal_name || '電子申請システム'}での申請が必要です。` +
+              `壁打ちでは申請前の準備をサポートしますが、実際の申請書類の作成は電子申請システム上で行ってください。`
+    };
   }
   
   return {
@@ -350,10 +316,10 @@ function performPrecheck(
     blocked_reasons: blockedReasons,
     missing_items: missingItems.slice(0, 10), // 最大10件
     subsidy_info: {
-      id: subsidy.id,
-      title: subsidy.title,
-      acceptance_end: subsidy.acceptance_end_datetime,
-      max_amount: subsidy.subsidy_max_limit
+      id: normalized.ids.canonical_id,
+      title: normalized.display.title,
+      acceptance_end: normalized.acceptance.acceptance_end || undefined,
+      max_amount: normalized.display.subsidy_max_limit || undefined
     },
     company_info: {
       id: company.id,
@@ -423,11 +389,15 @@ function determineInputType(category: string): 'boolean' | 'number' | 'text' | '
 }
 
 /**
- * 追加質問の生成（company_profileにない項目 + wall_chat_questions）
+ * 追加質問の生成（company_profileにない項目 + normalized.wall_chat.questions）
+ * 
+ * A-3-5: input_type 推測ロジック排除
+ * - normalized.wall_chat.questions のみを参照
+ * - 推測禁止: input_type が定義されていなければ text 固定（normalizeSubsidyDetail で処理済み）
  */
 function generateAdditionalQuestions(
   company: Record<string, any>,
-  subsidy: Record<string, any>,
+  normalized: NormalizedSubsidyDetail | null,
   existingFacts: Map<string, string>
 ): MissingItem[] {
   const questions: MissingItem[] = [];
@@ -465,87 +435,31 @@ function generateAdditionalQuestions(
     });
   }
   
-  // ===== wall_chat_questions からの質問を追加 =====
-  // detail_json に wall_chat_questions がある場合、公募要領に基づく質問を追加
-  if (subsidy?.detail_json) {
-    try {
-      const detail = typeof subsidy.detail_json === 'string' 
-        ? JSON.parse(subsidy.detail_json) 
-        : subsidy.detail_json;
+  // ===== A-3-5: normalized.wall_chat.questions からの質問を追加 =====
+  // input_type 推測ロジック排除: normalized.wall_chat.questions のみを参照
+  // 推測禁止: input_type が定義されていなければ text 固定（normalizeSubsidyDetail で処理済み）
+  if (normalized?.wall_chat.questions && normalized.wall_chat.questions.length > 0) {
+    const wcQuestions = normalized.wall_chat.questions;
+    
+    wcQuestions.forEach((wq: WallChatQuestion) => {
+      const factKey = `wc_${normalized.ids.canonical_id}_${wq.key}`;
       
-      if (detail.wall_chat_questions && Array.isArray(detail.wall_chat_questions)) {
-        const wcQuestions = detail.wall_chat_questions as Array<{
-          category: string;
-          question: string;
-          purpose: string;
-        }>;
-        
-        // カテゴリごとに優先度を設定
-        const categoryPriority: Record<string, number> = {
-          '基本情報': 1,
-          '賃上げ要件': 2,
-          '創業要件': 2,
-          '設備投資': 3,
-          '省力化効果': 3,
-          '事業計画': 3,
-          '経費': 4,
-          'インボイス': 4,
-          'インボイス特例': 4,
-          '賃金引上げ特例': 4,
-          '赤字事業者': 4,
-          '加点項目': 5,
-          '加点': 5,
-          '財務状況': 5,
-          '電子申請': 6,
-          '商工会': 6,
-        };
-        
-        wcQuestions.forEach((wq, idx) => {
-          const factKey = `wc_${subsidy.id}_${idx}`;
-          
-          // 既に回答済みならスキップ
-          if (existingFacts.has(factKey)) {
-            return;
-          }
-          
-          // 入力タイプを推測（改善版）
-          let inputType: 'boolean' | 'number' | 'text' | 'select' = 'text';
-          const q = wq.question;
-          
-          // 「何ですか」「どのような」「どんな」等の疑問詞がある場合はtext
-          const isOpenQuestion = /何(ですか|でしょうか)|どの(ような|程度)|どんな|いくつ|どこ|いつ/.test(q);
-          
-          // 「ますか」「ですか」で終わるが「何ですか」ではない場合のみboolean
-          const endsWithBooleanSuffix = /(ますか|いますか|ありますか|できますか|しますか|されていますか|いただけますか)[\？\?]?\s*$/.test(q);
-          
-          // 数値を問う質問
-          const isNumberQuestion = /(何名|何人|いくら|何円|何時間|何日|何年|何ヶ月|何か月|何回|何%|何パーセント|人数|金額|時間数)/.test(q);
-          
-          if (isOpenQuestion) {
-            // 「何ですか？」「どのようなものですか？」→ text
-            inputType = 'text';
-          } else if (isNumberQuestion) {
-            // 「何名ですか？」「いくらですか？」→ number
-            inputType = 'number';
-          } else if (endsWithBooleanSuffix) {
-            // 「～していますか？」「～ありますか？」→ boolean
-            inputType = 'boolean';
-          }
-          
-          const priority = categoryPriority[wq.category] || 3;
-          
-          questions.push({
-            key: factKey,
-            label: wq.question,
-            input_type: inputType,
-            source: 'eligibility',
-            priority: priority
-          });
-        });
+      // 既に回答済みならスキップ
+      if (existingFacts.has(factKey)) {
+        return;
       }
-    } catch (e) {
-      console.warn('[Chat] Failed to parse wall_chat_questions from detail_json:', e);
-    }
+      
+      // A-3-5 Freeze: input_type は normalized から取得（推測禁止）
+      // normalizeSubsidyDetail で未定義は text 固定済み
+      questions.push({
+        key: factKey,
+        label: wq.question,
+        input_type: wq.input_type,
+        options: wq.options,
+        source: 'eligibility',
+        priority: wq.priority
+      });
+    });
   }
   
   return questions;
@@ -612,50 +526,18 @@ chat.post('/sessions', async (c) => {
       WHERE c.id = ?
     `).bind(targetCompanyId).first() as Record<string, any> | null;
     
-    // 補助金情報取得（SSOT対応: canonical_id → latest_cache_id → subsidy_cache）
-    // Step 1: subsidy_id で直接 subsidy_cache を検索
-    let subsidyInfo = await c.env.DB.prepare(`
-      SELECT * FROM subsidy_cache WHERE id = ?
-    `).bind(subsidy_id).first() as Record<string, any> | null;
+    // A-3-5: SSOT（getNormalizedSubsidyDetail）から補助金情報取得
+    const ssotResult = await getNormalizedSubsidyDetail(c.env.DB, subsidy_id);
+    let normalized: NormalizedSubsidyDetail | null = ssotResult?.normalized || null;
     
-    // Step 2: 見つからない場合、canonical_id として扱い latest_cache_id 経由で検索
-    if (!subsidyInfo) {
-      const canonical = await c.env.DB.prepare(`
-        SELECT c.*, sc.*
-        FROM subsidy_canonical c
-        LEFT JOIN subsidy_cache sc ON sc.id = c.latest_cache_id
-        WHERE c.id = ?
-      `).bind(subsidy_id).first() as Record<string, any> | null;
-      
-      if (canonical && canonical.latest_cache_id) {
-        subsidyInfo = canonical;
-        console.log(`[Chat Session] Resolved canonical_id ${subsidy_id} → cache_id ${canonical.latest_cache_id}`);
-      }
-    }
-    
-    // Step 3: それでも見つからない場合はモックデータからフォールバック
-    if (!subsidyInfo) {
+    // SSOT で見つからない場合はモックデータからフォールバック
+    if (!normalized) {
       const mockDetail = getMockSubsidyDetail(subsidy_id);
       if (mockDetail) {
-        subsidyInfo = {
-          id: mockDetail.id,
-          title: mockDetail.title || mockDetail.name,
-          name: mockDetail.name,
-          subsidy_max_limit: mockDetail.subsidy_max_limit,
-          subsidy_rate: mockDetail.subsidy_rate,
-          target_area_search: mockDetail.target_area_search,
-          target_industry: mockDetail.target_industry,
-          target_number_of_employees: mockDetail.target_number_of_employees,
-          acceptance_start_datetime: mockDetail.acceptance_start_datetime,
-          acceptance_end_datetime: mockDetail.acceptance_end_datetime,
-          description: mockDetail.description,
-          application_requirements: mockDetail.application_requirements,
-          eligible_expenses: mockDetail.eligible_expenses,
-          required_documents: mockDetail.required_documents,
-          source: 'mock'
-        };
         console.log(`[Chat Session] Using mock subsidy data for ${subsidy_id}`);
       }
+    } else {
+      console.log(`[Chat Session] SSOT resolved: ${subsidy_id} → canonical_id: ${normalized.ids.canonical_id}`);
     }
     
     const eligibilityRules = await c.env.DB.prepare(`
@@ -679,9 +561,10 @@ chat.post('/sessions', async (c) => {
       factsMap.set((fact as any).fact_key, (fact as any).fact_value);
     }
     
+    // A-3-5: 判定ロジック（normalized を使用）
     const precheckResult = performPrecheck(
       companyInfo || {},
-      subsidyInfo as any,
+      normalized,
       eligibilityRules.results || [],
       requiredDocs.results || [],
       factsMap
@@ -705,8 +588,8 @@ chat.post('/sessions', async (c) => {
       now
     ).run();
     
-    // 初期システムメッセージ作成
-    const subsidyTitle = (subsidyInfo as any)?.title || '選択された補助金';
+    // A-3-5: 初期システムメッセージ作成（normalized から取得）
+    const subsidyTitle = normalized?.display.title || '選択された補助金';
     let systemMessage: string;
     
     // 電子申請の案内を追加 (v3)
