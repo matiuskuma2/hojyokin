@@ -230,7 +230,7 @@ export interface SubsidySearchParams {
   company_id: string;
   keyword?: string;
   acceptance?: 0 | 1;
-  sort?: 'acceptance_end_datetime' | 'subsidy_max_limit' | 'created_at';
+  sort?: 'acceptance_end_datetime' | 'subsidy_max_limit' | 'created_at' | 'score';
   order?: 'ASC' | 'DESC';
   limit?: number;
   offset?: number;

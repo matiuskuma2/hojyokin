@@ -13,7 +13,7 @@ import { requireAuth, requireCompanyAccess, getCurrentUser } from '../middleware
 import { createJGrantsAdapter, getJGrantsMode } from '../lib/jgrants-adapter';
 import { JGrantsError } from '../lib/jgrants';
 import { performBatchScreening, sortByStatus, sortByScore } from '../lib/screening';
-import { performBatchScreeningV2, sortByStatusV2, type ScreeningResultV2 } from '../lib/screening-v2';
+import { performBatchScreeningV2, sortByStatusV2, sortByScoreV2, type ScreeningResultV2 } from '../lib/screening-v2';
 import { getCompanySSOT, type CompanySSOT } from '../lib/ssot/getCompanySSOT';
 import { 
   resolveSubsidyRef, 
@@ -218,8 +218,11 @@ subsidies.get('/search', requireCompanyAccess(), async (c) => {
     // 3. v2 スクリーニング実行（SSOT 入力のみ）
     const screeningResultsV2 = performBatchScreeningV2(companySSOT, normalizedSubsidies);
     
-    // 4. ステータスでソート（推奨 > 注意 > 非推奨）
-    const sortedResultsV2 = sortByStatusV2(screeningResultsV2);
+    // 4. ソート処理（sort パラメータに応じて切り替え）
+    // sort=score の場合はスコア順、それ以外はステータス順（推奨 > 注意 > 非推奨）
+    const sortedResultsV2 = sort === 'score' 
+      ? sortByScoreV2(screeningResultsV2, order)
+      : sortByStatusV2(screeningResultsV2);
     
     // 5. 旧形式 MatchResult への変換（フロントエンド互換）
     const sortedResults = sortedResultsV2.map(v2Result => {
@@ -363,7 +366,15 @@ subsidies.get('/search', requireCompanyAccess(), async (c) => {
     
     return c.json(responseData);
   } catch (error) {
-    console.error('Search subsidies error:', error);
+    // 詳細なエラーログを出力
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    const errorStack = error instanceof Error ? error.stack : undefined;
+    console.error('Search subsidies error:', {
+      message: errorMessage,
+      stack: errorStack,
+      companyId: c.req.query('company_id'),
+      keyword: c.req.query('keyword'),
+    });
     
     if (error instanceof JGrantsError) {
       return c.json<ApiResponse<null>>({
@@ -380,6 +391,8 @@ subsidies.get('/search', requireCompanyAccess(), async (c) => {
       error: {
         code: 'INTERNAL_ERROR',
         message: 'Failed to search subsidies',
+        // デバッグ用: エラーメッセージを含める（本番では削除推奨）
+        details: process.env.NODE_ENV !== 'production' ? errorMessage : undefined,
       },
     }, 500);
   }
