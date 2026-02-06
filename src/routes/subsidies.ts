@@ -474,8 +474,21 @@ subsidies.get('/:subsidy_id', async (c) => {
       ? await db.prepare('SELECT * FROM subsidy_cache WHERE id = ?').bind(ref.cache_id).first()
       : null;
     
-    // detail_json パース
-    const detailJson = safeJsonParse(cacheRow?.detail_json as string);
+    // detail_json パース（cacheRow優先、なければsnapshotRow.detail_jsonを使用）
+    // SSOT補助金はsnapshotにdetail_jsonがあり、cacheRowがない場合がある
+    const cacheDetailJson = safeJsonParse(cacheRow?.detail_json as string);
+    const snapshotDetailJson = safeJsonParse(snapshotRow?.detail_json as string);
+    const detailJson = cacheDetailJson || snapshotDetailJson;
+    
+    console.log(`[API /subsidies/${subsidyId}] detail_json sources:`, {
+      has_cacheRow: !!cacheRow,
+      has_snapshotRow: !!snapshotRow,
+      cacheDetailJson_keys: cacheDetailJson ? Object.keys(cacheDetailJson).slice(0, 5) : null,
+      snapshotDetailJson_keys: snapshotDetailJson ? Object.keys(snapshotDetailJson).slice(0, 5) : null,
+      detailJson_keys: detailJson ? Object.keys(detailJson).slice(0, 5) : null,
+      has_required_forms: !!detailJson?.required_forms,
+      has_wall_chat_questions: !!detailJson?.wall_chat_questions,
+    });
     
     // ========================================
     // Step 3: NormalizedSubsidyDetail 生成（Freeze-NORM-0）
@@ -494,7 +507,9 @@ subsidies.get('/:subsidy_id', async (c) => {
         title: normalized.display.title,
         summary: normalized.overview.summary?.substring(0, 50),
         eligibility_rules_count: normalized.content.eligibility_rules.length,
+        required_forms_count: normalized.content.required_forms.length,
         wall_chat_ready: normalized.wall_chat.ready,
+        wall_chat_questions_count: normalized.wall_chat.questions.length,
       });
     } catch (normalizeError) {
       // 正規化失敗してもAPIは返す（互換維持）
