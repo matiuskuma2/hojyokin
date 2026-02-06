@@ -30,6 +30,10 @@ self.addEventListener('activate', (event) => {
 
 // フェッチ時（現状: キャッシュなし、ネットワークのみ）
 self.addEventListener('fetch', (event) => {
+  // API リクエストはService Workerを通さずに直接処理
+  if (event.request.url.includes('/api/')) {
+    return; // Service Workerが介入しない
+  }
   // 将来のキャッシュ戦略実装用のエントリーポイント
   // 現状はネットワークから取得
   event.respondWith(fetch(event.request));
