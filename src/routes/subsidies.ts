@@ -76,13 +76,22 @@ function generateSearchCacheKey(params: {
 subsidies.get('/search', requireCompanyAccess(), async (c) => {
   const db = c.env.DB;
   
+  // デバッグ用: 処理開始ログ
+  console.log('[Search] START - request received');
+  
   try {
     // クエリパラメータ取得
     const companyId = c.req.query('company_id');
     const keyword = c.req.query('keyword');
     const acceptance = c.req.query('acceptance') === '1' ? 1 : 0;
-    const sort = c.req.query('sort') as SubsidySearchParams['sort'] || 'acceptance_end_datetime';
+    const sortRaw = c.req.query('sort');
+    // sort=score は有効な値として扱う
+    const sort = (sortRaw === 'score' || sortRaw === 'acceptance_end_datetime' || sortRaw === 'subsidy_max_limit' || sortRaw === 'created_at') 
+      ? sortRaw as SubsidySearchParams['sort']
+      : 'acceptance_end_datetime';
     const order = c.req.query('order') as 'ASC' | 'DESC' || 'ASC';
+    
+    console.log(`[Search] Params: companyId=${companyId}, sort=${sort}, sortRaw=${sortRaw}, acceptance=${acceptance}`);
     
     // P1-1: limit/offset の境界値チェック（負数・NaN対策）
     const rawLimit = parseInt(c.req.query('limit') || '20', 10);
@@ -157,8 +166,9 @@ subsidies.get('/search', requireCompanyAccess(), async (c) => {
     const adapter = createJGrantsAdapter(c.env);
     const mode = getJGrantsMode(c.env);
     
-    console.log(`JGrants Adapter mode: ${mode}, allowUnready: ${allowUnready}`);
+    console.log(`[Search] JGrants Adapter mode: ${mode}, allowUnready: ${allowUnready}`);
     
+    console.log('[Search] STEP1 - calling adapter.search');
     const searchResponse = await adapter.search({
       keyword,
       acceptance,
@@ -174,11 +184,14 @@ subsidies.get('/search', requireCompanyAccess(), async (c) => {
     const totalCount = searchResponse.total_count;
     const source = searchResponse.source;
     
+    console.log(`[Search] STEP2 - adapter.search completed: ${jgrantsResults.length} results, total=${totalCount}, source=${source}`);
+    
     // ============================================================
     // Freeze-MATCH: v2 スクリーニング（SSOT統一版）
     // ============================================================
     
     // 1. CompanySSOT を取得（companies + company_profile + chat_facts 統合）
+    console.log('[Search] STEP3 - getting CompanySSOT');
     const companySSOT = await getCompanySSOT(db, companyId);
     if (!companySSOT) {
       // companies テーブルには存在するが getCompanySSOT が null → 内部エラー扱い
@@ -193,6 +206,7 @@ subsidies.get('/search', requireCompanyAccess(), async (c) => {
     }
     
     // 2. 検索結果を NormalizedSubsidyDetail に変換
+    console.log('[Search] STEP4 - normalizing subsidies');
     const normalizedSubsidies: NormalizedSubsidyDetail[] = [];
     const subsidyIdMapping = new Map<string, { source_id: string; cache_id: string | null; canonical_id: string }>();
     
@@ -214,17 +228,23 @@ subsidies.get('/search', requireCompanyAccess(), async (c) => {
         console.warn(`[Search] Failed to normalize subsidy ${result.id}:`, err);
       }
     }
+    console.log(`[Search] STEP4 complete - normalized ${normalizedSubsidies.length} subsidies`);
     
     // 3. v2 スクリーニング実行（SSOT 入力のみ）
+    console.log('[Search] STEP5 - performing v2 screening');
     const screeningResultsV2 = performBatchScreeningV2(companySSOT, normalizedSubsidies);
+    console.log(`[Search] STEP5 complete - screening returned ${screeningResultsV2.length} results`);
     
     // 4. ソート処理（sort パラメータに応じて切り替え）
     // sort=score の場合はスコア順、それ以外はステータス順（推奨 > 注意 > 非推奨）
+    console.log(`[Search] STEP6 - sorting by: ${sort}`);
     const sortedResultsV2 = sort === 'score' 
       ? sortByScoreV2(screeningResultsV2, order)
       : sortByStatusV2(screeningResultsV2);
+    console.log(`[Search] STEP6 complete - sorted ${sortedResultsV2.length} results`);
     
     // 5. 旧形式 MatchResult への変換（フロントエンド互換）
+    console.log('[Search] STEP7 - converting to frontend format');
     const sortedResults = sortedResultsV2.map(v2Result => {
       const mapping = subsidyIdMapping.get(v2Result.subsidy_canonical_id);
       return {
@@ -364,16 +384,18 @@ subsidies.get('/search', requireCompanyAccess(), async (c) => {
       }
     }
     
+    console.log('[Search] SUCCESS - returning response');
     return c.json(responseData);
   } catch (error) {
     // 詳細なエラーログを出力
     const errorMessage = error instanceof Error ? error.message : String(error);
     const errorStack = error instanceof Error ? error.stack : undefined;
-    console.error('Search subsidies error:', {
+    console.error('[Search] ERROR:', {
       message: errorMessage,
       stack: errorStack,
       companyId: c.req.query('company_id'),
       keyword: c.req.query('keyword'),
+      sort: c.req.query('sort'),
     });
     
     if (error instanceof JGrantsError) {
@@ -391,8 +413,8 @@ subsidies.get('/search', requireCompanyAccess(), async (c) => {
       error: {
         code: 'INTERNAL_ERROR',
         message: 'Failed to search subsidies',
-        // デバッグ用: エラーメッセージを含める（本番では削除推奨）
-        details: process.env.NODE_ENV !== 'production' ? errorMessage : undefined,
+        // デバッグ用: エラーメッセージを常に含める（問題解決後に削除）
+        details: errorMessage,
       },
     }, 500);
   }
