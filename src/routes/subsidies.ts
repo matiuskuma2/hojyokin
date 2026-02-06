@@ -15,7 +15,6 @@ import { JGrantsError } from '../lib/jgrants';
 import { performBatchScreening, sortByStatus, sortByScore } from '../lib/screening';
 import { performBatchScreeningV2, sortByStatusV2, type ScreeningResultV2 } from '../lib/screening-v2';
 import { getCompanySSOT, type CompanySSOT } from '../lib/ssot/getCompanySSOT';
-import { getCompanySSOT } from '../lib/ssot/getCompanySSOT';
 import { 
   resolveSubsidyRef, 
   normalizeSubsidyDetail, 
