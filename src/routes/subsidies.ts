@@ -413,8 +413,6 @@ subsidies.get('/search', requireCompanyAccess(), async (c) => {
       error: {
         code: 'INTERNAL_ERROR',
         message: 'Failed to search subsidies',
-        // デバッグ用: エラーメッセージを常に含める（問題解決後に削除）
-        details: errorMessage,
       },
     }, 500);
   }
