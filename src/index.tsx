@@ -13,6 +13,7 @@ import { jsxRenderer } from 'hono/jsx-renderer';
 import type { Env, Variables, ApiResponse } from './types';
 import { authRoutes, companiesRoutes, subsidiesRoutes, jobsRoutes, internalRoutes, knowledgeRoutes, consumerRoutes, kpiRoutes, adminRoutes, profileRoutes, chatRoutes, draftRoutes, adminDashboardRoutes, agencyRoutes, portalRoutes, cronRoutes, mastersRoutes } from './routes';
 import { securityHeaders, requestId } from './middleware/security';
+import { getNormalizedSubsidyDetail } from './lib/ssot/getNormalizedSubsidyDetail';
 import authPages from './pages/auth';
 import dashboardPages from './pages/dashboard';
 import adminPages from './pages/admin';
@@ -56,10 +57,13 @@ app.use('*', securityHeaders);
 app.get('/api/health', async (c) => {
   const searchBackend = (c.env as any).SEARCH_BACKEND || 'ssot';
   const jgrantsMode = (c.env as any).JGRANTS_MODE || 'cached-only';
+  const testSubsidyId = c.req.query('test_subsidy_id');
   
   // SSOT受付中件数を取得（母数確認用）
   let ssotAcceptingCount: number | null = null;
   let cacheAcceptingCount: number | null = null;
+  let testSubsidyDetail: any = null;
+  
   try {
     const ssotResult = await c.env.DB.prepare(`
       SELECT COUNT(*) as count
@@ -82,6 +86,93 @@ app.get('/api/health', async (c) => {
         AND acceptance_end_datetime > datetime('now')
     `).first<{ count: number }>();
     cacheAcceptingCount = cacheResult?.count || 0;
+    
+    // テスト用: 補助金詳細の確認
+    if (testSubsidyId) {
+      // canonical から snapshot_id と cache_id を取得
+      const canonicalRow = await c.env.DB.prepare(`
+        SELECT id, latest_snapshot_id, latest_cache_id
+        FROM subsidy_canonical
+        WHERE id = ?
+      `).bind(testSubsidyId).first<{ id: string; latest_snapshot_id: string | null; latest_cache_id: string | null }>();
+      
+      if (!canonicalRow) {
+        testSubsidyDetail = { error: 'Canonical not found' };
+      } else {
+        const snapshotRow = canonicalRow.latest_snapshot_id
+          ? await c.env.DB.prepare(`
+              SELECT id, detail_json, LENGTH(detail_json) as detail_length
+              FROM subsidy_snapshot
+              WHERE id = ?
+            `).bind(canonicalRow.latest_snapshot_id).first<{ id: string; detail_json: string; detail_length: number }>()
+          : null;
+          
+        const cacheRow = canonicalRow.latest_cache_id
+          ? await c.env.DB.prepare(`
+              SELECT id, detail_json, LENGTH(detail_json) as detail_length
+              FROM subsidy_cache
+              WHERE id = ?
+            `).bind(canonicalRow.latest_cache_id).first<{ id: string; detail_json: string; detail_length: number }>()
+          : null;
+        
+        const detailJson = cacheRow?.detail_json || snapshotRow?.detail_json;
+        
+        if (detailJson) {
+          try {
+            const dj = JSON.parse(detailJson);
+            testSubsidyDetail = {
+              canonical_id: canonicalRow.id,
+              latest_snapshot_id: canonicalRow.latest_snapshot_id,
+              latest_cache_id: canonicalRow.latest_cache_id,
+              has_snapshot_row: !!snapshotRow,
+              has_cache_row: !!cacheRow,
+              snapshot_detail_length: snapshotRow?.detail_length || 0,
+              cache_detail_length: cacheRow?.detail_length || 0,
+              detail_source: cacheRow?.detail_json ? 'cache' : 'snapshot',
+              has_description: !!dj.description,
+              has_eligibility: !!dj.eligibility_requirements,
+              has_expenses: !!dj.eligible_expenses,
+              has_criteria: !!dj.evaluation_criteria,
+              has_documents: !!dj.required_documents,
+              has_forms: !!dj.required_forms,
+              has_wall_chat: !!dj.wall_chat_questions,
+              forms_count: Array.isArray(dj.required_forms) ? dj.required_forms.length : 0,
+              wall_chat_count: Array.isArray(dj.wall_chat_questions) ? dj.wall_chat_questions.length : 0,
+            };
+            
+            // normalized summary（getNormalizedSubsidyDetail のテスト）
+            try {
+              const result = await getNormalizedSubsidyDetail(c.env.DB, testSubsidyId, { debug: false });
+              if (result) {
+                testSubsidyDetail.normalized_summary = {
+                  title: result.normalized.display.title,
+                  eligibility_rules_count: result.normalized.content.eligibility_rules.length,
+                  eligible_expenses_categories_count: result.normalized.content.eligible_expenses.categories.length,
+                  required_documents_count: result.normalized.content.required_documents.length,
+                  bonus_points_count: result.normalized.content.bonus_points.length,
+                  required_forms_count: result.normalized.content.required_forms.length,
+                  wall_chat_ready: result.normalized.wall_chat.ready,
+                  wall_chat_questions_count: result.normalized.wall_chat.questions.length,
+                };
+              }
+            } catch (normalizeError: any) {
+              testSubsidyDetail.normalize_error = normalizeError.message;
+            }
+          } catch (e) {
+            testSubsidyDetail = { error: 'JSON parse failed', canonical_id: canonicalRow.id };
+          }
+        } else {
+          testSubsidyDetail = { 
+            error: 'No detail_json found',
+            canonical_id: canonicalRow.id,
+            latest_snapshot_id: canonicalRow.latest_snapshot_id,
+            latest_cache_id: canonicalRow.latest_cache_id,
+            has_snapshot_row: !!snapshotRow,
+            has_cache_row: !!cacheRow,
+          };
+        }
+      }
+    }
   } catch (e) {
     // DB接続エラーは無視（healthは常に返す）
   }
@@ -93,6 +184,7 @@ app.get('/api/health', async (c) => {
     jgrants_mode: string;
     ssot_accepting_count: number | null;
     cache_accepting_count: number | null;
+    test_subsidy_detail?: any;
   }>>({
     success: true,
     data: {
@@ -102,6 +194,7 @@ app.get('/api/health', async (c) => {
       jgrants_mode: jgrantsMode,
       ssot_accepting_count: ssotAcceptingCount,
       cache_accepting_count: cacheAcceptingCount,
+      test_subsidy_detail: testSubsidyDetail,
     },
   });
 });

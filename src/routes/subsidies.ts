@@ -474,11 +474,16 @@ subsidies.get('/:subsidy_id', async (c) => {
       ? await db.prepare('SELECT * FROM subsidy_cache WHERE id = ?').bind(ref.cache_id).first()
       : null;
     
-    // detail_json パース（cacheRow優先、なければsnapshotRow.detail_jsonを使用）
+    // detail_json パース（snapshotRow優先、cacheRowで補完）
+    // Freeze-GET-1: snapshotRow.detail_json に wall_chat_questions/required_forms 等が格納されている
     // SSOT補助金はsnapshotにdetail_jsonがあり、cacheRowがない場合がある
-    const cacheDetailJson = safeJsonParse(cacheRow?.detail_json as string);
     const snapshotDetailJson = safeJsonParse(snapshotRow?.detail_json as string);
-    const detailJson = cacheDetailJson || snapshotDetailJson;
+    const cacheDetailJson = safeJsonParse(cacheRow?.detail_json as string);
+    // merge: snapshotDetailJson を優先し、cacheDetailJson を補完（getNormalizedSubsidyDetail.ts と同じロジック）
+    const detailJson = {
+      ...cacheDetailJson,
+      ...snapshotDetailJson,
+    };
     
     console.log(`[API /subsidies/${subsidyId}] detail_json sources:`, {
       has_cacheRow: !!cacheRow,

@@ -281,7 +281,7 @@ function normalizeDisplay(snapshotRow: any, cacheRow: any, dj: any): NormalizedD
 
 function normalizeOverview(dj: any): NormalizedOverview {
   return {
-    summary: dj.subsidy_overview || dj.overview || null,
+    summary: dj.subsidy_overview || dj.overview || dj.description || null,
     purpose: dj.subsidy_purpose || dj.purpose || null,
     target_business: dj.target_businesses || dj.target_business || dj.eligible_businesses || null,
   };
@@ -455,7 +455,11 @@ function normalizeEligibilityRules(canonicalId: string, dj: any, type: SubsidyTy
 
     case 'jizokuka':
       // 持続化補助金
-      addArrayRules(rules, elig.basic, '基本要件', 'MANUAL');
+      // DBには basic_requirements と scale_requirements がある
+      addArrayRules(rules, elig.basic_requirements, '基本要件', 'MANUAL');
+      addArrayRules(rules, elig.basic, '基本要件', 'MANUAL'); // fallback
+      addScaleRequirements(rules, elig.scale_requirements);
+      addArrayRules(rules, elig.exclusions, '対象外', 'MANUAL');
       addCreationRequirements(rules, elig.creation_requirements);
       break;
 
