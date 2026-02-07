@@ -432,15 +432,24 @@ chatPages.get('/chat', (c) => {
             document.getElementById('session-status').className = 'text-sm px-3 py-1 rounded-full bg-blue-100 text-blue-700';
           }
           
-          // 会社・補助金情報サマリー
+          // 会社・補助金情報サマリー（グレースフルデグレード対応）
           if (precheck.company_info) {
             document.getElementById('company-name').textContent = precheck.company_info.name || '-';
             document.getElementById('company-prefecture').textContent = precheck.company_info.prefecture || '-';
             document.getElementById('company-employees').textContent = precheck.company_info.employee_count || '-';
+          } else {
+            // company_info がない場合は「読み込み中」を表示
+            document.getElementById('company-name').textContent = '(未取得)';
+            document.getElementById('company-prefecture').textContent = '-';
+            document.getElementById('company-employees').textContent = '-';
           }
           if (precheck.subsidy_info) {
             document.getElementById('subsidy-max').textContent = formatCurrency(precheck.subsidy_info.max_amount);
             document.getElementById('subsidy-deadline').textContent = formatDate(precheck.subsidy_info.acceptance_end);
+          } else {
+            // subsidy_info がない場合は「未取得」を表示
+            document.getElementById('subsidy-max').textContent = '(未取得)';
+            document.getElementById('subsidy-deadline').textContent = '-';
           }
         } else {
           // precheckがない場合のデフォルト処理

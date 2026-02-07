@@ -12,7 +12,7 @@ import type { Env, Variables, Company, Subsidy, ApiResponse, MatchResult, Subsid
 import { requireAuth, requireCompanyAccess, getCurrentUser } from '../middleware/auth';
 import { createJGrantsAdapter, getJGrantsMode } from '../lib/jgrants-adapter';
 import { JGrantsError } from '../lib/jgrants';
-import { performBatchScreening, sortByStatus, sortByScore } from '../lib/screening';
+// v1 screening は廃止。v2 のみ使用 (2026-02-07)
 import { performBatchScreeningV2, sortByStatusV2, sortByScoreV2, type ScreeningResultV2 } from '../lib/screening-v2';
 import { getCompanySSOT, type CompanySSOT } from '../lib/ssot/getCompanySSOT';
 import { 
@@ -582,12 +582,20 @@ subsidies.get('/:subsidy_id', async (c) => {
     const source = detailResponse?.source || ref.primary_source_type;
     
     // 添付ファイルはメタ情報のみ返す
-    const attachments = (subsidyDetail.attachments || normalized?.content.attachments || []).map((a: any) => ({
-      id: a.id,
+    // attachmentsがオブジェクト形式（カテゴリ別）の場合はフラット化
+    let rawAttachments = subsidyDetail.attachments || normalized?.content.attachments || [];
+    if (rawAttachments && typeof rawAttachments === 'object' && !Array.isArray(rawAttachments)) {
+      // オブジェクト形式: { koubo_documents: [...], application_forms: [...], ... }
+      rawAttachments = Object.values(rawAttachments).flat();
+    }
+    const attachments = (Array.isArray(rawAttachments) ? rawAttachments : []).map((a: any) => ({
+      id: a.id || a.filename,
       name: a.name,
       url: a.url,
-      file_type: a.file_type,
+      file_type: a.file_type || a.filename?.split('.').pop(),
       file_size: a.file_size,
+      category: a.category,
+      updated_at: a.updated_at,
       status: 'not_processed',
     }));
     
@@ -639,7 +647,9 @@ subsidies.get('/:subsidy_id', async (c) => {
       },
     });
   } catch (error) {
-    console.error('Get subsidy detail error:', error);
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    const errorStack = error instanceof Error ? error.stack : undefined;
+    console.error('Get subsidy detail error:', errorMessage, errorStack);
     
     if (error instanceof JGrantsError) {
       if (error.statusCode === 404) {
@@ -660,11 +670,14 @@ subsidies.get('/:subsidy_id', async (c) => {
       }, error.statusCode >= 500 ? 502 : 400);
     }
     
+    // デバッグ用: エラー詳細を返す（本番では削除推奨）
     return c.json<ApiResponse<null>>({
       success: false,
       error: {
         code: 'INTERNAL_ERROR',
         message: 'Failed to get subsidy detail',
+        debug_message: errorMessage,
+        debug_stack: errorStack?.split('\n').slice(0, 5).join(' | '),
       },
     }, 500);
   }
@@ -770,6 +783,10 @@ subsidies.get('/evaluations/:company_id', requireCompanyAccess(), async (c) => {
  * A-3-1: normalized.content.eligibility_rules を SSOT として返却
  * 
  * Fallback: eligibility_rules テーブルにデータがある場合は従来通り返す（互換性維持）
+ * 
+ * NOTE (2026-02-07): eligibility_rules テーブルは現在0件。
+ * SSOT は NormalizedSubsidyDetail.content.eligibility_rules (detail_json から正規化)。
+ * テーブルは将来の手動ルール追加・外部連携用にFallbackとして保持。
  */
 subsidies.get('/:subsidy_id/eligibility', async (c) => {
   const db = c.env.DB;

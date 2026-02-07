@@ -220,6 +220,7 @@ function performPrecheck(
         source: 'eligibility',
         priority: 1
       }],
+      subsidy_info: undefined, // 補助金情報なし
       company_info: {
         id: company.id,
         name: company.name,

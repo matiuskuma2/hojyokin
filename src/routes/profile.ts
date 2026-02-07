@@ -155,6 +155,24 @@ profile.get('/', async (c) => {
       SELECT * FROM company_profile WHERE company_id = ?
     `).bind(companyId).first();
     
+    // chat_facts テーブルから会社レベルのfactsを取得
+    const factsResult = await c.env.DB.prepare(`
+      SELECT fact_key, fact_value FROM chat_facts 
+      WHERE company_id = ? AND subsidy_id IS NULL
+    `).bind(companyId).all();
+    
+    // factsをオブジェクトに変換
+    const facts: Record<string, boolean | string | null> = {};
+    for (const row of (factsResult.results || []) as Array<{ fact_key: string; fact_value: string }>) {
+      if (row.fact_value === 'true') {
+        facts[row.fact_key] = true;
+      } else if (row.fact_value === 'false') {
+        facts[row.fact_key] = false;
+      } else {
+        facts[row.fact_key] = row.fact_value;
+      }
+    }
+    
     // 書類一覧
     const documents = await c.env.DB.prepare(`
       SELECT id, doc_type, original_filename, content_type, size_bytes, status, confidence, uploaded_at
@@ -169,6 +187,7 @@ profile.get('/', async (c) => {
       data: {
         company,
         profile: profile || {},
+        facts,
         documents: documents.results || []
       }
     });
@@ -187,6 +206,7 @@ profile.get('/', async (c) => {
 
 profile.put('/', async (c) => {
   const companyId = c.get('company')?.id;
+  const user = c.get('user');
   
   if (!companyId) {
     return c.json<ApiResponse<null>>({
@@ -199,15 +219,19 @@ profile.put('/', async (c) => {
     const body = await c.req.json();
     const now = new Date().toISOString();
     
+    // profileがネストされているか直接フィールドかを判定
+    const profileData = body.profile || body;
+    const factsData = body.facts || {};
+    
     // companies テーブルの更新項目
     const companyFields = ['name', 'postal_code', 'prefecture', 'city', 'industry_major', 'industry_minor', 'employee_count', 'employee_band', 'capital', 'annual_revenue', 'established_date'];
     const companyUpdates: string[] = [];
     const companyValues: any[] = [];
     
     for (const field of companyFields) {
-      if (body[field] !== undefined) {
+      if (profileData[field] !== undefined) {
         companyUpdates.push(`${field} = ?`);
-        companyValues.push(body[field]);
+        companyValues.push(profileData[field]);
       }
     }
     
@@ -236,9 +260,9 @@ profile.put('/', async (c) => {
     let hasProfileData = false;
     
     for (const field of profileFields) {
-      if (body[field] !== undefined) {
+      if (profileData[field] !== undefined) {
         profileUpdates.push(`${field} = ?`);
-        profileValues.push(body[field]);
+        profileValues.push(profileData[field]);
         hasProfileData = true;
       }
     }
@@ -258,13 +282,41 @@ profile.put('/', async (c) => {
         `).bind(...profileValues).run();
       } else {
         // INSERT
-        const insertFields = ['company_id', ...profileFields.filter(f => body[f] !== undefined), 'updated_at', 'created_at'];
+        const insertFields = ['company_id', ...profileFields.filter(f => profileData[f] !== undefined), 'updated_at', 'created_at'];
         const insertPlaceholders = insertFields.map(() => '?').join(', ');
-        const insertValues = [companyId, ...profileFields.filter(f => body[f] !== undefined).map(f => body[f]), now, now];
+        const insertValues = [companyId, ...profileFields.filter(f => profileData[f] !== undefined).map(f => profileData[f]), now, now];
         
         await c.env.DB.prepare(`
           INSERT INTO company_profile (${insertFields.join(', ')}) VALUES (${insertPlaceholders})
         `).bind(...insertValues).run();
+      }
+    }
+    
+    // chat_facts テーブルへの保存（会社レベルのfacts）
+    const factKeys = ['has_gbiz_id', 'is_invoice_registered', 'plans_wage_raise', 'tax_arrears', 'has_business_plan', 'has_keiei_kakushin', 'has_jigyou_keizoku'];
+    
+    for (const key of factKeys) {
+      if (factsData[key] !== undefined && factsData[key] !== null) {
+        const factValue = String(factsData[key]);
+        
+        // 既存のfactを確認
+        const existingFact = await c.env.DB.prepare(`
+          SELECT id FROM chat_facts WHERE company_id = ? AND fact_key = ? AND subsidy_id IS NULL
+        `).bind(companyId, key).first();
+        
+        if (existingFact) {
+          // UPDATE
+          await c.env.DB.prepare(`
+            UPDATE chat_facts SET fact_value = ?, updated_at = ? WHERE id = ?
+          `).bind(factValue, now, (existingFact as any).id).run();
+        } else {
+          // INSERT
+          const factId = crypto.randomUUID();
+          await c.env.DB.prepare(`
+            INSERT INTO chat_facts (id, user_id, company_id, subsidy_id, fact_key, fact_value, confidence, source, created_at, updated_at)
+            VALUES (?, ?, ?, NULL, ?, ?, 100, 'user_input', ?, ?)
+          `).bind(factId, user?.id || null, companyId, key, factValue, now, now).run();
+        }
       }
     }
     

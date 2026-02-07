@@ -596,8 +596,14 @@ export class JGrantsAdapter {
           // 対象地域（フロントエンドは target_area を使用）
           target_area: detailData.target_area || baseFields.target_area_search || '全国',
           
-          // 添付ファイル
-          attachments: detailData.attachments || baseFields.attachments,
+          // 添付ファイル（オブジェクト形式の場合はフラット化）
+          attachments: (() => {
+            let rawAttachments = detailData.attachments || baseFields.attachments || [];
+            if (rawAttachments && typeof rawAttachments === 'object' && !Array.isArray(rawAttachments)) {
+              rawAttachments = Object.values(rawAttachments).flat();
+            }
+            return Array.isArray(rawAttachments) ? rawAttachments : [];
+          })(),
         };
       } catch (e) {
         console.error('[parseDetailRow] Failed to parse detail_json:', e);

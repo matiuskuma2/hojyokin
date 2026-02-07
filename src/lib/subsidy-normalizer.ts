@@ -707,13 +707,22 @@ export function normalizeSubsidyDetail(
     
     // URL・添付
     official_url: detailJson?.official_urls?.main || detailJson?.official_url || null,
-    attachments: (detailJson?.pdf_attachments || detailJson?.attachments || []).map((a: any, idx: number) => ({
-      id: a.id || `attachment-${idx}`,
-      name: a.name || '添付ファイル',
-      url: a.url || '',
-      file_type: a.file_type || null,
-      file_size: a.file_size || null,
-    })),
+    attachments: (() => {
+      let rawAttachments = detailJson?.pdf_attachments || detailJson?.attachments || [];
+      // オブジェクト形式（カテゴリ別）の場合はフラット化
+      if (rawAttachments && typeof rawAttachments === 'object' && !Array.isArray(rawAttachments)) {
+        rawAttachments = Object.values(rawAttachments).flat();
+      }
+      return (Array.isArray(rawAttachments) ? rawAttachments : []).map((a: any, idx: number) => ({
+        id: a.id || a.filename || `attachment-${idx}`,
+        name: a.name || '添付ファイル',
+        url: a.url || '',
+        file_type: a.file_type || a.filename?.split('.').pop() || null,
+        file_size: a.file_size || null,
+        category: a.category || null,
+        updated_at: a.updated_at || null,
+      }));
+    })(),
     
     // 連絡先
     contact: detailJson?.contact_info ? {

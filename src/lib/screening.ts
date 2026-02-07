@@ -1,7 +1,16 @@
 /**
- * 一次スクリーニング（高速マッチング）ロジック
+ * @deprecated screening v1 は廃止予定。screening-v2.ts を使用してください。
+ * 
+ * 一次スクリーニング（高速マッチング）ロジック - v1
  * 
  * 企業情報と補助金データを比較し、マッチ度・リスク・判定を算出
+ * 
+ * 移行状況 (2026-02-07):
+ * - subsidies.ts: v2に完全移行済み（v1 import削除済み）
+ * - cron/generate-suggestions: v1ベースだが独自ロジック
+ * - screening-v2.ts: 本番用。Freeze-MATCH-2 仕様準拠
+ * 
+ * このファイルは v2 の re-export のみ残し、v1 固有関数は将来削除予定。
  */
 
 import type {

@@ -28,13 +28,14 @@ export const securityHeaders: MiddlewareHandler<{ Bindings: Env; Variables: Vari
   c.res.headers.set('Referrer-Policy', 'strict-origin-when-cross-origin');
   
   // Content Security Policy (必要に応じてカスタマイズ)
+  // Cloudflare Insights (static.cloudflareinsights.com) を許可
   c.res.headers.set('Content-Security-Policy', [
     "default-src 'self'",
-    "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.tailwindcss.com https://cdnjs.cloudflare.com https://cdn.jsdelivr.net",
+    "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.tailwindcss.com https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://static.cloudflareinsights.com",
     "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net",
     "font-src 'self' https://cdn.jsdelivr.net",
     "img-src 'self' data: https:",
-    "connect-src 'self' https://cdn.jsdelivr.net",
+    "connect-src 'self' https://cdn.jsdelivr.net https://cloudflareinsights.com",
     "frame-ancestors 'none'",
   ].join('; '));
   

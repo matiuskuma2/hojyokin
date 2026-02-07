@@ -53,6 +53,16 @@ const subsidyLayout = (title: string, content: string, currentPath: string = '/s
     }
     /* タップ領域確保 */
     .tap-target { min-height: 44px; min-width: 44px; }
+    
+    /* タブコンテンツ表示保証 */
+    .tab-content:not(.hidden) {
+      display: block !important;
+      visibility: visible !important;
+      opacity: 1 !important;
+      height: auto !important;
+      min-height: 50px;
+      overflow: visible !important;
+    }
     /* ページネーションのモバイル対応 */
     @media (max-width: 640px) {
       .pagination-mobile { display: flex; justify-content: center; gap: 4px; flex-wrap: wrap; }
@@ -1863,7 +1873,7 @@ subsidyPages.get('/subsidies/:id', (c) => {
         <!-- タブコンテンツ -->
         <div class="p-6">
           <!-- 概要タブ -->
-          <div id="tab-overview" class="tab-content">
+          <div id="tab-overview" class="tab-content" style="display:block">
             <div class="prose max-w-none">
               <h3 class="text-lg font-semibold mb-3">補助金の概要</h3>
               <div id="overview-content" class="text-gray-700 whitespace-pre-wrap"></div>
@@ -1877,7 +1887,7 @@ subsidyPages.get('/subsidies/:id', (c) => {
           </div>
           
           <!-- 申請要件タブ -->
-          <div id="tab-eligibility" class="tab-content hidden">
+          <div id="tab-eligibility" class="tab-content hidden" style="display:none">
             <div class="mb-4">
               <h3 class="text-lg font-semibold mb-2">申請要件</h3>
               <p class="text-sm text-gray-600">この補助金に申請するための要件です。AUTO: 自動判定可能、MANUAL: 確認が必要</p>
@@ -1903,7 +1913,7 @@ subsidyPages.get('/subsidies/:id', (c) => {
           </div>
           
           <!-- 対象経費タブ -->
-          <div id="tab-expenses" class="tab-content hidden">
+          <div id="tab-expenses" class="tab-content hidden" style="display:none">
             <div class="mb-4">
               <h3 class="text-lg font-semibold mb-2">
                 <i class="fas fa-yen-sign text-green-600 mr-1"></i>対象経費
@@ -1919,7 +1929,7 @@ subsidyPages.get('/subsidies/:id', (c) => {
           </div>
           
           <!-- 加点要素タブ（公募要領ベース + 一般的な例） -->
-          <div id="tab-bonus" class="tab-content hidden">
+          <div id="tab-bonus" class="tab-content hidden" style="display:none">
             <div class="mb-4">
               <h3 class="text-lg font-semibold mb-2">
                 <i class="fas fa-star text-yellow-500 mr-1"></i>加点要素
@@ -2064,9 +2074,10 @@ subsidyPages.get('/subsidies/:id', (c) => {
               </p>
             </div>
           </div>
+          </div>
           
           <!-- 必要書類タブ -->
-          <div id="tab-documents" class="tab-content hidden">
+          <div id="tab-documents" class="tab-content hidden" style="display:none">
             <div class="mb-4">
               <h3 class="text-lg font-semibold mb-2">必要書類一覧</h3>
               <p class="text-sm text-gray-600">申請に必要な書類です。<span class="text-green-600">●</span>準備済み <span class="text-yellow-600">●</span>要準備 <span class="text-gray-400">●</span>任意</p>
@@ -2078,7 +2089,7 @@ subsidyPages.get('/subsidies/:id', (c) => {
           </div>
           
           <!-- 様式タブ（P3-SCORE1: required_forms表示） -->
-          <div id="tab-forms" class="tab-content hidden">
+          <div id="tab-forms" class="tab-content hidden" style="display:none">
             <div class="mb-4">
               <h3 class="text-lg font-semibold mb-2">申請様式と記載項目</h3>
               <p class="text-sm text-gray-600">各様式で必要な記載項目の一覧です。壁打ちチャットで詳細を確認できます。</p>
@@ -2090,7 +2101,7 @@ subsidyPages.get('/subsidies/:id', (c) => {
           </div>
           
           <!-- マッチング結果タブ -->
-          <div id="tab-evaluation" class="tab-content hidden">
+          <div id="tab-evaluation" class="tab-content hidden" style="display:none">
             <div id="evaluation-content">
               <p class="text-gray-500">会社を選択して検索を実行すると、マッチング結果が表示されます。</p>
             </div>
@@ -2165,6 +2176,9 @@ subsidyPages.get('/subsidies/:id', (c) => {
       
       // タブ切り替え
       function switchTab(tabName) {
+        console.log('[switchTab] Switching to:', tabName);
+        
+        // ボタンのスタイル切り替え
         document.querySelectorAll('.tab-btn').forEach(btn => {
           if (btn.dataset.tab === tabName) {
             btn.classList.add('border-green-600', 'text-green-600');
@@ -2175,17 +2189,50 @@ subsidyPages.get('/subsidies/:id', (c) => {
           }
         });
         
+        // すべてのタブコンテンツを非表示
         document.querySelectorAll('.tab-content').forEach(content => {
           content.classList.add('hidden');
+          content.style.display = 'none';
         });
-        document.getElementById('tab-' + tabName).classList.remove('hidden');
+        
+        // 選択されたタブを表示
+        const targetTab = document.getElementById('tab-' + tabName);
+        if (targetTab) {
+          targetTab.classList.remove('hidden');
+          targetTab.style.display = 'block';
+          targetTab.style.visibility = 'visible';
+          targetTab.style.opacity = '1';
+          targetTab.style.height = 'auto';
+          targetTab.style.overflow = 'visible';
+          
+          // 親要素も確実に表示
+          const parent = targetTab.parentElement;
+          if (parent) {
+            parent.style.display = 'block';
+            parent.style.height = 'auto';
+            parent.style.overflow = 'visible';
+          }
+          
+          console.log('[switchTab] Displayed tab:', tabName, 'innerHTML length:', targetTab.innerHTML.length);
+        } else {
+          console.error('[switchTab] Tab not found:', 'tab-' + tabName);
+        }
       }
       
       // 詳細データ読み込み
       async function loadDetail() {
         try {
+          console.log('[LoadDetail] Starting for subsidyId:', subsidyId);
           const params = companyId ? '?company_id=' + companyId : '';
           const res = await api('/api/subsidies/' + subsidyId + params);
+          console.log('[LoadDetail] API response received:', JSON.stringify({
+            success: res.success,
+            error: res.error,
+            has_normalized: !!res.data?.normalized,
+            has_subsidy: !!res.data?.subsidy,
+            has_required_forms: !!res.data?.required_forms,
+            required_forms_count: res.data?.required_forms?.length || 0
+          }));
           
           if (!res.success) {
             throw new Error(res.error?.message || '詳細の取得に失敗しました');
@@ -2194,13 +2241,19 @@ subsidyPages.get('/subsidies/:id', (c) => {
           subsidyData = res.data;
           renderDetail(res.data);
           
-          // 要件・必要書類・対象経費・加点項目・様式も取得
-          loadEligibility();
-          loadDocuments();
-          loadExpenses();
-          loadBonusPoints();
+          // 要件・必要書類・対象経費・加点項目・様式も取得（並列実行）
+          // 全ての読み込みが完了してから警告チェックを実行
+          await Promise.all([
+            loadEligibility(),
+            loadDocuments(),
+            loadExpenses(),
+            loadBonusPoints(),
+          ]);
           // P3-2C: res.data全体を渡す（required_formsはres.data直下にある）
           loadForms(res.data);
+          
+          // 全データ読み込み完了後に警告を再チェック（非表示にする）
+          checkAndShowDataWarning();
           
         } catch (e) {
           console.error('Load detail error:', e);
@@ -2262,6 +2315,13 @@ subsidyPages.get('/subsidies/:id', (c) => {
         document.getElementById('subsidy-org').innerHTML = '<i class="fas fa-building mr-1"></i>' + escapeHtml(issuerName);
         
         // ステータスバッジ
+        console.log('[renderDetail] evaluation data:', e ? JSON.stringify({
+          status: e.status,
+          score: e.score,
+          match_reasons_count: e.match_reasons?.length || 0,
+          risk_flags_count: e.risk_flags?.length || 0,
+        }) : 'null');
+        console.log('[renderDetail] evaluation-content element exists:', !!document.getElementById('evaluation-content'));
         if (e) {
           const statusConfig = {
             'PROCEED': { bg: 'bg-green-100', text: 'text-green-800', icon: 'fa-check-circle', label: '推奨' },
@@ -2458,12 +2518,15 @@ subsidyPages.get('/subsidies/:id', (c) => {
         if (!hasEligibilityData) missingItems.push('申請要件');
         if (!hasDocumentsData) missingItems.push('必要書類');
         
+        const warningEl = document.getElementById('data-warning');
+        const listEl = document.getElementById('missing-data-list');
+        
         if (missingItems.length > 0) {
-          const warningEl = document.getElementById('data-warning');
-          const listEl = document.getElementById('missing-data-list');
-          
           listEl.innerHTML = missingItems.map(item => \`<li>\${item}</li>\`).join('');
           warningEl.classList.remove('hidden');
+        } else {
+          // データが揃っている場合は警告を非表示
+          warningEl.classList.add('hidden');
         }
       }
       
@@ -2472,9 +2535,10 @@ subsidyPages.get('/subsidies/:id', (c) => {
         try {
           console.log('[Eligibility] Loading for subsidyId:', subsidyId);
           const res = await api('/api/subsidies/' + subsidyId + '/eligibility');
-          console.log('[Eligibility] API response:', { success: res.success, dataLength: res.data?.length });
+          console.log('[Eligibility] API response:', JSON.stringify({ success: res.success, error: res.error, dataLength: res.data?.length, meta: res.meta }));
           if (res.success && res.data && res.data.length > 0) {
             hasEligibilityData = true;
+            console.log('[Eligibility] First rule:', JSON.stringify(res.data[0]));
             const html = res.data.map(rule => {
               const typeLabel = rule.check_type === 'AUTO' ? 
                 '<span class="px-2 py-0.5 bg-green-100 text-green-800 rounded text-xs">AUTO</span>' :
@@ -2487,7 +2551,7 @@ subsidyPages.get('/subsidies/:id', (c) => {
                     \${typeLabel}
                   </div>
                   <p class="text-sm text-gray-700">\${escapeHtml(rule.rule_text || '')}</p>
-                  \${rule.source_text ? \`<p class="text-xs text-gray-500 mt-1">出典: \${escapeHtml(rule.source_text)}</p>\` : ''}
+                  \${rule.source_text || rule.source ? \`<p class="text-xs text-gray-500 mt-1">出典: \${escapeHtml(rule.source_text || rule.source || '')}</p>\` : ''}
                 </div>
               \`;
             }).join('');
@@ -2506,17 +2570,27 @@ subsidyPages.get('/subsidies/:id', (c) => {
         } catch (e) {
           console.error('Load eligibility error:', e);
           hasEligibilityData = false;
+          // グレースフルデグレード: エラーメッセージを表示
+          document.getElementById('eligibility-list').innerHTML = 
+            '<div class="p-3 bg-yellow-50 border border-yellow-200 rounded-lg">' +
+            '<p class="text-yellow-700"><i class="fas fa-exclamation-triangle mr-1"></i>要件情報の読み込みに失敗しました。</p>' +
+            '<p class="text-sm text-yellow-600 mt-1">ネットワーク接続を確認するか、しばらく待ってから再度お試しください。</p>' +
+            '</div>';
         }
-        // 両方のデータ読み込みが完了したら警告をチェック
-        checkAndShowDataWarning();
+        // 注: checkAndShowDataWarning() は loadDetail() で全データ読み込み完了後に呼び出される
       }
       
       // 必要書類読み込み
       async function loadDocuments() {
+        console.log('[Documents] loadDocuments called, subsidyId:', subsidyId);
+        console.log('[Documents] documents-list element exists:', !!document.getElementById('documents-list'));
         try {
+          console.log('[Documents] Loading for subsidyId:', subsidyId);
           const res = await api('/api/subsidies/' + subsidyId + '/documents');
-          if (res.success && res.data.length > 0) {
+          console.log('[Documents] API response:', JSON.stringify({ success: res.success, error: res.error, dataLength: res.data?.length, meta: res.meta }));
+          if (res.success && res.data && res.data.length > 0) {
             hasDocumentsData = true;
+            console.log('[Documents] First doc:', JSON.stringify(res.data[0]));
             const html = res.data.map(doc => {
               const levelIcon = doc.required_level === 'required' ? 
                 '<span class="text-red-500">●</span>' :
@@ -2543,27 +2617,48 @@ subsidyPages.get('/subsidies/:id', (c) => {
         } catch (e) {
           console.error('Load documents error:', e);
           hasDocumentsData = false;
+          // グレースフルデグレード: エラーメッセージを表示
+          document.getElementById('documents-list').innerHTML = 
+            '<div class="p-3 bg-yellow-50 border border-yellow-200 rounded-lg">' +
+            '<p class="text-yellow-700"><i class="fas fa-exclamation-triangle mr-1"></i>必要書類情報の読み込みに失敗しました。</p>' +
+            '</div>';
         }
-        // 両方のデータ読み込みが完了したら警告をチェック
-        checkAndShowDataWarning();
+        // 注: checkAndShowDataWarning() は loadDetail() で全データ読み込み完了後に呼び出される
       }
       
       // 様式情報表示（P3-SCORE1: required_forms）
-      // P3-2C: APIレスポンス全体を受け取り、required_formsを取得
+      // v1.0 Freeze: normalized.content.required_forms を優先参照
       function loadForms(responseData) {
+        console.log('[Forms] loadForms called with:', JSON.stringify({
+          has_responseData: !!responseData,
+          has_normalized: !!responseData?.normalized,
+          has_content: !!responseData?.normalized?.content,
+          has_required_forms_in_content: !!responseData?.normalized?.content?.required_forms,
+          required_forms_count_in_content: responseData?.normalized?.content?.required_forms?.length || 0,
+          has_required_forms_direct: !!responseData?.required_forms,
+          required_forms_count_direct: responseData?.required_forms?.length || 0,
+        }));
         try {
-          // P3-2C: required_formsを優先順位で取得
-          // 1. res.data.required_forms (APIレスポンス直下)
-          // 2. res.data.detail_json.required_forms (detail_json内)
-          // 3. res.data.subsidy.required_forms (補助金オブジェクト内)
+          // v1.0 Freeze: required_formsを優先順位で取得
+          // 1. normalized.content.required_forms (SSOT - 最優先)
+          // 2. res.data.required_forms (APIレスポンス直下 - 互換性)
+          // 3. res.data.detail_json.required_forms (detail_json内 - レガシー)
+          // 4. res.data.subsidy.required_forms (補助金オブジェクト内 - レガシー)
           let forms = [];
           
-          // 1. APIレスポンス直下のrequired_forms
-          if (responseData.required_forms && Array.isArray(responseData.required_forms)) {
+          // 1. normalized.content.required_forms (SSOT - 最優先)
+          if (responseData.normalized?.content?.required_forms && 
+              Array.isArray(responseData.normalized.content.required_forms) &&
+              responseData.normalized.content.required_forms.length > 0) {
+            forms = responseData.normalized.content.required_forms;
+            console.log('[v1.0] Found required_forms in normalized.content:', forms.length);
+          }
+          // 2. APIレスポンス直下のrequired_forms（互換性）
+          else if (responseData.required_forms && Array.isArray(responseData.required_forms)) {
             forms = responseData.required_forms;
             console.log('[P3-2C] Found required_forms in responseData:', forms.length);
           }
-          // 2. detail_json内のrequired_forms
+          // 3. detail_json内のrequired_forms（レガシー）
           else if (responseData.detail_json) {
             try {
               const detail = typeof responseData.detail_json === 'string' 
@@ -2577,7 +2672,7 @@ subsidyPages.get('/subsidies/:id', (c) => {
               console.warn('Failed to parse detail_json for forms:', e);
             }
           }
-          // 3. subsidyオブジェクト内（フォールバック）
+          // 4. subsidyオブジェクト内（レガシーフォールバック）
           else if (responseData.subsidy?.required_forms) {
             forms = responseData.subsidy.required_forms;
             console.log('[P3-2C] Found required_forms in subsidy:', forms.length);

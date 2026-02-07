@@ -184,12 +184,23 @@ export interface NormalizeInput {
 
 /**
  * detail_json を NormalizedSubsidyDetail v1.0 に変換
+ * 
+ * エラーハンドリング:
+ * - 各正規化ステップで個別にtry-catchし、失敗してもできる限り続行
+ * - 致命的なエラーのみ外側にスローし、詳細なログを出力
  */
 export function normalizeSubsidyDetail(input: NormalizeInput): NormalizedSubsidyDetail {
   const { ref, canonicalRow, snapshotRow, cacheRow, detailJson } = input;
   const dj = detailJson || {};
+  
+  // エラー収集用
+  const warnings: string[] = [];
 
-  // IDs
+  // IDs（必須 - エラー時はスロー）
+  if (!ref || !ref.canonical_id) {
+    throw new Error('[normalizeSubsidyDetail] ref.canonical_id is required');
+  }
+  
   const ids: NormalizedIds = {
     input_id: ref.input_id,
     canonical_id: ref.canonical_id,
@@ -204,26 +215,85 @@ export function normalizeSubsidyDetail(input: NormalizeInput): NormalizedSubsidy
     links: ref.links,
   };
 
-  // Acceptance（snapshot優先）
-  const acceptance = normalizeAcceptance(snapshotRow, cacheRow);
+  // Acceptance（snapshot優先）- エラー時はデフォルト値
+  let acceptance: NormalizedAcceptance;
+  try {
+    acceptance = normalizeAcceptance(snapshotRow, cacheRow);
+  } catch (e: any) {
+    warnings.push(`normalizeAcceptance failed: ${e.message}`);
+    acceptance = { is_accepting: null, acceptance_start: null, acceptance_end: null };
+  }
 
-  // Display
-  const display = normalizeDisplay(snapshotRow, cacheRow, dj);
+  // Display - エラー時はデフォルト値
+  let display: NormalizedDisplay;
+  try {
+    display = normalizeDisplay(snapshotRow, cacheRow, dj);
+  } catch (e: any) {
+    warnings.push(`normalizeDisplay failed: ${e.message}`);
+    display = {
+      title: canonicalRow?.name || '(タイトル取得失敗)',
+      official_name: null, round: null, issuer_name: null,
+      subsidy_max_limit: null, subsidy_min_limit: null,
+      subsidy_rate_text: null, target_area_text: null,
+    };
+  }
 
-  // Overview
-  const overview = normalizeOverview(dj);
+  // Overview - エラー時はデフォルト値
+  let overview: NormalizedOverview;
+  try {
+    overview = normalizeOverview(dj);
+  } catch (e: any) {
+    warnings.push(`normalizeOverview failed: ${e.message}`);
+    overview = { summary: null, purpose: null, target_business: null };
+  }
 
-  // Electronic Application
-  const electronicApplication = normalizeElectronicApplication(dj);
+  // Electronic Application - エラー時はデフォルト値
+  let electronicApplication: NormalizedElectronicApplication;
+  try {
+    electronicApplication = normalizeElectronicApplication(dj);
+  } catch (e: any) {
+    warnings.push(`normalizeElectronicApplication failed: ${e.message}`);
+    electronicApplication = { is_electronic_application: null, portal_name: null, portal_url: null, notes: null };
+  }
 
-  // Wall Chat
-  const wallChat = normalizeWallChat(dj, overview);
+  // Wall Chat - エラー時はデフォルト値
+  let wallChat: NormalizedWallChat;
+  try {
+    wallChat = normalizeWallChat(dj, overview);
+  } catch (e: any) {
+    warnings.push(`normalizeWallChat failed: ${e.message}`);
+    wallChat = { mode: 'unknown', ready: false, missing: ['壁打ち質問取得失敗'], questions: [] };
+  }
 
-  // Content（制度別マッピング）
-  const content = normalizeContent(ref.canonical_id, dj);
+  // Content（制度別マッピング）- エラー時はデフォルト値
+  let content: NormalizedContent;
+  try {
+    content = normalizeContent(ref.canonical_id, dj);
+  } catch (e: any) {
+    warnings.push(`normalizeContent failed: ${e.message}`);
+    content = {
+      eligibility_rules: [],
+      eligible_expenses: { required: [], categories: [], excluded: [], notes: null },
+      required_documents: [],
+      bonus_points: [],
+      required_forms: [],
+      attachments: [],
+    };
+  }
 
-  // Provenance
-  const provenance = normalizeProvenance(dj);
+  // Provenance - エラー時はデフォルト値
+  let provenance: NormalizedProvenance;
+  try {
+    provenance = normalizeProvenance(dj);
+  } catch (e: any) {
+    warnings.push(`normalizeProvenance failed: ${e.message}`);
+    provenance = { koubo_source_urls: [], pdf_urls: [], pdf_hashes: [], last_normalized_at: new Date().toISOString() };
+  }
+
+  // 警告があればログ出力
+  if (warnings.length > 0) {
+    console.warn(`[normalizeSubsidyDetail] ${ref.canonical_id}: ${warnings.length} warnings`, warnings);
+  }
 
   return {
     schema_version: '1.0',
@@ -329,6 +399,7 @@ function normalizeWallChat(dj: any, overview: NormalizedOverview): NormalizedWal
  * 
  * Freeze-WALLCHAT-1: input_type 推測ルール
  * - 明示的に指定されていればそれを使用
+ * - options が存在すれば select
  * - 未指定の場合、質問文からパターンマッチで推測（限定的）
  * - 推測できない場合は text 固定
  */
@@ -342,7 +413,12 @@ function normalizeWallChatQuestions(questions: any): WallChatQuestion[] {
     // 明示的に指定されていればそれを使用
     if (validateInputType(q.input_type)) {
       inputType = q.input_type;
-    } else {
+    }
+    // options が存在すれば select を優先（明示的指定より後に判定）
+    else if (Array.isArray(q.options) && q.options.length > 0) {
+      inputType = 'select';
+    }
+    else {
       // Freeze-WALLCHAT-1: 質問文からのパターンマッチ推測
       inputType = inferInputTypeFromQuestion(questionText);
     }
@@ -367,14 +443,17 @@ function normalizeWallChatQuestions(questions: any): WallChatQuestion[] {
  * - text: 上記以外
  * 
  * 注: select は自動推測しない（options が必要なため）
+ * 
+ * v2.0: 追加パターン
+ * - 事業規模、年数、割合を尋ねる質問も number
  */
 function inferInputTypeFromQuestion(question: string): 'boolean' | 'number' | 'text' {
   // Boolean パターン: 「ですか？」「ありますか？」「いますか？」で終わる
   // ただし、「何」「いくら」等が含まれる場合は number 優先
-  const hasBooleanEnding = /(ですか？|ありますか？|いますか？|ますか？|済みですか|でしょうか)$/.test(question);
+  const hasBooleanEnding = /(ですか？|ありますか？|いますか？|ますか？|済みですか|でしょうか|該当しますか)$/.test(question);
   
-  // Number パターン: 数値を尋ねる表現
-  const hasNumberPattern = /(何名|何人|いくら|何円|何時間|何日|総額|金額|年齢|年商|年収|売上|利益|平均給与|資本金|従業員数|人数)/.test(question);
+  // Number パターン: 数値を尋ねる表現（拡張）
+  const hasNumberPattern = /(何名|何人|いくら|何円|何時間|何日|総額|金額|年齢|年商|年収|売上|利益|平均給与|資本金|従業員数|人数|何年|何か月|何%|割合|比率|件数|台数|個数|事業所数|店舗数)/.test(question);
   
   // Number 最優先
   if (hasNumberPattern) {
@@ -383,7 +462,7 @@ function inferInputTypeFromQuestion(question: string): 'boolean' | 'number' | 't
   
   // Boolean はシンプルな Yes/No 質問のみ
   // 「何」「どのような」「どういう」等の詳細を尋ねる表現がある場合は text
-  const hasOpenEndedPattern = /(何を|何が|何ですか|どのような|どういう|どのように|詳細|具体的に|教えて)/.test(question);
+  const hasOpenEndedPattern = /(何を|何が|何ですか|どのような|どういう|どのように|詳細|具体的に|教えて|内容|理由|説明|記載|記入)/.test(question);
   
   if (hasBooleanEnding && !hasOpenEndedPattern) {
     return 'boolean';
@@ -721,7 +800,12 @@ function normalizeRequiredForms(dj: any): RequiredForm[] {
 
 function normalizeAttachments(dj: any): Attachment[] {
   const attachments: Attachment[] = [];
-  const source = dj.pdf_attachments || dj.attachments || [];
+  let source = dj.pdf_attachments || dj.attachments || [];
+
+  // オブジェクト形式（カテゴリ別）の場合はフラット化
+  if (source && typeof source === 'object' && !Array.isArray(source)) {
+    source = Object.values(source).flat();
+  }
 
   if (Array.isArray(source)) {
     source.forEach((a: any) => {
