@@ -297,28 +297,49 @@ izumiPromote.post('/crawl-izumi-details', async (c) => {
     }, authResult.error!.status);
   }
   
-  const MAX_ITEMS = 5; // Workers subrequest制限対応
+  const MAX_ITEMS = 10; // v2: 増量（PDF skip分を考慮）
   let runId: string | null = null;
   
   try {
     runId = await startCronRun(db, 'crawl-izumi-details', authResult.triggeredBy);
     
-    // クロール未完了のizumiアイテムを取得
-    // detail_jsonにcrawled_atがないもの = 未クロール
-    const targets = await db.prepare(`
-      SELECT 
-        sc.id, sc.title, sc.detail_json
-      FROM subsidy_cache sc
-      WHERE sc.source = 'izumi'
-        AND sc.wall_chat_ready = 0
-        AND sc.wall_chat_excluded = 0
-        AND (
-          sc.detail_json IS NULL 
-          OR json_extract(sc.detail_json, '$.crawled_at') IS NULL
-        )
-      ORDER BY RANDOM()
-      LIMIT ?
-    `).bind(MAX_ITEMS).all<{
+    const url = new URL(c.req.url);
+    const mode = url.searchParams.get('mode') || 'uncrawled'; // uncrawled | upgrade
+    
+    // mode=uncrawled: 未クロールを優先
+    // mode=upgrade: フォールバックのみのready済みをリアルデータに差し替え
+    let query: string;
+    if (mode === 'upgrade') {
+      query = `
+        SELECT sc.id, sc.title, sc.detail_json
+        FROM subsidy_cache sc
+        WHERE sc.source = 'izumi'
+          AND sc.wall_chat_excluded = 0
+          AND json_extract(sc.detail_json, '$.overview_source') = 'title_fallback_v1'
+          AND json_extract(sc.detail_json, '$.crawled_at') IS NULL
+          AND json_extract(sc.detail_json, '$.official_url') IS NOT NULL
+          AND json_extract(sc.detail_json, '$.official_url') NOT LIKE '%.pdf%'
+        ORDER BY RANDOM()
+        LIMIT ?
+      `;
+    } else {
+      query = `
+        SELECT sc.id, sc.title, sc.detail_json
+        FROM subsidy_cache sc
+        WHERE sc.source = 'izumi'
+          AND sc.wall_chat_excluded = 0
+          AND (
+            sc.detail_json IS NULL 
+            OR json_extract(sc.detail_json, '$.crawled_at') IS NULL
+          )
+          AND json_extract(sc.detail_json, '$.official_url') IS NOT NULL
+          AND json_extract(sc.detail_json, '$.official_url') NOT LIKE '%.pdf%'
+        ORDER BY RANDOM()
+        LIMIT ?
+      `;
+    }
+    
+    const targets = await db.prepare(query).bind(MAX_ITEMS).all<{
       id: string;
       title: string;
       detail_json: string | null;
@@ -328,21 +349,23 @@ izumiPromote.post('/crawl-izumi-details', async (c) => {
       if (runId) await finishCronRun(db, runId, 'success', { items_processed: 0 });
       return c.json<ApiResponse<{ message: string }>>({
         success: true,
-        data: { message: 'No izumi items to crawl' },
+        data: { message: `No izumi items to crawl (mode=${mode})` },
       });
     }
     
     let crawled = 0;
     let readyAfter = 0;
+    let upgraded = 0;
     let crawlFailed = 0;
     const errors: string[] = [];
     
     for (const target of targets.results) {
       try {
         const detail = target.detail_json ? JSON.parse(target.detail_json) : {};
-        const supportUrl = detail.official_url || detail.related_url;
         
-        if (!supportUrl) {
+        // support_urlを決定: HTML URLを優先
+        let crawlUrl = detail.official_url || detail.related_url;
+        if (!crawlUrl) {
           detail.crawled_at = new Date().toISOString();
           detail.crawl_error = 'no_support_url';
           await db.prepare(`UPDATE subsidy_cache SET detail_json = ? WHERE id = ?`)
@@ -351,8 +374,28 @@ izumiPromote.post('/crawl-izumi-details', async (c) => {
           continue;
         }
         
-        // HTML取得（simpleScrape: 直接fetch、タイムアウト8秒）
-        const scrapeResult = await simpleScrape(supportUrl);
+        // PDFリンクならスキップ（reference_urlsからHTMLを探す）
+        if (crawlUrl.toLowerCase().includes('.pdf')) {
+          const altHtmlUrl = (detail.reference_urls || []).find(
+            (u: string) => !u.toLowerCase().includes('.pdf')
+          );
+          if (altHtmlUrl) {
+            crawlUrl = altHtmlUrl;
+          } else {
+            detail.crawled_at = new Date().toISOString();
+            detail.crawl_error = 'pdf_url_only';
+            detail.crawl_source_url = crawlUrl;
+            if (!detail.pdf_urls) detail.pdf_urls = [];
+            if (!detail.pdf_urls.includes(crawlUrl)) detail.pdf_urls.push(crawlUrl);
+            await db.prepare(`UPDATE subsidy_cache SET detail_json = ? WHERE id = ?`)
+              .bind(JSON.stringify(detail), target.id).run();
+            crawlFailed++;
+            continue;
+          }
+        }
+        
+        // HTML取得
+        const scrapeResult = await simpleScrape(crawlUrl);
         
         if (!scrapeResult.success || !scrapeResult.html) {
           detail.crawled_at = new Date().toISOString();
@@ -363,67 +406,75 @@ izumiPromote.post('/crawl-izumi-details', async (c) => {
           continue;
         }
         
-        // HTML → テキスト変換 & フィールド抽出
-        // PDFレスポンスを検出してスキップ
-        if (scrapeResult.html.startsWith('%PDF') || scrapeResult.html.substring(0, 50).includes('%PDF')) {
+        // PDFレスポンスを検出
+        const rawHtml = scrapeResult.html;
+        if (rawHtml.startsWith('%PDF') || rawHtml.substring(0, 100).includes('%PDF')) {
           detail.crawled_at = new Date().toISOString();
           detail.crawl_error = 'pdf_response';
-          detail.crawl_source_url = supportUrl;
-          // PDFリンクとして記録
+          detail.crawl_source_url = crawlUrl;
           if (!detail.pdf_urls) detail.pdf_urls = [];
-          detail.pdf_urls.push(supportUrl);
+          if (!detail.pdf_urls.includes(crawlUrl)) detail.pdf_urls.push(crawlUrl);
           await db.prepare(`UPDATE subsidy_cache SET detail_json = ? WHERE id = ?`)
             .bind(JSON.stringify(detail), target.id).run();
           crawlFailed++;
           continue;
         }
         
-        const extractedText = htmlToPlainText(scrapeResult.html, 5000);
-        const extractedFields = extractFieldsFromText(extractedText, target.title);
+        // v2: main/article優先のテキスト抽出
+        const extractedText = htmlToPlainTextV2(rawHtml, 5000);
+        const extractedFields = extractFieldsFromTextV2(extractedText, target.title);
         
-        // detail_jsonに追加
-        if (extractedText.length > 50) {
+        // overviewの品質チェック: ナビゲーションゴミが多い場合はスキップ
+        const wasUpgrade = detail.overview_source === 'title_fallback_v1';
+        if (extractedText.length > 80) {
           detail.overview = extractedText.substring(0, 2000);
+          detail.overview_source = 'crawl_v2';
         }
-        if (extractedFields.eligible_expenses && extractedFields.eligible_expenses.length > 0) {
+        
+        // 抽出フィールドがフォールバックより良い場合のみ上書き
+        if (extractedFields.eligible_expenses.length > 0) {
           detail.eligible_expenses = extractedFields.eligible_expenses;
-          detail.eligible_expenses_source = 'crawl_extraction_v1';
+          detail.eligible_expenses_source = 'crawl_extraction_v2';
         }
-        if (extractedFields.application_requirements && extractedFields.application_requirements.length > 0) {
+        if (extractedFields.application_requirements.length > 0) {
           detail.application_requirements = extractedFields.application_requirements;
-          detail.application_requirements_source = 'crawl_extraction_v1';
+          detail.application_requirements_source = 'crawl_extraction_v2';
         }
-        if (extractedFields.required_documents && extractedFields.required_documents.length > 0) {
+        if (extractedFields.required_documents.length > 0) {
           detail.required_documents = extractedFields.required_documents;
-          detail.required_documents_source = 'crawl_extraction_v1';
+          detail.required_documents_source = 'crawl_extraction_v2';
         }
         if (extractedFields.deadline) {
           detail.deadline = extractedFields.deadline;
           detail.acceptance_end_datetime = extractedFields.deadline;
+          detail.deadline_source = 'crawl_extraction_v2';
+        }
+        if (extractedFields.subsidy_rate) {
+          detail.subsidy_rate_text = extractedFields.subsidy_rate;
+        }
+        if (extractedFields.subsidy_amount) {
+          detail.subsidy_amount_text = extractedFields.subsidy_amount;
+        }
+        if (extractedFields.target_businesses) {
+          detail.target_businesses = extractedFields.target_businesses;
         }
         
         // PDFリンク抽出
-        const pdfLinks = extractPdfLinksFromHtml(scrapeResult.html, supportUrl);
+        const pdfLinks = extractPdfLinksFromHtml(rawHtml, crawlUrl);
         if (pdfLinks.length > 0) {
           detail.pdf_urls = [...new Set([...(detail.pdf_urls || []), ...pdfLinks])];
         }
         
-        // deadline フォールバック: izumiの地方自治体補助金は通年募集が多い
+        // deadline フォールバック
         if (!detail.deadline && !detail.acceptance_end_datetime) {
-          if (extractedFields.deadline) {
-            detail.deadline = extractedFields.deadline;
-            detail.acceptance_end_datetime = extractedFields.deadline;
-          } else {
-            // 通年募集フォールバック（多くの地方自治体補助金は予算終了まで受付）
-            detail.deadline = '通年募集（予算がなくなり次第終了）';
-            detail.deadline_source = 'izumi_default_fallback';
-          }
+          detail.deadline = '通年募集（予算がなくなり次第終了）';
+          detail.deadline_source = 'izumi_default_fallback';
         }
         
         detail.crawled_at = new Date().toISOString();
-        detail.crawl_source_url = supportUrl;
-        detail.crawl_html_length = scrapeResult.html.length;
-        detail.enriched_version = 'izumi_crawl_v1';
+        detail.crawl_source_url = crawlUrl;
+        detail.crawl_html_length = rawHtml.length;
+        detail.enriched_version = 'izumi_crawl_v2';
         
         // wall_chat_ready判定
         const readyResult = checkWallChatReadyFromJson(JSON.stringify(detail), target.title);
@@ -445,35 +496,37 @@ izumiPromote.post('/crawl-izumi-details', async (c) => {
           `).bind(JSON.stringify(detail), target.id).run();
         } else {
           await db.prepare(`
-            UPDATE subsidy_cache SET detail_json = ? WHERE id = ?
-          `).bind(JSON.stringify(detail), target.id).run();
+            UPDATE subsidy_cache SET detail_json = ? WHERE id = ?`)
+            .bind(JSON.stringify(detail), target.id).run();
         }
         
-        // izumi_subsidiesのcrawl_statusも更新
-        await db.prepare(`
-          UPDATE izumi_subsidies 
-          SET crawl_status = 'done', last_crawled_at = datetime('now')
-          WHERE id = ?
-        `).bind(target.id).run();
-        
         crawled++;
+        if (wasUpgrade) upgraded++;
         
-        // レート制限: 500ms待機
-        await new Promise(resolve => setTimeout(resolve, 500));
+        // レート制限: 300ms待機
+        await new Promise(resolve => setTimeout(resolve, 300));
         
       } catch (err) {
         errors.push(`${target.id}: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
     
-    // 残件確認
+    // 残件確認（HTML URLのみ）
     const remaining = await db.prepare(`
       SELECT COUNT(*) as cnt FROM subsidy_cache
-      WHERE source = 'izumi' AND wall_chat_ready = 0 AND wall_chat_excluded = 0
+      WHERE source = 'izumi' AND wall_chat_excluded = 0
         AND (detail_json IS NULL OR json_extract(detail_json, '$.crawled_at') IS NULL)
+        AND json_extract(detail_json, '$.official_url') NOT LIKE '%.pdf%'
     `).first<{ cnt: number }>();
     
-    console.log(`[Crawl-Izumi] Completed: crawled=${crawled}, ready=${readyAfter}, failed=${crawlFailed}, remaining=${remaining?.cnt || 0}`);
+    const remainingFallback = await db.prepare(`
+      SELECT COUNT(*) as cnt FROM subsidy_cache
+      WHERE source = 'izumi' AND wall_chat_excluded = 0
+        AND json_extract(detail_json, '$.overview_source') = 'title_fallback_v1'
+        AND json_extract(detail_json, '$.crawled_at') IS NULL
+    `).first<{ cnt: number }>();
+    
+    console.log(`[Crawl-Izumi-v2] crawled=${crawled}, upgraded=${upgraded}, ready=${readyAfter}, failed=${crawlFailed}, remaining=${remaining?.cnt || 0}, remaining_fallback=${remainingFallback?.cnt || 0}`);
     
     if (runId) {
       await finishCronRun(db, runId, errors.length > 0 ? 'partial' : 'success', {
@@ -483,27 +536,31 @@ izumiPromote.post('/crawl-izumi-details', async (c) => {
         items_skipped: crawlFailed,
         error_count: errors.length,
         errors: errors.slice(0, 50),
-        metadata: { crawled, ready_after: readyAfter, crawl_failed: crawlFailed, remaining: remaining?.cnt || 0 },
+        metadata: { crawled, upgraded, ready_after: readyAfter, crawl_failed: crawlFailed, remaining: remaining?.cnt || 0, remaining_fallback: remainingFallback?.cnt || 0, mode },
       });
     }
     
     return c.json<ApiResponse<{
       message: string;
       crawled: number;
+      upgraded: number;
       ready_after: number;
       crawl_failed: number;
       remaining: number;
+      remaining_fallback: number;
       errors_count: number;
       timestamp: string;
       run_id?: string;
     }>>({
       success: true,
       data: {
-        message: `Izumi crawl completed: ${crawled} crawled, ${readyAfter} ready`,
+        message: `Izumi crawl v2: ${crawled} crawled, ${upgraded} upgraded, ${readyAfter} ready`,
         crawled,
+        upgraded,
         ready_after: readyAfter,
         crawl_failed: crawlFailed,
         remaining: remaining?.cnt || 0,
+        remaining_fallback: remainingFallback?.cnt || 0,
         errors_count: errors.length,
         timestamp: new Date().toISOString(),
         run_id: runId ?? undefined,
@@ -511,7 +568,7 @@ izumiPromote.post('/crawl-izumi-details', async (c) => {
     });
     
   } catch (error) {
-    console.error('[Crawl-Izumi] Error:', error);
+    console.error('[Crawl-Izumi-v2] Error:', error);
     if (runId) {
       await finishCronRun(db, runId, 'failed', {
         error_count: 1,
@@ -867,141 +924,223 @@ function prefectureCodeToName(code: string): string | null {
 }
 
 /**
- * HTML → プレーンテキスト変換（軽量版）
+ * HTML → プレーンテキスト変換（軽量版 - 後方互換用）
  */
 function htmlToPlainText(html: string, maxLength: number = 5000): string {
-  let text = html
-    // scriptとstyleタグ除去
+  return htmlToPlainTextV2(html, maxLength);
+}
+
+/**
+ * HTML → プレーンテキスト変換 v2
+ * main/article/content領域を優先抽出、ナビゲーション除去強化
+ */
+function htmlToPlainTextV2(html: string, maxLength: number = 5000): string {
+  // Step 1: main content領域を探す
+  let contentHtml = html;
+  const mainPatterns = [
+    /<main[^>]*>([\s\S]*?)<\/main>/i,
+    /<article[^>]*>([\s\S]*?)<\/article>/i,
+    /<div[^>]*(?:id|class)=["'][^"']*(?:content|main|honbun|mainContents|entry-content)[^"']*["'][^>]*>([\s\S]*?)<\/div>\s*(?:<\/div>|<div[^>]*(?:id|class)=["'][^"']*(?:footer|sidebar|sub|navi))/i,
+  ];
+  
+  for (const pattern of mainPatterns) {
+    const match = pattern.exec(html);
+    if (match && match[1] && match[1].length > 200) {
+      contentHtml = match[1];
+      break;
+    }
+  }
+  
+  let text = contentHtml
+    // 不要タグ除去
     .replace(/<script[\s\S]*?<\/script>/gi, '')
     .replace(/<style[\s\S]*?<\/style>/gi, '')
     .replace(/<nav[\s\S]*?<\/nav>/gi, '')
     .replace(/<header[\s\S]*?<\/header>/gi, '')
     .replace(/<footer[\s\S]*?<\/footer>/gi, '')
-    // HTMLタグ除去
+    .replace(/<aside[\s\S]*?<\/aside>/gi, '')
+    .replace(/<form[\s\S]*?<\/form>/gi, '')
+    .replace(/<!--[\s\S]*?-->/g, '')
+    // 構造タグ → 改行
     .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<\/?(p|div|h[1-6]|li|tr|td|th)[^>]*>/gi, '\n')
+    .replace(/<\/?(p|div|h[1-6]|li|tr|td|th|dt|dd|section|blockquote)[^>]*>/gi, '\n')
     .replace(/<[^>]+>/g, '')
-    // HTMLエンティティ変換
+    // HTMLエンティティ
     .replace(/&nbsp;/g, ' ')
     .replace(/&amp;/g, '&')
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
     .replace(/&quot;/g, '"')
+    .replace(/&rsaquo;/g, '>')
+    .replace(/&lsaquo;/g, '<')
     .replace(/&#\d+;/g, '')
+    .replace(/&[a-z]+;/gi, '')
     // 空白正規化
     .replace(/[ \t]+/g, ' ')
-    .replace(/\n\s*\n/g, '\n')
+    .replace(/\n[ \t]+/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
     .trim();
   
-  return text.substring(0, maxLength);
+  // ナビゲーション行を除去（短い行が連続する部分）
+  const lines = text.split('\n');
+  const filteredLines: string[] = [];
+  let shortLineStreak = 0;
+  
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) { shortLineStreak = 0; continue; }
+    
+    // 除外パターン: サイト共通ナビゲーション等
+    if (/^(ホーム|トップ|HOME|TOP|サイトマップ|お問い合わせ|閲覧補助|文字サイズ|Foreign|Select Language|検索|メニュー|印刷|ページの先頭|本文へ|このページ|JavaScriptが無効|くらし|健康|税金|子育て|防災|移住|閉じる|共通メニュー|操作補助)/.test(trimmed)) {
+      continue;
+    }
+    // 非常に短い行が連続したらナビゲーション判定
+    if (trimmed.length <= 6) {
+      shortLineStreak++;
+      if (shortLineStreak >= 3) continue;
+    } else {
+      shortLineStreak = 0;
+    }
+    
+    if (trimmed.length >= 4) {
+      filteredLines.push(trimmed);
+    }
+  }
+  
+  return filteredLines.join('\n').substring(0, maxLength);
 }
 
 /**
- * テキストからフィールド抽出
+ * テキストからフィールド抽出 (後方互換用)
  */
-function extractFieldsFromText(text: string, title: string): {
+function extractFieldsFromText(text: string, title: string) {
+  return extractFieldsFromTextV2(text, title);
+}
+
+/**
+ * テキストからフィールド抽出 v2
+ * パターン拡充: 補助率、金額、対象事業者も抽出
+ */
+function extractFieldsFromTextV2(text: string, title: string): {
   eligible_expenses: string[];
   application_requirements: string[];
   required_documents: string[];
   deadline: string | null;
+  subsidy_rate: string | null;
+  subsidy_amount: string | null;
+  target_businesses: string | null;
 } {
-  const result: {
-    eligible_expenses: string[];
-    application_requirements: string[];
-    required_documents: string[];
-    deadline: string | null;
-  } = {
-    eligible_expenses: [],
-    application_requirements: [],
-    required_documents: [],
-    deadline: null,
+  const result = {
+    eligible_expenses: [] as string[],
+    application_requirements: [] as string[],
+    required_documents: [] as string[],
+    deadline: null as string | null,
+    subsidy_rate: null as string | null,
+    subsidy_amount: null as string | null,
+    target_businesses: null as string | null,
   };
   
-  // 対象経費の抽出パターン
+  // === 対象経費の抽出 ===
   const expensePatterns = [
-    /対象経費[：:]\s*(.+?)(?:\n|$)/gi,
-    /補助対象[：:]\s*(.+?)(?:\n|$)/gi,
-    /助成対象[：:]\s*(.+?)(?:\n|$)/gi,
-    /経費[：:]\s*(.+?)(?:\n|$)/gi,
+    /(?:補助|助成|対象)(?:の)?(?:対象)?(?:経費|費用|事業)[：:は]\s*(.+?)(?:\n|$)/gi,
+    /(?:対象となる)(?:経費|費用|事業)[：:は]\s*(.+?)(?:\n|$)/gi,
+    /(?:補助対象内容)[\s\n]*(.+?)(?:\n\n|$)/gi,
   ];
-  
   for (const pattern of expensePatterns) {
     let match;
     while ((match = pattern.exec(text)) !== null) {
-      const items = match[1].split(/[、，,・]/).map(s => s.trim()).filter(s => s.length >= 2 && s.length <= 50);
+      const items = match[1].split(/[、，,・\n]/).map(s => s.trim()).filter(s => s.length >= 2 && s.length <= 80);
       result.eligible_expenses.push(...items);
     }
   }
+  // 重複除去
+  result.eligible_expenses = [...new Set(result.eligible_expenses)].slice(0, 10);
   
-  // タイトルからもカテゴリ推定
-  if (result.eligible_expenses.length === 0) {
-    const t = title.toLowerCase();
-    if (t.includes('設備') || t.includes('機械') || t.includes('導入')) {
-      result.eligible_expenses = ['機械装置・システム構築費', '設備購入費'];
-    } else if (t.includes('it') || t.includes('デジタル') || t.includes('dx')) {
-      result.eligible_expenses = ['ソフトウェア購入費', 'クラウド利用費'];
-    } else if (t.includes('研修') || t.includes('人材') || t.includes('育成')) {
-      result.eligible_expenses = ['研修費', '外部専門家経費'];
-    } else if (t.includes('販路') || t.includes('海外') || t.includes('展示会')) {
-      result.eligible_expenses = ['広報費', '展示会出展費'];
-    } else if (t.includes('創業') || t.includes('起業')) {
-      result.eligible_expenses = ['設備費', '広報費', '開業費'];
-    } else {
-      result.eligible_expenses = ['設備費', '外注費', '委託費'];
-    }
-  }
-  
-  // 申請要件の抽出
+  // === 申請要件・対象者 ===
   const reqPatterns = [
-    /対象者[：:]\s*(.+?)(?:\n|$)/gi,
-    /申請要件[：:]\s*(.+?)(?:\n|$)/gi,
-    /対象[：:]\s*(.+?)(?:\n|$)/gi,
+    /(?:補助|助成|給付|交付)?(?:の)?(?:対象|要件|資格)[：:は]\s*(.+?)(?:\n\n|$)/gi,
+    /(?:対象者|対象事業者|申請資格|交付対象|給付対象者)[：:は]?\s*(.+?)(?:\n\n|$)/gis,
+    /(?:次の.{0,10}に該当)(.{10,300}?)(?:\n\n)/gis,
   ];
-  
   for (const pattern of reqPatterns) {
     let match;
     while ((match = pattern.exec(text)) !== null) {
-      const items = match[1].split(/[、，,]/).map(s => s.trim()).filter(s => s.length >= 3 && s.length <= 100);
+      const block = match[1];
+      const items = block.split(/[\n]/).map(s => s.trim()).filter(s => s.length >= 5 && s.length <= 200);
       result.application_requirements.push(...items);
     }
   }
+  result.application_requirements = [...new Set(result.application_requirements)].slice(0, 15);
   
-  if (result.application_requirements.length === 0) {
-    result.application_requirements = [
-      '日本国内に事業所を有すること',
-      '税務申告を適正に行っていること',
-    ];
-  }
-  
-  // 必要書類の抽出
+  // === 必要書類 ===
   const docPatterns = [
-    /必要書類[：:]\s*(.+?)(?:\n|$)/gi,
-    /提出書類[：:]\s*(.+?)(?:\n|$)/gi,
-    /申請書類[：:]\s*(.+?)(?:\n|$)/gi,
+    /(?:必要|提出|申請)?書類[：:は]?\s*(.+?)(?:\n\n|$)/gi,
+    /(?:添付書類|提出物|必要なもの)[：:は]?\s*(.+?)(?:\n\n|$)/gi,
   ];
-  
   for (const pattern of docPatterns) {
     let match;
     while ((match = pattern.exec(text)) !== null) {
-      const items = match[1].split(/[、，,・]/).map(s => s.trim()).filter(s => s.length >= 2 && s.length <= 50);
+      const items = match[1].split(/[、，,・\n]/).map(s => s.trim()).filter(s => s.length >= 2 && s.length <= 60 && !s.includes('ワード形式') && !s.includes('PDF形式') && !s.includes('エクセル'));
       result.required_documents.push(...items);
     }
   }
-  
-  if (result.required_documents.length === 0) {
-    result.required_documents = ['申請書', '事業計画書', '見積書'];
+  // テキスト内の書類名直接検出
+  const docKeywords = ['申請書', '事業計画書', '見積書', '決算書', '確定申告書', '登記簿謄本', '印鑑証明書', '納税証明書', '住民票', '定款', '経費明細', '交付申請書', '実績報告書', '概算払請求書'];
+  for (const kw of docKeywords) {
+    if (text.includes(kw) && !result.required_documents.includes(kw)) {
+      result.required_documents.push(kw);
+    }
   }
+  result.required_documents = [...new Set(result.required_documents)].slice(0, 10);
   
-  // 締切日の抽出
+  // === 締切日 ===
   const deadlinePatterns = [
-    /(?:締切|期限|期日|〆切|しめきり)[：:日は]\s*(令和\d+年\d+月\d+日|20\d{2}[年\/\-]\d{1,2}[月\/\-]\d{1,2}日?)/gi,
-    /(?:受付期間|募集期間|申請期間)[：:は]\s*[\s\S]*?(?:～|~|から)\s*(令和\d+年\d+月\d+日|20\d{2}[年\/\-]\d{1,2}[月\/\-]\d{1,2}日?)/gi,
+    /(?:締切|期限|期日|〆切|しめきり|受付終了)[：:日は]?\s*(令和\d+年\d+月\d+日|20\d{2}[年\/\-]\d{1,2}[月\/\-]\d{1,2}日?)/gi,
+    /(?:受付期間|募集期間|申請期間|公募期間)[：:は]?[\s\S]{0,50}?(?:～|~|〜|まで|から)\s*(令和\d+年\d+月\d+日|20\d{2}[年\/\-]\d{1,2}[月\/\-]\d{1,2}日?)/gi,
+    /(令和\d+年\d+月\d+日)\s*(?:まで|締切|迄)/gi,
   ];
-  
   for (const pattern of deadlinePatterns) {
     const match = pattern.exec(text);
     if (match) {
       result.deadline = match[1];
+      break;
+    }
+  }
+  
+  // === 補助率 ===
+  const ratePatterns = [
+    /(?:補助率|助成率|補助割合)[：:は]?\s*([0-9\/１-９／]+(?:分の[0-9１-９]+)?|[0-9]+[%％])/gi,
+    /(?:対象経費の)\s*([0-9\/１-９／]+(?:分の[0-9１-９]+)?|[0-9]+[%％])\s*(?:以内|を補助)/gi,
+  ];
+  for (const pattern of ratePatterns) {
+    const match = pattern.exec(text);
+    if (match) {
+      result.subsidy_rate = match[1];
+      break;
+    }
+  }
+  
+  // === 補助金額 ===
+  const amountPatterns = [
+    /(?:補助(?:金額|上限|限度額)|助成(?:金額|上限|限度額)|上限額)[：:は]?\s*([0-9,，]+万?円(?:以内)?)/gi,
+    /(?:1(?:件|事業所|法人|人)あたり|1(?:件|事業所|法人|人)当たり)\s*(?:最大)?\s*([0-9,，]+万?円)/gi,
+  ];
+  for (const pattern of amountPatterns) {
+    const match = pattern.exec(text);
+    if (match) {
+      result.subsidy_amount = match[1];
+      break;
+    }
+  }
+  
+  // === 対象事業者 ===
+  const bizPatterns = [
+    /(?:対象(?:と)?(?:なる)?(?:事業者|企業|者))[：:は]?\s*(.{10,200}?)(?:\n\n|\n(?:[0-9０-９]|\(|（))/gis,
+  ];
+  for (const pattern of bizPatterns) {
+    const match = pattern.exec(text);
+    if (match) {
+      result.target_businesses = match[1].trim().substring(0, 200);
       break;
     }
   }
