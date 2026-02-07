@@ -62,17 +62,20 @@ const EXCLUSION_PATTERNS: Array<{
     code: 'SENGEN_NINTEI',
     reason_ja: '宣言/認定プログラムのため壁打ち対象外（補助金ではない）',
   },
-  // ガイドライン系
+  // ガイドライン系 — タイトルのみで判定
+  // ※ overviewに「手引き」「ガイドライン」が含まれるのは正常な補助金説明
   {
     pattern: /ガイドライン(?:のみ)?|使用規約|利用規約|手引き(?:書)?(?:のみ)?/,
     code: 'GUIDELINE_ONLY',
     reason_ja: 'ガイドライン/手引き等のため壁打ち対象外',
+    titleOnly: true,
   },
-  // 練習・テスト用
+  // 練習・テスト用 — タイトルのみで判定
   {
     pattern: /練習用|テスト用|ダミー|サンプル(?:申請)?/,
     code: 'RENSHU_TEST',
     reason_ja: '練習/テスト用のため壁打ち対象外',
+    titleOnly: true,
   },
 ];
 
