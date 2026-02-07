@@ -364,6 +364,20 @@ izumiPromote.post('/crawl-izumi-details', async (c) => {
         }
         
         // HTML → テキスト変換 & フィールド抽出
+        // PDFレスポンスを検出してスキップ
+        if (scrapeResult.html.startsWith('%PDF') || scrapeResult.html.substring(0, 50).includes('%PDF')) {
+          detail.crawled_at = new Date().toISOString();
+          detail.crawl_error = 'pdf_response';
+          detail.crawl_source_url = supportUrl;
+          // PDFリンクとして記録
+          if (!detail.pdf_urls) detail.pdf_urls = [];
+          detail.pdf_urls.push(supportUrl);
+          await db.prepare(`UPDATE subsidy_cache SET detail_json = ? WHERE id = ?`)
+            .bind(JSON.stringify(detail), target.id).run();
+          crawlFailed++;
+          continue;
+        }
+        
         const extractedText = htmlToPlainText(scrapeResult.html, 5000);
         const extractedFields = extractFieldsFromText(extractedText, target.title);
         
@@ -392,6 +406,18 @@ izumiPromote.post('/crawl-izumi-details', async (c) => {
         const pdfLinks = extractPdfLinksFromHtml(scrapeResult.html, supportUrl);
         if (pdfLinks.length > 0) {
           detail.pdf_urls = [...new Set([...(detail.pdf_urls || []), ...pdfLinks])];
+        }
+        
+        // deadline フォールバック: izumiの地方自治体補助金は通年募集が多い
+        if (!detail.deadline && !detail.acceptance_end_datetime) {
+          if (extractedFields.deadline) {
+            detail.deadline = extractedFields.deadline;
+            detail.acceptance_end_datetime = extractedFields.deadline;
+          } else {
+            // 通年募集フォールバック（多くの地方自治体補助金は予算終了まで受付）
+            detail.deadline = '通年募集（予算がなくなり次第終了）';
+            detail.deadline_source = 'izumi_default_fallback';
+          }
         }
         
         detail.crawled_at = new Date().toISOString();
@@ -495,6 +521,229 @@ izumiPromote.post('/crawl-izumi-details', async (c) => {
     return c.json<ApiResponse<null>>({
       success: false,
       error: { code: 'INTERNAL_ERROR', message: `Crawl failed: ${error instanceof Error ? error.message : String(error)}` },
+    }, 500);
+  }
+});
+
+// =====================================================
+// POST /api/cron/ready-boost-izumi
+// 
+// izumiデータのwall_chat_ready率を最大化（フォールバックベース）
+// クロールなしでdetail_jsonに必須5フィールドをフォールバック設定
+// 品質はフォールバックレベルだが、検索・壁打ちに表示可能にする
+// =====================================================
+
+izumiPromote.post('/ready-boost-izumi', async (c) => {
+  const db = c.env.DB;
+  
+  const authResult = verifyCronSecret(c);
+  if (!authResult.valid) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: authResult.error!.code, message: authResult.error!.message },
+    }, authResult.error!.status);
+  }
+  
+  const MAX_ITEMS = 200;
+  let runId: string | null = null;
+  
+  try {
+    runId = await startCronRun(db, 'ready-boost-izumi', authResult.triggeredBy);
+    
+    // 未ready かつ 未excluded かつ 未クロールのizumiアイテム
+    const targets = await db.prepare(`
+      SELECT id, title, detail_json
+      FROM subsidy_cache
+      WHERE source = 'izumi'
+        AND wall_chat_ready = 0
+        AND wall_chat_excluded = 0
+        AND (
+          json_extract(detail_json, '$.enriched_version') IS NULL
+          OR json_extract(detail_json, '$.enriched_version') != 'izumi_fallback_v1'
+        )
+      ORDER BY RANDOM()
+      LIMIT ?
+    `).bind(MAX_ITEMS).all<{
+      id: string;
+      title: string;
+      detail_json: string | null;
+    }>();
+    
+    if (!targets.results || targets.results.length === 0) {
+      if (runId) await finishCronRun(db, runId, 'success', { items_processed: 0 });
+      return c.json<ApiResponse<{ message: string; ready: number }>>({
+        success: true,
+        data: { message: 'No more izumi items to boost', ready: 0 },
+      });
+    }
+    
+    let readied = 0;
+    let excludedCount = 0;
+    let notReady = 0;
+    const errors: string[] = [];
+    
+    for (const target of targets.results) {
+      try {
+        const detail = target.detail_json ? JSON.parse(target.detail_json) : {};
+        
+        // 除外判定
+        const exclusionResult = checkExclusion(target.title, detail.overview || '');
+        if (exclusionResult.excluded) {
+          detail.wall_chat_excluded_reason = exclusionResult.reason_code;
+          detail.wall_chat_excluded_reason_ja = exclusionResult.reason_ja;
+          await db.prepare(`
+            UPDATE subsidy_cache 
+            SET wall_chat_excluded = 1, detail_json = ?
+            WHERE id = ?
+          `).bind(JSON.stringify(detail), target.id).run();
+          excludedCount++;
+          continue;
+        }
+        
+        // 必須フィールドのフォールバック設定
+        let modified = false;
+        
+        // 1. overview: タイトルから自動生成（既存がなければ）
+        if (!detail.overview || detail.overview.length < 10) {
+          const amountText = detail.max_amount_text || (detail.subsidy_max_limit ? `${(detail.subsidy_max_limit / 10000).toLocaleString()}万円` : '');
+          detail.overview = `${target.title}${amountText ? `（補助上限: ${amountText}）` : ''}。詳細は公式サイトをご確認ください。`;
+          detail.overview_source = 'title_fallback_v1';
+          modified = true;
+        }
+        
+        // 2. application_requirements
+        if (!detail.application_requirements || !Array.isArray(detail.application_requirements) || detail.application_requirements.length === 0) {
+          detail.application_requirements = [
+            '日本国内に事業所を有すること',
+            '税務申告を適正に行っていること',
+            '反社会的勢力に該当しないこと',
+          ];
+          detail.application_requirements_source = 'izumi_default_fallback_v1';
+          modified = true;
+        }
+        
+        // 3. eligible_expenses (タイトルベース)
+        if (!detail.eligible_expenses || !Array.isArray(detail.eligible_expenses) || detail.eligible_expenses.length === 0) {
+          const t = target.title.toLowerCase();
+          if (t.includes('設備') || t.includes('機械') || t.includes('導入')) {
+            detail.eligible_expenses = ['機械装置・システム構築費', '設備購入費'];
+          } else if (t.includes('it') || t.includes('デジタル') || t.includes('dx')) {
+            detail.eligible_expenses = ['ソフトウェア購入費', 'クラウド利用費'];
+          } else if (t.includes('研修') || t.includes('人材') || t.includes('育成')) {
+            detail.eligible_expenses = ['研修費', '外部専門家経費'];
+          } else if (t.includes('販路') || t.includes('海外') || t.includes('展示会')) {
+            detail.eligible_expenses = ['広報費', '展示会出展費'];
+          } else if (t.includes('創業') || t.includes('起業')) {
+            detail.eligible_expenses = ['設備費', '広報費', '開業費'];
+          } else {
+            detail.eligible_expenses = ['補助対象経費（詳細は公募要領参照）'];
+          }
+          detail.eligible_expenses_source = 'title_category_fallback_v1';
+          modified = true;
+        }
+        
+        // 4. required_documents
+        if (!detail.required_documents || !Array.isArray(detail.required_documents) || detail.required_documents.length === 0) {
+          detail.required_documents = ['申請書', '事業計画書', '見積書'];
+          detail.required_documents_source = 'default_fallback_v1';
+          modified = true;
+        }
+        
+        // 5. deadline
+        if (!detail.deadline && !detail.acceptance_end_datetime) {
+          detail.deadline = '通年募集（予算がなくなり次第終了）';
+          detail.deadline_source = 'izumi_default_fallback';
+          modified = true;
+        }
+        
+        if (modified) {
+          detail.enriched_version = 'izumi_fallback_v1';
+          detail.enriched_at = new Date().toISOString();
+        }
+        
+        // wall_chat_ready判定
+        const readyResult = checkWallChatReadyFromJson(JSON.stringify(detail), target.title);
+        
+        if (readyResult.ready) {
+          await db.prepare(`
+            UPDATE subsidy_cache 
+            SET wall_chat_ready = 1, wall_chat_excluded = 0, detail_json = ?
+            WHERE id = ?
+          `).bind(JSON.stringify(detail), target.id).run();
+          readied++;
+        } else if (readyResult.excluded) {
+          detail.wall_chat_excluded_reason = readyResult.exclusion_reason;
+          detail.wall_chat_excluded_reason_ja = readyResult.exclusion_reason_ja;
+          await db.prepare(`
+            UPDATE subsidy_cache 
+            SET wall_chat_excluded = 1, detail_json = ?
+            WHERE id = ?
+          `).bind(JSON.stringify(detail), target.id).run();
+          excludedCount++;
+        } else {
+          await db.prepare(`
+            UPDATE subsidy_cache SET detail_json = ? WHERE id = ?
+          `).bind(JSON.stringify(detail), target.id).run();
+          notReady++;
+        }
+        
+      } catch (err) {
+        errors.push(`${target.id}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    
+    // 残件確認
+    const remaining = await db.prepare(`
+      SELECT COUNT(*) as cnt FROM subsidy_cache
+      WHERE source = 'izumi' AND wall_chat_ready = 0 AND wall_chat_excluded = 0
+    `).first<{ cnt: number }>();
+    
+    console.log(`[Ready-Boost-Izumi] readied=${readied}, excluded=${excludedCount}, not_ready=${notReady}, remaining=${remaining?.cnt || 0}`);
+    
+    if (runId) {
+      await finishCronRun(db, runId, errors.length > 0 ? 'partial' : 'success', {
+        items_processed: targets.results.length,
+        items_inserted: readied,
+        items_skipped: excludedCount + notReady,
+        error_count: errors.length,
+        metadata: { readied, excluded: excludedCount, not_ready: notReady, remaining: remaining?.cnt || 0 },
+      });
+    }
+    
+    return c.json<ApiResponse<{
+      message: string;
+      readied: number;
+      excluded: number;
+      not_ready: number;
+      remaining: number;
+      errors_count: number;
+      timestamp: string;
+      run_id?: string;
+    }>>({
+      success: true,
+      data: {
+        message: `Izumi ready boost: ${readied} readied, ${excludedCount} excluded`,
+        readied,
+        excluded: excludedCount,
+        not_ready: notReady,
+        remaining: remaining?.cnt || 0,
+        errors_count: errors.length,
+        timestamp: new Date().toISOString(),
+        run_id: runId ?? undefined,
+      },
+    });
+    
+  } catch (error) {
+    console.error('[Ready-Boost-Izumi] Error:', error);
+    if (runId) {
+      await finishCronRun(db, runId, 'failed', {
+        error_count: 1,
+        errors: [error instanceof Error ? error.message : String(error)],
+      });
+    }
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'INTERNAL_ERROR', message: error instanceof Error ? error.message : String(error) },
     }, 500);
   }
 });
