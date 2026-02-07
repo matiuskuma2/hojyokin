@@ -1,0 +1,14 @@
+name = "hojyokin-cron"
+main = "src/index.ts"
+compatibility_date = "2026-01-21"
+compatibility_flags = ["nodejs_compat"]
+
+# Cron Triggers
+# 毎日 06:00 JST (21:00 UTC): JGrants同期 + enrich
+# 毎時 15分: izumiクロール (10件/回)
+# 毎日 07:00 JST (22:00 UTC): daily-ready-boost + recalc
+[triggers]
+crons = [
+  "0 21 * * *",
+  "0 */1 * * *"
+]

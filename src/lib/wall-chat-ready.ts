@@ -46,12 +46,15 @@ const EXCLUSION_PATTERNS: Array<{
   pattern: RegExp;
   code: ExclusionReasonCode;
   reason_ja: string;
+  titleOnly?: boolean;  // trueの場合、タイトルのみでチェック（overviewは除外判定に使わない）
 }> = [
-  // 交付申請系（採択後の手続き）
+  // 交付申請系（採択後の手続き）— タイトルのみで判定
+  // ※ overviewには「交付申請は○月○日まで」等の正当な案内文が含まれるため
   {
-    pattern: /交付申請|交付決定後|採択後|実績報告|精算払い|概算払い/,
+    pattern: /交付決定後|採択後の手続|実績報告(?:書)?(?:の提出|について)|精算払い(?:について|の手続)|概算払い(?:について|の手続)/,
     code: 'KOFU_SHINSEI',
     reason_ja: '交付申請等（採択後の手続き）のため壁打ち対象外',
+    titleOnly: true,
   },
   // 宣言/認定系（補助金ではない）
   {
@@ -81,9 +84,9 @@ const EXCLUSION_PATTERNS: Array<{
  * @returns 除外判定結果
  */
 export function checkExclusion(title: string, overview?: string): ExclusionResult {
-  const textToCheck = `${title} ${overview || ''}`;
-  
-  for (const { pattern, code, reason_ja } of EXCLUSION_PATTERNS) {
+  for (const { pattern, code, reason_ja, titleOnly } of EXCLUSION_PATTERNS) {
+    // titleOnly フラグがある場合はタイトルのみでチェック
+    const textToCheck = titleOnly ? title : `${title} ${overview || ''}`;
     const match = textToCheck.match(pattern);
     if (match) {
       return {
