@@ -41,6 +41,7 @@ import wallChat from './wall-chat';
 import jnet21 from './jnet21';
 import monitoring from './monitoring';
 import misc from './misc';
+import izumiPromote from './izumi-promote';
 
 const cron = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -54,6 +55,7 @@ cron.route('/', wallChat);
 cron.route('/', jnet21);
 cron.route('/', monitoring);
 cron.route('/', misc);
+cron.route('/', izumiPromote);
 
 export default cron;
 
