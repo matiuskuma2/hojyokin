@@ -9,7 +9,9 @@
  *   data-status.ts        - データ状態・アラート (727行)
  *   ops.ts                - 運用操作（data-health, trigger-sync等）(912行)
  *   feed-failures.ts      - フィード障害管理 (406行)
- *   extraction-admin.ts   - 抽出・エンリッチメント管理 (1,963行)
+ *   enrichment.ts         - 抽出・エンリッチメント実行 (959行)
+ *   logs-summary.ts       - 抽出ログ・サマリー (261行)
+ *   queue-management.ts   - 抽出キュー管理 (737行)
  *   cost-discovery.ts     - コスト・ディスカバリー・進捗 (1,275行)
  *   izumi-monitors.ts     - 泉リンク・監視・更新管理 (730行)
  * 
@@ -45,7 +47,9 @@ import dashboardKpi from './dashboard-kpi';
 import dataStatus from './data-status';
 import ops from './ops';
 import feedFailures from './feed-failures';
-import extractionAdmin from './extraction-admin';
+import enrichment from './enrichment';
+import logsSummary from './logs-summary';
+import queueManagement from './queue-management';
 import costDiscovery from './cost-discovery';
 import izumiMonitors from './izumi-monitors';
 import adminOps from '../admin-ops';
@@ -61,7 +65,9 @@ adminDashboard.route('/', dashboardKpi);
 adminDashboard.route('/', dataStatus);
 adminDashboard.route('/', ops);
 adminDashboard.route('/', feedFailures);
-adminDashboard.route('/', extractionAdmin);
+adminDashboard.route('/', enrichment);
+adminDashboard.route('/', logsSummary);
+adminDashboard.route('/', queueManagement);
 adminDashboard.route('/', costDiscovery);
 adminDashboard.route('/', izumiMonitors);
 

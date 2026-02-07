@@ -8,7 +8,8 @@
  *   _helpers.ts        - 共通ヘルパー（UUID、cronRun、secret検証）
  *   sync-jgrants.ts    - JGrants同期・enrichment・詳細取得 (1,387行)
  *   scrape-tokyo.ts    - 東京都スクレイピング（公社/しごと財団/はたらくネット）(1,401行)
- *   extraction.ts      - PDF抽出・OCR・キュー管理 (1,732行)
+ *   pdf-operations.ts   - PDF保存・抽出 (847行)
+ *   extraction-queue.ts  - 抽出キュー管理 (876行)
  *   wall-chat.ts       - wall_chat_ready計算・fallback生成 (1,048行)
  *   suggestions.ts     - 提案生成 (500行)
  *   monitoring.ts      - データソース監視（P4/P5）(625行)
@@ -34,7 +35,8 @@ import type { Env, Variables } from '../../types';
 import syncJgrants from './sync-jgrants';
 import scrapeTokyo from './scrape-tokyo';
 import suggestions from './suggestions';
-import extraction from './extraction';
+import pdfOperations from './pdf-operations';
+import extractionQueue from './extraction-queue';
 import wallChat from './wall-chat';
 import jnet21 from './jnet21';
 import monitoring from './monitoring';
@@ -46,7 +48,8 @@ const cron = new Hono<{ Bindings: Env; Variables: Variables }>();
 cron.route('/', syncJgrants);
 cron.route('/', scrapeTokyo);
 cron.route('/', suggestions);
-cron.route('/', extraction);
+cron.route('/', pdfOperations);
+cron.route('/', extractionQueue);
 cron.route('/', wallChat);
 cron.route('/', jnet21);
 cron.route('/', monitoring);
