@@ -160,8 +160,9 @@ const agencyLayout = (title: string, content: string, activeTab: string = '') =>
           </div>
         </div>
         <div class="flex items-center gap-4">
-          <a href="/agency/settings" id="agency-name" class="text-sm hover:text-emerald-200 cursor-pointer" title="事務所設定"></a>
-          <a href="/agency/settings" id="user-name" class="text-sm text-emerald-200 hover:text-white cursor-pointer" title="アカウント設定"></a>
+          <a href="/agency/settings" id="agency-name" class="text-sm font-medium hover:text-emerald-200 cursor-pointer" title="事務所設定">
+            <i class="fas fa-building mr-1"></i><span id="agency-name-text"></span>
+          </a>
           <button onclick="logout()" class="text-sm hover:text-emerald-200">
             <i class="fas fa-sign-out-alt mr-1"></i>ログアウト
           </button>
@@ -180,22 +181,13 @@ const agencyLayout = (title: string, content: string, activeTab: string = '') =>
     // DOM読み込み後の初期化（apiCallはheadで定義済み）
     // ============================================================
     document.addEventListener('DOMContentLoaded', function() {
-      // ユーザー名表示
-      var user = window.currentUser;
-      if (user) {
-        var userNameEl = document.getElementById('user-name');
-        if (userNameEl) {
-          userNameEl.textContent = user.name || user.email || '';
-        }
-      }
-      
-      // Agency情報取得
+      // Agency情報取得（事務所名のみヘッダーに表示）
       if (window.apiCall) {
         window.apiCall('/api/agency/me').then(function(data) {
           if (data && data.success && data.data && data.data.agency) {
-            var agencyNameEl = document.getElementById('agency-name');
-            if (agencyNameEl) {
-              agencyNameEl.textContent = data.data.agency.name || '';
+            var agencyNameTextEl = document.getElementById('agency-name-text');
+            if (agencyNameTextEl) {
+              agencyNameTextEl.textContent = data.data.agency.name || '';
             }
           }
         });
