@@ -15,6 +15,7 @@ import type { Env, Variables, ApiResponse } from '../../types';
 import { generateUUID, startCronRun, finishCronRun, verifyCronSecret } from './_helpers';
 import { checkExclusion, checkWallChatReadyFromJson } from '../../lib/wall-chat-ready';
 import { simpleScrape } from '../../services/firecrawl';
+import { logSimpleScrapeCost } from '../../lib/cost/cost-logger';
 
 const izumiPromote = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -397,6 +398,23 @@ izumiPromote.post('/crawl-izumi-details', async (c) => {
         // HTML取得
         const scrapeResult = await simpleScrape(crawlUrl);
         
+        // コスト記録（simpleScrape: $0だが呼び出し数を管理画面で可視化）
+        try {
+          await logSimpleScrapeCost(db, {
+            url: crawlUrl,
+            success: scrapeResult.success,
+            httpStatus: scrapeResult.error?.startsWith('HTTP ') ? parseInt(scrapeResult.error.split(' ')[1]) : undefined,
+            errorCode: scrapeResult.success ? undefined : scrapeResult.error,
+            errorMessage: scrapeResult.success ? undefined : scrapeResult.error,
+            subsidyId: target.id,
+            sourceId: 'izumi',
+            responseSize: scrapeResult.html?.length || 0,
+          });
+        } catch (costErr) {
+          // コスト記録失敗はクロールを止めない
+          console.warn(`[cost-log] Failed for ${target.id}:`, costErr);
+        }
+        
         if (!scrapeResult.success || !scrapeResult.html) {
           detail.crawled_at = new Date().toISOString();
           detail.crawl_error = scrapeResult.error || 'scrape_failed';
@@ -476,28 +494,36 @@ izumiPromote.post('/crawl-izumi-details', async (c) => {
         detail.crawl_html_length = rawHtml.length;
         detail.enriched_version = 'izumi_crawl_v2';
         
+        // acceptance_end_datetime をテーブルカラムにも反映
+        // detail_json内の値とsubsidy_cacheカラムを同期させる
+        const deadlineForColumn = detail.acceptance_end_datetime || null;
+        
         // wall_chat_ready判定
         const readyResult = checkWallChatReadyFromJson(JSON.stringify(detail), target.title);
         
         if (readyResult.ready) {
           await db.prepare(`
             UPDATE subsidy_cache 
-            SET detail_json = ?, wall_chat_ready = 1, wall_chat_excluded = 0, wall_chat_mode = 'pending'
+            SET detail_json = ?, wall_chat_ready = 1, wall_chat_excluded = 0, wall_chat_mode = 'pending',
+                acceptance_end_datetime = COALESCE(?, acceptance_end_datetime)
             WHERE id = ?
-          `).bind(JSON.stringify(detail), target.id).run();
+          `).bind(JSON.stringify(detail), deadlineForColumn, target.id).run();
           readyAfter++;
         } else if (readyResult.excluded) {
           detail.wall_chat_excluded_reason = readyResult.exclusion_reason;
           detail.wall_chat_excluded_reason_ja = readyResult.exclusion_reason_ja;
           await db.prepare(`
             UPDATE subsidy_cache 
-            SET detail_json = ?, wall_chat_ready = 0, wall_chat_excluded = 1
+            SET detail_json = ?, wall_chat_ready = 0, wall_chat_excluded = 1,
+                acceptance_end_datetime = COALESCE(?, acceptance_end_datetime)
             WHERE id = ?
-          `).bind(JSON.stringify(detail), target.id).run();
+          `).bind(JSON.stringify(detail), deadlineForColumn, target.id).run();
         } else {
           await db.prepare(`
-            UPDATE subsidy_cache SET detail_json = ? WHERE id = ?`)
-            .bind(JSON.stringify(detail), target.id).run();
+            UPDATE subsidy_cache 
+            SET detail_json = ?, acceptance_end_datetime = COALESCE(?, acceptance_end_datetime)
+            WHERE id = ?
+          `).bind(JSON.stringify(detail), deadlineForColumn, target.id).run();
         }
         
         crawled++;

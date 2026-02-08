@@ -698,74 +698,85 @@ export class JGrantsAdapter {
     try {
       const includeUnready = params.includeUnready === true;
       
-      // 今日の日付（JST）を取得してISO形式に
+      // 今日の日付を取得してISO形式に
       const today = new Date();
       const todayStr = today.toISOString().slice(0, 10); // YYYY-MM-DD
       
-      // SQLレベルでは基本的なフィルタ
-      let query = `
-        SELECT * FROM subsidy_cache 
+      // ============================================================
+      // 共通WHERE句の構築（検索 + カウントで共通利用）
+      // v4.8: SQLベース正しいページネーション（旧: fetchLimit 100件固定バグ修正）
+      // ============================================================
+      let whereClause = `
         WHERE expires_at > datetime('now')
+          AND wall_chat_excluded = 0
       `;
-      const bindings: any[] = [];
+      const baseBindings: any[] = [];
       
       // 申請期限が今日以降のもののみ（期限切れを除外）
-      // acceptance_end_datetime が NULL または今日以降の場合のみ表示
-      // includeUnready の場合は期限切れも含める（debug用）
+      // acceptance_end_datetime が NULL（期限不明・常時受付）の場合も表示する
       if (!includeUnready) {
-        query += ` AND (acceptance_end_datetime IS NULL OR acceptance_end_datetime >= ?)`;
-        bindings.push(todayStr);
+        whereClause += ` AND (acceptance_end_datetime IS NULL OR acceptance_end_datetime >= ?)`;
+        baseBindings.push(todayStr);
       }
       
-      // 未整備を含めない場合はdetail_jsonの存在チェック
+      // 未整備を含めない場合はdetail_jsonの存在チェック + wall_chat_ready
       if (!includeUnready) {
-        query += ` AND detail_json IS NOT NULL AND LENGTH(detail_json) > 10`;
+        whereClause += ` AND wall_chat_ready = 1`;
+        whereClause += ` AND detail_json IS NOT NULL AND LENGTH(detail_json) > 10`;
       }
       
       if (params.target_area_search) {
-        query += ` AND (target_area_search IS NULL OR target_area_search = '全国' OR target_area_search LIKE ?)`;
-        bindings.push(`%${params.target_area_search}%`);
+        whereClause += ` AND (target_area_search IS NULL OR target_area_search = '全国' OR target_area_search LIKE ?)`;
+        baseBindings.push(`%${params.target_area_search}%`);
       }
       
       if (params.acceptance === 1) {
-        query += ` AND request_reception_display_flag = 1`;
+        whereClause += ` AND request_reception_display_flag = 1`;
       }
       
       if (params.keyword) {
-        query += ` AND title LIKE ?`;
-        bindings.push(`%${params.keyword}%`);
+        whereClause += ` AND title LIKE ?`;
+        baseBindings.push(`%${params.keyword}%`);
       }
+      
+      // ============================================================
+      // 1. 総件数を取得（正確な total_count）
+      // ============================================================
+      const countQuery = `SELECT COUNT(*) as total FROM subsidy_cache ${whereClause}`;
+      const countResult = await this.db.prepare(countQuery).bind(...baseBindings).first<{ total: number }>();
+      const totalCount = countResult?.total || 0;
+      
+      // ============================================================
+      // 2. ページネーション付きデータ取得（SQLレベルで正しいoffset/limit）
+      // ============================================================
+      const limit = params.limit || 20;
+      const offset = params.offset || 0;
+      
+      let dataQuery = `SELECT * FROM subsidy_cache ${whereClause}`;
+      const dataBindings = [...baseBindings];
       
       // ソート（tie-breaker: id で順序安定化）
+      // acceptance_end_datetime 順: NULLは最後に配置（期限不明は後ろ）
       if (params.sort === 'acceptance_end_datetime') {
-        query += ` ORDER BY acceptance_end_datetime ${params.order || 'ASC'}, id ASC`;
+        dataQuery += ` ORDER BY CASE WHEN acceptance_end_datetime IS NULL THEN 1 ELSE 0 END, acceptance_end_datetime ${params.order || 'ASC'}, id ASC`;
       } else if (params.sort === 'subsidy_max_limit') {
-        query += ` ORDER BY subsidy_max_limit ${params.order || 'DESC'}, id ASC`;
+        dataQuery += ` ORDER BY CASE WHEN subsidy_max_limit IS NULL THEN 1 ELSE 0 END, subsidy_max_limit ${params.order || 'DESC'}, id ASC`;
+      } else if (params.sort === 'score') {
+        // スコア順: detail_score DESC（NULL最後）→ id ASC
+        dataQuery += ` ORDER BY CASE WHEN detail_score IS NULL THEN 1 ELSE 0 END, detail_score DESC, id ASC`;
       } else {
-        query += ` ORDER BY cached_at DESC, id ASC`;
+        // デフォルト: 締切が近い順（NULLは最後）
+        dataQuery += ` ORDER BY CASE WHEN acceptance_end_datetime IS NULL THEN 1 ELSE 0 END, acceptance_end_datetime ASC, id ASC`;
       }
       
-      // 多めに取得してJS側でフィルタ（SEARCHABLE条件の詳細チェック用）
-      const fetchLimit = Math.max((params.limit || 20) * 3, 100);
-      query += ` LIMIT ? OFFSET ?`;
-      bindings.push(fetchLimit, 0); // offsetは後でJS側で適用
+      dataQuery += ` LIMIT ? OFFSET ?`;
+      dataBindings.push(limit, offset);
       
-      const result = await this.db.prepare(query).bind(...bindings).all();
-      
-      // SEARCHABLE条件でフィルタ（includeUnready時はスキップ）
-      const filteredRows = includeUnready 
-        ? (result.results || [])
-        : (result.results || []).filter(row => 
-            checkSearchableFromJson(row.detail_json as string | null)
-          );
-      
-      // ページネーション適用
-      const offset = params.offset || 0;
-      const limit = params.limit || 20;
-      const paginatedRows = filteredRows.slice(offset, offset + limit);
+      const result = await this.db.prepare(dataQuery).bind(...dataBindings).all();
+      const rows = result.results || [];
       
       // 各補助金にdetail_ready, wall_chat_readyフラグを付与
-      const subsidies = paginatedRows.map(row => {
+      const subsidies = rows.map(row => {
         const subsidy = this.rowToSubsidy(row);
         const detailJsonStr = row.detail_json as string | null;
         const wallChatResult = checkWallChatReadyFromJson(detailJsonStr);
@@ -775,10 +786,12 @@ export class JGrantsAdapter {
         return subsidy;
       });
       
+      console.log(`[searchFromCache] total=${totalCount}, returned=${subsidies.length}, offset=${offset}, limit=${limit}`);
+      
       return {
         subsidies,
-        total_count: filteredRows.length,
-        has_more: offset + limit < filteredRows.length,
+        total_count: totalCount,
+        has_more: offset + limit < totalCount,
         gate: includeUnready ? 'debug:all' : 'searchable-only',
       };
     } catch (error) {

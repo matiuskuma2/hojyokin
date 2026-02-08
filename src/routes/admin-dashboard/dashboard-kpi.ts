@@ -251,7 +251,7 @@ dashboardKpi.get('/costs', async (c) => {
         service as provider,
         SUM(cost_usd) as cost
       FROM api_cost_logs
-      WHERE service IN ('openai', 'firecrawl')
+      WHERE service IN ('openai', 'firecrawl', 'simple_scrape')
         AND created_at >= date('now', '-30 days')
       GROUP BY date(created_at), service
       ORDER BY date DESC
@@ -264,7 +264,7 @@ dashboardKpi.get('/costs', async (c) => {
         SUM(CASE WHEN date(created_at) = ? THEN cost_usd ELSE 0 END) as today,
         SUM(CASE WHEN date(created_at) >= ? THEN cost_usd ELSE 0 END) as month
       FROM api_cost_logs
-      WHERE service IN ('openai', 'firecrawl', 'vision_ocr')
+      WHERE service IN ('openai', 'firecrawl', 'vision_ocr', 'simple_scrape')
       GROUP BY service
     `).bind(today, monthStart).all<{ provider: string; today: number; month: number }>();
 
@@ -290,11 +290,38 @@ dashboardKpi.get('/costs', async (c) => {
       ? (todayCostResult?.cost || 0) / yesterdayCost.cost
       : null;
 
+    // simpleScrape 使用状況（コスト$0だが呼び出し数を把握）
+    const simpleScrapStats = await db.prepare(`
+      SELECT 
+        COUNT(*) as total_calls,
+        SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) as success_calls,
+        SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) as failed_calls,
+        COUNT(CASE WHEN date(created_at) = ? THEN 1 END) as today_calls,
+        COUNT(CASE WHEN date(created_at) >= ? THEN 1 END) as month_calls,
+        SUM(CASE WHEN date(created_at) = ? THEN units ELSE 0 END) as today_requests,
+        SUM(CASE WHEN date(created_at) >= ? THEN units ELSE 0 END) as month_requests,
+        MAX(created_at) as last_call
+      FROM api_cost_logs
+      WHERE service = 'simple_scrape'
+    `).bind(today, monthStart, today, monthStart)
+      .first<{
+        total_calls: number; success_calls: number; failed_calls: number;
+        today_calls: number; month_calls: number;
+        today_requests: number; month_requests: number;
+        last_call: string | null;
+      }>() || {
+        total_calls: 0, success_calls: 0, failed_calls: 0,
+        today_calls: 0, month_calls: 0,
+        today_requests: 0, month_requests: 0,
+        last_call: null,
+      };
+
     return c.json<ApiResponse<any>>({
       success: true,
       data: {
         openai: openaiCosts.results || [],
         firecrawl: firecrawlCosts.results || [],
+        simple_scrape: simpleScrapStats,
         daily: dailyCosts.results || [],
         totals: totalsByProvider,
         alerts: {

@@ -24,6 +24,12 @@
     // cached-only: subsidy_cacheを優先、なければモックにフォールバック
     "JGRANTS_MODE": "cached-only",
     
+    // 検索バックエンド (本番: wrangler secret で設定)
+    // cache: subsidy_cache全件検索（Izumi含む全ソース対応）
+    // ssot: subsidy_canonical + subsidy_snapshot（JGrantsのみ、将来全ソース対応予定）
+    // dual: ssot結果を返しつつcacheも裏で実行して差分ログ（検証用）
+    // 現在: cache（2026-02-08〜）
+    
     // 環境識別
     "ENVIRONMENT": "development"
     

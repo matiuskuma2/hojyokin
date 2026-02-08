@@ -241,3 +241,41 @@ export async function logOpenAICost(
     },
   });
 }
+
+/**
+ * simpleScrape（直接fetch）コストを記録
+ * 
+ * コストは$0（外部API不使用）だが、呼び出し数・成功率を把握するために記録する。
+ * これにより管理画面で「どれだけスクレイピングしているか」が可視化される。
+ */
+export async function logSimpleScrapeCost(
+  db: D1Database,
+  params: {
+    url: string;
+    success: boolean;
+    httpStatus?: number;
+    errorCode?: string;
+    errorMessage?: string;
+    subsidyId?: string;
+    sourceId?: string;
+    responseSize?: number; // レスポンスサイズ（bytes）
+  }
+): Promise<CostLogResult> {
+  return logApiCost(db, {
+    service: 'simple_scrape',
+    action: 'fetch',
+    units: 1,
+    unitType: 'request',
+    costUsd: 0, // 直接fetchなのでコストは$0
+    url: params.url,
+    success: params.success,
+    httpStatus: params.httpStatus,
+    errorCode: params.errorCode,
+    errorMessage: params.errorMessage,
+    subsidyId: params.subsidyId,
+    sourceId: params.sourceId,
+    metadata: {
+      response_size: params.responseSize || 0,
+    },
+  });
+}
