@@ -30,8 +30,9 @@ export function getSearchBackend(env: Env): SearchBackend {
   if (backend === 'ssot' || backend === 'dual' || backend === 'cache') {
     return backend;
   }
-  // デフォルト: ssot（SSOT検索を正とする）
-  return 'ssot';
+  // デフォルト: cache（2026-02-08〜 全ソース検索対応）
+  // Phase D 完了後に ssot へ戻す予定
+  return 'cache';
 }
 
 export type JGrantsMode = 'live' | 'mock' | 'cached-only';

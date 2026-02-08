@@ -868,31 +868,75 @@ adminPages.get('/admin', (c) => {
       <div class="bg-white rounded-xl shadow p-6">
         <div class="flex items-center justify-between mb-4">
           <h2 class="text-lg font-bold text-gray-800">
-            <i class="fas fa-dollar-sign text-green-600 mr-2"></i>コスト概要（今月）
+            <i class="fas fa-dollar-sign text-green-600 mr-2"></i>APIコスト概要
           </h2>
           <a href="/admin/costs" class="text-sm text-indigo-600 hover:text-indigo-800">
             詳細を見る <i class="fas fa-arrow-right ml-1"></i>
           </a>
         </div>
-        <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <div class="bg-gray-50 rounded-lg p-4">
-            <p class="text-sm text-gray-500">OpenAI</p>
-            <p id="cost-openai" class="text-2xl font-bold text-gray-900">$-</p>
-          </div>
-          <div class="bg-gray-50 rounded-lg p-4">
-            <p class="text-sm text-gray-500">Firecrawl</p>
-            <p id="cost-firecrawl" class="text-2xl font-bold text-gray-900">$-</p>
-          </div>
-          <div class="bg-gray-50 rounded-lg p-4">
-            <p class="text-sm text-gray-500">SimpleScrape</p>
-            <p id="cost-scrape-calls" class="text-2xl font-bold text-gray-900">-</p>
-            <p class="text-xs text-gray-400">呼び出し数（$0）</p>
-          </div>
-          <div class="bg-gray-50 rounded-lg p-4">
-            <p class="text-sm text-gray-500">合計</p>
-            <p id="cost-total" class="text-2xl font-bold text-indigo-600">$-</p>
+        
+        <!-- 全期間コスト -->
+        <div class="mb-4">
+          <p class="text-xs text-gray-500 mb-2 font-medium">全期間（api_cost_logs記録分）</p>
+          <div class="grid grid-cols-2 md:grid-cols-5 gap-3">
+            <div class="bg-gradient-to-br from-green-50 to-green-100 rounded-lg p-3">
+              <p class="text-xs text-green-600">OpenAI</p>
+              <p id="cost-openai-all" class="text-xl font-bold text-green-700">$-</p>
+              <p id="cost-openai-calls" class="text-xs text-green-500">- calls</p>
+            </div>
+            <div class="bg-gradient-to-br from-orange-50 to-orange-100 rounded-lg p-3">
+              <p class="text-xs text-orange-600">Firecrawl</p>
+              <p id="cost-firecrawl-all" class="text-xl font-bold text-orange-700">$-</p>
+              <p id="cost-firecrawl-calls" class="text-xs text-orange-500">- calls</p>
+            </div>
+            <div class="bg-gradient-to-br from-blue-50 to-blue-100 rounded-lg p-3">
+              <p class="text-xs text-blue-600">SimpleScrape</p>
+              <p id="cost-scrape-calls" class="text-xl font-bold text-blue-700">-</p>
+              <p class="text-xs text-blue-500">呼び出し数（$0）</p>
+            </div>
+            <div class="bg-gradient-to-br from-indigo-50 to-indigo-100 rounded-lg p-3">
+              <p class="text-xs text-indigo-600">API合計</p>
+              <p id="cost-total" class="text-xl font-bold text-indigo-700">$-</p>
+              <p class="text-xs text-indigo-500">記録済みのみ</p>
+            </div>
+            <div class="bg-gradient-to-br from-gray-50 to-gray-100 rounded-lg p-3">
+              <p class="text-xs text-gray-600">今月</p>
+              <p id="cost-openai" class="text-xl font-bold text-gray-700">$-</p>
+              <p id="cost-firecrawl" class="text-xs text-gray-500 hidden">fc: $-</p>
+            </div>
           </div>
         </div>
+
+        <!-- 未計測コスト注意 -->
+        <div class="p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm">
+          <p class="font-medium text-amber-800 mb-1">
+            <i class="fas fa-info-circle text-amber-500 mr-1"></i>コスト把握の注意点
+          </p>
+          <ul class="text-xs text-amber-700 space-y-1 ml-5 list-disc">
+            <li><strong>上記はAPIコストのみ</strong>（api_cost_logs記録分）</li>
+            <li><strong>Cloudflare</strong>（Workers/D1/R2/Pages）→ <a href="https://dash.cloudflare.com" target="_blank" class="underline">Cloudflare Dashboard</a> で確認</li>
+            <li><strong>AWS</strong>（Lambda/API Gateway等）→ AWS Billing Console で確認</li>
+            <li><strong>Firecrawl実コスト</strong> → <a href="https://www.firecrawl.dev/app" target="_blank" class="underline">Firecrawl Dashboard</a> で確認（課金額とapi_cost_logsのズレに注意）</li>
+            <li><strong>壁打ちチャット</strong>はテンプレートベースのためOpenAI不使用（$0）</li>
+          </ul>
+        </div>
+
+        <!-- インフラ使用状況 -->
+        <div class="mt-4 p-3 bg-slate-50 border border-slate-200 rounded-lg">
+          <p class="font-medium text-slate-700 mb-2 text-sm">
+            <i class="fas fa-server text-slate-500 mr-1"></i>インフラ使用状況（参考値）
+          </p>
+          <div id="cost-infra-stats" class="text-xs text-slate-600">読み込み中...</div>
+        </div>
+
+        <!-- 月別コスト推移 -->
+        <div class="mt-4">
+          <p class="font-medium text-gray-700 mb-2 text-sm">
+            <i class="fas fa-calendar-alt text-gray-500 mr-1"></i>月別コスト推移
+          </p>
+          <div id="cost-monthly-table" class="text-xs text-gray-600">読み込み中...</div>
+        </div>
+
         <div id="cost-alert" class="hidden mt-4 p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">
           <i class="fas fa-exclamation-triangle mr-2"></i>
           <span id="cost-alert-text"></span>
@@ -1070,17 +1114,77 @@ adminPages.get('/admin', (c) => {
           const data = await api('/api/admin-ops/costs');
           if (!data.success) return;
 
-          const { totals, alerts } = data.data;
+          const { totals, alerts, infra, monthly } = data.data;
           
-          const openai = totals.openai?.month || 0;
-          const firecrawl = totals.firecrawl?.month || 0;
-          const scrape = totals.simple_scrape?.month_calls || 0;
-          const total = openai + firecrawl;
+          // 全期間コスト
+          const openaiAll = totals.openai?.all_time || 0;
+          const firecrawlAll = totals.firecrawl?.all_time || 0;
+          const totalAll = openaiAll + firecrawlAll;
+          const openaiCalls = totals.openai?.all_time_calls || 0;
+          const firecrawlCalls = totals.firecrawl?.all_time_calls || 0;
+          const scrapeCalls = totals.simple_scrape?.all_time_calls || 0;
 
-          document.getElementById('cost-openai').textContent = '$' + openai.toFixed(2);
-          document.getElementById('cost-firecrawl').textContent = '$' + firecrawl.toFixed(2);
-          document.getElementById('cost-scrape-calls').textContent = scrape.toLocaleString();
-          document.getElementById('cost-total').textContent = '$' + total.toFixed(2);
+          document.getElementById('cost-openai-all').textContent = '$' + openaiAll.toFixed(4);
+          document.getElementById('cost-openai-calls').textContent = openaiCalls.toLocaleString() + ' calls';
+          document.getElementById('cost-firecrawl-all').textContent = '$' + firecrawlAll.toFixed(4);
+          document.getElementById('cost-firecrawl-calls').textContent = firecrawlCalls.toLocaleString() + ' calls';
+          document.getElementById('cost-scrape-calls').textContent = scrapeCalls.toLocaleString();
+          document.getElementById('cost-total').textContent = '$' + totalAll.toFixed(4);
+
+          // 今月コスト
+          const openaiMonth = totals.openai?.month || 0;
+          const firecrawlMonth = totals.firecrawl?.month || 0;
+          const monthTotal = openaiMonth + firecrawlMonth;
+          document.getElementById('cost-openai').textContent = '$' + monthTotal.toFixed(2);
+          if (firecrawlMonth > 0) {
+            document.getElementById('cost-firecrawl').textContent = 'fc: $' + firecrawlMonth.toFixed(2);
+            document.getElementById('cost-firecrawl').classList.remove('hidden');
+          }
+
+          // インフラ使用状況
+          if (infra) {
+            const infraEl = document.getElementById('cost-infra-stats');
+            if (infraEl) {
+              const dbRows = infra.db_rows || {};
+              const totalRows = Object.values(dbRows).reduce(function(a, b) { return a + b; }, 0);
+              infraEl.innerHTML = 
+                '<div class="grid grid-cols-2 gap-2 text-xs">' +
+                '<div><span class="text-gray-500">Cron実行:</span> <strong>' + (infra.total_cron_runs || 0).toLocaleString() + '</strong>回</div>' +
+                '<div><span class="text-gray-500">処理件数:</span> <strong>' + (infra.total_items_processed || 0).toLocaleString() + '</strong></div>' +
+                '<div><span class="text-gray-500">DB行数:</span> <strong>' + totalRows.toLocaleString() + '</strong></div>' +
+                '<div><span class="text-gray-500">最終Cron:</span> <strong>' + (infra.last_cron_run ? new Date(infra.last_cron_run).toLocaleString('ja-JP') : '-') + '</strong></div>' +
+                '</div>';
+            }
+          }
+
+          // 月別推移テーブル
+          if (monthly && monthly.length > 0) {
+            const monthlyEl = document.getElementById('cost-monthly-table');
+            if (monthlyEl) {
+              var monthMap = {};
+              monthly.forEach(function(r) {
+                if (!monthMap[r.month]) monthMap[r.month] = { openai: 0, firecrawl: 0, simple_scrape: 0, calls: 0 };
+                monthMap[r.month][r.service] = (monthMap[r.month][r.service] || 0) + r.cost;
+                monthMap[r.month].calls += r.calls;
+              });
+              var months = Object.keys(monthMap).sort().reverse();
+              var html = '<table class="min-w-full text-xs"><thead><tr class="bg-gray-50">' +
+                '<th class="px-2 py-1 text-left">月</th><th class="px-2 py-1 text-right">OpenAI</th>' +
+                '<th class="px-2 py-1 text-right">Firecrawl</th><th class="px-2 py-1 text-right">合計</th>' +
+                '<th class="px-2 py-1 text-right">API calls</th></tr></thead><tbody>';
+              months.forEach(function(m) {
+                var d = monthMap[m];
+                var t = d.openai + d.firecrawl;
+                html += '<tr class="border-t"><td class="px-2 py-1">' + m + '</td>' +
+                  '<td class="px-2 py-1 text-right">$' + d.openai.toFixed(4) + '</td>' +
+                  '<td class="px-2 py-1 text-right">$' + d.firecrawl.toFixed(4) + '</td>' +
+                  '<td class="px-2 py-1 text-right font-medium">$' + t.toFixed(4) + '</td>' +
+                  '<td class="px-2 py-1 text-right">' + d.calls.toLocaleString() + '</td></tr>';
+              });
+              html += '</tbody></table>';
+              monthlyEl.innerHTML = html;
+            }
+          }
 
           if (alerts.costAlert) {
             document.getElementById('cost-alert').classList.remove('hidden');
@@ -1537,7 +1641,7 @@ adminPages.get('/admin/costs', (c) => {
   const content = `
     <div class="mb-8">
       <h1 class="text-2xl font-bold text-gray-800">コスト管理</h1>
-      <p class="text-gray-600 mt-1">OpenAI / Firecrawl / AWS のコストを詳細に確認</p>
+      <p class="text-gray-600 mt-1">OpenAI / Firecrawl / AWS / Cloudflare のコストを詳細に確認</p>
     </div>
 
     <div id="access-denied" class="hidden bg-red-50 border border-red-200 rounded-xl p-8 text-center">
@@ -1547,24 +1651,100 @@ adminPages.get('/admin/costs', (c) => {
     </div>
 
     <div id="costs-content" class="space-y-8">
-      <!-- 概要 -->
-      <div class="grid grid-cols-1 md:grid-cols-4 gap-6">
-        <div class="bg-white rounded-xl shadow p-6">
-          <p class="text-sm text-gray-500">今日の合計</p>
-          <p id="cost-today" class="text-3xl font-bold text-gray-900">$-</p>
+      <!-- 概要カード（全期間 + 今月 + 今日） -->
+      <div class="grid grid-cols-2 md:grid-cols-6 gap-4">
+        <div class="bg-white rounded-xl shadow p-5 col-span-2 md:col-span-1">
+          <p class="text-xs text-gray-500">全期間合計</p>
+          <p id="cost-all-total" class="text-2xl font-bold text-gray-900">$-</p>
+          <p id="cost-all-calls" class="text-xs text-gray-400">- calls</p>
         </div>
-        <div class="bg-white rounded-xl shadow p-6">
-          <p class="text-sm text-gray-500">今月の合計</p>
-          <p id="cost-month" class="text-3xl font-bold text-indigo-600">$-</p>
+        <div class="bg-white rounded-xl shadow p-5">
+          <p class="text-xs text-green-600">OpenAI 全期間</p>
+          <p id="cost-openai-all2" class="text-xl font-bold text-green-700">$-</p>
+          <p id="cost-openai-calls2" class="text-xs text-green-400">- calls</p>
+          <p id="cost-openai-last" class="text-[10px] text-gray-400 mt-1">-</p>
         </div>
-        <div class="bg-white rounded-xl shadow p-6">
-          <p class="text-sm text-gray-500">OpenAI（今月）</p>
-          <p id="cost-openai-month" class="text-3xl font-bold text-green-600">$-</p>
+        <div class="bg-white rounded-xl shadow p-5">
+          <p class="text-xs text-orange-600">Firecrawl 全期間</p>
+          <p id="cost-fc-all2" class="text-xl font-bold text-orange-700">$-</p>
+          <p id="cost-fc-calls2" class="text-xs text-orange-400">- calls</p>
+          <p id="cost-fc-last" class="text-[10px] text-gray-400 mt-1">-</p>
         </div>
-        <div class="bg-white rounded-xl shadow p-6">
-          <p class="text-sm text-gray-500">Firecrawl（今月）</p>
-          <p id="cost-firecrawl-month" class="text-3xl font-bold text-orange-600">$-</p>
+        <div class="bg-white rounded-xl shadow p-5">
+          <p class="text-xs text-blue-600">SimpleScrape 全期間</p>
+          <p id="cost-ss-calls2" class="text-xl font-bold text-blue-700">-</p>
+          <p class="text-xs text-blue-400">$0（無料）</p>
         </div>
+        <div class="bg-white rounded-xl shadow p-5">
+          <p class="text-xs text-gray-500">今月合計</p>
+          <p id="cost-month" class="text-xl font-bold text-indigo-600">$-</p>
+        </div>
+        <div class="bg-white rounded-xl shadow p-5">
+          <p class="text-xs text-gray-500">今日合計</p>
+          <p id="cost-today" class="text-xl font-bold text-gray-700">$-</p>
+        </div>
+      </div>
+
+      <!-- 外部サービスコスト（手動確認リンク） -->
+      <div class="bg-gradient-to-r from-amber-50 to-yellow-50 border border-amber-200 rounded-xl p-6">
+        <h2 class="text-lg font-bold text-amber-800 mb-3">
+          <i class="fas fa-exclamation-triangle text-amber-500 mr-2"></i>未計測のインフラコスト
+        </h2>
+        <p class="text-sm text-amber-700 mb-4">以下はAPIログで計測できないコストです。各ダッシュボードで直接確認してください。</p>
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <a href="https://dash.cloudflare.com" target="_blank" class="bg-white rounded-lg p-4 border border-amber-200 hover:border-amber-400 transition-colors">
+            <div class="flex items-center gap-3">
+              <div class="w-10 h-10 bg-orange-100 rounded-full flex items-center justify-center">
+                <i class="fas fa-cloud text-orange-600"></i>
+              </div>
+              <div>
+                <p class="font-medium text-gray-800">Cloudflare</p>
+                <p class="text-xs text-gray-500">Workers / D1 / R2 / Pages</p>
+              </div>
+            </div>
+            <p class="text-xs text-gray-400 mt-2">Free tier: 100K req/day, 5M D1 reads/day</p>
+          </a>
+          <a href="https://www.firecrawl.dev/app" target="_blank" class="bg-white rounded-lg p-4 border border-amber-200 hover:border-amber-400 transition-colors">
+            <div class="flex items-center gap-3">
+              <div class="w-10 h-10 bg-orange-100 rounded-full flex items-center justify-center">
+                <i class="fas fa-spider text-orange-600"></i>
+              </div>
+              <div>
+                <p class="font-medium text-gray-800">Firecrawl</p>
+                <p class="text-xs text-gray-500">実際の課金額を確認</p>
+              </div>
+            </div>
+            <p class="text-xs text-gray-400 mt-2">api_cost_logsと実課金のズレに注意</p>
+          </a>
+          <a href="https://console.aws.amazon.com/billing" target="_blank" class="bg-white rounded-lg p-4 border border-amber-200 hover:border-amber-400 transition-colors">
+            <div class="flex items-center gap-3">
+              <div class="w-10 h-10 bg-yellow-100 rounded-full flex items-center justify-center">
+                <i class="fab fa-aws text-yellow-700"></i>
+              </div>
+              <div>
+                <p class="font-medium text-gray-800">AWS</p>
+                <p class="text-xs text-gray-500">Lambda / API Gateway / S3</p>
+              </div>
+            </div>
+            <p class="text-xs text-gray-400 mt-2">Billing Console で確認</p>
+          </a>
+        </div>
+      </div>
+
+      <!-- インフラ使用状況 -->
+      <div class="bg-white rounded-xl shadow p-6">
+        <h2 class="text-lg font-bold text-gray-800 mb-4">
+          <i class="fas fa-server text-slate-600 mr-2"></i>インフラ使用状況
+        </h2>
+        <div id="infra-detail" class="text-sm text-gray-600">読み込み中...</div>
+      </div>
+
+      <!-- 月別推移テーブル -->
+      <div class="bg-white rounded-xl shadow p-6">
+        <h2 class="text-lg font-bold text-gray-800 mb-4">
+          <i class="fas fa-calendar-alt text-purple-600 mr-2"></i>月別コスト推移
+        </h2>
+        <div id="monthly-cost-table" class="overflow-x-auto text-sm">読み込み中...</div>
       </div>
 
       <!-- OpenAI詳細 -->
@@ -1638,15 +1818,76 @@ adminPages.get('/admin/costs', (c) => {
           const data = await api('/api/admin-ops/costs');
           if (!data.success) throw new Error(data.error?.message);
 
-          const { openai, firecrawl, daily, totals } = data.data;
+          const { openai, firecrawl, daily, monthly, totals, infra } = data.data;
 
-          // 概要
+          // 全期間合計
+          const allOpenai = totals.openai?.all_time || 0;
+          const allFc = totals.firecrawl?.all_time || 0;
+          const allTotal = allOpenai + allFc;
+          const allCalls = (totals.openai?.all_time_calls || 0) + (totals.firecrawl?.all_time_calls || 0) + (totals.simple_scrape?.all_time_calls || 0);
+          document.getElementById('cost-all-total').textContent = '$' + allTotal.toFixed(4);
+          document.getElementById('cost-all-calls').textContent = allCalls.toLocaleString() + ' calls';
+          document.getElementById('cost-openai-all2').textContent = '$' + allOpenai.toFixed(4);
+          document.getElementById('cost-openai-calls2').textContent = (totals.openai?.all_time_calls || 0).toLocaleString() + ' calls';
+          document.getElementById('cost-openai-last').textContent = totals.openai?.last_entry ? '最終: ' + new Date(totals.openai.last_entry).toLocaleString('ja-JP') : '-';
+          document.getElementById('cost-fc-all2').textContent = '$' + allFc.toFixed(4);
+          document.getElementById('cost-fc-calls2').textContent = (totals.firecrawl?.all_time_calls || 0).toLocaleString() + ' calls';
+          document.getElementById('cost-fc-last').textContent = totals.firecrawl?.last_entry ? '最終: ' + new Date(totals.firecrawl.last_entry).toLocaleString('ja-JP') : '-';
+          document.getElementById('cost-ss-calls2').textContent = (totals.simple_scrape?.all_time_calls || 0).toLocaleString();
+
+          // 今月・今日
           const todayTotal = (totals.openai?.today || 0) + (totals.firecrawl?.today || 0);
           const monthTotal = (totals.openai?.month || 0) + (totals.firecrawl?.month || 0);
-          document.getElementById('cost-today').textContent = '$' + todayTotal.toFixed(2);
-          document.getElementById('cost-month').textContent = '$' + monthTotal.toFixed(2);
-          document.getElementById('cost-openai-month').textContent = '$' + (totals.openai?.month || 0).toFixed(2);
-          document.getElementById('cost-firecrawl-month').textContent = '$' + (totals.firecrawl?.month || 0).toFixed(2);
+          document.getElementById('cost-today').textContent = '$' + todayTotal.toFixed(4);
+          document.getElementById('cost-month').textContent = '$' + monthTotal.toFixed(4);
+
+          // インフラ詳細
+          if (infra) {
+            var dbRows = infra.db_rows || {};
+            var totalRows = Object.values(dbRows).reduce(function(a, b) { return a + b; }, 0);
+            var infraHtml = '<div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">' +
+              '<div class="bg-slate-50 rounded-lg p-3"><p class="text-xs text-gray-500">総Cron実行数</p><p class="text-lg font-bold">' + (infra.total_cron_runs || 0).toLocaleString() + '</p></div>' +
+              '<div class="bg-slate-50 rounded-lg p-3"><p class="text-xs text-gray-500">処理アイテム数</p><p class="text-lg font-bold">' + (infra.total_items_processed || 0).toLocaleString() + '</p></div>' +
+              '<div class="bg-slate-50 rounded-lg p-3"><p class="text-xs text-gray-500">DB総行数</p><p class="text-lg font-bold">' + totalRows.toLocaleString() + '</p></div>' +
+              '<div class="bg-slate-50 rounded-lg p-3"><p class="text-xs text-gray-500">最終Cron</p><p class="text-sm font-bold">' + (infra.last_cron_run ? new Date(infra.last_cron_run).toLocaleString('ja-JP') : '-') + '</p></div>' +
+              '</div>';
+            // テーブル別行数
+            infraHtml += '<div class="overflow-x-auto"><table class="text-xs w-full"><thead class="bg-gray-50"><tr>' +
+              '<th class="px-3 py-2 text-left">テーブル</th><th class="px-3 py-2 text-right">行数</th></tr></thead><tbody>';
+            Object.entries(dbRows).sort(function(a, b) { return b[1] - a[1]; }).forEach(function(e) {
+              infraHtml += '<tr class="border-t"><td class="px-3 py-1">' + e[0] + '</td><td class="px-3 py-1 text-right">' + e[1].toLocaleString() + '</td></tr>';
+            });
+            infraHtml += '</tbody></table></div>';
+            document.getElementById('infra-detail').innerHTML = infraHtml;
+          }
+
+          // 月別推移テーブル
+          if (monthly && monthly.length > 0) {
+            var monthMap = {};
+            monthly.forEach(function(r) {
+              if (!monthMap[r.month]) monthMap[r.month] = { openai: 0, firecrawl: 0, simple_scrape: 0, calls: 0 };
+              monthMap[r.month][r.service] = (monthMap[r.month][r.service] || 0) + r.cost;
+              monthMap[r.month].calls += r.calls;
+            });
+            var months = Object.keys(monthMap).sort().reverse();
+            var mHtml = '<table class="min-w-full"><thead><tr class="bg-gray-50">' +
+              '<th class="px-4 py-2 text-left">月</th><th class="px-4 py-2 text-right">OpenAI</th>' +
+              '<th class="px-4 py-2 text-right">Firecrawl</th><th class="px-4 py-2 text-right">合計</th>' +
+              '<th class="px-4 py-2 text-right">API calls</th></tr></thead><tbody>';
+            months.forEach(function(m) {
+              var d = monthMap[m];
+              var t = d.openai + d.firecrawl;
+              mHtml += '<tr class="border-t"><td class="px-4 py-2">' + m + '</td>' +
+                '<td class="px-4 py-2 text-right text-green-700">$' + d.openai.toFixed(4) + '</td>' +
+                '<td class="px-4 py-2 text-right text-orange-700">$' + d.firecrawl.toFixed(4) + '</td>' +
+                '<td class="px-4 py-2 text-right font-bold">$' + t.toFixed(4) + '</td>' +
+                '<td class="px-4 py-2 text-right">' + d.calls.toLocaleString() + '</td></tr>';
+            });
+            mHtml += '</tbody></table>';
+            document.getElementById('monthly-cost-table').innerHTML = mHtml;
+          } else {
+            document.getElementById('monthly-cost-table').innerHTML = '<p class="text-gray-400 py-4">月別データなし</p>';
+          }
 
           // OpenAIテーブル
           const openaiHtml = openai.length ? openai.map(row => \`

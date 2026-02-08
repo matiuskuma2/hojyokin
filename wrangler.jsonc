@@ -24,11 +24,11 @@
     // cached-only: subsidy_cacheを優先、なければモックにフォールバック
     "JGRANTS_MODE": "cached-only",
     
-    // 検索バックエンド (本番: wrangler secret で設定)
+    // 検索バックエンド（wrangler secret で設定: SEARCH_BACKEND=cache）
     // cache: subsidy_cache全件検索（Izumi含む全ソース対応）
     // ssot: subsidy_canonical + subsidy_snapshot（JGrantsのみ、将来全ソース対応予定）
     // dual: ssot結果を返しつつcacheも裏で実行して差分ログ（検証用）
-    // 現在: cache（2026-02-08〜）
+    // 現在: cache（2026-02-08〜）。デフォルトもcacheに変更済み（jgrants-adapter.ts）
     
     // 環境識別
     "ENVIRONMENT": "development"

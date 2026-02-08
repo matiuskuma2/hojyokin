@@ -274,20 +274,85 @@ dashboardKpi.get('/costs', async (c) => {
       ORDER BY date DESC
     `).all<{ date: string; provider: string; cost: number }>();
 
-    // 合計（api_cost_logs から）
+    // 合計（api_cost_logs から）— 全期間 + 今月 + 今日 + 呼び出し数
     const totals = await db.prepare(`
       SELECT 
         service as provider,
+        SUM(cost_usd) as all_time,
         SUM(CASE WHEN date(created_at) = ? THEN cost_usd ELSE 0 END) as today,
-        SUM(CASE WHEN date(created_at) >= ? THEN cost_usd ELSE 0 END) as month
+        SUM(CASE WHEN date(created_at) >= ? THEN cost_usd ELSE 0 END) as month,
+        COUNT(*) as all_time_calls,
+        COUNT(CASE WHEN date(created_at) = ? THEN 1 END) as today_calls,
+        COUNT(CASE WHEN date(created_at) >= ? THEN 1 END) as month_calls,
+        MAX(created_at) as last_entry
       FROM api_cost_logs
       WHERE service IN ('openai', 'firecrawl', 'vision_ocr', 'simple_scrape')
       GROUP BY service
-    `).bind(today, monthStart).all<{ provider: string; today: number; month: number }>();
+    `).bind(today, monthStart, today, monthStart).all<{
+      provider: string; all_time: number; today: number; month: number;
+      all_time_calls: number; today_calls: number; month_calls: number;
+      last_entry: string | null;
+    }>();
 
-    const totalsByProvider: Record<string, { today: number; month: number }> = {};
+    const totalsByProvider: Record<string, {
+      all_time: number; today: number; month: number;
+      all_time_calls: number; today_calls: number; month_calls: number;
+      last_entry: string | null;
+    }> = {};
     for (const row of totals.results || []) {
-      totalsByProvider[row.provider] = { today: row.today || 0, month: row.month || 0 };
+      totalsByProvider[row.provider] = {
+        all_time: row.all_time || 0,
+        today: row.today || 0,
+        month: row.month || 0,
+        all_time_calls: row.all_time_calls || 0,
+        today_calls: row.today_calls || 0,
+        month_calls: row.month_calls || 0,
+        last_entry: row.last_entry,
+      };
+    }
+
+    // 月別コスト推移（全サービス合計を月ごとに集計）
+    const monthlyCosts = await db.prepare(`
+      SELECT 
+        substr(created_at, 1, 7) as month,
+        service,
+        SUM(cost_usd) as cost,
+        COUNT(*) as calls
+      FROM api_cost_logs
+      WHERE service IN ('openai', 'firecrawl', 'simple_scrape')
+      GROUP BY substr(created_at, 1, 7), service
+      ORDER BY month DESC
+      LIMIT 60
+    `).all<{ month: string; service: string; cost: number; calls: number }>();
+
+    // Cloudflare D1 使用量推定（cron_runsから推測）
+    const infraUsage = await db.prepare(`
+      SELECT
+        COUNT(*) as total_cron_runs,
+        SUM(items_processed) as total_items_processed,
+        SUM(items_inserted) as total_items_inserted,
+        MAX(finished_at) as last_cron_run
+      FROM cron_runs
+      WHERE status = 'completed'
+    `).first<{
+      total_cron_runs: number; total_items_processed: number;
+      total_items_inserted: number; last_cron_run: string | null;
+    }>() || { total_cron_runs: 0, total_items_processed: 0, total_items_inserted: 0, last_cron_run: null };
+
+    // DB行数概算（コスト見積もり用）
+    const dbRowCounts = await db.prepare(`
+      SELECT 'subsidy_cache' as tbl, COUNT(*) as cnt FROM subsidy_cache
+      UNION ALL SELECT 'api_cost_logs', COUNT(*) FROM api_cost_logs
+      UNION ALL SELECT 'cron_runs', COUNT(*) FROM cron_runs
+      UNION ALL SELECT 'usage_events', COUNT(*) FROM usage_events
+      UNION ALL SELECT 'users', COUNT(*) FROM users
+      UNION ALL SELECT 'companies', COUNT(*) FROM companies
+      UNION ALL SELECT 'chat_sessions', COUNT(*) FROM chat_sessions
+    `).all<{ tbl: string; cnt: number }>();
+
+    const dbRows: Record<string, number> = {};
+    for (const row of dbRowCounts.results || []) {
+      dbRows[row.tbl] = row.cnt;
     }
 
     // 前日比（急増検知用）
@@ -340,7 +405,17 @@ dashboardKpi.get('/costs', async (c) => {
         firecrawl: firecrawlCosts.results || [],
         simple_scrape: simpleScrapStats,
         daily: dailyCosts.results || [],
+        monthly: monthlyCosts.results || [],
         totals: totalsByProvider,
+        infra: {
+          ...infraUsage,
+          db_rows: dbRows,
+          notes: {
+            cloudflare_d1: 'Free tier: 5M reads/day, 100K writes/day, 5GB storage. Check dash.cloudflare.com for actual usage.',
+            cloudflare_workers: 'Free tier: 100K requests/day, 10ms CPU per request. Check dash.cloudflare.com.',
+            firecrawl_billing: 'Check firecrawl.dev/app for actual billing. api_cost_logs may undercount.',
+          },
+        },
         alerts: {
           costRatio,
           costAlert: costRatio && costRatio > 3 ? 'HIGH' : costRatio && costRatio > 2 ? 'MEDIUM' : null,
