@@ -3,10 +3,25 @@
 ## 📋 プロジェクト概要
 
 - **Name**: subsidy-matching (hojyokin)
-- **Version**: 4.8.0
+- **Version**: 4.8.1
 - **Goal**: 企業情報を登録するだけで、最適な補助金・助成金を自動でマッチング＆申請書ドラフト作成
 
-### 🎉 最新アップデート (v4.8.0) - SEARCH_BACKEND=cache切替 + 検索件数100倍改善
+### 🎉 最新アップデート (v4.8.1) - 管理画面ダッシュボード強化 + クロール進捗監視改善
+
+**v4.8.1 リリース（2026-02-08）:**
+
+| 項目 | 状態 | 詳細 |
+|------|------|------|
+| **subsidy-overview APIバグ修正** | ✅ | overview_sourceカラム不在のクエリを修正（detail_json.crawled_at判定に変更） |
+| **/dashboard APIに補助金サマリー追加** | ✅ | subsidy_summary(total/searchable/ready/excluded)を応答に含む |
+| **Izumiクロール進捗強化** | ✅ | last_run(最終実行)とdaily_stats(日別統計)をAPIに追加 |
+| **フロントエンド: ミニサマリーカード** | ✅ | KPI行の下に補助金データの4カードを追加 |
+| **フロントエンド: クロール進捗5カラム** | ✅ | 最終実行時刻・日別統計テーブルを追加 |
+| **CODE_QUALITY_GUIDELINES.md** | ✅ | AI駆動開発コード品質ガイドライン作成 |
+
+---
+
+### 📌 v4.8.0 - SEARCH_BACKEND=cache切替 + 検索件数100倍改善
 
 **v4.8.0 リリース（2026-02-08）:**
 
@@ -1287,6 +1302,7 @@ Private
 
 ## 🔄 更新履歴
 
+- **2026-02-08 (v4.8.1)**: 管理画面ダッシュボード強化 - subsidy-overview APIバグ修正(overview_source→crawled_at判定)、/dashboard APIに補助金サマリー追加、Izumiクロール進捗にlast_run/daily_stats追加、フロントエンド: ミニサマリーカード4枚+クロール進捗5カラム+日別統計テーブル
 - **2026-02-08 (v4.8.0)**: SEARCH_BACKEND=cache切替 - 検索178件→18,809件（100倍改善）、searchFromCacheのSQL直接ページネーション修正、acceptance_end_datetimeカラム同期、simpleScrapeコスト記録、tokyo系expires_at修正、DATA-PIPELINE.md作成
 - **2026-02-07 (v4.6.0)**: Phase 2 izumi大量投入 - 18,651件をsubsidy_cacheに投入、ready-boost-izumiで18,618件をready化、全体ready率93.0%達成（1,563→20,181件）
 - **2026-02-05 (v4.4.0)**: Phase A-3 完了 - 他API追随（eligibility/documents/expenses/bonus-points）を normalized 経由へ統一、getNormalizedSubsidyDetail.ts（SSOT共通読み取り関数）、chat.ts normalized対応（input_type 推測排除）
