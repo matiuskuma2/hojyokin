@@ -3,52 +3,74 @@
 ## 📋 プロジェクト概要
 
 - **Name**: subsidy-matching (hojyokin)
-- **Version**: 4.5.0
+- **Version**: 4.8.0
 - **Goal**: 企業情報を登録するだけで、最適な補助金・助成金を自動でマッチング＆申請書ドラフト作成
 
-### 🎉 最新アップデート (v4.5.0) - Freeze-MATCH Gate + 壁打ち機能改善
+### 🎉 最新アップデート (v4.8.0) - SEARCH_BACKEND=cache切替 + 検索件数100倍改善
 
-**v4.5.0 リリース（2026-02-05）:**
+**v4.8.0 リリース（2026-02-08）:**
+
+| 項目 | 状態 | 詳細 |
+|------|------|------|
+| **SEARCH_BACKEND=cache** | ✅ | subsidy_cacheから直接検索に切替、全21,692件が検索対象 |
+| **検索件数 178→18,809件** | ✅ | Izumi/tokyo系含む全ソースが検索に反映 |
+| **searchFromCache修正** | ✅ | SQL直接ページネーション（旧fetchLimit=100問題を解消） |
+| **acceptance_end_datetimeカラム同期** | ✅ | クロール結果をsubsidy_cacheテーブルに反映 |
+| **simpleScrapeコスト記録** | ✅ | logSimpleScrapeCost()追加、管理画面で可視化 |
+| **tokyo系expires_at修正** | ✅ | 期限切れで検索から消えていた問題を修正 |
+| **DATA-PIPELINE.md** | ✅ | パイプライン設計書・運用ルールを文書化 |
+
+**v4.8.0 根本原因と解決:**
+```
+問題: 検索結果が178件しか出ない
+原因: SEARCH_BACKEND=ssotが subsidy_canonical (2,903件) を検索
+     → Izumi 18,651件は subsidy_cache にのみ存在
+     → canonical昇格パイプラインが未構築
+解決: SEARCH_BACKEND=cache に切替えて全21,692件を検索対象に
+     → wall_chat_ready=1 かつ期限内のもの: 18,809件が検索可能
+```
+
+**検索結果の内訳（2026-02-08時点）:**
+| Source | 検索可能件数 | 備考 |
+|--------|-------------|------|
+| izumi | ~18,580 | 全国の補助金・助成金 |
+| jgrants | ~177 | 受付中かつ期限内 |
+| tokyo-kosha | 5 | 東京都中小企業振興公社 |
+| tokyo-shigoto | 22 | 東京しごと財団 |
+| tokyo-hataraku | 15 | TOKYOはたらくネット |
+| manual | 10 | 手動登録の主要補助金 |
+
+**コスト記録状況:**
+| サービス | 記録件数 | 備考 |
+|----------|---------|------|
+| simple_scrape | 211件 | Izumiクロール（$0/回） |
+| firecrawl | 189件 | PDF/HTML抽出（$0.001/credit） |
+| openai | 3件 | GPT-4o推論 |
+
+**v4.8.0 成果物:**
+| ファイル | 変更内容 |
+|----------|----------|
+| `src/lib/jgrants-adapter.ts` | searchFromCache: SQL直接ページネーション、wall_chat_excludedフィルタ追加 |
+| `src/routes/cron/izumi-promote.ts` | acceptance_end_datetimeカラム同期、logSimpleScrapeCost統合 |
+| `src/lib/cost/cost-logger.ts` | logSimpleScrapeCost()関数追加 |
+| `src/routes/admin-dashboard/dashboard-kpi.ts` | /costs にsimple_scrape統計追加 |
+| `wrangler.jsonc` | SEARCH_BACKEND env変数追加 |
+| `DATA-PIPELINE.md` | パイプライン全体設計書（新規作成） |
+
+---
+
+### 🎉 過去アップデート (v4.5.0) - Freeze-MATCH Gate + 壁打ち機能改善
+
+<details>
+<summary>v4.5.0 詳細（2026-02-05）</summary>
 
 | 項目 | 状態 | 詳細 |
 |------|------|------|
 | **Freeze-MATCH Gate A-D** | ✅ | v2スクリーニング統一、canonical_id厳格化、chat_facts凍結、missing_fields→Gate導線 |
 | **Freeze-WALLCHAT** | ✅ | 壁打ち質問の input_type パターンマッチ推測 + 多様な質問タイプ対応 |
 | **ものづくり補助金22次** | ✅ | SSOT追加、監視登録、壁打ち質問12問 |
-| **P4-3 差分抽出** | ✅ | POST /api/admin-ops/missing-queue/:id/extract-diff 実装 |
-| **業務改善助成金** | ✅ | 監視登録完了（awaiting_change） |
 
-**v4.5.0 成果物:**
-| ファイル | 役割 |
-|----------|------|
-| `src/routes/subsidies.ts` | v2 screening + evaluation_runs 拡張（screening_version, subsidy_source_id等） |
-| `src/routes/admin-ops.ts` | P4-3 extract-diff エンドポイント追加 |
-| `src/lib/ssot/getNormalizedSubsidyDetail.ts` | snapshotRow.detail_json 優先読み取り（Freeze-GET-1） |
-| `src/lib/ssot/normalizeSubsidyDetail.ts` | input_type パターンマッチ推測（Freeze-WALLCHAT-1） |
-| `src/routes/chat.ts` | フォールバック質問多様化（Freeze-WALLCHAT-2） |
-
-**Freeze-MATCH 仕様:**
-| 仕様ID | 内容 |
-|--------|------|
-| Freeze-MATCH-0 | マッチング入力は (CompanySSOT, NormalizedSubsidyDetail) のみ |
-| Freeze-MATCH-1 | evaluation_runs.subsidy_id は常に canonical_id |
-| Freeze-MATCH-2 | screening 結果に missing_fields を追加 |
-| Freeze-Company-SSOT-1 | chat_facts 集約: 最新優先、同一キーは初出採用、補助金固有が優先 |
-
-**Freeze-WALLCHAT 仕様:**
-| 仕様ID | 内容 |
-|--------|------|
-| Freeze-WALLCHAT-1 | 質問文から input_type をパターンマッチ推測（boolean/number/text） |
-| Freeze-WALLCHAT-2 | フォールバック質問を多様化（boolean だけでなく text/number も含む） |
-| Freeze-WALLCHAT-3 | input_type に応じた適切な回答ガイドを表示 |
-
-**新規 evaluation_runs カラム:**
-```sql
-screening_version    TEXT  -- 'v1' | 'v2'（追跡用）
-subsidy_source_id    TEXT  -- JGrants ID 等の元ID
-subsidy_cache_id     TEXT  -- 使用した cache_id
-missing_fields_json  TEXT  -- JSON配列 [{ field, source, severity, label, reason }]
-```
+</details>
 
 ---
 
@@ -213,19 +235,20 @@ Phase 3: generate-fallback-v2（NEW）
   └─ application_requirements_v2（対象者要件中心）
 ```
 
-**データ状況（v4.7 - 2026-02-07）:**
+**データ状況（v4.8 - 2026-02-08）:**
 | Metric | Count | Percent | 備考 |
 |--------|-------|---------|------|
 | **Total Cache** | **21,692** | 100% | 全ソース統合 |
-| **Ready** | **20,219** | **93.2%** | izumi大量投入 + 除外修正で達成 |
-| Excluded | 769 | 3.5% | 除外判定（KOFU_SHINSEI修正済） |
-| Not Ready | 704 | 3.2% | 情報不足（jGrants expired等）|
+| **Ready** | **20,250** | **93.4%** | izumi大量投入 + 除外修正で達成 |
+| **Searchable** | **18,809** | **86.7%** | 検索に表示される件数 |
+| Excluded | 379 | 1.7% | 除外判定（KOFU_SHINSEI修正済） |
+| Not Ready | 1,063 | 4.9% | 情報不足（jGrants expired等）|
 
 **ソース別内訳:**
 | Source | Total | Ready | Excluded | Not Ready |
 |--------|-------|-------|----------|-----------|
-| izumi | 18,651 | 18,582 | 69 | 0 |
-| jgrants | 2,932 | 1,563 | 701 | 668 |
+| izumi | 18,651 | 18,580 | 71 | 0 |
+| jgrants | 2,932 | 1,597 | 308 | 1,027 |
 | tokyo-shigoto | 28 | 22 | 0 | 6 |
 | jnet21 | 24 | 0 | 0 | 24 |
 | tokyo-kosha | 23 | 23 | 0 | 0 |
@@ -235,9 +258,9 @@ Phase 3: generate-fallback-v2（NEW）
 **クロール品質（izumi support_url → detail_json）:**
 | 品質レベル | 件数 | 状態 |
 |-----------|------|------|
-| crawl_v2（実データ） | ~900+ | 公式サイトからHTML抽出済 |
-| fallback_v1（タイトル自動生成） | ~17,500 | クロール中（毎時+10件） |
-| crawl_error（404等） | ~180 | リンク切れ/PDF/SSL |
+| crawl_v2（実データ） | ~5,100+ | 公式サイトからHTML抽出済（バッチ進行中） |
+| fallback_v1（タイトル自動生成） | ~13,500 | クロール中（サンドボックスバッチ+Cron毎時10件） |
+| crawl_error（404等） | ~500 | リンク切れ/PDF/SSL |
 
 **hojyokin-cron Worker（自動スケジュール）:**
 - `0 21 * * *` (06:00 JST): JGrants同期 + daily-ready-boost + recalc
@@ -1060,6 +1083,33 @@ npm run build
 
 ## 📝 開発ガイドライン
 
+### AI駆動開発用 コード品質チェックガイドライン
+
+**必須チェック項目（全変更に適用）:**
+
+| # | チェック項目 | 説明 |
+|---|------------|------|
+| 1 | **型安全性** | TypeScript の型定義が正確か。any の多用を避ける |
+| 2 | **エラーハンドリング** | try-catch で保護、ユーザーにわかりやすいエラーメッセージ |
+| 3 | **SQL インジェクション防止** | バインドパラメータ（?）を使用、文字列結合禁止 |
+| 4 | **コスト記録** | 外部API呼び出しには必ずコストログを記録（成功・失敗とも） |
+| 5 | **冪等性** | Cron/バッチ処理は複数回実行しても安全か |
+| 6 | **ページネーション** | 大量データ取得時は LIMIT/OFFSET を SQL で処理（JS で slice しない） |
+| 7 | **環境変数管理** | シークレットは wrangler secret / .dev.vars で管理、コードに埋め込まない |
+| 8 | **Workers ランタイム制約** | fs, path, child_process 等の Node.js API を使わない |
+
+**推奨チェック項目:**
+
+| # | チェック項目 | 説明 |
+|---|------------|------|
+| 9 | **データ整合性** | detail_json 内のフィールドとテーブルカラムの同期（例: acceptance_end_datetime） |
+| 10 | **ログ出力** | デバッグ用ログは `console.log` + `[モジュール名]` プレフィックス |
+
+**出力ルール:**
+- 懸念点がある場合は `// TODO: 要確認 - [理由]` をコメントに付記
+- 未確定のビジネスロジックには `// TODO: 要確認` を付記
+- 既知の制約・ワークアラウンドには `// WORKAROUND:` を付記
+
 ### コーディング規則
 
 1. **API呼び出しは `window.api()` を使用**
@@ -1098,6 +1148,21 @@ git push origin main
 # デプロイ
 npm run deploy
 ```
+
+### 運用ルール
+
+1. **新しいデータソースを追加したら、必ず以下を実装する**（→ DATA-PIPELINE.md 2.1参照）:
+   - subsidy_cache 投入
+   - wall_chat_ready 判定
+   - acceptance_end_datetime 設定
+   - expires_at 設定
+   - コスト記録
+   - 管理画面反映
+   - canonical 昇格パイプライン（Phase D以降）
+
+2. **期限切れ補助金は自動非表示**（WHERE条件で制御）。DB削除はしない。
+
+3. **全外部API呼び出しにコストログを記録する**（成功・失敗とも）。
 
 ---
 
@@ -1144,6 +1209,7 @@ webapp/
 ├── wrangler.jsonc             # Cloudflare 設定
 ├── vite.config.ts             # Vite 設定
 ├── package.json               # 依存関係
+├── DATA-PIPELINE.md           # データパイプライン設計書・運用ルール
 └── README.md                  # このファイル
 ```
 
@@ -1168,38 +1234,44 @@ webapp/
 
 ### 優先度: 高
 
-1. **Consumer Worker の安定稼働**
-   - Firecrawl タイムアウトの監視
-   - ドメインブロックの適切な設定
-   - クロール結果の subsidy_cache への保存
+1. **canonical昇格パイプライン（Phase D）**
+   - Izumi → subsidy_canonical → subsidy_snapshot への正規化
+   - 完了後に SEARCH_BACKEND を ssot に戻す
+   - 重複統合（go.jp系516件の重複可能性）
 
-2. **データ収集パイプラインの本格稼働**
-   - `subsidy_cache` へのデータ格納（現在0件）
-   - `eligibility_rules` へのルール格納（現在0件）
-   - L2 実稼働の緑化（直近24時間の done/failed カウント増加）
+2. **SuperAdmin管理画面更新（Phase C）**
+   - ダッシュボードKPIをsubsidy_cacheベースに更新
+   - simple_scrapeコスト可視化の充実
+   - canonical vs cache のギャップ可視化
 
-3. **L3 網羅性の向上**
-   - source_registry からのデータ取得
-   - 都道府県サイトのクロール結果からデータ抽出・正規化
+3. **期限切れ自動管理（Phase E）**
+   - 期限切れ補助金の自動非表示は実装済み（WHERE条件）
+   - 次期公募の自動検出と`acceptance_end_datetime`更新
+   - `data_source_monitors`テーブルによる監視対象URL管理
 
 ### 優先度: 中
 
-1. **KPI 動作確認**
-   - SUBSIDY_SEARCH イベントの記録
-   - CHAT_SESSION_STARTED イベントの記録
-   - DRAFT_GENERATED イベントの記録
+1. **Izumiクロール品質向上**
+   - 残り約14,000件のfallback_v1 → crawl_v2アップグレード
+   - バッチクロール毎時10件（Cron）+ サンドボックスバッチ（並行）
+   - 404エラー約500件のURL更新検討
 
-2. **UI/UX 改善**
-   - Tailwind CSS CDN からビルド済みCSSへの移行
-   - モバイル対応の強化
-   - アクセシビリティ向上
+2. **コスト管理の充実**
+   - api_cost_logsの日次・月次サマリー自動化
+   - 異常検知（コスト急増アラート）の実装
+   - 月額コスト見積もりレポート
 
-### 現状のデータ状況（2026-02-07）
+3. **JGrants expired復活**
+   - 2,745件のexpiredレコードの次期公募チェック
+   - JNet21 24件のready化（コンテンツ不足対応）
+
+### 現状のデータ状況（2026-02-08）
 
 | 項目 | 件数 | 備考 |
 |------|------|------|
 | subsidy_cache 総数 | **21,692件** | 全ソース統合 |
-| 壁打ち可能(ready) | **20,181件** | 93.0% |
+| 壁打ち可能(ready) | **20,250件** | 93.4% |
+| **検索可能(searchable)** | **18,809件** | **v4.8で178件→18,809件に改善** |
 | izumi投入 | **18,651件** | 情報の泉データ全量投入 |
 | jGrants | **2,932件** | API同期済み |
 | 東京都系 | **66件** | kosha+shigoto+hataraku |
@@ -1215,6 +1287,7 @@ Private
 
 ## 🔄 更新履歴
 
+- **2026-02-08 (v4.8.0)**: SEARCH_BACKEND=cache切替 - 検索178件→18,809件（100倍改善）、searchFromCacheのSQL直接ページネーション修正、acceptance_end_datetimeカラム同期、simpleScrapeコスト記録、tokyo系expires_at修正、DATA-PIPELINE.md作成
 - **2026-02-07 (v4.6.0)**: Phase 2 izumi大量投入 - 18,651件をsubsidy_cacheに投入、ready-boost-izumiで18,618件をready化、全体ready率93.0%達成（1,563→20,181件）
 - **2026-02-05 (v4.4.0)**: Phase A-3 完了 - 他API追随（eligibility/documents/expenses/bonus-points）を normalized 経由へ統一、getNormalizedSubsidyDetail.ts（SSOT共通読み取り関数）、chat.ts normalized対応（input_type 推測排除）
 - **2026-02-05 (v4.3.0)**: NormalizedSubsidyDetail v1.0 Freeze + Phase A-1/A-2 完了 - resolveSubsidyRef.ts（SSOT ID解決）、normalizeSubsidyDetail.ts（5制度マッピング）、フロントエンド normalized 完全参照切替
