@@ -403,6 +403,56 @@ adminPages.get('/admin', (c) => {
       </div>
     </div>
 
+    <!-- 補助金データ ミニサマリー（super_admin向け、dashboardAPI応答に含む） -->
+    <div id="subsidy-mini-summary" class="hidden mb-8">
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div class="bg-gradient-to-br from-indigo-50 to-indigo-100 rounded-xl shadow p-4">
+          <div class="flex items-center justify-between">
+            <div>
+              <p class="text-xs font-medium text-indigo-500">補助金 総件数</p>
+              <p id="mini-sd-total" class="text-2xl font-bold text-indigo-700">-</p>
+            </div>
+            <div class="bg-indigo-200 rounded-full p-2">
+              <i class="fas fa-database text-indigo-600"></i>
+            </div>
+          </div>
+        </div>
+        <div class="bg-gradient-to-br from-green-50 to-green-100 rounded-xl shadow p-4">
+          <div class="flex items-center justify-between">
+            <div>
+              <p class="text-xs font-medium text-green-500">検索可能</p>
+              <p id="mini-sd-searchable" class="text-2xl font-bold text-green-700">-</p>
+            </div>
+            <div class="bg-green-200 rounded-full p-2">
+              <i class="fas fa-search text-green-600"></i>
+            </div>
+          </div>
+        </div>
+        <div class="bg-gradient-to-br from-blue-50 to-blue-100 rounded-xl shadow p-4">
+          <div class="flex items-center justify-between">
+            <div>
+              <p class="text-xs font-medium text-blue-500">Ready</p>
+              <p id="mini-sd-ready" class="text-2xl font-bold text-blue-700">-</p>
+            </div>
+            <div class="bg-blue-200 rounded-full p-2">
+              <i class="fas fa-check-circle text-blue-600"></i>
+            </div>
+          </div>
+        </div>
+        <div class="bg-gradient-to-br from-amber-50 to-amber-100 rounded-xl shadow p-4">
+          <div class="flex items-center justify-between">
+            <div>
+              <p class="text-xs font-medium text-amber-500">Excluded</p>
+              <p id="mini-sd-excluded" class="text-2xl font-bold text-amber-700">-</p>
+            </div>
+            <div class="bg-amber-200 rounded-full p-2">
+              <i class="fas fa-ban text-amber-600"></i>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- ファネル + キュー -->
     <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
       <!-- ファネル -->
@@ -698,6 +748,121 @@ adminPages.get('/admin', (c) => {
       </div>
     </div>
 
+    <!-- 補助金データ概要（super_admin のみ） -->
+    <div id="subsidy-data-section" class="hidden mb-8">
+      <div class="bg-white rounded-xl shadow p-6">
+        <div class="flex items-center justify-between mb-4">
+          <h2 class="text-lg font-bold text-gray-800">
+            <i class="fas fa-database text-indigo-600 mr-2"></i>補助金データ概要
+          </h2>
+          <button onclick="loadSubsidyOverview()" class="text-sm text-indigo-600 hover:text-indigo-800">
+            <i class="fas fa-sync-alt mr-1"></i>更新
+          </button>
+        </div>
+        
+        <!-- サマリーカード -->
+        <div class="grid grid-cols-2 md:grid-cols-5 gap-4 mb-6">
+          <div class="bg-gradient-to-br from-indigo-50 to-indigo-100 rounded-lg p-4 text-center">
+            <p class="text-sm text-indigo-600 font-medium">総件数</p>
+            <p id="sd-total" class="text-3xl font-bold text-indigo-700">-</p>
+            <p class="text-xs text-indigo-400">subsidy_cache</p>
+          </div>
+          <div class="bg-gradient-to-br from-green-50 to-green-100 rounded-lg p-4 text-center">
+            <p class="text-sm text-green-600 font-medium">検索可能</p>
+            <p id="sd-searchable" class="text-3xl font-bold text-green-700">-</p>
+            <p id="sd-searchable-pct" class="text-xs text-green-500">-%</p>
+          </div>
+          <div class="bg-gradient-to-br from-blue-50 to-blue-100 rounded-lg p-4 text-center">
+            <p class="text-sm text-blue-600 font-medium">Ready</p>
+            <p id="sd-ready" class="text-3xl font-bold text-blue-700">-</p>
+            <p id="sd-ready-pct" class="text-xs text-blue-500">-%</p>
+          </div>
+          <div class="bg-gradient-to-br from-yellow-50 to-yellow-100 rounded-lg p-4 text-center">
+            <p class="text-sm text-yellow-600 font-medium">Excluded</p>
+            <p id="sd-excluded" class="text-3xl font-bold text-yellow-700">-</p>
+          </div>
+          <div class="bg-gradient-to-br from-red-50 to-red-100 rounded-lg p-4 text-center">
+            <p class="text-sm text-red-600 font-medium">Not Ready</p>
+            <p id="sd-not-ready" class="text-3xl font-bold text-red-700">-</p>
+          </div>
+        </div>
+
+        <!-- canonical vs cache ギャップ -->
+        <div class="mb-6 p-4 bg-amber-50 border border-amber-200 rounded-lg">
+          <h3 class="text-sm font-medium text-amber-800 mb-2">
+            <i class="fas fa-exclamation-triangle text-amber-500 mr-1"></i>canonical vs cache ギャップ
+          </h3>
+          <div class="grid grid-cols-3 gap-4">
+            <div class="text-center">
+              <p class="text-xs text-gray-500">subsidy_canonical</p>
+              <p id="sd-canonical" class="text-xl font-bold text-gray-700">-</p>
+            </div>
+            <div class="text-center">
+              <p class="text-xs text-gray-500">subsidy_cache</p>
+              <p id="sd-cache-total" class="text-xl font-bold text-gray-700">-</p>
+            </div>
+            <div class="text-center">
+              <p class="text-xs text-gray-500">ギャップ</p>
+              <p id="sd-gap" class="text-xl font-bold text-red-600">-</p>
+              <p class="text-xs text-gray-400">canonical未昇格</p>
+            </div>
+          </div>
+          <p class="text-xs text-amber-700 mt-2">
+            <i class="fas fa-info-circle mr-1"></i>
+            SEARCH_BACKEND=cache で運用中。Izumiデータは canonical 未昇格のため cache 検索で対応。
+          </p>
+        </div>
+
+        <!-- ソース別内訳テーブル -->
+        <div class="mb-4">
+          <h3 class="text-sm font-medium text-gray-700 mb-2">
+            <i class="fas fa-layer-group mr-1"></i>ソース別内訳
+          </h3>
+          <div id="sd-by-source" class="overflow-x-auto">
+            <div class="loading text-gray-400 p-4">読み込み中...</div>
+          </div>
+        </div>
+
+        <!-- Izumiクロール進捗 -->
+        <div class="p-4 bg-blue-50 border border-blue-200 rounded-lg">
+          <h3 class="text-sm font-medium text-blue-800 mb-2">
+            <i class="fas fa-spider text-blue-500 mr-1"></i>Izumiクロール進捗（fallback_v1 → crawl_v2 アップグレード）
+          </h3>
+          <div class="grid grid-cols-2 md:grid-cols-5 gap-3 mb-2">
+            <div class="bg-white rounded p-2 text-center">
+              <p class="text-xs text-gray-500">crawl_v2完了</p>
+              <p id="sd-crawl-v2" class="text-lg font-bold text-green-600">-</p>
+            </div>
+            <div class="bg-white rounded p-2 text-center">
+              <p class="text-xs text-gray-500">fallback_v1残</p>
+              <p id="sd-fallback-remaining" class="text-lg font-bold text-yellow-600">-</p>
+            </div>
+            <div class="bg-white rounded p-2 text-center">
+              <p class="text-xs text-gray-500">クロールエラー</p>
+              <p id="sd-crawl-errors" class="text-lg font-bold text-red-600">-</p>
+            </div>
+            <div class="bg-white rounded p-2 text-center">
+              <p class="text-xs text-gray-500">進捗率</p>
+              <p id="sd-crawl-progress" class="text-lg font-bold text-indigo-600">-%</p>
+            </div>
+            <div class="bg-white rounded p-2 text-center">
+              <p class="text-xs text-gray-500">最終実行</p>
+              <p id="sd-last-run" class="text-sm font-bold text-gray-600">-</p>
+              <p id="sd-last-run-status" class="text-xs text-gray-400">-</p>
+            </div>
+          </div>
+          <div class="w-full bg-gray-200 rounded-full h-2 mb-2">
+            <div id="sd-crawl-bar" class="bg-gradient-to-r from-blue-500 to-indigo-600 h-2 rounded-full transition-all duration-500" style="width: 0%"></div>
+          </div>
+          <!-- 日別クロール統計 -->
+          <div id="sd-daily-crawl" class="hidden mt-3 pt-3 border-t border-blue-200">
+            <p class="text-xs text-blue-700 font-medium mb-2"><i class="fas fa-chart-bar mr-1"></i>日別クロール統計（過去7日）</p>
+            <div id="sd-daily-crawl-data" class="text-xs text-gray-600"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- コスト概要（super_admin のみ） -->
     <div id="cost-section" class="hidden mb-8">
       <div class="bg-white rounded-xl shadow p-6">
@@ -709,7 +874,7 @@ adminPages.get('/admin', (c) => {
             詳細を見る <i class="fas fa-arrow-right ml-1"></i>
           </a>
         </div>
-        <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
           <div class="bg-gray-50 rounded-lg p-4">
             <p class="text-sm text-gray-500">OpenAI</p>
             <p id="cost-openai" class="text-2xl font-bold text-gray-900">$-</p>
@@ -717,6 +882,11 @@ adminPages.get('/admin', (c) => {
           <div class="bg-gray-50 rounded-lg p-4">
             <p class="text-sm text-gray-500">Firecrawl</p>
             <p id="cost-firecrawl" class="text-2xl font-bold text-gray-900">$-</p>
+          </div>
+          <div class="bg-gray-50 rounded-lg p-4">
+            <p class="text-sm text-gray-500">SimpleScrape</p>
+            <p id="cost-scrape-calls" class="text-2xl font-bold text-gray-900">-</p>
+            <p class="text-xs text-gray-400">呼び出し数（$0）</p>
           </div>
           <div class="bg-gray-50 rounded-lg p-4">
             <p class="text-sm text-gray-500">合計</p>
@@ -766,6 +936,19 @@ adminPages.get('/admin', (c) => {
           document.getElementById('kpi-chats-today').textContent = kpi.chats?.today || 0;
           document.getElementById('kpi-drafts-total').textContent = kpi.drafts?.total || 0;
           document.getElementById('kpi-drafts-today').textContent = kpi.drafts?.today || 0;
+
+          // 補助金ミニサマリー（super_admin向け）
+          if (data.data.subsidy_summary) {
+            const ss = data.data.subsidy_summary;
+            const miniEl = document.getElementById('subsidy-mini-summary');
+            if (miniEl) {
+              miniEl.classList.remove('hidden');
+              document.getElementById('mini-sd-total').textContent = (ss.total || 0).toLocaleString();
+              document.getElementById('mini-sd-searchable').textContent = (ss.searchable || 0).toLocaleString();
+              document.getElementById('mini-sd-ready').textContent = (ss.ready || 0).toLocaleString();
+              document.getElementById('mini-sd-excluded').textContent = (ss.excluded || 0).toLocaleString();
+            }
+          }
 
           // ファネル更新
           const maxUsers = kpi.users?.month || 1;
@@ -891,10 +1074,12 @@ adminPages.get('/admin', (c) => {
           
           const openai = totals.openai?.month || 0;
           const firecrawl = totals.firecrawl?.month || 0;
+          const scrape = totals.simple_scrape?.month_calls || 0;
           const total = openai + firecrawl;
 
           document.getElementById('cost-openai').textContent = '$' + openai.toFixed(2);
           document.getElementById('cost-firecrawl').textContent = '$' + firecrawl.toFixed(2);
+          document.getElementById('cost-scrape-calls').textContent = scrape.toLocaleString();
           document.getElementById('cost-total').textContent = '$' + total.toFixed(2);
 
           if (alerts.costAlert) {
@@ -906,6 +1091,108 @@ adminPages.get('/admin', (c) => {
           }
         } catch (error) {
           console.error('Costs load error:', error);
+        }
+      }
+
+      // ★ 補助金データ概要 ★
+      async function loadSubsidyOverview() {
+        const user = JSON.parse(localStorage.getItem('user') || 'null');
+        if (user?.role !== 'super_admin') return;
+
+        document.getElementById('subsidy-data-section').classList.remove('hidden');
+
+        try {
+          const data = await api('/api/admin-ops/subsidy-overview');
+          if (!data.success) {
+            console.error('Subsidy overview error:', data.error);
+            return;
+          }
+
+          const { cache_stats, canonical_stats, by_source, crawl_progress } = data.data;
+
+          // サマリーカード
+          document.getElementById('sd-total').textContent = (cache_stats.total || 0).toLocaleString();
+          document.getElementById('sd-searchable').textContent = (cache_stats.searchable || 0).toLocaleString();
+          const sPct = cache_stats.total > 0 ? ((cache_stats.searchable / cache_stats.total) * 100).toFixed(1) : 0;
+          document.getElementById('sd-searchable-pct').textContent = sPct + '%';
+          document.getElementById('sd-ready').textContent = (cache_stats.ready || 0).toLocaleString();
+          const rPct = cache_stats.total > 0 ? ((cache_stats.ready / cache_stats.total) * 100).toFixed(1) : 0;
+          document.getElementById('sd-ready-pct').textContent = rPct + '%';
+          document.getElementById('sd-excluded').textContent = (cache_stats.excluded || 0).toLocaleString();
+          document.getElementById('sd-not-ready').textContent = (cache_stats.not_ready || 0).toLocaleString();
+
+          // canonical vs cache ギャップ
+          document.getElementById('sd-canonical').textContent = (canonical_stats.total || 0).toLocaleString();
+          document.getElementById('sd-cache-total').textContent = (cache_stats.total || 0).toLocaleString();
+          const gap = (cache_stats.total || 0) - (canonical_stats.total || 0);
+          document.getElementById('sd-gap').textContent = gap.toLocaleString();
+
+          // ソース別テーブル
+          if (by_source && by_source.length > 0) {
+            const tableHtml = '<table class="min-w-full text-sm"><thead><tr class="bg-gray-50">' +
+              '<th class="px-3 py-2 text-left">ソース</th>' +
+              '<th class="px-3 py-2 text-right">総件数</th>' +
+              '<th class="px-3 py-2 text-right">Ready</th>' +
+              '<th class="px-3 py-2 text-right">Excluded</th>' +
+              '<th class="px-3 py-2 text-right">Not Ready</th>' +
+              '<th class="px-3 py-2 text-right">Ready率</th>' +
+              '</tr></thead><tbody>' +
+              by_source.map(s => {
+                const readyPct = s.total > 0 ? ((s.ready / s.total) * 100).toFixed(1) : '0.0';
+                const barColor = parseFloat(readyPct) >= 90 ? 'bg-green-500' : parseFloat(readyPct) >= 50 ? 'bg-yellow-500' : 'bg-red-500';
+                return '<tr class="border-b hover:bg-gray-50">' +
+                  '<td class="px-3 py-2 font-medium">' + s.source + '</td>' +
+                  '<td class="px-3 py-2 text-right">' + s.total.toLocaleString() + '</td>' +
+                  '<td class="px-3 py-2 text-right text-green-600">' + s.ready.toLocaleString() + '</td>' +
+                  '<td class="px-3 py-2 text-right text-yellow-600">' + (s.excluded || 0) + '</td>' +
+                  '<td class="px-3 py-2 text-right text-red-600">' + (s.not_ready || 0) + '</td>' +
+                  '<td class="px-3 py-2 text-right"><div class="flex items-center justify-end gap-2"><div class="w-16 bg-gray-200 rounded-full h-2"><div class="' + barColor + ' h-2 rounded-full" style="width:' + readyPct + '%"></div></div><span class="text-xs">' + readyPct + '%</span></div></td>' +
+                  '</tr>';
+              }).join('') +
+              '</tbody></table>';
+            document.getElementById('sd-by-source').innerHTML = tableHtml;
+          }
+
+          // Izumiクロール進捗
+          if (crawl_progress) {
+            document.getElementById('sd-crawl-v2').textContent = (crawl_progress.crawl_v2 || 0).toLocaleString();
+            document.getElementById('sd-fallback-remaining').textContent = (crawl_progress.fallback_remaining || 0).toLocaleString();
+            document.getElementById('sd-crawl-errors').textContent = (crawl_progress.errors || 0).toLocaleString();
+            const total_izumi = (crawl_progress.crawl_v2 || 0) + (crawl_progress.fallback_remaining || 0) + (crawl_progress.errors || 0);
+            const progressPct = total_izumi > 0 ? ((crawl_progress.crawl_v2 / total_izumi) * 100).toFixed(1) : '0';
+            document.getElementById('sd-crawl-progress').textContent = progressPct + '%';
+            document.getElementById('sd-crawl-bar').style.width = progressPct + '%';
+
+            // 最終実行情報
+            if (crawl_progress.last_run) {
+              const lr = crawl_progress.last_run;
+              const finishedAt = lr.finished_at ? new Date(lr.finished_at + 'Z') : null;
+              const timeStr = finishedAt ? finishedAt.toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo', hour: '2-digit', minute: '2-digit' }) : '-';
+              document.getElementById('sd-last-run').textContent = timeStr;
+              const statusIcon = lr.status === 'success' ? '✅' : '❌';
+              document.getElementById('sd-last-run-status').textContent = statusIcon + ' ' + lr.items_inserted + '/' + lr.items_processed + '件処理';
+            }
+
+            // 日別クロール統計
+            if (crawl_progress.daily_stats && crawl_progress.daily_stats.length > 0) {
+              const dailyEl = document.getElementById('sd-daily-crawl');
+              dailyEl.classList.remove('hidden');
+              const rows = crawl_progress.daily_stats.map(d => {
+                const successRate = d.processed > 0 ? ((d.inserted / d.processed) * 100).toFixed(0) : '0';
+                return '<div class="flex justify-between py-1 border-b border-blue-100">' +
+                  '<span>' + d.date + '</span>' +
+                  '<span>' + d.runs + '回</span>' +
+                  '<span>' + d.inserted + '/' + d.processed + '件</span>' +
+                  '<span class="' + (parseInt(successRate) >= 80 ? 'text-green-600' : 'text-yellow-600') + '">' + successRate + '%</span>' +
+                  '</div>';
+              }).join('');
+              document.getElementById('sd-daily-crawl-data').innerHTML = 
+                '<div class="flex justify-between py-1 text-blue-600 font-medium"><span>日付</span><span>実行回数</span><span>成功/処理</span><span>成功率</span></div>' + rows;
+            }
+          }
+
+        } catch (error) {
+          console.error('Subsidy overview load error:', error);
         }
       }
 
@@ -1231,6 +1518,7 @@ adminPages.get('/admin', (c) => {
 
       loadDashboard();
       loadCosts();
+      loadSubsidyOverview();
       loadCoverage();
       loadPdfCoverage();
       loadPdfMissingTypes();

@@ -140,6 +140,22 @@ dashboardKpi.get('/dashboard', async (c) => {
       created_at: string;
     }>();
 
+    // 補助金データ概要（super_admin向け軽量サマリー）
+    const subsidySummary = await db.prepare(`
+      SELECT
+        COUNT(*) as total,
+        SUM(CASE WHEN wall_chat_ready=1 THEN 1 ELSE 0 END) as ready,
+        SUM(CASE WHEN wall_chat_excluded=1 THEN 1 ELSE 0 END) as excluded,
+        SUM(CASE WHEN wall_chat_ready=1 AND wall_chat_excluded=0 
+            AND expires_at > datetime('now')
+            AND (acceptance_end_datetime IS NULL OR acceptance_end_datetime >= ?)
+            AND detail_json IS NOT NULL AND LENGTH(detail_json) > 10 
+            THEN 1 ELSE 0 END) as searchable
+      FROM subsidy_cache
+    `).bind(today).first<{
+      total: number; ready: number; excluded: number; searchable: number;
+    }>() || { total: 0, ready: 0, excluded: 0, searchable: 0 };
+
     return c.json<ApiResponse<any>>({
       success: true,
       data: {
@@ -155,6 +171,7 @@ dashboardKpi.get('/dashboard', async (c) => {
           users: dailyUsers.results || [],
         },
         recent_events: recentEvents.results || [],
+        subsidy_summary: subsidySummary,
         generated_at: new Date().toISOString(),
       },
     });
@@ -978,6 +995,128 @@ dashboardKpi.get('/kpi-history', async (c) => {
       success: false,
       error: {
         code: 'KPI_HISTORY_ERROR',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      },
+    }, 500);
+  }
+});
+
+// ============================================================
+// 補助金データ概要API（super_admin向け）
+// subsidy_cache統計 + canonical vs cache ギャップ + Izumiクロール進捗
+// ============================================================
+dashboardKpi.get('/subsidy-overview', async (c) => {
+  const db = c.env.DB;
+  
+  try {
+    const todayStr = new Date().toISOString().split('T')[0];
+
+    // 1. subsidy_cache 統計
+    const cacheStats = await db.prepare(`
+      SELECT
+        COUNT(*) as total,
+        SUM(CASE WHEN wall_chat_ready=1 THEN 1 ELSE 0 END) as ready,
+        SUM(CASE WHEN wall_chat_excluded=1 THEN 1 ELSE 0 END) as excluded,
+        SUM(CASE WHEN wall_chat_ready=0 AND wall_chat_excluded=0 THEN 1 ELSE 0 END) as not_ready,
+        SUM(CASE WHEN wall_chat_ready=1 AND wall_chat_excluded=0 
+            AND expires_at > datetime('now') 
+            AND (acceptance_end_datetime IS NULL OR acceptance_end_datetime >= ?)
+            AND detail_json IS NOT NULL AND LENGTH(detail_json) > 10 
+            THEN 1 ELSE 0 END) as searchable
+      FROM subsidy_cache
+    `).bind(todayStr).first<{
+      total: number; ready: number; excluded: number; not_ready: number; searchable: number;
+    }>() || { total: 0, ready: 0, excluded: 0, not_ready: 0, searchable: 0 };
+
+    // 2. canonical 統計
+    const canonicalStats = await db.prepare(`
+      SELECT COUNT(*) as total, SUM(CASE WHEN is_active=1 THEN 1 ELSE 0 END) as active
+      FROM subsidy_canonical
+    `).first<{ total: number; active: number; }>() || { total: 0, active: 0 };
+
+    // 3. ソース別内訳
+    const bySource = await db.prepare(`
+      SELECT 
+        source,
+        COUNT(*) as total,
+        SUM(CASE WHEN wall_chat_ready=1 THEN 1 ELSE 0 END) as ready,
+        SUM(CASE WHEN wall_chat_excluded=1 THEN 1 ELSE 0 END) as excluded,
+        SUM(CASE WHEN wall_chat_ready=0 AND wall_chat_excluded=0 THEN 1 ELSE 0 END) as not_ready
+      FROM subsidy_cache
+      GROUP BY source
+      ORDER BY total DESC
+    `).all();
+
+    // 4. Izumiクロール進捗
+    // NOTE: overview_source カラムは存在しない。detail_json内のcrawled_atで判定
+    const crawlProgress = await db.prepare(`
+      SELECT
+        SUM(CASE WHEN detail_json IS NOT NULL AND json_valid(detail_json) = 1
+            AND json_extract(detail_json, '$.crawled_at') IS NOT NULL 
+            AND (json_extract(detail_json, '$.crawl_error') IS NULL 
+                 OR json_extract(detail_json, '$.crawl_error') = '') 
+            THEN 1 ELSE 0 END) as crawl_v2,
+        SUM(CASE WHEN detail_json IS NULL 
+            OR json_valid(detail_json) = 0
+            OR json_extract(detail_json, '$.crawled_at') IS NULL 
+            THEN 1 ELSE 0 END) as fallback_remaining,
+        SUM(CASE WHEN detail_json IS NOT NULL AND json_valid(detail_json) = 1
+            AND json_extract(detail_json, '$.crawl_error') IS NOT NULL 
+            AND json_extract(detail_json, '$.crawl_error') != '' 
+            THEN 1 ELSE 0 END) as errors
+      FROM subsidy_cache
+      WHERE source = 'izumi'
+    `).first<{ crawl_v2: number; fallback_remaining: number; errors: number; }>() || 
+      { crawl_v2: 0, fallback_remaining: 0, errors: 0 };
+
+    // 5. 直近のクロール実行状況（cron_runs）
+    const lastCrawlRun = await db.prepare(`
+      SELECT 
+        run_id, status, items_processed, items_inserted, error_count, finished_at
+      FROM cron_runs 
+      WHERE job_type = 'crawl-izumi-details' AND finished_at IS NOT NULL
+      ORDER BY finished_at DESC LIMIT 1
+    `).first<{ 
+      run_id: string; status: string; items_processed: number; 
+      items_inserted: number; error_count: number; finished_at: string; 
+    }>();
+
+    // 6. 日別クロール統計（過去7日）
+    const dailyCrawlStats = await db.prepare(`
+      SELECT 
+        date(finished_at) as date,
+        COUNT(*) as runs,
+        SUM(items_processed) as processed,
+        SUM(items_inserted) as inserted,
+        SUM(error_count) as errors
+      FROM cron_runs
+      WHERE job_type = 'crawl-izumi-details' 
+        AND finished_at IS NOT NULL
+        AND finished_at >= datetime('now', '-7 days')
+      GROUP BY date(finished_at)
+      ORDER BY date DESC
+    `).all<{ date: string; runs: number; processed: number; inserted: number; errors: number }>();
+
+    return c.json<ApiResponse<any>>({
+      success: true,
+      data: {
+        cache_stats: cacheStats,
+        canonical_stats: canonicalStats,
+        by_source: bySource.results || [],
+        crawl_progress: {
+          ...crawlProgress,
+          last_run: lastCrawlRun || null,
+          daily_stats: dailyCrawlStats.results || [],
+        },
+        generated_at: new Date().toISOString(),
+      },
+    });
+  } catch (error) {
+    console.error('Subsidy overview error:', error);
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: 'SUBSIDY_OVERVIEW_ERROR',
         message: error instanceof Error ? error.message : 'Unknown error',
       },
     }, 500);
