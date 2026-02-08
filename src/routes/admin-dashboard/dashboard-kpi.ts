@@ -339,20 +339,30 @@ dashboardKpi.get('/costs', async (c) => {
       total_items_inserted: number; last_cron_run: string | null;
     }>() || { total_cron_runs: 0, total_items_processed: 0, total_items_inserted: 0, last_cron_run: null };
 
-    // DB行数概算（コスト見積もり用）
-    const dbRowCounts = await db.prepare(`
-      SELECT 'subsidy_cache' as tbl, COUNT(*) as cnt FROM subsidy_cache
-      UNION ALL SELECT 'api_cost_logs', COUNT(*) FROM api_cost_logs
-      UNION ALL SELECT 'cron_runs', COUNT(*) FROM cron_runs
-      UNION ALL SELECT 'usage_events', COUNT(*) FROM usage_events
-      UNION ALL SELECT 'users', COUNT(*) FROM users
-      UNION ALL SELECT 'companies', COUNT(*) FROM companies
-      UNION ALL SELECT 'chat_sessions', COUNT(*) FROM chat_sessions
-    `).all<{ tbl: string; cnt: number }>();
-
+    // DB行数概算（コスト見積もり用）— D1はcompound SELECTに制限があるため分割
     const dbRows: Record<string, number> = {};
-    for (const row of dbRowCounts.results || []) {
-      dbRows[row.tbl] = row.cnt;
+    const tableNames = ['subsidy_cache', 'api_cost_logs', 'cron_runs', 'users', 'companies'];
+    
+    // 2つずつバッチで取得（D1の制限回避）
+    try {
+      const batch1 = await db.prepare(`
+        SELECT 'subsidy_cache' as tbl, COUNT(*) as cnt FROM subsidy_cache
+        UNION ALL SELECT 'api_cost_logs', COUNT(*) FROM api_cost_logs
+        UNION ALL SELECT 'cron_runs', COUNT(*) FROM cron_runs
+      `).all<{ tbl: string; cnt: number }>();
+      for (const row of batch1.results || []) {
+        dbRows[row.tbl] = row.cnt;
+      }
+      
+      const batch2 = await db.prepare(`
+        SELECT 'users' as tbl, COUNT(*) as cnt FROM users
+        UNION ALL SELECT 'companies', COUNT(*) FROM companies
+      `).all<{ tbl: string; cnt: number }>();
+      for (const row of batch2.results || []) {
+        dbRows[row.tbl] = row.cnt;
+      }
+    } catch (e) {
+      console.error('DB row count error (non-fatal):', e);
     }
 
     // 前日比（急増検知用）
