@@ -52,3 +52,4 @@ migrations/local/izumi_urls_data.sql
 migrations/local/canonical_data.sql
 migrations/local/snapshot_data.sql
 .github/workflows/
+pdfs/
