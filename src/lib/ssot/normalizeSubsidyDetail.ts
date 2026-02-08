@@ -677,32 +677,44 @@ function normalizeRequiredDocuments(canonicalId: string, dj: any, type: SubsidyT
   const rd = dj.required_documents || {};
   let sortOrder = 0;
 
-  // common
-  addDocuments(docs, rd.common, 'required', '共通', sortOrder);
-  sortOrder += (rd.common?.length || 0);
+  // 既知のキーと required_level / phase のマッピング
+  const knownKeys: Record<string, { level: 'required' | 'conditional' | 'optional'; phase: string }> = {
+    common: { level: 'required', phase: '共通' },
+    corporation: { level: 'conditional', phase: '法人向け' },
+    individual: { level: 'conditional', phase: '個人向け' },
+    optional: { level: 'optional', phase: '任意' },
+    main_forms: { level: 'required', phase: '申請様式' },
+    special_optional: { level: 'conditional', phase: '特例' },
+    additional: { level: 'conditional', phase: '追加' },
+  };
 
-  // corporation
-  addDocuments(docs, rd.corporation, 'conditional', '法人向け', sortOrder);
-  sortOrder += (rd.corporation?.length || 0);
+  // 既知のキーを先に処理
+  for (const [key, config] of Object.entries(knownKeys)) {
+    if (rd[key]) {
+      addDocuments(docs, rd[key], config.level, config.phase, sortOrder);
+      sortOrder += (rd[key]?.length || 0);
+    }
+  }
 
-  // individual
-  addDocuments(docs, rd.individual, 'conditional', '個人向け', sortOrder);
-  sortOrder += (rd.individual?.length || 0);
+  // 未知のキー（plan_submission, payment_application 等）も自動処理
+  // キー名を日本語フェーズ名に変換
+  const keyToPhase: Record<string, string> = {
+    plan_submission: '計画届',
+    payment_application: '支給申請',
+    plan_change: '計画変更届',
+    report: '報告書',
+    training: '訓練関連',
+    certification: '証明書',
+  };
 
-  // optional
-  addDocuments(docs, rd.optional, 'optional', '任意', sortOrder);
-  sortOrder += (rd.optional?.length || 0);
-
-  // main_forms（持続化補助金など）
-  addDocuments(docs, rd.main_forms, 'required', '申請様式', sortOrder);
-  sortOrder += (rd.main_forms?.length || 0);
-
-  // special_optional（持続化補助金特例）
-  addDocuments(docs, rd.special_optional, 'conditional', '特例', sortOrder);
-  sortOrder += (rd.special_optional?.length || 0);
-
-  // additional（ものづくり補助金）
-  addDocuments(docs, rd.additional, 'conditional', '追加', sortOrder);
+  for (const key of Object.keys(rd)) {
+    if (knownKeys[key]) continue; // 既に処理済み
+    if (!Array.isArray(rd[key])) continue; // 配列のみ
+    
+    const phase = keyToPhase[key] || key.replace(/_/g, ' ');
+    addDocuments(docs, rd[key], 'required', phase, sortOrder);
+    sortOrder += (rd[key]?.length || 0);
+  }
 
   return docs;
 }
