@@ -2279,15 +2279,25 @@ subsidyPages.get('/subsidies/:id', (c) => {
         const e = data.evaluation;
         
         // デバッグログ: normalized と legacy の両方を確認
+        // Safe string helper for debug logging
+        function safeStr(v, maxLen) {
+          if (v == null) return null;
+          if (typeof v === 'string') return v.substring(0, maxLen || 50);
+          if (typeof v === 'object') {
+            if (typeof v.summary === 'string') return v.summary.substring(0, maxLen || 50);
+            return '[object]';
+          }
+          return String(v).substring(0, maxLen || 50);
+        }
         console.log('[renderDetail] normalized:', n ? {
           title: n.display?.title,
-          summary: n.overview?.summary?.substring(0, 50),
+          summary: safeStr(n.overview?.summary, 50),
           issuer_name: n.display?.issuer_name,
           wall_chat_ready: n.wall_chat?.ready,
         } : 'null');
         console.log('[renderDetail] legacy subsidy:', s ? {
           title: s.title,
-          subsidy_summary: s.subsidy_summary?.substring(0, 50),
+          subsidy_summary: safeStr(s.subsidy_summary, 50),
         } : 'null');
         
         // normalized が無い場合は legacy fallback（互換期間）
@@ -2446,8 +2456,18 @@ subsidyPages.get('/subsidies/:id', (c) => {
         // ========================================
         // 概要・対象事業も normalized 優先
         // ========================================
-        const overviewText = n?.overview?.summary || s?.subsidy_summary || s?.outline || '概要情報なし';
-        document.getElementById('overview-content').textContent = overviewText;
+        // Safe extraction of overview summary (may be string or object)
+        let overviewText = n?.overview?.summary;
+        if (overviewText && typeof overviewText === 'object') {
+          overviewText = overviewText.summary || overviewText.text || overviewText.description || JSON.stringify(overviewText);
+        }
+        if (!overviewText || typeof overviewText !== 'string') {
+          overviewText = s?.subsidy_summary || s?.outline || '概要情報なし';
+          if (typeof overviewText === 'object') {
+            overviewText = overviewText?.summary || JSON.stringify(overviewText);
+          }
+        }
+        document.getElementById('overview-content').textContent = String(overviewText);
         
         const targetText = n?.overview?.target_business || s?.target || s?.target_businesses || '対象事業情報なし';
         document.getElementById('target-content').textContent = targetText;
@@ -2512,7 +2532,8 @@ subsidyPages.get('/subsidies/:id', (c) => {
         if (!hasRate) missingItems.push('補助率');
         
         // 概要チェック
-        const hasSummary = n?.overview?.summary || s?.subsidy_summary || s?.outline;
+        const rawSummary = n?.overview?.summary;
+        const hasSummary = (typeof rawSummary === 'string' ? rawSummary : (rawSummary && typeof rawSummary === 'object' ? rawSummary.summary : null)) || s?.subsidy_summary || s?.outline;
         if (!hasSummary) missingItems.push('補助金の概要');
         
         if (!hasEligibilityData) missingItems.push('申請要件');

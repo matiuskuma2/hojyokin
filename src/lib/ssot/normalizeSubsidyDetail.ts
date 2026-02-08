@@ -350,9 +350,40 @@ function normalizeDisplay(snapshotRow: any, cacheRow: any, dj: any): NormalizedD
 }
 
 function normalizeOverview(dj: any): NormalizedOverview {
+  // subsidy_overview can be a string OR an object { summary, purpose, ... }
+  const so = dj.subsidy_overview;
+  let summary: string | null = null;
+  let purpose: string | null = null;
+
+  if (typeof so === 'string') {
+    summary = so;
+  } else if (so && typeof so === 'object') {
+    summary = typeof so.summary === 'string' ? so.summary : null;
+    purpose = typeof so.purpose === 'string' ? so.purpose : null;
+  }
+
+  // Fallback chain for summary
+  if (!summary) {
+    const ov = dj.overview;
+    if (typeof ov === 'string') {
+      summary = ov;
+    } else if (ov && typeof ov === 'object' && typeof ov.summary === 'string') {
+      summary = ov.summary;
+    }
+  }
+  if (!summary && typeof dj.description === 'string') {
+    summary = dj.description;
+  }
+
+  // Fallback chain for purpose
+  if (!purpose) {
+    purpose = (typeof dj.subsidy_purpose === 'string' ? dj.subsidy_purpose : null)
+           || (typeof dj.purpose === 'string' ? dj.purpose : null);
+  }
+
   return {
-    summary: dj.subsidy_overview || dj.overview || dj.description || null,
-    purpose: dj.subsidy_purpose || dj.purpose || null,
+    summary,
+    purpose,
     target_business: dj.target_businesses || dj.target_business || dj.eligible_businesses || null,
   };
 }
