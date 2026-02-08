@@ -22,6 +22,7 @@ import chatPages from './pages/chat';
 import draftPages from './pages/draft';
 import agencyPages from './pages/agency';
 import portalPages from './pages/portal';
+import monitorPages from './pages/monitor';
 
 // アプリケーション初期化
 const app = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -441,6 +442,9 @@ app.route('/', agencyPages);
 
 // 顧客ポータルページ（/intake, /answer - ログイン不要）
 app.route('/', portalPages);
+
+// PDF監視ダッシュボード（/monitor - 認証不要）
+app.route('/', monitorPages);
 
 // ============================================================
 // エラーハンドリング

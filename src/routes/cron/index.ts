@@ -26,6 +26,8 @@
  *   [Monitor]     POST /check-updates, /monitor-status, /approve-update, /add-monitor
  *   [JNet21]      POST /promote-jnet21, /sync-jnet21-catalog, /cleanup-queue
  *   [Misc]        GET /health, /verify-data-quality
+ *   [PDFMonitor]  POST /scan-subsidy-pdfs, /process-detected-pdfs, /force-scan-single
+ *                 GET /monitor-dashboard
  */
 
 import { Hono } from 'hono';
@@ -42,6 +44,7 @@ import jnet21 from './jnet21';
 import monitoring from './monitoring';
 import misc from './misc';
 import izumiPromote from './izumi-promote';
+import pdfMonitor from './pdf-monitor';
 
 const cron = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -56,6 +59,7 @@ cron.route('/', jnet21);
 cron.route('/', monitoring);
 cron.route('/', misc);
 cron.route('/', izumiPromote);
+cron.route('/', pdfMonitor);
 
 export default cron;
 
