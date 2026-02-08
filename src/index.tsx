@@ -62,6 +62,8 @@ app.get('/api/health', async (c) => {
   // SSOT受付中件数を取得（母数確認用）
   let ssotAcceptingCount: number | null = null;
   let cacheAcceptingCount: number | null = null;
+  let searchableCount: number | null = null;
+  let totalSubsidies: number | null = null;
   let testSubsidyDetail: any = null;
   
   try {
@@ -86,6 +88,25 @@ app.get('/api/health', async (c) => {
         AND acceptance_end_datetime > datetime('now')
     `).first<{ count: number }>();
     cacheAcceptingCount = cacheResult?.count || 0;
+    
+    // 検索可能件数（ダッシュボード表示用）
+    try {
+      const searchableResult = await c.env.DB.prepare(`
+        SELECT COUNT(*) as count
+        FROM subsidy_cache
+        WHERE wall_chat_ready = 1
+          AND wall_chat_excluded = 0
+          AND expires_at > datetime('now')
+      `).first<{ count: number }>();
+      searchableCount = searchableResult?.count || 0;
+      
+      const totalResult = await c.env.DB.prepare(`
+        SELECT COUNT(*) as count FROM subsidy_cache
+      `).first<{ count: number }>();
+      totalSubsidies = totalResult?.count || 0;
+    } catch (e) {
+      // non-fatal
+    }
     
     // テスト用: 補助金詳細の確認
     if (testSubsidyId) {
@@ -184,6 +205,8 @@ app.get('/api/health', async (c) => {
     jgrants_mode: string;
     ssot_accepting_count: number | null;
     cache_accepting_count: number | null;
+    searchable_count: number | null;
+    total_subsidies: number | null;
     test_subsidy_detail?: any;
   }>>({
     success: true,
@@ -194,6 +217,8 @@ app.get('/api/health', async (c) => {
       jgrants_mode: jgrantsMode,
       ssot_accepting_count: ssotAcceptingCount,
       cache_accepting_count: cacheAcceptingCount,
+      searchable_count: searchableCount,
+      total_subsidies: totalSubsidies,
       test_subsidy_detail: testSubsidyDetail,
     },
   });

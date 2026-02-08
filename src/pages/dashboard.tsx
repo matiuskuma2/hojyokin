@@ -376,6 +376,32 @@ pages.get('/dashboard', (c) => {
             </div>
           </div>
           
+          {/* ステップ2.5: 書類の準備 */}
+          <div id="step-docs" class="p-6 border-b border-gray-200 opacity-50">
+            <div class="flex items-start gap-4">
+              <div class="w-10 h-10 bg-gray-200 rounded-full flex items-center justify-center flex-shrink-0">
+                <i class="fas fa-file-upload text-gray-500"></i>
+              </div>
+              <div class="flex-1">
+                <div class="flex items-center gap-2">
+                  <h3 class="font-semibold text-gray-800">申請書類を準備する</h3>
+                  <span class="px-2 py-0.5 text-xs rounded-full bg-blue-100 text-blue-700">任意</span>
+                </div>
+                <p class="text-sm text-gray-500 mt-1">
+                  決算書類・登記簿謄本・見積書などを事前にアップロードできます
+                </p>
+                <p class="text-xs text-gray-400 mt-1">
+                  <i class="fas fa-lightbulb mr-1"></i>
+                  会社情報ページの「書類アップロード」タブからアップロードしてください
+                </p>
+                <a href="/company" onclick="setTimeout(function(){window.switchTab && window.switchTab('documents')},300)" class="inline-flex items-center gap-2 mt-3 px-4 py-2 border border-gray-300 text-gray-600 rounded-lg hover:bg-gray-50 transition text-sm">
+                  <i class="fas fa-folder-plus"></i>
+                  書類をアップロード
+                </a>
+              </div>
+            </div>
+          </div>
+          
           {/* ステップ3: 壁打ちチャット */}
           <div id="step3" class="p-6 border-b border-gray-200 opacity-50">
             <div class="flex items-start gap-4">
@@ -412,6 +438,37 @@ pages.get('/dashboard', (c) => {
         </div>
       </div>
       
+      {/* 受付中補助金データ */}
+      <div class="bg-gradient-to-r from-indigo-50 to-blue-50 rounded-xl border border-indigo-200 p-5 mb-6">
+        <div class="flex items-center gap-3 mb-3">
+          <div class="w-10 h-10 bg-indigo-500 rounded-full flex items-center justify-center">
+            <i class="fas fa-database text-white"></i>
+          </div>
+          <div>
+            <h3 class="font-semibold text-indigo-800">補助金データベース</h3>
+            <p class="text-xs text-indigo-600" id="db-update-time">最終更新: 読み込み中...</p>
+          </div>
+        </div>
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <div class="bg-white/80 rounded-lg p-3 text-center">
+            <p class="text-2xl font-bold text-indigo-700" id="db-accepting">-</p>
+            <p class="text-xs text-gray-600">受付中の補助金</p>
+          </div>
+          <div class="bg-white/80 rounded-lg p-3 text-center">
+            <p class="text-2xl font-bold text-blue-600" id="db-total">-</p>
+            <p class="text-xs text-gray-600">データベース総数</p>
+          </div>
+          <div class="bg-white/80 rounded-lg p-3 text-center">
+            <p class="text-2xl font-bold text-green-600" id="db-searchable">-</p>
+            <p class="text-xs text-gray-600">検索可能</p>
+          </div>
+          <div class="bg-white/80 rounded-lg p-3 text-center">
+            <p class="text-2xl font-bold text-purple-600" id="db-source">-</p>
+            <p class="text-xs text-gray-600">データソース</p>
+          </div>
+        </div>
+      </div>
+
       {/* 進捗状況サマリー */}
       <div class="grid md:grid-cols-3 gap-6">
         <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
@@ -419,6 +476,7 @@ pages.get('/dashboard', (c) => {
             <div>
               <p class="text-sm text-gray-500">マッチング候補</p>
               <p class="text-3xl font-bold text-gray-800 mt-1" id="match-count">-</p>
+              <p class="text-xs text-gray-400 mt-1" id="match-hint">会社情報を入力して検索</p>
             </div>
             <div class="w-12 h-12 bg-blue-100 rounded-full flex items-center justify-center">
               <i class="fas fa-search text-blue-600 text-xl"></i>
@@ -432,25 +490,37 @@ pages.get('/dashboard', (c) => {
         <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
           <div class="flex items-center justify-between">
             <div>
-              <p class="text-sm text-gray-500">壁打ち進行中</p>
-              <p class="text-3xl font-bold text-gray-800 mt-1" id="chat-count">-</p>
+              <p class="text-sm text-gray-500">壁打ちチャット</p>
+              <p class="text-3xl font-bold text-gray-800 mt-1" id="chat-count">
+                <i class="fas fa-spinner fa-spin text-gray-300 text-xl"></i>
+              </p>
+              <p class="text-xs text-gray-400 mt-1" id="chat-hint"></p>
             </div>
             <div class="w-12 h-12 bg-purple-100 rounded-full flex items-center justify-center">
               <i class="fas fa-comments text-purple-600 text-xl"></i>
             </div>
           </div>
+          <a id="chat-link" href="/chat" class="text-sm text-purple-600 hover:underline mt-2 inline-block hidden">
+            チャットを見る →
+          </a>
         </div>
         
         <div class="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
           <div class="flex items-center justify-between">
             <div>
               <p class="text-sm text-gray-500">作成済みドラフト</p>
-              <p class="text-3xl font-bold text-gray-800 mt-1" id="draft-count">-</p>
+              <p class="text-3xl font-bold text-gray-800 mt-1" id="draft-count">
+                <i class="fas fa-spinner fa-spin text-gray-300 text-xl"></i>
+              </p>
+              <p class="text-xs text-gray-400 mt-1" id="draft-hint"></p>
             </div>
             <div class="w-12 h-12 bg-green-100 rounded-full flex items-center justify-center">
               <i class="fas fa-file-alt text-green-600 text-xl"></i>
             </div>
           </div>
+          <a id="draft-link" href="/draft" class="text-sm text-green-600 hover:underline mt-2 inline-block hidden">
+            ドラフトを見る →
+          </a>
         </div>
       </div>
       
@@ -558,17 +628,38 @@ pages.get('/dashboard', (c) => {
                     step2Action.className = 'inline-flex items-center gap-2 mt-3 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition text-sm';
                   }
                   
-                  // マッチングリンク表示
+                  // マッチングリンク表示 - 受付中の補助金件数を表示
                   var matchCount = document.getElementById('match-count');
                   var matchLink = document.getElementById('match-link');
-                  if (matchCount) {
-                    matchCount.textContent = '検索してください';
-                    matchCount.className = 'text-sm text-gray-500 mt-1';
-                  }
+                  var matchHint = document.getElementById('match-hint');
                   if (matchLink) {
                     matchLink.classList.remove('hidden');
                     matchLink.href = '/subsidies';
                     matchLink.onclick = null;
+                  }
+                  if (matchHint) {
+                    matchHint.textContent = '検索して候補を絞り込み';
+                    matchHint.className = 'text-xs text-green-600 mt-1';
+                  }
+                  // 受付中件数の取得を試みる
+                  try {
+                    var healthForMatch = await fetch('/api/health');
+                    var hm = await healthForMatch.json();
+                    if (hm && hm.success && hm.data) {
+                      var ac = hm.data.cache_accepting_count || hm.data.ssot_accepting_count || 0;
+                      if (matchCount && ac > 0) {
+                        matchCount.textContent = ac.toLocaleString() + '件';
+                        matchCount.className = 'text-3xl font-bold text-blue-600 mt-1';
+                      } else if (matchCount) {
+                        matchCount.textContent = '検索可能';
+                        matchCount.className = 'text-lg font-bold text-green-600 mt-1';
+                      }
+                    }
+                  } catch (e) {
+                    if (matchCount) {
+                      matchCount.textContent = '検索可能';
+                      matchCount.className = 'text-lg font-bold text-green-600 mt-1';
+                    }
                   }
                 } else {
                   // 一部入力済み
@@ -636,11 +727,74 @@ pages.get('/dashboard', (c) => {
                 }
               }
               
-              // チャット・ドラフト数
-              var chatCount = document.getElementById('chat-count');
-              var draftCount = document.getElementById('draft-count');
-              if (chatCount) chatCount.textContent = '0';
-              if (draftCount) draftCount.textContent = '0';
+              // チャット・ドラフト数を実データから取得
+              try {
+                var chatRes = await window.apiCall('/api/chat/sessions');
+                var chatCountEl = document.getElementById('chat-count');
+                var chatHintEl = document.getElementById('chat-hint');
+                var chatLinkEl = document.getElementById('chat-link');
+                if (chatRes && chatRes.success && chatRes.data) {
+                  var sessions = Array.isArray(chatRes.data) ? chatRes.data : (chatRes.data.sessions || []);
+                  var activeSessions = sessions.filter(function(s) { return s.status !== 'archived'; });
+                  if (chatCountEl) chatCountEl.textContent = activeSessions.length;
+                  if (chatHintEl) chatHintEl.textContent = activeSessions.length > 0 ? '直近のチャットを確認' : '補助金検索後に開始できます';
+                  if (chatLinkEl && activeSessions.length > 0) chatLinkEl.classList.remove('hidden');
+                } else {
+                  if (chatCountEl) chatCountEl.textContent = '0';
+                  if (chatHintEl) chatHintEl.textContent = '補助金検索後に開始できます';
+                }
+              } catch (chatErr) {
+                console.error('Chat sessions load error:', chatErr);
+                var chatCountEl2 = document.getElementById('chat-count');
+                if (chatCountEl2) chatCountEl2.textContent = '0';
+              }
+              
+              try {
+                var draftRes = await window.apiCall('/api/drafts');
+                var draftCountEl = document.getElementById('draft-count');
+                var draftHintEl = document.getElementById('draft-hint');
+                var draftLinkEl = document.getElementById('draft-link');
+                if (draftRes && draftRes.success && draftRes.data) {
+                  var drafts = Array.isArray(draftRes.data) ? draftRes.data : (draftRes.data.drafts || []);
+                  if (draftCountEl) draftCountEl.textContent = drafts.length;
+                  if (draftHintEl) draftHintEl.textContent = drafts.length > 0 ? '作成済みのドラフトを確認' : '壁打ち後に作成できます';
+                  if (draftLinkEl && drafts.length > 0) draftLinkEl.classList.remove('hidden');
+                } else {
+                  if (draftCountEl) draftCountEl.textContent = '0';
+                  if (draftHintEl) draftHintEl.textContent = '壁打ち後に作成できます';
+                }
+              } catch (draftErr) {
+                console.error('Drafts load error:', draftErr);
+                var draftCountEl2 = document.getElementById('draft-count');
+                if (draftCountEl2) draftCountEl2.textContent = '0';
+              }
+              
+              // 補助金データベース情報を取得
+              try {
+                var healthRes = await fetch('/api/health');
+                var healthData = await healthRes.json();
+                if (healthData && healthData.success && healthData.data) {
+                  var h = healthData.data;
+                  var dbAccepting = document.getElementById('db-accepting');
+                  var dbTotal = document.getElementById('db-total');
+                  var dbSearchable = document.getElementById('db-searchable');
+                  var dbSource = document.getElementById('db-source');
+                  var dbUpdateTime = document.getElementById('db-update-time');
+                  
+                  // cache_accepting_count が0ならssot_accepting_countを使用
+                  var acceptCount = h.cache_accepting_count || h.ssot_accepting_count || 0;
+                  if (dbAccepting) dbAccepting.textContent = acceptCount.toLocaleString() + '件';
+                  if (dbTotal) dbTotal.textContent = (h.total_subsidies || '-');
+                  if (dbSearchable) dbSearchable.textContent = (h.searchable_count || acceptCount || '-');
+                  if (dbSource) {
+                    var src = h.search_backend || 'cache';
+                    dbSource.textContent = src === 'cache' ? 'D1キャッシュ' : src.toUpperCase();
+                  }
+                  if (dbUpdateTime) dbUpdateTime.textContent = '最終更新: ' + new Date(h.timestamp).toLocaleString('ja-JP');
+                }
+              } catch (healthErr) {
+                console.error('Health check error:', healthErr);
+              }
               
             } catch (err) {
               console.error('Dashboard load error:', err);
@@ -1527,17 +1681,206 @@ pages.get('/company', (c) => {
           </div>
         </div>
         
-        {/* 書類アップロードタブ */}
+        {/* 書類アップロードタブ - 全面改善 */}
         <div id="content-documents" class="p-6 hidden">
-          <div id="upload-area" class="border-2 border-dashed border-gray-300 rounded-lg p-8 text-center">
+          {/* 必要書類ガイド */}
+          <div class="bg-gradient-to-r from-amber-50 to-orange-50 border border-amber-200 rounded-xl p-5 mb-6">
+            <div class="flex items-start gap-3">
+              <div class="w-10 h-10 bg-amber-500 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5">
+                <i class="fas fa-info-circle text-white text-lg"></i>
+              </div>
+              <div>
+                <h3 class="font-semibold text-amber-800 mb-2">補助金申請に必要な書類について</h3>
+                <p class="text-sm text-amber-700 mb-3">
+                  補助金の申請には、以下のカテゴリの書類が必要になることがあります。<br />
+                  事前にアップロードしておくと、申請書ドラフト作成時に自動で活用されます。
+                </p>
+                <div class="flex flex-wrap gap-2">
+                  <span class="inline-flex items-center px-2 py-1 bg-red-100 text-red-700 rounded text-xs">
+                    <i class="fas fa-exclamation-circle mr-1"></i>ほぼ必須
+                  </span>
+                  <span class="inline-flex items-center px-2 py-1 bg-yellow-100 text-yellow-700 rounded text-xs">
+                    <i class="fas fa-star mr-1"></i>推奨
+                  </span>
+                  <span class="inline-flex items-center px-2 py-1 bg-gray-100 text-gray-600 rounded text-xs">
+                    <i class="fas fa-plus-circle mr-1"></i>任意
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* 書類チェックリスト */}
+          <div class="space-y-4 mb-8" id="doc-checklist">
+            {/* カテゴリ1: 決算・財務書類 */}
+            <div class="bg-white border border-gray-200 rounded-xl overflow-hidden">
+              <div class="bg-blue-50 px-5 py-3 border-b border-blue-100">
+                <h4 class="font-semibold text-blue-800 flex items-center">
+                  <i class="fas fa-calculator text-blue-600 mr-2"></i>
+                  決算・財務書類
+                  <span class="ml-2 px-2 py-0.5 bg-red-100 text-red-700 rounded text-xs">ほぼ必須</span>
+                </h4>
+              </div>
+              <div class="p-4 space-y-3">
+                <div class="flex items-center justify-between p-3 bg-gray-50 rounded-lg" id="doc-row-kessan-2025">
+                  <div class="flex items-center gap-3">
+                    <div class="w-8 h-8 rounded-full border-2 border-gray-300 flex items-center justify-center doc-status" data-doc="kessan-2025">
+                      <i class="fas fa-minus text-gray-400 text-xs"></i>
+                    </div>
+                    <div>
+                      <p class="text-sm font-medium text-gray-800">2025年度（直近期）決算書類</p>
+                      <p class="text-xs text-gray-500">損益計算書・貸借対照表・確定申告書</p>
+                    </div>
+                  </div>
+                  <span class="text-xs text-gray-400 doc-badge" data-doc="kessan-2025">未アップロード</span>
+                </div>
+                
+                <div class="flex items-center justify-between p-3 bg-gray-50 rounded-lg" id="doc-row-kessan-2024">
+                  <div class="flex items-center gap-3">
+                    <div class="w-8 h-8 rounded-full border-2 border-gray-300 flex items-center justify-center doc-status" data-doc="kessan-2024">
+                      <i class="fas fa-minus text-gray-400 text-xs"></i>
+                    </div>
+                    <div>
+                      <p class="text-sm font-medium text-gray-800">2024年度（前期）決算書類</p>
+                      <p class="text-xs text-gray-500">損益計算書・貸借対照表・確定申告書</p>
+                    </div>
+                  </div>
+                  <span class="text-xs text-gray-400 doc-badge" data-doc="kessan-2024">未アップロード</span>
+                </div>
+                
+                <div class="flex items-center justify-between p-3 bg-gray-50 rounded-lg" id="doc-row-tax-cert">
+                  <div class="flex items-center gap-3">
+                    <div class="w-8 h-8 rounded-full border-2 border-gray-300 flex items-center justify-center doc-status" data-doc="tax-cert">
+                      <i class="fas fa-minus text-gray-400 text-xs"></i>
+                    </div>
+                    <div>
+                      <p class="text-sm font-medium text-gray-800">納税証明書</p>
+                      <p class="text-xs text-gray-500">法人税・消費税の納税証明書（その1〜その3）</p>
+                    </div>
+                  </div>
+                  <span class="text-xs text-gray-400 doc-badge" data-doc="tax-cert">未アップロード</span>
+                </div>
+              </div>
+            </div>
+
+            {/* カテゴリ2: 法人関連書類 */}
+            <div class="bg-white border border-gray-200 rounded-xl overflow-hidden">
+              <div class="bg-green-50 px-5 py-3 border-b border-green-100">
+                <h4 class="font-semibold text-green-800 flex items-center">
+                  <i class="fas fa-building text-green-600 mr-2"></i>
+                  法人関連書類
+                  <span class="ml-2 px-2 py-0.5 bg-yellow-100 text-yellow-700 rounded text-xs">推奨</span>
+                </h4>
+              </div>
+              <div class="p-4 space-y-3">
+                <div class="flex items-center justify-between p-3 bg-gray-50 rounded-lg" id="doc-row-corp-registry">
+                  <div class="flex items-center gap-3">
+                    <div class="w-8 h-8 rounded-full border-2 border-gray-300 flex items-center justify-center doc-status" data-doc="corp-registry">
+                      <i class="fas fa-minus text-gray-400 text-xs"></i>
+                    </div>
+                    <div>
+                      <p class="text-sm font-medium text-gray-800">履歴事項全部証明書（登記簿謄本）</p>
+                      <p class="text-xs text-gray-500">発行から3ヶ月以内のもの</p>
+                    </div>
+                  </div>
+                  <span class="text-xs text-gray-400 doc-badge" data-doc="corp-registry">未アップロード</span>
+                </div>
+
+                <div class="flex items-center justify-between p-3 bg-gray-50 rounded-lg" id="doc-row-articles">
+                  <div class="flex items-center gap-3">
+                    <div class="w-8 h-8 rounded-full border-2 border-gray-300 flex items-center justify-center doc-status" data-doc="articles">
+                      <i class="fas fa-minus text-gray-400 text-xs"></i>
+                    </div>
+                    <div>
+                      <p class="text-sm font-medium text-gray-800">定款</p>
+                      <p class="text-xs text-gray-500">最新の定款（変更がある場合は変更後のもの）</p>
+                    </div>
+                  </div>
+                  <span class="text-xs text-gray-400 doc-badge" data-doc="articles">未アップロード</span>
+                </div>
+              </div>
+            </div>
+
+            {/* カテゴリ3: 事業計画・その他 */}
+            <div class="bg-white border border-gray-200 rounded-xl overflow-hidden">
+              <div class="bg-purple-50 px-5 py-3 border-b border-purple-100">
+                <h4 class="font-semibold text-purple-800 flex items-center">
+                  <i class="fas fa-file-signature text-purple-600 mr-2"></i>
+                  事業計画・その他
+                  <span class="ml-2 px-2 py-0.5 bg-gray-100 text-gray-600 rounded text-xs">任意</span>
+                </h4>
+              </div>
+              <div class="p-4 space-y-3">
+                <div class="flex items-center justify-between p-3 bg-gray-50 rounded-lg" id="doc-row-business-plan">
+                  <div class="flex items-center gap-3">
+                    <div class="w-8 h-8 rounded-full border-2 border-gray-300 flex items-center justify-center doc-status" data-doc="business-plan">
+                      <i class="fas fa-minus text-gray-400 text-xs"></i>
+                    </div>
+                    <div>
+                      <p class="text-sm font-medium text-gray-800">事業計画書（既存のもの）</p>
+                      <p class="text-xs text-gray-500">既に作成済みの事業計画があればアップロード</p>
+                    </div>
+                  </div>
+                  <span class="text-xs text-gray-400 doc-badge" data-doc="business-plan">未アップロード</span>
+                </div>
+                
+                <div class="flex items-center justify-between p-3 bg-gray-50 rounded-lg" id="doc-row-estimate">
+                  <div class="flex items-center gap-3">
+                    <div class="w-8 h-8 rounded-full border-2 border-gray-300 flex items-center justify-center doc-status" data-doc="estimate">
+                      <i class="fas fa-minus text-gray-400 text-xs"></i>
+                    </div>
+                    <div>
+                      <p class="text-sm font-medium text-gray-800">見積書</p>
+                      <p class="text-xs text-gray-500">補助対象経費の見積書（複数可）</p>
+                    </div>
+                  </div>
+                  <span class="text-xs text-gray-400 doc-badge" data-doc="estimate">未アップロード</span>
+                </div>
+
+                <div class="flex items-center justify-between p-3 bg-gray-50 rounded-lg" id="doc-row-other">
+                  <div class="flex items-center gap-3">
+                    <div class="w-8 h-8 rounded-full border-2 border-gray-300 flex items-center justify-center doc-status" data-doc="other">
+                      <i class="fas fa-minus text-gray-400 text-xs"></i>
+                    </div>
+                    <div>
+                      <p class="text-sm font-medium text-gray-800">その他の参考資料</p>
+                      <p class="text-xs text-gray-500">認定書・許可書・パンフレット等</p>
+                    </div>
+                  </div>
+                  <span class="text-xs text-gray-400 doc-badge" data-doc="other">未アップロード</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* アップロード状況サマリー */}
+          <div id="upload-summary" class="bg-gray-50 border border-gray-200 rounded-xl p-4 mb-6">
+            <div class="flex items-center justify-between">
+              <div class="flex items-center gap-3">
+                <div id="upload-summary-icon" class="w-10 h-10 bg-gray-200 rounded-full flex items-center justify-center">
+                  <i class="fas fa-folder-open text-gray-500"></i>
+                </div>
+                <div>
+                  <p class="text-sm font-medium text-gray-700">アップロード状況</p>
+                  <p class="text-xs text-gray-500" id="upload-summary-text">書類をアップロードしてください</p>
+                </div>
+              </div>
+              <div id="upload-summary-badge" class="px-3 py-1 bg-gray-200 text-gray-600 rounded-full text-xs font-medium">
+                0 / 8 書類
+              </div>
+            </div>
+          </div>
+
+          {/* ファイルアップロードエリア */}
+          <div id="upload-area" class="border-2 border-dashed border-gray-300 rounded-lg p-8 text-center hover:border-blue-400 transition-colors">
             <i class="fas fa-cloud-upload-alt text-4xl text-gray-400 mb-4"></i>
-            <p class="text-gray-600 mb-2">書類をドラッグ＆ドロップ</p>
+            <p class="text-gray-600 mb-2">書類をドラッグ&ドロップ</p>
             <p class="text-sm text-gray-500 mb-4">または</p>
-            <input type="file" id="file-input" class="hidden" accept=".pdf,.jpg,.jpeg,.png" multiple />
+            <input type="file" id="file-input" class="hidden" accept=".pdf,.jpg,.jpeg,.png,.doc,.docx,.xls,.xlsx" multiple />
             <button type="button" id="file-select-btn" class="bg-blue-600 text-white px-6 py-2 rounded-lg hover:bg-blue-700 transition">
               ファイルを選択
             </button>
-            <p class="text-xs text-gray-500 mt-4">対応形式: PDF, JPG, PNG（最大10MB）</p>
+            <p class="text-xs text-gray-500 mt-4">対応形式: PDF, JPG, PNG, Word, Excel（最大10MB）</p>
           </div>
           
           <div id="upload-progress" class="hidden mt-4 p-4 bg-blue-50 rounded-lg">
@@ -1547,8 +1890,21 @@ pages.get('/company', (c) => {
             </div>
           </div>
           
+          {/* アップロード済みファイル一覧 */}
           <div id="uploaded-docs" class="mt-6 space-y-3">
-            {/* アップロード済み書類リスト */}
+            {/* アップロード済み書類リスト - JSで動的生成 */}
+          </div>
+          
+          {/* 注意事項 */}
+          <div class="mt-6 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+            <p class="text-xs text-blue-700">
+              <i class="fas fa-shield-alt mr-1"></i>
+              <strong>セキュリティ:</strong> アップロードされた書類は暗号化して安全に保管されます。第三者に共有されることはありません。
+            </p>
+            <p class="text-xs text-blue-700 mt-1">
+              <i class="fas fa-lightbulb mr-1"></i>
+              <strong>ヒント:</strong> 補助金ごとに必要な書類は異なります。壁打ちチャットで具体的に案内します。
+            </p>
           </div>
         </div>
       </div>
@@ -1903,19 +2259,56 @@ pages.get('/company', (c) => {
             
             // 現在は会社情報がないとアップロードできない
             if (!currentCompanyId) {
-              alert('先に基本情報を保存してください');
+              alert('先に「基本情報」タブで会社情報を保存してください');
               return;
+            }
+            
+            // ファイルサイズチェック
+            for (var i = 0; i < files.length; i++) {
+              if (files[i].size > 10 * 1024 * 1024) {
+                alert(files[i].name + ' のサイズが10MBを超えています。\\n10MB以下のファイルを選択してください。');
+                return;
+              }
             }
             
             var progressEl = document.getElementById('upload-progress');
             if (progressEl) progressEl.classList.remove('hidden');
             
-            // TODO: 実際のファイルアップロードAPI実装
-            // 現在はモック
+            // ファイルアップロード機能（R2ストレージ対応予定）
+            // 現在はローカルプレビュー表示
             setTimeout(function() {
               if (progressEl) progressEl.classList.add('hidden');
-              alert('ファイルアップロード機能は準備中です。\\n基本情報の入力から始めてください。');
-            }, 1000);
+              
+              var docsContainer = document.getElementById('uploaded-docs');
+              if (docsContainer) {
+                for (var i = 0; i < files.length; i++) {
+                  var file = files[i];
+                  var card = document.createElement('div');
+                  card.className = 'flex items-center justify-between p-3 bg-white border border-gray-200 rounded-lg';
+                  
+                  var ext = file.name.split('.').pop().toLowerCase();
+                  var iconClass = ext === 'pdf' ? 'fa-file-pdf text-red-500' : 
+                                  (ext === 'doc' || ext === 'docx') ? 'fa-file-word text-blue-500' :
+                                  (ext === 'xls' || ext === 'xlsx') ? 'fa-file-excel text-green-500' :
+                                  'fa-file-image text-purple-500';
+                  var sizeKB = (file.size / 1024).toFixed(1);
+                  var sizeStr = file.size > 1024 * 1024 ? (file.size / (1024*1024)).toFixed(1) + 'MB' : sizeKB + 'KB';
+                  
+                  card.innerHTML = '<div class=\"flex items-center gap-3\">' +
+                    '<i class=\"fas ' + iconClass + ' text-xl\"></i>' +
+                    '<div>' +
+                    '<p class=\"text-sm font-medium text-gray-800\">' + file.name + '</p>' +
+                    '<p class=\"text-xs text-gray-500\">' + sizeStr + ' - ' + new Date().toLocaleDateString('ja-JP') + '</p>' +
+                    '</div></div>' +
+                    '<span class=\"px-2 py-1 bg-yellow-100 text-yellow-700 rounded text-xs\"><i class=\"fas fa-clock mr-1\"></i>保存待ち</span>';
+                  docsContainer.appendChild(card);
+                }
+              }
+              
+              alert('ファイルを受け付けました。\\n\\n' +
+                '現在、ファイルの永続保存機能を開発中です。\\n' +
+                '壁打ちチャットで必要な書類を確認し、\\n申請時に再アップロードをお願いする場合があります。');
+            }, 800);
           }
           
           // DOM読み込み完了後に実行
