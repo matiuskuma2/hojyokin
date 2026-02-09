@@ -45,6 +45,7 @@ import monitoring from './monitoring';
 import misc from './misc';
 import izumiPromote from './izumi-promote';
 import pdfMonitor from './pdf-monitor';
+import kouboCrawl from './koubo-crawl';
 
 const cron = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -60,6 +61,7 @@ cron.route('/', monitoring);
 cron.route('/', misc);
 cron.route('/', izumiPromote);
 cron.route('/', pdfMonitor);
+cron.route('/', kouboCrawl);
 
 export default cron;
 

@@ -15,3 +15,4 @@ export { agencyRoutes } from './agency';
 export { portalRoutes } from './portal';
 export { default as cronRoutes } from './cron';
 export { default as mastersRoutes } from './masters';
+export { default as kouboMonitorRoutes } from './koubo-monitors';

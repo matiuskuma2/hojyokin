@@ -11,7 +11,7 @@ import { HTTPException } from 'hono/http-exception';
 import { jsxRenderer } from 'hono/jsx-renderer';
 
 import type { Env, Variables, ApiResponse } from './types';
-import { authRoutes, companiesRoutes, subsidiesRoutes, jobsRoutes, internalRoutes, knowledgeRoutes, consumerRoutes, kpiRoutes, adminRoutes, profileRoutes, chatRoutes, draftRoutes, adminDashboardRoutes, agencyRoutes, portalRoutes, cronRoutes, mastersRoutes } from './routes';
+import { authRoutes, companiesRoutes, subsidiesRoutes, jobsRoutes, internalRoutes, knowledgeRoutes, consumerRoutes, kpiRoutes, adminRoutes, profileRoutes, chatRoutes, draftRoutes, adminDashboardRoutes, agencyRoutes, portalRoutes, cronRoutes, mastersRoutes, kouboMonitorRoutes } from './routes';
 import { securityHeaders, requestId } from './middleware/security';
 import { getNormalizedSubsidyDetail } from './lib/ssot/getNormalizedSubsidyDetail';
 import authPages from './pages/auth';
@@ -414,6 +414,9 @@ app.route('/api/cron', cronRoutes);
 
 // マスタデータルート（発行機関、カテゴリ、業種、地域）
 app.route('/api/masters', mastersRoutes);
+
+// 定点観測（公募要領PDF監視）ルート
+app.route('/api/admin/monitors', kouboMonitorRoutes);
 
 // ============================================================
 // UI ページルート（U1）
