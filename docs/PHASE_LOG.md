@@ -1,7 +1,7 @@
 # Phase別実施ログ (PHASE_LOG)
 
 > **目的**: 各Phaseで何をしたか、何が成果で、次に何をするかを記録
-> **最終更新**: 2026-02-09 (Phase 13)
+> **最終更新**: 2026-02-09 (Phase 14)
 > **記録ルール**: Phase完了時に必ず追記。計画→実施→結果→次アクションの順で記録。
 
 ---
@@ -10,6 +10,7 @@
 
 | Phase | 日付 | タイトル | 主な成果 |
 |-------|------|---------|---------|
+| 14 | 2026-02-09 | jGrants鮮度更新 + 本番DB検証 | flag更新2,770件, 受付中精度186件, 本番koubo_monitors 685件確認, Cron API本番稼働 |
 | 13 | 2026-02-09 | needs_manual深堀 + Cron運用テスト + バグ修正 | active 473 (+10), PDF 69.1%, Cron API全5本動作確認, verifyCronSecret修正 |
 | 12.2 | 2026-02-09 | 全件クロール完了 | active 463, PDF Coverage 67.6%, crawl_log 685件100% |
 | 12.1 | 2026-02-09 | 定点観測データ充実 | active 406, 110件復旧, PDF Coverage 59.3% |
@@ -25,6 +26,56 @@
 | 3 | 2026-02-05 | Go-Tech・事業再構築追加 | 省エネ補助金・両立支援等追加 |
 | 2 | 2026-02-05 | デジタル化・AI補助金 | セキュリティ枠追加 |
 | 1 | 2026-02-02 | SSOT移行 | subsidy_canonical + snapshot体制確立 |
+
+---
+
+## Phase 14: jGrants鮮度更新 + 本番DB検証 (2026-02-09)
+
+### 計画
+- Phase 14-A: jGrants受付フラグの鮮度更新（期限切れflag=1→0）
+- Phase 14-C: koubo_monitors本番DB移行＋Cron API本番動作確認
+
+### 実施内容
+
+#### Phase 14-A: jGrants受付フラグ鮮度更新 (2,770件)
+1. **現状分析**: jGrants 2,934件のうち2,745件が `acceptance_end_datetime < now()` なのに `request_reception_display_flag=1` のまま
+2. **全ソース横断分析**:
+   - jGrants: expired 2,745件（全てflag=1）、active 187件、not_started 2件
+   - izumi: active 129件、end_null 18,522件（日付情報なし）
+   - manual: active 119件、expired 14件、not_started 440件（将来公募）
+   - tokyo系: active 13件、expired 18件
+3. **更新実行**: 3ソース（jGrants/manual/tokyo-kosha）の期限切れ分を一括更新
+   - **SQL**: `tools/update_phase14_freshness.sql`
+   - **結果**: 2,770件更新（changes=2,770, rows_written=5,538）
+4. **効果検証**: Health API `ssot_accepting_count` が正確に186件を返却
+
+| 指標 | 更新前 | 更新後 | 変化 |
+|------|--------|--------|------|
+| flag=1（受付中表示） | 21,685 | **18,916** | -2,769 |
+| flag=0（受付終了） | 7 | **2,777** | +2,770 |
+| ssot_accepting_count | 不正確 | **186件** | 精度大幅改善 |
+
+#### Phase 14-C: 本番DB・Cron API検証（移行不要だった）
+1. **本番DB確認**: koubo_monitors 685件、koubo_crawl_log 696件、cron_runs全カラム完備
+2. **本番Cron API確認**: `GET /api/cron/koubo-dashboard` → total=685, active=473, pre_koubo=130, overdue=0
+3. **cron_runs スキーマ**: 13カラム全て存在
+4. **結論**: 移行作業は不要。本番環境は完全に最新状態
+
+### 成果数値
+
+| 指標 | Phase 13 | Phase 14 | 変化 |
+|------|----------|----------|------|
+| flag=1（受付中） | 21,685 | **18,916** | -2,769 |
+| ssot_accepting_count | 不正確 | **186** | 精度改善 |
+| 本番koubo_monitors | CLI確認のみ | **685件本番確認済** | 検証完了 |
+| 本番Cron API | ローカル確認 | **本番稼働確認済** | 検証完了 |
+
+### 次アクション（→ Phase 15）
+1. **定期クロール自動実行**: overdue到来時のバッチ実行テスト
+2. **jGrants API同期**: 最新の受付状況を定期取得し、flag自動更新
+3. **Playwright導入**: izumi SPA対応 → url_lost 158件の元自治体URL取得
+4. **detail_score底上げ**: izumi 18,651件のdetail_json構造化
+5. **ダッシュボードUI強化**: /monitor ページのアラート可視化
 
 ---
 

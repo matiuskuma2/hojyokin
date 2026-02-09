@@ -1,5 +1,5 @@
 # 公募要領PDF管理 SSOT (Single Source of Truth)
-# 最終更新: 2026-02-09 (Phase 13: needs_manual深堀 + Cron運用テスト)
+# 最終更新: 2026-02-09 (Phase 14: jGrants鮮度更新 + 本番DB検証)
 # 管理者: モギモギ（関屋紘之）
 
 ## 1. データソース別状況サマリ

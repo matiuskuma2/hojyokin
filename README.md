@@ -3,7 +3,7 @@
 ## 📋 プロジェクト概要
 
 - **Name**: subsidy-matching (hojyokin)
-- **Version**: 5.2.1 (Phase 13 完了 - fetchタイムアウト追加)
+- **Version**: 5.3.0 (Phase 14 - jGrants鮮度更新 + 本番DB検証)
 - **Goal**: 企業情報を登録するだけで、最適な補助金・助成金を自動でマッチング＆申請書ドラフト作成
 - **管理者**: モギモギ（関屋紘之）
 - **本番URL**: https://hojyokin.pages.dev
@@ -28,7 +28,7 @@
 
 ---
 
-## 📊 現在のデータ状況 (2026-02-09 Phase 13)
+## 📊 現在のデータ状況 (2026-02-09 Phase 14)
 
 | 指標 | 値 |
 |------|-----|
@@ -39,8 +39,9 @@
 | 定点観測 url_lost | 158件 |
 | 定点観測 needs_manual | **54件** |
 | PDF Coverage | **69.1%** (473/685) |
-| crawl_log カバー率 | **100%+** (695件+) |
-| Cron API稼働状況 | **5本全稼働確認済み** |
+| 受付中補助金 (ssot_accepting) | **186件** |
+| wall_chat_ready | 20,180件 (90.7%) |
+| Cron API稼働状況 | **本番5本全稼働** |
 
 ### バックアップ
 
@@ -52,7 +53,14 @@
 
 ---
 
-### 🎉 最新: Phase 13 - needs_manual深堀 + Cron運用テスト (v5.2.0)
+### 🎉 最新: Phase 14 - jGrants鮮度更新 + 本番DB検証 (v5.3.0)
+
+**Phase 14 成果 (2026-02-09)**:
+- **jGrants受付フラグ鮮度更新**: 期限切れ2,770件を flag=1→0 に更新
+  - 受付中表示: 21,685→**18,916件** に精度改善
+  - Health API `ssot_accepting_count` = **186件**（真に受付中の補助金数）
+- **本番DB完全検証**: koubo_monitors 685件 + crawl_log 696件 + cron_runsスキーマ完備
+- **本番Cron API稼働確認**: koubo-dashboard → total=685, active=473, pre_koubo=130
 
 **Phase 13 成果 (2026-02-09)**:
 - needs_manual 64件を深堀クロール → 10件復旧（active 463→473）
