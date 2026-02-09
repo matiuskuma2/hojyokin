@@ -24,11 +24,15 @@ async function checkUrlReachability(url: string): Promise<{
   error?: string;
 }> {
   try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000);
     const response = await fetch(url, {
       method: 'HEAD',
       headers: { 'User-Agent': 'HojyorakuBot/1.0 (+https://hojyokin.pages.dev)' },
       redirect: 'follow',
+      signal: controller.signal,
     });
+    clearTimeout(timeout);
     return {
       reachable: response.ok,
       httpStatus: response.status,
@@ -47,10 +51,14 @@ async function fetchPageAndExtractPdfs(url: string): Promise<{
   error?: string;
 }> {
   try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 20000);
     const response = await fetch(url, {
       headers: { 'User-Agent': 'HojyorakuBot/1.0 (+https://hojyokin.pages.dev)' },
       redirect: 'follow',
+      signal: controller.signal,
     });
+    clearTimeout(timeout);
     if (!response.ok) {
       return { ok: false, httpStatus: response.status, pdfUrls: [], contentHash: '' };
     }

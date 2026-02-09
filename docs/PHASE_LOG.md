@@ -55,7 +55,14 @@
 1. **バグ発見・修正**: `koubo-crawl.ts` の `verifyCronSecret` 呼び出しが旧シグネチャ（2引数）のまま残っており、本番で `TypeError: Cannot read properties of undefined` エラー発生。4箇所を修正して他のcronファイルと同じ `verifyCronSecret(c)` パターンに統一
 2. **修正箇所**: koubo-crawl (L99), koubo-crawl-single (L283), koubo-check-period (L341), koubo-discover (L501)
 3. **finishCronRun引数修正**: statsオブジェクトのキーを _helpers.ts の定義に合わせて変更
-4. **デプロイ後テスト結果**:
+4. **fetchタイムアウト追加**: `checkUrlReachability`に15秒、`fetchPageAndExtractPdfs`に20秒のAbortControllerを追加。ローカルテストで外部fetchタイムアウト問題を防止
+5. **ローカル運用テスト結果** (10件テストデータ使用):
+   - `GET /koubo-dashboard` → 200 OK、stats正確（active=6, url_lost=2, needs_manual=2, overdue=4）
+   - `POST /koubo-crawl?batch=2` → 200 OK、processed=1, crawl_log記録済み（GO-TECH-R8 → page_not_found）
+   - `POST /koubo-check-period` → 200 OK、checked=0, updated=0（テストデータ=正常）
+   - `POST /koubo-crawl-single` (RYOURITSU-SHUSSEI) → PDF 404, page到達OK, 307 PDFリンク発見, content_hash取得
+   - 認証なしリクエスト → 403 "Invalid cron secret"（正常拒否）
+6. **本番テスト結果** (2026-02-09 前セッション):
    - `POST /koubo-crawl?batch=3` → 認証OK、processed=0（overdueなし=正常）
    - `POST /koubo-crawl-single` (HIROSHIMA-MONO) → PDF到達OK (HTTP 200), content_hash取得
    - `POST /koubo-check-period` → checked=0, updated=0（全件設定済み=正常）

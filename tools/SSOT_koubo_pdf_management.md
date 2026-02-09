@@ -28,6 +28,7 @@
 | DB復旧 (needs_manual→active) | - | **10件** | - |
 | url_lost Wayback探索 | 158件 | 0件（SPA+レート制限） | → Phase 14 |
 | Cron APIバグ修正 | 4箇所 | 4箇所修正 | 100% |
+| Cron API fetchタイムアウト追加 | 2関数 | AbortController 15s/20s | 100% |
 | Cron API動作確認テスト | 5エンドポイント | 5本全稼働 | 100% |
 
 ### Phase 12.2 実績 (2026-02-09)

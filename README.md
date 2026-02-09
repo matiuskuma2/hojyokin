@@ -3,7 +3,7 @@
 ## 📋 プロジェクト概要
 
 - **Name**: subsidy-matching (hojyokin)
-- **Version**: 5.2.0 (Phase 13)
+- **Version**: 5.2.1 (Phase 13 完了 - fetchタイムアウト追加)
 - **Goal**: 企業情報を登録するだけで、最適な補助金・助成金を自動でマッチング＆申請書ドラフト作成
 - **管理者**: モギモギ（関屋紘之）
 - **本番URL**: https://hojyokin.pages.dev
@@ -56,7 +56,8 @@
 **Phase 13 成果 (2026-02-09)**:
 - needs_manual 64件を深堀クロール → 10件復旧（active 463→473）
 - `koubo-crawl.ts` の `verifyCronSecret` バグ修正（4箇所）
-- 本番 Cron API 5本全稼働確認:
+- `checkUrlReachability`/`fetchPageAndExtractPdfs`にAbortControllerタイムアウト追加（15s/20s）
+- 本番 + ローカル Cron API 5本全稼働確認:
   - `POST /api/cron/koubo-crawl` → 定期クロール実行（認証OK）
   - `POST /api/cron/koubo-crawl-single` → 手動クロール（PDF到達確認OK）
   - `POST /api/cron/koubo-check-period` → 公募時期判定（正常動作）
