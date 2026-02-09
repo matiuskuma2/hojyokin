@@ -98,9 +98,9 @@ async function fetchPageAndExtractPdfs(url: string): Promise<{
 // =====================================================
 kouboCrawl.post('/koubo-crawl', async (c) => {
   const db = c.env.DB;
-  const secret = c.req.header('X-Cron-Secret') || c.req.query('secret');
-  if (!verifyCronSecret(secret, c.env.CRON_SECRET)) {
-    return c.json({ success: false, error: 'Unauthorized' }, 401);
+  const authResult = verifyCronSecret(c);
+  if (!authResult.valid) {
+    return c.json({ success: false, error: authResult.error!.message }, authResult.error!.status as any);
   }
   
   const batchSize = parseInt(c.req.query('batch') || '10');
@@ -264,7 +264,10 @@ kouboCrawl.post('/koubo-crawl', async (c) => {
     }
     
     await finishCronRun(db, runId, errors > 0 ? 'partial' : 'success', {
-      processed, success, url_changed: urlChanged, url_lost: urlLost, errors
+      items_processed: processed,
+      items_updated: success + urlChanged,
+      error_count: errors,
+      metadata: { success, url_changed: urlChanged, url_lost: urlLost, errors }
     });
     
     return c.json({
@@ -272,7 +275,7 @@ kouboCrawl.post('/koubo-crawl', async (c) => {
       data: { run_id: runId, processed, success, url_changed: urlChanged, url_lost: urlLost, errors }
     });
   } catch (e: any) {
-    await finishCronRun(db, runId, 'failed', { error: e.message });
+    await finishCronRun(db, runId, 'failed', { error_count: 1, errors: [e.message] });
     return c.json({ success: false, error: e.message }, 500);
   }
 });
@@ -282,9 +285,9 @@ kouboCrawl.post('/koubo-crawl', async (c) => {
 // =====================================================
 kouboCrawl.post('/koubo-crawl-single', async (c) => {
   const db = c.env.DB;
-  const secret = c.req.header('X-Cron-Secret') || c.req.query('secret');
-  if (!verifyCronSecret(secret, c.env.CRON_SECRET)) {
-    return c.json({ success: false, error: 'Unauthorized' }, 401);
+  const authResult = verifyCronSecret(c);
+  if (!authResult.valid) {
+    return c.json({ success: false, error: authResult.error!.message }, authResult.error!.status as any);
   }
   
   const { subsidy_id } = await c.req.json<{ subsidy_id: string }>();
@@ -340,9 +343,9 @@ kouboCrawl.post('/koubo-crawl-single', async (c) => {
 // =====================================================
 kouboCrawl.post('/koubo-check-period', async (c) => {
   const db = c.env.DB;
-  const secret = c.req.header('X-Cron-Secret') || c.req.query('secret');
-  if (!verifyCronSecret(secret, c.env.CRON_SECRET)) {
-    return c.json({ success: false, error: 'Unauthorized' }, 401);
+  const authResult = verifyCronSecret(c);
+  if (!authResult.valid) {
+    return c.json({ success: false, error: authResult.error!.message }, authResult.error!.status as any);
   }
   
   // subsidy_cacheから公募日程情報を取得して、koubo_monitorsの時期情報を更新
@@ -500,9 +503,9 @@ kouboCrawl.get('/koubo-dashboard', async (c) => {
 // =====================================================
 kouboCrawl.post('/koubo-discover', async (c) => {
   const db = c.env.DB;
-  const secret = c.req.header('X-Cron-Secret') || c.req.query('secret');
-  if (!verifyCronSecret(secret, c.env.CRON_SECRET)) {
-    return c.json({ success: false, error: 'Unauthorized' }, 401);
+  const authResult = verifyCronSecret(c);
+  if (!authResult.valid) {
+    return c.json({ success: false, error: authResult.error!.message }, authResult.error!.status as any);
   }
   
   const { discovery_id, action, reject_reason } = await c.req.json<{

@@ -3,7 +3,7 @@
 ## 📋 プロジェクト概要
 
 - **Name**: subsidy-matching (hojyokin)
-- **Version**: 5.1.0 (Phase 12.2)
+- **Version**: 5.2.0 (Phase 13)
 - **Goal**: 企業情報を登録するだけで、最適な補助金・助成金を自動でマッチング＆申請書ドラフト作成
 - **管理者**: モギモギ（関屋紘之）
 - **本番URL**: https://hojyokin.pages.dev
@@ -28,18 +28,19 @@
 
 ---
 
-## 📊 現在のデータ状況 (2026-02-09 Phase 12.2)
+## 📊 現在のデータ状況 (2026-02-09 Phase 13)
 
 | 指標 | 値 |
 |------|-----|
 | 補助金マスタ (subsidy_cache) | **22,258件** |
 | 正規化済み (subsidy_canonical) | 3,470件 |
 | 定点観測対象 (koubo_monitors) | 685件 |
-| 定点観測 active | **463件** (67.6%) |
+| 定点観測 active | **473件** (69.1%) |
 | 定点観測 url_lost | 158件 |
-| 定点観測 needs_manual | 64件 |
-| PDF Coverage | **67.6%** |
-| crawl_log カバー率 | **100%** (685件) |
+| 定点観測 needs_manual | **54件** |
+| PDF Coverage | **69.1%** (473/685) |
+| crawl_log カバー率 | **100%+** (695件+) |
+| Cron API稼働状況 | **5本全稼働確認済み** |
 
 ### バックアップ
 

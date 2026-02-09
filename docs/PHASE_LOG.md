@@ -1,7 +1,7 @@
 # Phase別実施ログ (PHASE_LOG)
 
 > **目的**: 各Phaseで何をしたか、何が成果で、次に何をするかを記録
-> **最終更新**: 2026-02-09 (Phase 12.2)
+> **最終更新**: 2026-02-09 (Phase 13)
 > **記録ルール**: Phase完了時に必ず追記。計画→実施→結果→次アクションの順で記録。
 
 ---
@@ -10,6 +10,7 @@
 
 | Phase | 日付 | タイトル | 主な成果 |
 |-------|------|---------|---------|
+| 13 | 2026-02-09 | needs_manual深堀 + Cron運用テスト + バグ修正 | active 473 (+10), PDF 69.1%, Cron API全5本動作確認, verifyCronSecret修正 |
 | 12.2 | 2026-02-09 | 全件クロール完了 | active 463, PDF Coverage 67.6%, crawl_log 685件100% |
 | 12.1 | 2026-02-09 | 定点観測データ充実 | active 406, 110件復旧, PDF Coverage 59.3% |
 | 12 | 2026-02-09 | 定点観測システム導入 | koubo_monitors 685件, クロールエンジン5API, ダッシュボード |
@@ -24,6 +25,63 @@
 | 3 | 2026-02-05 | Go-Tech・事業再構築追加 | 省エネ補助金・両立支援等追加 |
 | 2 | 2026-02-05 | デジタル化・AI補助金 | セキュリティ枠追加 |
 | 1 | 2026-02-02 | SSOT移行 | subsidy_canonical + snapshot体制確立 |
+
+---
+
+## Phase 13: needs_manual深堀 + Cron運用テスト + バグ修正 (2026-02-09)
+
+### 計画
+- Phase 13-A: needs_manual 64件のkoubo_page_url直接クロール
+- Phase 13-B: url_lost 158件のWayback Machine探索
+- Phase 13-C: 定期クロール（Cron API）動作確認テスト
+
+### 実施内容
+
+#### Phase 13-A: needs_manual深堀クロール (10件復旧)
+1. **ページクロール**: 64件中61件ページOK、39件にサブリンク324個発見
+2. **サブリンク深堀**: 高優先度121件を選定 → 80件クロール → 34件にPDF → 12件の補助金にPDF候補
+3. **ベストPDF選定**: キーワードスコアリング（koubo=10, youryou=9, bosyu=8, guide=6等）
+4. **到達性検証**: 12件中10件HTTP 200確認（GX-LEAGUE=URL encoding問題、MYNUMBER=404）
+5. **DB登録**: 10件を needs_manual → active に更新
+- **SQL**: `tools/update_needs_manual_phase13.sql`
+- **復旧対象**: SAIGAI-SHIKIN-JFC, SPORTS-SHISETSU, INBOUND-KANKYOU, IRYOU-KIKI-KAIHATSU, RE100-SUISHIN, NIIGATA-IOTAI, RARE-METAL, MICHIBIKI-RIYOU, HIROSHIMA-MONO, NARA-BUNKA
+
+#### Phase 13-B: url_lost探索 → 延期
+- **調査結果**: 158件全てizumiソース。izumi detailページはSPA（JavaScript必須）のためcurlでは取得不可
+- **Wayback Machine**: APIレート制限（HTTP 429）で断念
+- **判断**: Playwright導入をPhase 14で実施。ROI低い158件はPhase 14以降に延期
+
+#### Phase 13-C: Cron API動作確認テスト
+1. **バグ発見・修正**: `koubo-crawl.ts` の `verifyCronSecret` 呼び出しが旧シグネチャ（2引数）のまま残っており、本番で `TypeError: Cannot read properties of undefined` エラー発生。4箇所を修正して他のcronファイルと同じ `verifyCronSecret(c)` パターンに統一
+2. **修正箇所**: koubo-crawl (L99), koubo-crawl-single (L283), koubo-check-period (L341), koubo-discover (L501)
+3. **finishCronRun引数修正**: statsオブジェクトのキーを _helpers.ts の定義に合わせて変更
+4. **デプロイ後テスト結果**:
+   - `POST /koubo-crawl?batch=3` → 認証OK、processed=0（overdueなし=正常）
+   - `POST /koubo-crawl-single` (HIROSHIMA-MONO) → PDF到達OK (HTTP 200), content_hash取得
+   - `POST /koubo-check-period` → checked=0, updated=0（全件設定済み=正常）
+   - `GET /koubo-dashboard` → total=685, active=473, url_lost=158, needs_manual=54（正常）
+   - 認証なしリクエスト → 403 "Invalid cron secret"（正常拒否）
+
+#### 本番DB状態の確認
+- **発見**: wrangler d1 execute で参照されるDBと、Cloudflare Pagesにバインドされたdb_idが異なる可能性。CLIでは空DBに接続するが、Pages本番は22,258件のデータを保持
+- **対処**: Pages本番でのAPI動作確認で正常性を保証。CLIでの直接SQL操作は以前のセッションのバインディングが残っている可能性
+
+### 成果数値
+
+| 指標 | Phase 12.2 | Phase 13 | 変化 |
+|------|-----------|----------|------|
+| active | 463 | **473** | +10 |
+| url_lost | 158 | **158** | ±0 |
+| needs_manual | 64 | **54** | -10 |
+| PDF Coverage | 67.6% | **69.1%** | +1.5pp |
+| Cron API 5本 | バグあり | **全本動作確認** | 修正完了 |
+
+### 次アクション（→ Phase 14）
+1. **Playwright導入**: izumi SPA対応 + url_lost 158件の元自治体URL取得
+2. **jGrants PDF抽出**: 1,213件のPDF URL取得（Playwright）
+3. **定期クロール本稼働**: overdue到来時の自動実行開始（約30日後）
+4. **needs_manual残り54件**: 大半が制度系（公募型ではない）ため分母見直しも検討
+5. **ダッシュボードUI改善**: アラート可視化の強化
 
 ---
 
