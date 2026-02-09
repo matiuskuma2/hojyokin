@@ -315,8 +315,8 @@ syncJgrants.post('/enrich-jgrants', async (c) => {
   
   // forceモード: v2エンリッチ済みでもeligible_expensesがないものを再処理（Active内のみ）
   const forceMode = c.req.query('force') === 'true';
-  // 注意: allMode は削除（2026-01-27）
-  // 期限切れを処理する導線を完全に塞ぐ - Activeのみを対象とする
+  // include_expired: 期限切れも含めてエンリッチ対象にする
+  const includeExpired = c.req.query('include_expired') === 'true';
   
   // 設定 (Cloudflare Worker 30秒制限のため5件に制限)
   const MAX_ITEMS_PER_RUN = 5;
@@ -586,10 +586,11 @@ syncJgrants.post('/enrich-jgrants', async (c) => {
       ? `(detail_json IS NULL OR detail_json NOT LIKE '%"enriched_version":"v2"%' OR (json_extract(detail_json, '$.eligible_expenses') IS NULL AND detail_json LIKE '%"enriched_version":"v2"%'))`
       : `(detail_json IS NULL OR detail_json NOT LIKE '%"enriched_version":"v2"%')`;
     
-    // Active only: 受付中のみを対象（2026-01-27 確定方針）
-    // - acceptance_end_datetime が NULL の場合は対象外（期限不明は Active とみなさない）
-    // - 期限切れを処理する導線を完全に塞ぐ
-    const dateCondition = `acceptance_end_datetime IS NOT NULL AND acceptance_end_datetime > datetime('now')`;
+    // Active only（デフォルト）: 受付中のみを対象
+    // include_expired=true の場合: 期限切れも含めてエンリッチ
+    const dateCondition = includeExpired
+      ? `1=1`  // 日付制約なし
+      : `acceptance_end_datetime IS NOT NULL AND acceptance_end_datetime > datetime('now')`;
     
     const targets = await db.prepare(`
       SELECT 

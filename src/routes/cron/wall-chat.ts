@@ -247,6 +247,8 @@ wallChat.post('/apply-field-fallbacks', async (c) => {
     // パラメータ
     const url = new URL(c.req.url);
     const source = url.searchParams.get('source') || 'jgrants';
+    const includeExpired = url.searchParams.get('include_expired') === 'true';
+    const flagFilter = includeExpired ? '' : 'AND request_reception_display_flag = 1';
     
     // 対象取得: wall_chat_ready = 0 かつ overview あり かつ (app_reqs or eligible がない)
     const targets = await db.prepare(`
@@ -260,7 +262,7 @@ wallChat.post('/apply-field-fallbacks', async (c) => {
         subsidy_max_limit
       FROM subsidy_cache
       WHERE source = ?
-        AND request_reception_display_flag = 1
+        ${flagFilter}
         AND wall_chat_ready = 0
         AND wall_chat_excluded = 0
         AND json_extract(detail_json, '$.overview') IS NOT NULL
@@ -487,7 +489,10 @@ wallChat.post('/daily-ready-boost', async (c) => {
   try {
     runId = await startCronRun(db, 'daily-ready-boost', authResult.triggeredBy);
     
-    const source = 'jgrants';
+    const boostUrl = new URL(c.req.url);
+    const source = boostUrl.searchParams.get('source') || 'jgrants';
+    const includeExpired = boostUrl.searchParams.get('include_expired') === 'true';
+    const flagFilter = includeExpired ? '' : 'AND request_reception_display_flag = 1';
     const startTime = Date.now();
     
     // 統計
@@ -516,7 +521,7 @@ wallChat.post('/daily-ready-boost', async (c) => {
           subsidy_rate, subsidy_max_limit
         FROM subsidy_cache
         WHERE source = ?
-          AND request_reception_display_flag = 1
+          ${flagFilter}
           AND wall_chat_ready = 0
           AND wall_chat_excluded = 0
           AND json_extract(detail_json, '$.overview') IS NOT NULL
@@ -655,7 +660,7 @@ wallChat.post('/daily-ready-boost', async (c) => {
         SELECT id, title, detail_json
         FROM subsidy_cache
         WHERE source = ?
-          AND request_reception_display_flag = 1
+          ${flagFilter}
           AND wall_chat_ready = 0
           AND json_extract(detail_json, '$.enriched_version') IS NOT NULL
         ORDER BY RANDOM()
@@ -751,7 +756,7 @@ wallChat.post('/daily-ready-boost', async (c) => {
         SUM(CASE WHEN wall_chat_ready = 1 THEN 1 ELSE 0 END) as ready,
         SUM(CASE WHEN wall_chat_excluded = 1 THEN 1 ELSE 0 END) as excluded
       FROM subsidy_cache
-      WHERE source = ? AND request_reception_display_flag = 1
+      WHERE source = ? ${flagFilter}
     `).bind(source).first<{ total: number; ready: number; excluded: number }>();
     
     const durationMs = Date.now() - startTime;
