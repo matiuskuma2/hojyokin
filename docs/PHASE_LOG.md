@@ -1,7 +1,7 @@
 # Phase別実施ログ (PHASE_LOG)
 
 > **目的**: 各Phaseで何をしたか、何が成果で、次に何をするかを記録
-> **最終更新**: 2026-02-09 (Phase 14)
+> **最終更新**: 2026-02-09 (Phase 15)
 > **記録ルール**: Phase完了時に必ず追記。計画→実施→結果→次アクションの順で記録。
 
 ---
@@ -10,6 +10,7 @@
 
 | Phase | 日付 | タイトル | 主な成果 |
 |-------|------|---------|---------|
+| 15 | 2026-02-09 | jGrants wall_chat_ready改善 + データ品質向上 | 受付中ready率 14.3%→98.4%, +165件ready化, searchable +164件 |
 | 14 | 2026-02-09 | jGrants鮮度更新 + 本番DB検証 | flag更新2,770件, 受付中精度186件, 本番koubo_monitors 685件確認, Cron API本番稼働 |
 | 13 | 2026-02-09 | needs_manual深堀 + Cron運用テスト + バグ修正 | active 473 (+10), PDF 69.1%, Cron API全5本動作確認, verifyCronSecret修正 |
 | 12.2 | 2026-02-09 | 全件クロール完了 | active 463, PDF Coverage 67.6%, crawl_log 685件100% |
@@ -26,6 +27,70 @@
 | 3 | 2026-02-05 | Go-Tech・事業再構築追加 | 省エネ補助金・両立支援等追加 |
 | 2 | 2026-02-05 | デジタル化・AI補助金 | セキュリティ枠追加 |
 | 1 | 2026-02-02 | SSOT移行 | subsidy_canonical + snapshot体制確立 |
+
+---
+
+## Phase 15: jGrants wall_chat_ready改善 + データ品質向上 (2026-02-09)
+
+### 計画
+- Phase 15-A: jGrants has_data 773件の wall_chat_ready 再計算・改善
+- Phase 15-B: jGrants empty 662件の detail_json 強化（低優先度）
+
+### 実施内容
+
+#### Phase 15-A: jGrants wall_chat_ready 改善
+
+1. **根本原因分析**:
+   - wall_chat_ready判定の5必須項目: overview, application_requirements, eligible_expenses, required_documents, deadline
+   - recalc-wall-chat-readyは `enriched_version` IS NOT NULL が前提条件
+   - **受付中162件中161件が enriched_version なし** → recalc対象外だった
+   - 残り1件は eligible_expenses のみ不足
+
+2. **全量分析（受付中jGrants 162件のボトルネック）**:
+
+   | パターン | 件数 | 状況 |
+   |---------|------|------|
+   | no_enriched + 全フィールド欠如 | 161件 | enrich未処理 |
+   | enriched + eligible不足のみ | 1件 | フォールバック対象 |
+
+3. **Phase 15-A-1: enrich-jgrants 本番実行**:
+   - API: `POST /api/cron/enrich-jgrants` × 32ラウンド（各5件ずつ）
+   - **結果**: 155件 enrich完了、36件が即ready化
+   - jGrants APIから overview/application_requirements 等を detail_json に補完
+
+4. **Phase 15-A-2: daily-ready-boost 本番実行**:
+   - API: `POST /api/cron/daily-ready-boost`
+   - 1回目: +6件ready (enrich前の残存分)
+   - 2回目（enrich後）: **+120件ready** (fallback補完で大量ready化)
+   - app_reqs_filled: 44件, eligible_filled: 108件, excluded: 3件
+
+5. **効果検証**:
+
+   | 指標 | Phase 14 | Phase 15 | 変化 |
+   |------|----------|----------|------|
+   | 受付中jGrants ready率 | 14.3% (27/189) | **98.4% (186/189)** | **+84.1pp** |
+   | wall_chat_ready=1 全体 | 20,180件 | **20,345件** | **+165件** |
+   | wall_chat_ready=0 全体 | 2,078件 | **1,913件** | -165件 |
+   | Ready率 全体 | 90.7% | **91.4%** | +0.7pp |
+   | searchable_count | 18,691 | **18,855** | **+164件** |
+   | ssot_accepting_count | 186 | 186 | (変化なし) |
+
+### 成果数値
+
+| 指標 | 値 |
+|------|-----|
+| enrich実行件数 | 155件（32ラウンド） |
+| ready化合計 | +165件（enrich直接: 36件 + fallback: 120件 + boost初回: 6件 + boost前enrich: 3件） |
+| 受付中ready率 | **98.4%** (186/189) |
+| 全体ready率 | **91.4%** (20,345/22,258) |
+| 受付中not_ready残 | 3件（excluded 2 + not_ready 1） |
+
+### 次アクション（→ Phase 16）
+1. **定期Cron設定**: daily-ready-boost を毎日自動実行（cron-job.org等で設定）
+2. **jGrants API同期**: enrich-jgrantsを定期実行し、新規受付開始分を自動enrich
+3. **Playwright導入**: izumi SPA対応 → url_lost 158件の元自治体URL取得
+4. **detail_score底上げ**: 残り1,913件のnot_ready改善（受付終了分のenrich処理）
+5. **ダッシュボードUI強化**: /monitor ページのアラート可視化
 
 ---
 
