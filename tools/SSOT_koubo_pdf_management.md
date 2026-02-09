@@ -1,18 +1,32 @@
 # 公募要領PDF管理 SSOT (Single Source of Truth)
-# 最終更新: 2026-02-09 (Phase 12: 定点観測システム導入)
+# 最終更新: 2026-02-09 (Phase 12.1: 定点観測データ充実 - 110件復旧)
 # 管理者: モギモギ（関屋紘之）
 
 ## 1. データソース別状況サマリ
 
-### 総計 (2026-02-09 最終更新)
-| 指標 | 件数 | 割合 |
-|------|------|------|
-| 総案件数 (subsidy_cache) | 22,258 | 100% |
-| subsidy_canonical | 3,470 | - |
-| 定点観測対象 (koubo_monitors) | 685 | 3.1% |
-| 定点観測 active | 296 | - |
-| 定点観測 url_lost | 316 | - |
-| 定点観測 needs_manual | 73 | - |
+### 総計 (2026-02-09 Phase 12.1 最終更新)
+| 指標 | 件数 | 割合 | Phase 12→12.1 変化 |
+|------|------|------|-------------------|
+| 総案件数 (subsidy_cache) | 22,258 | 100% | - |
+| subsidy_canonical | 3,470 | - | - |
+| 定点観測対象 (koubo_monitors) | 685 | 3.1% | - |
+| 定点観測 active | **406** | 59.3% | +110 (296→406) |
+| 定点観測 url_lost | **212** | 30.9% | -104 (316→212) |
+| 定点観測 needs_manual | **67** | 9.8% | -6 (73→67) |
+| PDF Coverage | **406/685** | **59.3%** | +16.1pp (43.2%→59.3%) |
+| crawl_log 記録 | **406** | - | +406 (0→406) |
+
+### Phase 12.1 実績 (2026-02-09)
+| 施策 | 対象 | 発見数 | 成功率 |
+|------|------|--------|--------|
+| issuer_pageクロール (url_lost) | 313件 | 172件PDF発見 | 55% |
+| うち公募要領PDF (koubo keyword) | - | 115件 | 37% |
+| URL到達性検証 | 115件 | 104件確認 | 90.4% |
+| DB復旧 (url_lost→active) | - | **104件** | - |
+| Google検索 (needs_manual) | 73件 | 6件PDF発見 | 8.2% |
+| DB復旧 (needs_manual→active) | - | **6件** | - |
+| 初回到達性チェック (active全件) | 296件 | 246件HEAD確認 | 100% |
+| crawl_log初回記録 | 406件 | 406件生成 | 100% |
 
 ### PDF特定状況 (情報源横断)
 | カテゴリ | 件数 | DB記録先 |
@@ -34,9 +48,9 @@
 
 | テーブル | 用途 | レコード数 |
 |---------|------|-----------|
-| koubo_monitors | 補助金ごとの公募要領PDFクローリングルール管理 | 685 |
-| koubo_crawl_log | クロール実行結果履歴 | - |
-| koubo_discovery_queue | 新規発見補助金の確認キュー | - |
+| koubo_monitors | 補助金ごとの公募要領PDFクローリングルール管理 | 685 (active=406, url_lost=212, needs_manual=67) |
+| koubo_crawl_log | クロール実行結果履歴 | 406 (success=296, new_url_found=110) |
+| koubo_discovery_queue | 新規発見補助金の確認キュー | 0 |
 | v_koubo_monitor_dashboard | superadminダッシュボード用ビュー | - |
 | v_koubo_discoveries_pending | 新規発見一覧ビュー | - |
 
