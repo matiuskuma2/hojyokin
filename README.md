@@ -46,11 +46,23 @@
 
 | 日付 | URL | コミット |
 |------|-----|---------|
-| 2026-02-09 | https://www.genspark.ai/api/files/s/MnjK5oGK | 0e322f1 |
+| 2026-02-09 (Phase 13) | https://www.genspark.ai/api/files/s/JiJ4lYBt | a86230d |
+| 2026-02-09 (Phase 12.2) | https://www.genspark.ai/api/files/s/MnjK5oGK | 0e322f1 |
 
 ---
 
-### 🎉 最新: Phase 12.2 - 全件クロール完了 (v5.1.0)
+### 🎉 最新: Phase 13 - needs_manual深堀 + Cron運用テスト (v5.2.0)
+
+**Phase 13 成果 (2026-02-09)**:
+- needs_manual 64件を深堀クロール → 10件復旧（active 463→473）
+- `koubo-crawl.ts` の `verifyCronSecret` バグ修正（4箇所）
+- 本番 Cron API 5本全稼働確認:
+  - `POST /api/cron/koubo-crawl` → 定期クロール実行（認証OK）
+  - `POST /api/cron/koubo-crawl-single` → 手動クロール（PDF到達確認OK）
+  - `POST /api/cron/koubo-check-period` → 公募時期判定（正常動作）
+  - `GET /api/cron/koubo-dashboard` → ダッシュボード（685件表示OK）
+  - `POST /api/cron/koubo-discover` → 新規発見承認/却下（認証OK）
+- url_lost 158件はizumi SPA制限+Waybackレート制限のためPhase 14へ延期
 
 **v5.1.0 リリース（2026-02-09）:**
 
