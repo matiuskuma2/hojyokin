@@ -3,10 +3,35 @@
 ## 📋 プロジェクト概要
 
 - **Name**: subsidy-matching (hojyokin)
-- **Version**: 4.17.0
+- **Version**: 5.0.0
 - **Goal**: 企業情報を登録するだけで、最適な補助金・助成金を自動でマッチング＆申請書ドラフト作成
 
-### 🎉 最新アップデート (v4.17.0) - Phase 4 重要補助金拡充＆サンドボックス軽量化
+### 🎉 最新アップデート (v5.0.0) - Phase 12: 公募要領PDF定点観測システム導入
+
+**v5.0.0 リリース（2026-02-09）:**
+
+| 項目 | 状態 | 詳細 |
+|------|------|------|
+| **定点観測DB** | ✅ | koubo_monitors 685件（active 296 / url_lost 316 / needs_manual 73） |
+| **クロールエンジン** | ✅ | Cron API 5本（koubo-crawl / koubo-crawl-single / koubo-check-period / koubo-dashboard / koubo-discover） |
+| **ダッシュボード** | ✅ | /monitor - Chart.js統合、5タブ構成（アラート/履歴/カバレッジ/スケジュール/新規発見） |
+| **Admin API** | ✅ | 7エンドポイント（dashboard/alerts/discoveries/detail/discontinue/update-url/schedule） |
+| **SSOT** | ✅ | 定点観測ルール全面更新（公募時期判定/URL変更検知/中止判定/新規発見） |
+| **初回スケジュール** | ✅ | active 296件 next_crawl設定済、url_lost 316件 fallback検索クエリ設定済 |
+| **手動登録追加** | ✅ | Phase 11で11件追加、dead_link 1件回復 |
+
+**定点観測フロー:**
+```
+毎日: POST /api/cron/koubo-crawl → PDF到達性チェック → URL変更検知
+週次: POST /api/cron/koubo-check-period → 公募時期判定 → pre_kouboスケジュール設定
+URL消失時: ページ再探索 → Google検索 → superadminにエスカレーション
+補助金中止: POST /api/admin/monitors/:id/discontinue → クローリング停止
+新規発見: koubo_discovery_queue → superadmin承認 → DB自動登録
+```
+
+---
+
+### 🎉 前回アップデート (v4.17.0) - Phase 4 重要補助金拡充＆サンドボックス軽量化
 
 **v4.17.0 リリース（2026-02-08）:**
 
