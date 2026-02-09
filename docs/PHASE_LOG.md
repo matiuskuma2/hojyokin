@@ -133,16 +133,40 @@
 - **jnet21 0件**: 完了
 - **tokyo-kosha/hataraku 0件**: 完了
 
-### コード変更（未デプロイ）
+### コード変更・デプロイ
 - `src/routes/cron/wall-chat.ts`: `include_expired` パラメータ追加（4箇所）
-- `src/routes/cron/sync-jgrants.ts`: `include_expired` 日付条件オプション化
+- `src/routes/cron/sync-jgrants.ts`: `include_expired` 日付条件オプション化 + SQL最適化
+  - include_expired時はキーワードLIKE検索をスキップ（CF Workers CPU制限対策）
+  - AbortController タイムアウト 10s→8s
+  - MAX_ITEMS_PER_RUN: 5→3（CF Workers 30s wall time対策）
+- **本番デプロイ完了**: Cloudflare APIキー設定・wrangler pages deploy実施
+
+#### Phase 16-D: jGrants 662件 include_expired enrich（本番実行）
+
+1. **本番enrich-jgrants実行（include_expired=true）**:
+   - 1件ずつ×232ラウンド（jGrants API外部呼出し＋CF Workers 30秒制限のため）
+   - **結果**: 231件enrich、42件が直接ready化
+
+2. **daily-ready-boost（include_expired=true）**:
+   - jGrants全2,934件を対象にフォールバック補完
+   - **結果**: +190件ready化（フォールバック補完→ready）
+
+3. **最終成果（Phase 16全体）**:
+
+   | 指標 | Phase 15 | Phase 16最終 | 変化 |
+   |------|----------|-------------|------|
+   | wall_chat_ready=1 全体 | 20,345件 | **21,430件** | **+1,085件** |
+   | wall_chat_ready=0 全体 | 1,913件 | **828件** | **-1,085件** |
+   | Ready率 全体 | 91.4% | **96.3%** | **+4.9pp** |
+   | jGrants ready率 | 56.7% | **74.8%** | **+18.1pp** |
+   | manual ready率 | 7.2% | **97.9%** | **+90.7pp** |
+   | jnet21 ready率 | 0% | **100%** | **+100pp** |
 
 ### 次アクション（→ Phase 17）
-1. **Cloudflare APIキー設定**: 本番デプロイ → include_expired対応コード反映
-2. **jGrants 662件enrich**: include_expired=true でenrich-jgrants実行
-3. **定期Cron設定**: daily-ready-boost + enrich-jgrants を毎日自動実行
-4. **Playwright導入**: izumi SPA対応 → url_lost 158件改善
-5. **ダッシュボードUI**: ready率モニタリング・推移グラフ追加
+1. **定期Cron設定**: daily-ready-boost + enrich-jgrants を毎日自動実行
+2. **Playwright導入**: izumi SPA対応 → url_lost 158件改善
+3. **ダッシュボードUI**: ready率モニタリング・推移グラフ追加
+4. **jGrants残738件**: enrich対象外（jGrants API側にデータなし or 補完条件未達）
 
 ---
 

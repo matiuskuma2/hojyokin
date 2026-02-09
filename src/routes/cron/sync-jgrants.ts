@@ -319,7 +319,7 @@ syncJgrants.post('/enrich-jgrants', async (c) => {
   const includeExpired = c.req.query('include_expired') === 'true';
   
   // 設定 (Cloudflare Worker 30秒制限のため5件に制限)
-  const MAX_ITEMS_PER_RUN = 5;
+  const MAX_ITEMS_PER_RUN = 3; // CF Workers 30s制限対策: 通常3件/include_expired時も3件（SQL最適化済み）
   const JGRANTS_DETAIL_API_V2 = 'https://api.jgrants-portal.go.jp/exp/v2/public/subsidies/id';
   
   let itemsEnriched = 0;
@@ -587,10 +587,13 @@ syncJgrants.post('/enrich-jgrants', async (c) => {
       : `(detail_json IS NULL OR detail_json NOT LIKE '%"enriched_version":"v2"%')`;
     
     // Active only（デフォルト）: 受付中のみを対象
-    // include_expired=true の場合: 期限切れも含めてエンリッチ
+    // include_expired=true の場合: 期限切れも含めてエンリッチ（軽量条件）
     const dateCondition = includeExpired
-      ? `1=1`  // 日付制約なし
+      ? `acceptance_end_datetime IS NOT NULL`  // 期限あり全件（1=1より軽量）
       : `acceptance_end_datetime IS NOT NULL AND acceptance_end_datetime > datetime('now')`;
+    
+    // include_expired時はキーワード条件を省略（軽量化）
+    const keywordFilter = includeExpired ? '1=1' : `(${allCondition})`;
     
     const targets = await db.prepare(`
       SELECT 
@@ -605,7 +608,7 @@ syncJgrants.post('/enrich-jgrants', async (c) => {
         AND wall_chat_ready = 0
         AND ${enrichmentCondition}
         AND ${dateCondition}
-        AND (${allCondition})
+        AND ${keywordFilter}
       ORDER BY 
         priority_tier ASC,
         CASE WHEN acceptance_end_datetime IS NOT NULL THEN 0 ELSE 1 END,
@@ -664,7 +667,7 @@ syncJgrants.post('/enrich-jgrants', async (c) => {
         
         // V2 API から詳細取得（タイムアウト10秒）
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 10000);
+        const timeoutId = setTimeout(() => controller.abort(), 8000); // 8秒タイムアウト（CF Workers 30s制限対策）
         
         let response: Response;
         try {
