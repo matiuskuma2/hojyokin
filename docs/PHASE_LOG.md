@@ -1,0 +1,216 @@
+# Phase別実施ログ (PHASE_LOG)
+
+> **目的**: 各Phaseで何をしたか、何が成果で、次に何をするかを記録
+> **最終更新**: 2026-02-09 (Phase 12.2)
+> **記録ルール**: Phase完了時に必ず追記。計画→実施→結果→次アクションの順で記録。
+
+---
+
+## Phase一覧（逆順 = 最新が上）
+
+| Phase | 日付 | タイトル | 主な成果 |
+|-------|------|---------|---------|
+| 12.2 | 2026-02-09 | 全件クロール完了 | active 463, PDF Coverage 67.6%, crawl_log 685件100% |
+| 12.1 | 2026-02-09 | 定点観測データ充実 | active 406, 110件復旧, PDF Coverage 59.3% |
+| 12 | 2026-02-09 | 定点観測システム導入 | koubo_monitors 685件, クロールエンジン5API, ダッシュボード |
+| 11 | 2026-02-08 | 公募要領PDF全件横断特定 | 全ソース横断でPDF特定・DB記録 |
+| 10 | 2026-02-08 | 補助金340件追加 | subsidy_cache 22,258件 |
+| 9 | 2026-02-08 | 重要補助金100件追加 | manual登録236件 |
+| 8 | 2026-02-08 | 重要補助金100件追加 | v4.21 |
+| 7 | 2026-02-07 | detail_json精緻化 | 12件のdetail_json更新 |
+| 6 | 2026-02-07 | 全34件manual score 95 | 手動登録補助金のdetail_json完全化 |
+| 5 | 2026-02-06 | detail_jsonバッチ更新 | 18件の公募要領からdetail_json生成 |
+| 4 | 2026-02-06 | 重要補助金拡充 | 大規模成長投資・働き方改革等6件追加 |
+| 3 | 2026-02-05 | Go-Tech・事業再構築追加 | 省エネ補助金・両立支援等追加 |
+| 2 | 2026-02-05 | デジタル化・AI補助金 | セキュリティ枠追加 |
+| 1 | 2026-02-02 | SSOT移行 | subsidy_canonical + snapshot体制確立 |
+
+---
+
+## Phase 12.2: 全件クロール完了 (2026-02-09)
+
+### 計画
+- url_lost残り212件の追加復旧
+- needs_manual 67件のGoogle検索
+- crawl_log 100%カバー達成
+
+### 実施内容
+
+#### 1. other PDFスマート選定 (54件復旧)
+- **対象**: url_lost 212件のうち、issuer_pageクロールでPDFが見つかったがkouboキーワードなしだった57件
+- **方法**: ファイル名スコアリング（yoko=10, bosyu=9, gaiyou=7, annai=6, hojo=5...）
+- **結果**: 54件到達確認OK → DB更新（url_lost → active）
+- **SQL**: `tools/update_other_pdf_recovery.sql`
+
+#### 2. url_lost 404記録 (158件)
+- **対象**: issuer_page 404 + Google検索不達の158件
+- **方法**: crawl_logに `page_not_found` として一括記録
+- **結果**: 158件のcrawl_log記録完了
+
+#### 3. needs_manual Google検索 (3件復旧)
+- **対象**: 67件の中央省庁補助金
+- **方法**: `{補助金名} 公募要領 filetype:pdf` でGoogle検索
+- **発見**: ISMAP、福岡スタートアップ、外国人材受入の3件
+- **SQL**: `tools/update_needs_manual_google.sql`（Phase 12.1のもの + 追加3件）
+
+#### 4. crawl_log 100%カバー達成
+- 全685件のモニターにcrawl_log記録が存在
+- 分布: success=296, new_url_found=167, page_not_found=158, pdf_not_found=64
+
+### 成果数値
+
+| 指標 | Phase 12 | Phase 12.1 | Phase 12.2 | 変化 |
+|------|----------|-----------|-----------|------|
+| active | 296 | 406 | **463** | +167 |
+| url_lost | 316 | 212 | **158** | -158 |
+| needs_manual | 73 | 67 | **64** | -9 |
+| PDF Coverage | 43.2% | 59.3% | **67.6%** | +24.4pp |
+| crawl_log | 0 | 406 | **685** | 100% |
+
+### 次アクション（→ Phase 13）
+1. url_lost 158件: Wayback Machine / リダイレクト先探索
+2. needs_manual 64件: 個別サイトの深層クロール
+3. 定期クロール運用開始: POST /api/cron/koubo-crawl?batch=20
+4. jGrants 1,213件: Playwright導入によるPDF URL抽出
+5. ダッシュボードUI改善
+
+---
+
+## Phase 12.1: 定点観測データ充実 (2026-02-09)
+
+### 計画
+- url_lost 316件のissuer_pageクロール
+- 公募要領PDF候補の抽出・検証・DB登録
+
+### 実施内容
+
+#### 1. issuer_pageクロール (104件復旧)
+- **対象**: url_lost 316件のうち izumi ソースの issuer_page URL
+- **方法**: issuer_pageをHEADチェック → 200OKのページをクロール → PDFリンク抽出
+- **結果**: 313件クロール → 172件PDF発見 → 115件koubo keyword一致 → 104件到達確認 → DB登録
+- **SQL**: `tools/update_url_lost_recovery.sql`
+
+#### 2. needs_manual Google検索 (6件復旧)
+- **対象**: needs_manual 73件
+- **方法**: Google検索（fallback_search_query使用）
+- **結果**: 6件のPDF URL発見・登録
+- **SQL**: `tools/update_needs_manual_google.sql`
+
+#### 3. crawl_log初回記録
+- active 296件の初回到達性チェック: success 296件
+- 復旧分: new_url_found 110件
+- **SQL**: `tools/seed_crawl_log_initial.sql`
+
+### 成果数値
+| 指標 | Phase 12 | Phase 12.1 |
+|------|----------|-----------|
+| active | 296 | 406 (+110) |
+| url_lost | 316 | 212 (-104) |
+| needs_manual | 73 | 67 (-6) |
+| PDF Coverage | 43.2% | 59.3% (+16.1pp) |
+| crawl_log | 0 | 406 |
+
+---
+
+## Phase 12: 定点観測システム導入 (2026-02-09)
+
+### 計画
+- 公募要領PDFの定点観測テーブル構築
+- クロールエンジン（Cron API）5本作成
+- モニターダッシュボード構築
+- 初回スケジュール設定
+
+### 実施内容
+1. **テーブル新設**: koubo_monitors, koubo_crawl_log, koubo_discovery_queue
+2. **ビュー新設**: v_koubo_monitor_dashboard, v_koubo_discoveries_pending
+3. **クロールAPI**: 5エンドポイント（crawl/crawl-single/check-period/dashboard/discover）
+4. **Admin API**: 7エンドポイント
+5. **モニターUI**: /monitor ページ（Chart.js統合、5タブ構成）
+6. **初回登録**: 685件（Phase 11のデータから自動移行）
+7. **初回スケジュール**: active 296件に next_crawl_at 設定
+
+### 成果数値
+| 指標 | 値 |
+|------|-----|
+| koubo_monitors | 685件 |
+| active | 296 |
+| url_lost | 316 |
+| needs_manual | 73 |
+| PDF Coverage | 43.2% |
+
+---
+
+## Phase 11: 公募要領PDF全件横断特定 (2026-02-08)
+
+### 実施内容
+- jGrants API、izumi、手動登録の全ソースからPDF URL横断特定
+- koubo_pdf_url の初期設定
+- needs_manual 73件の識別（手動対応が必要な補助金）
+
+---
+
+## Phase 10: 補助金340件追加 (2026-02-08)
+
+### 実施内容
+- Part1-6に分けて340件の新規補助金を subsidy_cache に追加
+- 総計 22,258件に到達
+- **SQL**: `tools/seed_phase10_part1.sql` ～ `tools/seed_phase10_part6.sql`
+
+---
+
+## Phase 9: 重要補助金100件追加 (2026-02-08)
+
+### 実施内容
+- スコア90の重要補助金100件追加
+- 手動登録計236件
+- **SQL**: `tools/seed_phase9_part1.sql`, `tools/seed_phase9_part2.sql`
+
+---
+
+## Phase 8: 重要補助金100件追加 (2026-02-08)
+
+### 実施内容
+- 初回の重要補助金100件追加（v4.21）
+- **SQL**: `tools/seed_phase8_new100_part1.sql`, `tools/seed_phase8_new100_part2.sql`
+
+---
+
+## Phase 7: detail_json精緻化 (2026-02-07)
+
+### 実施内容
+- 12件の補助金について公式ガイドラインからdetail_json更新
+- **SQL**: `tools/seed_phase7_detail_json_update.sql`
+
+---
+
+## Phase 6: 全34件manual score 95 (2026-02-07)
+
+### 実施内容
+- 手動登録の全34件をdetail_jsonスコア95に引き上げ
+- **SQL**: `tools/seed_phase6_detail_json_batch.sql`, `tools/seed_phase6b_remaining4.sql`
+
+---
+
+## Phase 5: detail_jsonバッチ更新 (2026-02-06)
+
+### 実施内容
+- 18件のdetail_jsonバッチ更新
+- **SQL**: `tools/seed_phase5_detail_json_batch.sql`
+
+---
+
+## Phase 4: 重要補助金拡充 (2026-02-06)
+
+### 実施内容
+- 大規模成長投資補助金、働き方改革推進支援助成金等6件追加
+- **SQL**: `tools/seed_phase4_major_subsidies.sql`, `tools/seed_phase4_detail_json_3subsidies.sql`
+
+---
+
+## Phase 1-3: 基盤構築 (2026-02-02 ～ 2026-02-05)
+
+### 実施内容
+- Phase 1: SSOT体制確立（subsidy_canonical + subsidy_snapshot）
+- Phase 2: デジタル化・AI補助金セキュリティ枠追加
+- Phase 3: Go-Tech・事業再構築・省エネ補助金等追加
+- **SQL**: `tools/seed_phase2_digital_ai_and_extras.sql`, `tools/seed_phase3_gotech_saikouchiku.sql`

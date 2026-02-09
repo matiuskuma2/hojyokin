@@ -3,21 +3,82 @@
 ## 📋 プロジェクト概要
 
 - **Name**: subsidy-matching (hojyokin)
-- **Version**: 5.0.0
+- **Version**: 5.1.0 (Phase 12.2)
 - **Goal**: 企業情報を登録するだけで、最適な補助金・助成金を自動でマッチング＆申請書ドラフト作成
+- **管理者**: モギモギ（関屋紘之）
+- **本番URL**: https://hojyokin.pages.dev
+- **モニターUI**: https://hojyokin.pages.dev/monitor
+- **GitHub**: https://github.com/matiuskuma2/hojyokin
 
-### 🎉 最新アップデート (v5.0.0) - Phase 12: 公募要領PDF定点観測システム導入
+---
+
+## 📚 ドキュメントガイド（サンドボックス消失時はここから復活）
+
+| ドキュメント | 内容 | 重要度 |
+|-------------|------|--------|
+| **[SANDBOX_RECOVERY.md](docs/SANDBOX_RECOVERY.md)** | サンドボックス完全復活手順 | 最重要 |
+| **[PROJECT_RULES.md](docs/PROJECT_RULES.md)** | 全体ルール・命名規則・記録方法 | 最重要 |
+| **[PHASE_LOG.md](docs/PHASE_LOG.md)** | Phase別の計画・実施・成果・次アクション | 重要 |
+| **[CRAWL_RULES.md](docs/CRAWL_RULES.md)** | クロール運用ルール・壁打ち結果 | 重要 |
+| **[DB_SCHEMA_OVERVIEW.md](docs/DB_SCHEMA_OVERVIEW.md)** | 主要テーブル・ER図・マイグレーション | 重要 |
+| **[DEPLOYMENT.md](docs/DEPLOYMENT.md)** | ビルド・デプロイ・環境設定手順 | 重要 |
+| **[SSOT_koubo_pdf_management.md](tools/SSOT_koubo_pdf_management.md)** | 公募PDF管理SSOT（数値詳細） | 参照 |
+| **[DATA-ACQUISITION-RULES.md](docs/DATA-ACQUISITION-RULES.md)** | データソース別取得ルール | 参照 |
+| **[ssot-data-architecture.md](docs/ssot-data-architecture.md)** | SSOTデータアーキテクチャ台帳 | 参照 |
+
+---
+
+## 📊 現在のデータ状況 (2026-02-09 Phase 12.2)
+
+| 指標 | 値 |
+|------|-----|
+| 補助金マスタ (subsidy_cache) | **22,258件** |
+| 正規化済み (subsidy_canonical) | 3,470件 |
+| 定点観測対象 (koubo_monitors) | 685件 |
+| 定点観測 active | **463件** (67.6%) |
+| 定点観測 url_lost | 158件 |
+| 定点観測 needs_manual | 64件 |
+| PDF Coverage | **67.6%** |
+| crawl_log カバー率 | **100%** (685件) |
+
+### バックアップ
+
+| 日付 | URL | コミット |
+|------|-----|---------|
+| 2026-02-09 | https://www.genspark.ai/api/files/s/MnjK5oGK | 0e322f1 |
+
+---
+
+### 🎉 最新: Phase 12.2 - 全件クロール完了 (v5.1.0)
+
+**v5.1.0 リリース（2026-02-09）:**
+
+| 指標 | Phase 12 | Phase 12.1 | Phase 12.2 | 変化 |
+|------|----------|-----------|-----------|------|
+| active | 296 | 406 | **463** | +167 |
+| url_lost | 316 | 212 | **158** | -158 |
+| needs_manual | 73 | 67 | **64** | -9 |
+| PDF Coverage | 43.2% | 59.3% | **67.6%** | +24.4pp |
+| crawl_log | 0 | 406 | **685** | 100% |
+
+**実施内容**: issuer_pageクロール(104件)、other PDFスマート選定(54件)、Google検索(9件)の復旧。crawl_log 100%カバー達成。
+
+**次のステップ (Phase 13+)**: url_lost 158件のWayback Machine探索、jGrants 1,213件のPlaywright PDF抽出、定期クロール運用開始
+
+---
+
+### 🎉 Phase 12: 公募要領PDF定点観測システム導入 (v5.0.0)
 
 **v5.0.0 リリース（2026-02-09）:**
 
 | 項目 | 状態 | 詳細 |
 |------|------|------|
-| **定点観測DB** | ✅ | koubo_monitors 685件（active 296 / url_lost 316 / needs_manual 73） |
+| **定点観測DB** | ✅ | koubo_monitors 685件（active 463 / url_lost 158 / needs_manual 64） |
 | **クロールエンジン** | ✅ | Cron API 5本（koubo-crawl / koubo-crawl-single / koubo-check-period / koubo-dashboard / koubo-discover） |
 | **ダッシュボード** | ✅ | /monitor - Chart.js統合、5タブ構成（アラート/履歴/カバレッジ/スケジュール/新規発見） |
 | **Admin API** | ✅ | 7エンドポイント（dashboard/alerts/discoveries/detail/discontinue/update-url/schedule） |
 | **SSOT** | ✅ | 定点観測ルール全面更新（公募時期判定/URL変更検知/中止判定/新規発見） |
-| **初回スケジュール** | ✅ | active 296件 next_crawl設定済、url_lost 316件 fallback検索クエリ設定済 |
+| **初回スケジュール** | ✅ | active 463件 next_crawl設定済、url_lost 158件 fallback検索クエリ設定済 |
 | **手動登録追加** | ✅ | Phase 11で11件追加、dead_link 1件回復 |
 
 **定点観測フロー:**
