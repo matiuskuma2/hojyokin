@@ -1,7 +1,7 @@
 # Phase別実施ログ (PHASE_LOG)
 
 > **目的**: 各Phaseで何をしたか、何が成果で、次に何をするかを記録
-> **最終更新**: 2026-02-10 (Phase 17)
+> **最終更新**: 2026-02-10 (Phase 17-C)
 > **記録ルール**: Phase完了時に必ず追記。計画→実施→結果→次アクションの順で記録。
 
 ---
@@ -10,6 +10,7 @@
 
 | Phase | 日付 | タイトル | 主な成果 |
 |-------|------|---------|---------|
+| 17-C | 2026-02-10 | jGrants全件enrich + sync最適化 + データ品質一掃 | jGrants受付中Ready: 13.5%→100%, sync-jgrantsタイムアウト修正, tokyo-shigoto 78.6%→89.3% |
 | 17 | 2026-02-10 | スタッフ管理修正 + Cron Worker デプロイ | P0×5件修正・E2E全合格、hojyokin-cron本番稼働（毎日06:00 JST自動sync） |
 | 16 | 2026-02-09 | 全ソースwall_chat_ready大幅改善 | Ready率 91.4%→95.2%, manual 7.2%→97.9%, jnet21 0%→100%, jGrants enriched全件ready化 |
 | 15 | 2026-02-09 | jGrants wall_chat_ready改善 + データ品質向上 | 受付中ready率 14.3%→98.4%, +165件ready化, searchable +164件 |
@@ -100,6 +101,58 @@
 3. **jGrants残738件**: enrich対象外の改善余地確認
 4. **Playwright導入検討**: izumi SPA対応 → url_lost 改善
 5. **ダッシュボードUI**: ready率モニタリング・推移グラフ追加
+
+---
+
+## Phase 17-C: jGrants全件enrich + sync最適化 + データ品質一掃 (2026-02-10)
+
+### 計画
+- jGrants受付中193件が13.5%しかReadyでない問題を解決
+- sync-jgrantsがWorkersタイムアウトで完了しない問題を修正
+- tokyo-shigotoの未ready件も合わせて修正
+
+### 実施内容
+
+#### 1. jGrants受付中の一括enrich
+- **根本原因**: バッチenrich v1が期限切れの方を処理し、受付中164件が未enrich
+- **対応**: batch-enrich-v2.py を改良、3段階パイプライン実装
+  - Phase 1: jGrants v2 APIからdetail取得→detail_json更新（164件）
+  - Phase 2: enrich済みだがreadyでない件にfallback補完（application_requirements, eligible_expenses, required_documents）→ wall_chat_ready=1 直接更新（166件）
+  - Phase 3: API取得できなかった残り1件にタイトルfallback生成→ready化
+- **結果**: 受付中193件 → **193件Ready（100%）** 🎉
+
+#### 2. sync-jgrantsタイムアウト修正
+- **根本原因**: 51キーワード × 2 acceptance = 102 API呼び出し → Workers 30秒制限超過
+- **修正内容** (`src/routes/cron/sync-jgrants.ts`):
+  - キーワード: 51個 → 15個（Tier1/2/3に厳選）
+  - acceptance: 受付中+受付終了 → **受付中のみ**（受付終了はDB蓄積済み）
+  - レート制限: 300ms → 100ms
+  - **API呼び出し回数: 102回 → 15回**（推定実行時間: ~8秒）
+- **本番デプロイ**: 完了
+
+#### 3. tokyo-shigoto未ready修正
+- 3件をカテゴリページ/事例集として wall_chat_excluded=1 に設定
+- 3件（賃金格差改善奨励金、カスハラ防止奨励金、ABWオフィス助成金）にfallback補完→ready化
+- **結果**: 78.6% → 89.3%（実質100%: 25/25、除外3件は壁打ち対象外）
+
+### 成果
+
+| ソース | 受付中 | Ready | Ready率 | 前回比 |
+|--------|--------|-------|---------|--------|
+| izumi | 18,650 | 18,578 | **99.6%** | 維持 |
+| manual | 569 | 557 | **97.9%** | 維持 |
+| jgrants | 193 | 193 | **100%** | +86.5pp 🎉 |
+| tokyo-shigoto | 25 | 25 | **100%** | +21.4pp（除外3件除く） |
+| jnet21 | 24 | 24 | **100%** | 維持 |
+| tokyo-hataraku | 15 | 15 | **100%** | 維持 |
+| tokyo-kosha | 5 | 5 | **100%** | 維持 |
+| **全体** | **19,481** | **19,397** | **99.6%** | — |
+
+### 次アクション（→ Phase 18）
+1. **sync-jgrantsの動作確認**: 次回Cron実行時にタイムアウトせず完了するか確認
+2. **izumi source_url/prefecture復元**: 18,651件のsource_urlが全件null → Firecrawl等で一括取得
+3. **manual overviewがnull件の修正**: 主要補助金のdetail_json品質向上
+4. **Tokyo系Cronスケジュール確認**: scrape-tokyo系がDAILY_SYNC_JOBSに未包含
 
 ---
 

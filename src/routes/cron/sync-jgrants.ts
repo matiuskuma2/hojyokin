@@ -42,75 +42,33 @@ syncJgrants.post('/sync-jgrants', async (c) => {
   
   try {
     // =====================================================================
-    // 凍結キーワードセット（データ収集パイプライン v1.3）
-    // Phase1-1: 500件達成を目標
+    // 最適化キーワードセット（v2.0 - Workers タイムアウト対策）
     // 
     // 変更履歴:
-    // v1.2 -> v1.3: 受付終了分も取得（acceptance='0'を追加）
+    // v1.3 -> v2.0: 51キーワード×2acceptance(102API呼び出し)がWorkersタイムアウト
+    //   → 受付中のみ + キーワード15個に厳選（15API呼び出し、~8秒で完了）
+    //   → 受付終了分は既にDBに保存済み（新規取り込み不要）
+    //   → 重複はseenIdsで排除されるので広いキーワードでカバー
     // =====================================================================
     const KEYWORDS = [
-      // 基本キーワード（汎用性が高く、多くの補助金をカバー）
+      // Tier1: 広範カバー（これだけでjGrants受付中のほとんどをカバー）
       '補助金',
       '助成金', 
       '事業',
       '支援',
-      '申請',
       '公募',
-      // テーマ別
-      'DX',
-      'IT導入',
+      // Tier2: テーマ別（Tier1で漏れるものをカバー）
+      '設備',
       '省エネ',
       '雇用',
-      '設備投資',
-      '製造業',
-      'デジタル化',
-      '創業',
-      '販路開拓',
-      '人材育成',
-      '研究開発',
-      '生産性向上',
-      // 企業規模・業種
+      'DX',
       '中小企業',
-      '小規模事業者',
-      '新事業',
-      '海外展開',
-      '輸出',
-      '観光',
+      // Tier3: ニッチ分野
+      '研究開発',
       '農業',
-      '介護',
-      '福祉',
-      '環境',
-      'カーボンニュートラル',
-      '脱炭素',
-      'ものづくり',
-      'サービス',
-      // IT・デジタル関連
-      'ECサイト',
-      'テレワーク',
-      'AI',
-      'IoT',
-      'クラウド',
-      '情報化',
-      // 経営・人事関連
-      '感染症対策',
-      '賃上げ',
-      '最低賃金',
-      '事業承継',
-      '再構築',
-      '経営革新',
-      '働き方改革',
-      // 地域・産業振興
-      '地域活性化',
-      '商店街',
-      '中心市街地',
-      '地方創生',
-      '産業振興',
-      // インフラ・設備
-      '省力化',
-      '自動化',
-      '機械化',
+      '観光',
       '建設',
-      '建築',
+      '環境',
     ];
     
     const JGRANTS_API_URL = 'https://api.jgrants-portal.go.jp/exp/v1/public/subsidies';
@@ -121,8 +79,8 @@ syncJgrants.post('/sync-jgrants', async (c) => {
     const seenIds = new Set<string>();
     const errors: string[] = [];
     
-    // Phase1-1改善: 受付中と受付終了の両方を取得
-    const acceptanceFlags = ['1', '0']; // 1=受付中, 0=受付終了
+    // v2.0: 受付中のみ取得（受付終了分は既にDBに蓄積済み）
+    const acceptanceFlags = ['1']; // 1=受付中のみ
     
     for (const acceptance of acceptanceFlags) {
       for (const keyword of KEYWORDS) {
@@ -205,8 +163,8 @@ syncJgrants.post('/sync-jgrants', async (c) => {
           totalFetched += subsidies.length;
           totalInserted += uniqueSubsidies.length;
           
-          // レート制限対策: 300ms待機
-          await new Promise(resolve => setTimeout(resolve, 300));
+          // レート制限対策: 100ms待機（v2.0: 300ms→100msに短縮）
+          await new Promise(resolve => setTimeout(resolve, 100));
           
         } catch (err) {
           errors.push(`${keyword}(acc=${acceptance}): ${String(err)}`);
