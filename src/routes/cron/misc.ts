@@ -179,4 +179,191 @@ misc.get('/health', async (c) => {
  * - BLOCKED顧客は除外（事故防止）
  */
 
+// =====================================================
+// POST /api/cron/expire-check
+// 
+// 期限切れ補助金の自動検知・フラグ管理
+// - acceptance_end_datetime < now のレコードを壁打ち非表示に
+// - 期限切れ間近（7日以内）の補助金をアラート
+// - データ鮮度サマリを生成
+// =====================================================
+
+misc.post('/expire-check', async (c) => {
+  const db = c.env.DB;
+  
+  const authResult = verifyCronSecret(c);
+  if (!authResult.valid) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: authResult.error!.code, message: authResult.error!.message },
+    }, authResult.error!.status);
+  }
+  
+  let runId: string | null = null;
+  try {
+    runId = await startCronRun(db, 'expire-check', 'cron');
+  } catch (e) {
+    console.warn('[ExpireCheck] Failed to start cron_run:', e);
+  }
+  
+  try {
+    // Phase 1: 期限切れ補助金を検出（acceptance_end_datetime < now AND wall_chat_ready=1）
+    const expired = await db.prepare(`
+      SELECT id, title, source, acceptance_end_datetime
+      FROM subsidy_cache
+      WHERE wall_chat_ready = 1
+        AND acceptance_end_datetime IS NOT NULL
+        AND acceptance_end_datetime < datetime('now')
+        AND acceptance_end_datetime != ''
+      LIMIT 500
+    `).all();
+    
+    let expiredCount = 0;
+    if (expired.results && expired.results.length > 0) {
+      // バッチでwall_chat_readyを0に更新
+      for (const row of expired.results as any[]) {
+        await db.prepare(`
+          UPDATE subsidy_cache 
+          SET wall_chat_ready = 0, 
+              wall_chat_missing = '["expired"]'
+          WHERE id = ?
+        `).bind(row.id).run();
+        expiredCount++;
+      }
+      console.log(`[ExpireCheck] Phase1: ${expiredCount}件の期限切れを非表示化`);
+    }
+    
+    // Phase 2: 7日以内に期限切れの補助金を集計（アラート用）
+    const expiring = await db.prepare(`
+      SELECT source, COUNT(*) as cnt
+      FROM subsidy_cache
+      WHERE wall_chat_ready = 1
+        AND acceptance_end_datetime IS NOT NULL
+        AND acceptance_end_datetime BETWEEN datetime('now') AND datetime('now', '+7 days')
+      GROUP BY source
+    `).all();
+    
+    const expiringBySource: Record<string, number> = {};
+    for (const row of (expiring.results || []) as any[]) {
+      expiringBySource[row.source] = row.cnt;
+    }
+    
+    // Phase 3: ソース別の現状サマリ
+    const summary = await db.prepare(`
+      SELECT 
+        source,
+        COUNT(*) as total,
+        SUM(CASE WHEN acceptance_end_datetime > datetime('now') OR acceptance_end_datetime IS NULL THEN 1 ELSE 0 END) as accepting,
+        SUM(CASE WHEN wall_chat_ready = 1 THEN 1 ELSE 0 END) as ready,
+        SUM(CASE WHEN wall_chat_ready = 1 AND (acceptance_end_datetime > datetime('now') OR acceptance_end_datetime IS NULL) THEN 1 ELSE 0 END) as accepting_ready
+      FROM subsidy_cache
+      GROUP BY source
+    `).all();
+    
+    const sourceStats: Record<string, any> = {};
+    for (const row of (summary.results || []) as any[]) {
+      sourceStats[row.source] = {
+        total: row.total,
+        accepting: row.accepting,
+        ready: row.ready,
+        accepting_ready: row.accepting_ready,
+        ready_pct: row.accepting > 0 ? Math.round(row.accepting_ready / row.accepting * 1000) / 10 : 0,
+      };
+    }
+    
+    if (runId) {
+      await finishCronRun(db, runId, 'success', {
+        items_processed: expiredCount,
+        items_inserted: 0,
+        error_count: 0,
+        metadata: {
+          expired_hidden: expiredCount,
+          expiring_7days: expiringBySource,
+          source_stats: sourceStats,
+        },
+      });
+    }
+    
+    console.log(`[ExpireCheck] Done: expired=${expiredCount}, expiring_7d=${JSON.stringify(expiringBySource)}`);
+    
+    return c.json<ApiResponse<{
+      expired_hidden: number;
+      expiring_7days: Record<string, number>;
+      source_stats: Record<string, any>;
+      timestamp: string;
+    }>>({
+      success: true,
+      data: {
+        expired_hidden: expiredCount,
+        expiring_7days: expiringBySource,
+        source_stats: sourceStats,
+        timestamp: new Date().toISOString(),
+      },
+    });
+    
+  } catch (error) {
+    console.error('[ExpireCheck] Error:', error);
+    if (runId) {
+      await finishCronRun(db, runId, 'failed', {
+        error_count: 1,
+        errors: [String(error)],
+      });
+    }
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'INTERNAL_ERROR', message: String(error) },
+    }, 500);
+  }
+});
+
+// =====================================================
+// GET /api/cron/data-freshness
+// 
+// データ鮮度ダッシュボード（認証不要、読み取り専用）
+// =====================================================
+misc.get('/data-freshness', async (c) => {
+  const db = c.env.DB;
+  
+  try {
+    const stats = await db.prepare(`
+      SELECT 
+        source,
+        COUNT(*) as total,
+        SUM(CASE WHEN acceptance_end_datetime > datetime('now') OR acceptance_end_datetime IS NULL THEN 1 ELSE 0 END) as accepting,
+        SUM(CASE WHEN wall_chat_ready = 1 AND (acceptance_end_datetime > datetime('now') OR acceptance_end_datetime IS NULL) THEN 1 ELSE 0 END) as accepting_ready,
+        SUM(CASE WHEN json_extract(detail_json, '$.enriched_version') LIKE '%crawl%' THEN 1 ELSE 0 END) as crawled,
+        MAX(cached_at) as last_updated
+      FROM subsidy_cache
+      GROUP BY source
+      ORDER BY total DESC
+    `).all();
+    
+    // 直近のCron実行履歴
+    const recentRuns = await db.prepare(`
+      SELECT job_type, status, items_processed, items_inserted, started_at, finished_at
+      FROM cron_runs
+      ORDER BY started_at DESC
+      LIMIT 20
+    `).all();
+    
+    return c.json<ApiResponse<{
+      sources: any[];
+      recent_cron_runs: any[];
+      timestamp: string;
+    }>>({
+      success: true,
+      data: {
+        sources: stats.results || [],
+        recent_cron_runs: recentRuns.results || [],
+        timestamp: new Date().toISOString(),
+      },
+    });
+  } catch (error) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'INTERNAL_ERROR', message: String(error) },
+    }, 500);
+  }
+});
+
 export default misc;

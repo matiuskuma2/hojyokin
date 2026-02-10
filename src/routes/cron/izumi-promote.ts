@@ -298,7 +298,7 @@ izumiPromote.post('/crawl-izumi-details', async (c) => {
     }, authResult.error!.status);
   }
   
-  const MAX_ITEMS = 10; // v2: 増量（PDF skip分を考慮）
+  const MAX_ITEMS = 30; // v3: バッチサイズ引上げ（15min間隔で120件/時目標）
   let runId: string | null = null;
   
   try {

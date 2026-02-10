@@ -1,7 +1,7 @@
 # Phase別実施ログ (PHASE_LOG)
 
 > **目的**: 各Phaseで何をしたか、何が成果で、次に何をするかを記録
-> **最終更新**: 2026-02-10 (Phase 17-C)
+> **最終更新**: 2026-02-10 (Phase 18)
 > **記録ルール**: Phase完了時に必ず追記。計画→実施→結果→次アクションの順で記録。
 
 ---
@@ -10,6 +10,7 @@
 
 | Phase | 日付 | タイトル | 主な成果 |
 |-------|------|---------|---------|
+| 18 | 2026-02-10 | データ品質一掃 + 期限切れ自動管理 + izumi大規模クロール | manual 100%, 期限切れ1535件非表示, izumi crawl 9097件+, expire-check/data-freshness新設 |
 | 17-C | 2026-02-10 | jGrants全件enrich + sync最適化 + データ品質一掃 | jGrants受付中Ready: 13.5%→100%, sync-jgrantsタイムアウト修正, tokyo-shigoto 78.6%→89.3% |
 | 17 | 2026-02-10 | スタッフ管理修正 + Cron Worker デプロイ | P0×5件修正・E2E全合格、hojyokin-cron本番稼働（毎日06:00 JST自動sync） |
 | 16 | 2026-02-09 | 全ソースwall_chat_ready大幅改善 | Ready率 91.4%→95.2%, manual 7.2%→97.9%, jnet21 0%→100%, jGrants enriched全件ready化 |
@@ -153,6 +154,81 @@
 2. **izumi source_url/prefecture復元**: 18,651件のsource_urlが全件null → Firecrawl等で一括取得
 3. **manual overviewがnull件の修正**: 主要補助金のdetail_json品質向上
 4. **Tokyo系Cronスケジュール確認**: scrape-tokyo系がDAILY_SYNC_JOBSに未包含
+
+---
+
+## Phase 18: データ品質一掃 + 期限切れ自動管理 + izumi大規模クロール (2026-02-10)
+
+### 計画
+- manual 43件のoverview null問題を完全解消（IT導入/ものづくり/持続化等の最重要補助金含む）
+- izumi fallback_v1 12,954件をバッチクロールでofficial_urlから詳細取得→overview品質向上
+- 期限切れ補助金の自動検知・非表示化Cronエンドポイント追加
+- データ鮮度ダッシュボードAPIの追加
+
+### 実施内容
+
+#### 1. manual主要補助金overview一括補完
+- **根本原因**: 手動登録した43件（IT導入補助金、ものづくり補助金、持続化補助金等）のdetail_jsonにoverviewがnull
+- **対応**: `tools/enrich-manual-subsidies.py` で補助金ごとの詳細overviewを手動マッピング＆自動補完
+  - REAL-001〜008: 主要国補助金（IT導入、ものづくり、持続化、業務改善、省エネ等）
+  - IT-SUBSIDY-2026系: IT導入補助金2026の5枠
+  - SHORYOKUKA系: 省力化投資補助金（カタログ/一般型）
+  - JIZOKUKA系: 持続化補助金（一般/創業/共同/能登）
+  - 雇用系: キャリアアップ、人材開発、両立支援等
+  - 地方系: 富山/奈良/三重/宮城/群馬
+- 残り12件のnot-ready（ar/ee/rd欠落）にfallback補完→全件ready化
+- **結果**: manual 569件中 overview有 **569/569 (100%)**, ready **569/569 (100%)** 🎉
+
+#### 2. izumi大規模バッチクロール
+- **背景**: izumi_fallback_v1の12,954件がoverview平均48文字のテンプレ → 壁打ち品質不十分
+- **対応**: `tools/batch-crawl-izumi.py` を新規作成
+  - 並列クロール: ThreadPoolExecutor(workers=5)
+  - 処理速度: **123件/分**（既存Cron 10件/15分の約185倍）
+  - HTML→テキスト抽出（main/article優先）、PDFリンク抽出、フィールド抽出
+  - D1直接書き込み: enriched_version='izumi_crawl_v2'に昇格
+- **中間結果**: 2,000件＋バッチ処理完了、成功率86%
+- izumi_crawl_v2: 5,624件 → **9,097件以上**（進行中）
+
+#### 3. 期限切れ自動管理（expire-check）
+- **新エンドポイント**: `POST /api/cron/expire-check`
+  - Phase 1: acceptance_end_datetime < now かつ wall_chat_ready=1 → ready=0に更新（非表示化）
+  - Phase 2: 7日以内に期限切れの補助金をソース別に集計（アラート用）
+  - Phase 3: ソース別の総合サマリ生成
+- **初回実行**: **1,535件の期限切れ補助金を自動非表示化** ✅
+- jGrants: 受付終了の旧データが壁打ち表示されていた問題を解消
+
+#### 4. データ鮮度ダッシュボードAPI
+- **新エンドポイント**: `GET /api/cron/data-freshness`（認証不要）
+  - ソース別の total/accepting/accepting_ready/crawled/last_updated を一覧表示
+  - 直近20件のCron実行履歴
+
+#### 5. izumiクロールバッチサイズ引上げ
+- crawl-izumi-details: MAX_ITEMS 10 → **30**に増量（15分間隔で120件/時目標）
+
+### 成果
+
+| ソース | 受付中 | Ready | Ready率 | 前回比 |
+|--------|--------|-------|---------|--------|
+| izumi | 18,650 | 18,578 | **99.6%** | 維持（クロール品質向上中） |
+| manual | 569 | 569 | **100%** | +2.1pp 🎉（97.9%→100%） |
+| jgrants | 193 | 193 | **100%** | 維持 |
+| tokyo-shigoto | 28 | 25 | **89.3%** | 維持 |
+| jnet21 | 24 | 24 | **100%** | 維持 |
+| tokyo-hataraku | 15 | 15 | **100%** | 維持 |
+| tokyo-kosha | 5 | 5 | **100%** | 維持 |
+| **全体** | **19,484** | **19,409** | **99.6%** | — |
+
+**追加成果**:
+- 期限切れ1,535件の自動非表示化（壁打ち体験の精度向上）
+- izumi crawl_v2: 5,624件→9,097件＋（overview品質向上、バッチ継続中）
+- expire-check / data-freshness の2つの運用APIを新設
+
+### 次アクション（→ Phase 19）
+1. **izumiバッチクロール完了確認**: 残り約9,000件の完了を確認、最終stats
+2. **hojyokin-cron にexpire-check追加**: 日次maintenanceにexpire-checkジョブを組み込み
+3. **Tokyo系の定期更新**: 最終更新1/24 → 2週間以上停止中。scrape-tokyo系Cronスケジュール追加
+4. **壁打ちUI品質確認**: クロール後のoverviewが壁打ちで適切に表示されるかE2E確認
+5. **運用ドキュメント整備**: OPERATIONS_RULES.md のSSOT化
 
 ---
 
