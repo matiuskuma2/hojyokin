@@ -1,7 +1,7 @@
 # Phase別実施ログ (PHASE_LOG)
 
 > **目的**: 各Phaseで何をしたか、何が成果で、次に何をするかを記録
-> **最終更新**: 2026-02-09 (Phase 16)
+> **最終更新**: 2026-02-10 (Phase 17)
 > **記録ルール**: Phase完了時に必ず追記。計画→実施→結果→次アクションの順で記録。
 
 ---
@@ -10,6 +10,7 @@
 
 | Phase | 日付 | タイトル | 主な成果 |
 |-------|------|---------|---------|
+| 17 | 2026-02-10 | スタッフ管理修正 + Cron Worker デプロイ | P0×5件修正・E2E全合格、hojyokin-cron本番稼働（毎日06:00 JST自動sync） |
 | 16 | 2026-02-09 | 全ソースwall_chat_ready大幅改善 | Ready率 91.4%→95.2%, manual 7.2%→97.9%, jnet21 0%→100%, jGrants enriched全件ready化 |
 | 15 | 2026-02-09 | jGrants wall_chat_ready改善 + データ品質向上 | 受付中ready率 14.3%→98.4%, +165件ready化, searchable +164件 |
 | 14 | 2026-02-09 | jGrants鮮度更新 + 本番DB検証 | flag更新2,770件, 受付中精度186件, 本番koubo_monitors 685件確認, Cron API本番稼働 |
@@ -28,6 +29,77 @@
 | 3 | 2026-02-05 | Go-Tech・事業再構築追加 | 省エネ補助金・両立支援等追加 |
 | 2 | 2026-02-05 | デジタル化・AI補助金 | セキュリティ枠追加 |
 | 1 | 2026-02-02 | SSOT移行 | subsidy_canonical + snapshot体制確立 |
+
+---
+
+## Phase 17: スタッフ管理修正 + Cron Worker デプロイ (2026-02-10)
+
+### 計画
+- Phase 17-A: スタッフ招待/ログイン/管理のコードレビュー＆全面修正
+- Phase 17-B: hojyokin-cron Worker を本番デプロイし、日次Cron自動化を稼働
+
+### 実施内容
+
+#### Phase 17-A: スタッフ管理修正（P0×5 + P1×7）
+
+**根本原因**: 2つのテーブル系統が混在（招待は agency_staff_credentials に書き込むが、一覧は agency_members + agency_member_invites を読む）
+
+| # | 問題 | 修正内容 | 状態 |
+|---|---|---|---|
+| P0-1 | requireAuth がスタッフ招待をブロック | staffPublicRoutes / staffAuthRoutes 分離 | ✅ |
+| P0-2 | GET /members がスタッフを表示しない | agency_staff_credentials 統合クエリ | ✅ |
+| P0-3 | validatePasswordStrength 返り値バグ | .valid → .length > 0 修正 | ✅ |
+| P0-4 | hashToken 3箇所に散在 | _helpers.ts の hashToken に統一 | ✅ |
+| P0-5 | debug_token 漏洩リスク | !== 'production' → === 'development' | ✅ |
+| P1-1〜7 | agency_id絞込、楽観ロック、XSSサニタイズ等 | 7件すべて修正 | ✅ |
+
+**E2Eテスト全合格**: オーナー登録→招待→検証（認証なし）→パスワード設定（認証なし）→一覧表示→スタッフログイン→招待取消
+
+**変更ファイル**: 6件、+451行/-152行
+- `src/routes/agency/staff.ts` — 完全リライト
+- `src/routes/agency/members.ts` — 完全リライト
+- `src/routes/agency/index.ts` — staffPublicRoutes分離
+- `src/routes/agency/_helpers.ts` — generateShortCode暗号化
+- `src/routes/auth.ts` — validatePasswordStrength修正、hashToken統一
+- `docs/CODE_REVIEW_STAFF_MANAGEMENT.md` — レビュー報告書
+
+**本番デプロイ**: hojyokin Pages deploy 完了（コミット 91f97e1）
+
+#### Phase 17-B: hojyokin-cron Worker デプロイ
+
+1. **デプロイ**: `workers/hojyokin-cron/` を Cloudflare Workers にデプロイ
+   - URL: https://hojyokin-cron.sekiyadubai.workers.dev
+   - Version ID: 748ef44b-a344-43e0-ab58-905818fc1727
+
+2. **Cronスケジュール（本番稼働）**:
+   | Cron | 時刻 (JST) | ジョブ |
+   |------|-----------|--------|
+   | `0 21 * * *` | 毎日 06:00 | sync-jgrants + enrich-jgrants + daily-ready-boost + recalc-wall-chat-ready + consume-extractions |
+   | `0 */1 * * *` | 毎時 | crawl-izumi-details (upgrade mode) |
+
+3. **Secrets確認**: CRON_SECRET, APP_BASE_URL, CRON_MANUAL_TOKEN — 全て設定済み
+
+4. **動作確認**:
+   - /status: ✅ has_secret=true, app_base_url=https://hojyokin.pages.dev
+   - /trigger sync: ✅ 成功（27.9秒で完了）
+   - /trigger maintenance: ✅ 成功（1.5秒で完了）
+   - 本体 /api/cron/health: ✅ cron_configured=true
+
+### 成果
+
+| 項目 | 成果 |
+|------|------|
+| スタッフ管理 | 「追加不能・名前非表示」バグ完全修正、本番デプロイ済み |
+| Cron自動化 | hojyokin-cron Worker 本番稼働開始、毎日06:00 JSTに自動sync |
+| データ鮮度 | daily-ready-boost + enrich-jgrants が毎日自動で Ready率を維持・向上 |
+| izumiクロール | 毎時自動でdetails upgradeが実行 |
+
+### 次アクション（→ Phase 18）
+1. **Cron実行結果の監視**: cron_runs テーブルで日次実行結果を確認、異常検知
+2. **OPERATIONS_RULES.md 作成**: 運用ルールのSSOTドキュメント整備
+3. **jGrants残738件**: enrich対象外の改善余地確認
+4. **Playwright導入検討**: izumi SPA対応 → url_lost 改善
+5. **ダッシュボードUI**: ready率モニタリング・推移グラフ追加
 
 ---
 
