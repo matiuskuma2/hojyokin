@@ -194,12 +194,14 @@ export async function hashToken(token: string): Promise<string> {
   return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
-/** 短縮コード生成 */
+/** 短縮コード生成（暗号学的に安全な乱数を使用） */
 export function generateShortCode(): string {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789';
+  const randomBytes = new Uint8Array(8);
+  crypto.getRandomValues(randomBytes);
   let code = '';
   for (let i = 0; i < 8; i++) {
-    code += chars.charAt(Math.floor(Math.random() * chars.length));
+    code += chars.charAt(randomBytes[i] % chars.length);
   }
   return code;
 }

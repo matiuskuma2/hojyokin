@@ -15,16 +15,17 @@ import { hashPassword, verifyPassword, validatePasswordStrength } from '../lib/p
 import { signJWT } from '../lib/jwt';
 import { requireAuth, getCurrentUser } from '../middleware/auth';
 import { sendPasswordResetEmail } from '../services/email';
+import { hashToken } from './agency/_helpers';
 
 /**
  * SHA-256ハッシュ生成（トークン保存用）
+ * 
+ * 注意: 新規コードでは hashToken() (_helpers.ts) を使用してください。
+ * この関数は既存の password_reset_tokens との後方互換性のために残しています。
+ * hashToken と同じ実装（SHA-256 hex）です。
  */
 async function sha256Hash(input: string): Promise<string> {
-  const encoder = new TextEncoder();
-  const data = encoder.encode(input);
-  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
-  const hashArray = Array.from(new Uint8Array(hashBuffer));
-  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+  return hashToken(input);
 }
 
 /**
@@ -629,8 +630,8 @@ auth.post('/password-reset/request', async (c) => {
       success: true,
       data: {
         message: 'If the email exists, a reset link will be sent',
-        // 開発用: 本番では削除（ENVIRONMENTが未設定またはproduction以外でのみ表示）
-        debug_token: c.env.ENVIRONMENT !== 'production' ? rawToken : undefined,
+        // 開発用: 明示的に 'development' の場合のみ表示（未設定時は非表示）
+        debug_token: c.env.ENVIRONMENT === 'development' ? rawToken : undefined,
       },
     });
   } catch (error) {
@@ -960,11 +961,12 @@ auth.post('/change-password', requireAuth, async (c) => {
     }
     
     // 新しいパスワードの強度を確認
-    const passwordValidation = validatePasswordStrength(newPassword);
-    if (!passwordValidation.valid) {
+    // validatePasswordStrength はエラーメッセージの配列を返す（空配列 = 合格）
+    const passwordErrors = validatePasswordStrength(newPassword);
+    if (passwordErrors.length > 0) {
       return c.json<ApiResponse<null>>({
         success: false,
-        error: { code: 'WEAK_PASSWORD', message: passwordValidation.message },
+        error: { code: 'WEAK_PASSWORD', message: passwordErrors.join(', '), details: passwordErrors },
       }, 400);
     }
     

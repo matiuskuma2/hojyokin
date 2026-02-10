@@ -10,10 +10,11 @@
  *   - members.ts        : メンバー管理
  *   - dashboard-v2.ts   : ダッシュボードv2
  *   - suggestions.ts    : サジェスション生成
- *   - staff.ts          : スタッフ管理
+ *   - staff.ts          : スタッフ管理（認証不要エンドポイント含む）
  * 
  * 認証ルール:
  *   - /public-news のみ認証不要
+ *   - /staff/verify-invite, /staff/setup-password は認証不要（招待からの新規スタッフ用）
  *   - その他は全て requireAuth 必須
  */
 
@@ -29,12 +30,14 @@ import submissions from './submissions';
 import members from './members';
 import dashboardV2 from './dashboard-v2';
 import suggestions from './suggestions';
-import staff from './staff';
+import { staffPublicRoutes, staffAuthRoutes } from './staff';
 
 const agencyRoutes = new Hono<{ Bindings: Env; Variables: Variables }>();
 
 // ── 公開エンドポイント（認証不要） ──
 agencyRoutes.route('/', publicNews);
+// スタッフ招待検証・パスワード設定（認証不要 - 新規スタッフはトークンを持っていない）
+agencyRoutes.route('/', staffPublicRoutes);
 
 // ── 認証ミドルウェア（以降の全ルートに適用） ──
 agencyRoutes.use('/*', requireAuth);
@@ -47,7 +50,7 @@ agencyRoutes.route('/', submissions);
 agencyRoutes.route('/', members);
 agencyRoutes.route('/', dashboardV2);
 agencyRoutes.route('/', suggestions);
-agencyRoutes.route('/', staff);
+agencyRoutes.route('/', staffAuthRoutes);
 
 export { agencyRoutes };
 export default agencyRoutes;
