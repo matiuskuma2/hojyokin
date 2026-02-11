@@ -450,6 +450,15 @@ function generateAdditionalQuestions(
         return;
       }
       
+      // DBに既に登録されている情報と重複する質問はスキップ
+      const qLower = wq.question.toLowerCase();
+      if (qLower.includes('従業員') && company.employee_count && company.employee_count > 0) return;
+      if (qLower.includes('資本金') && company.capital && company.capital > 0) return;
+      if (qLower.includes('年商') && company.annual_revenue && company.annual_revenue > 0) return;
+      if (qLower.includes('設立') && company.established_date) return;
+      if (qLower.includes('所在地') && company.prefecture) return;
+      if (qLower.includes('業種') && company.industry_major) return;
+      
       questions.push({
         key: factKey,
         label: wq.question,
