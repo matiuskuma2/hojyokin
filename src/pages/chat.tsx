@@ -234,17 +234,58 @@ chatPages.get('/chat', (c) => {
         </div>
       </div>
       
-      <!-- 完了時のアクション -->
+      <!-- Phase 19: 構造化質問完了 → コンシェルジュモード移行 -->
       <div id="completion-area" class="hidden border-t p-4 bg-gradient-to-r from-green-50 to-emerald-50">
         <div class="flex items-center justify-between">
           <div>
             <h4 class="font-semibold text-gray-800 text-sm">
-              <i class="fas fa-check-circle text-green-600 mr-1"></i>確認完了
+              <i class="fas fa-check-circle text-green-600 mr-1"></i>基本情報の収集完了
             </h4>
-            <p class="text-xs text-gray-600">必要な情報が揃いました。申請書の作成に進めます。</p>
+            <p class="text-xs text-gray-600">引き続きコンシェルジュに相談できます。申請書作成にも進めます。</p>
           </div>
-          <button onclick="goToDraft()" class="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 text-sm font-medium">
+          <div class="flex gap-2">
+            <button onclick="switchToConsulting()" class="bg-indigo-600 text-white px-3 py-2 rounded-lg hover:bg-indigo-700 text-xs font-medium">
+              <i class="fas fa-robot mr-1"></i>AIに相談
+            </button>
+            <button onclick="goToDraft()" class="bg-green-600 text-white px-3 py-2 rounded-lg hover:bg-green-700 text-xs font-medium">
+              <i class="fas fa-file-alt mr-1"></i>申請書作成
+            </button>
+          </div>
+        </div>
+      </div>
+      
+      <!-- Phase 19: コンシェルジュモード入力エリア -->
+      <div id="consulting-input-area" class="hidden border-t p-3">
+        <div class="mb-2">
+          <span class="text-xs text-indigo-600 font-medium">
+            <i class="fas fa-robot mr-1"></i>AIコンシェルジュモード - 何でもご相談ください
+          </span>
+        </div>
+        <div class="flex items-center space-x-2">
+          <div class="flex-1">
+            <input type="text" id="consulting-input" 
+                   placeholder="補助金について何でもお聞きください..." 
+                   class="w-full px-3 py-2.5 border rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent text-sm"
+                   onkeypress="if(event.key==='Enter')sendConsultingMessage()"
+                   autocomplete="off">
+          </div>
+          <button onclick="sendConsultingMessage()" id="consulting-send-btn"
+                  class="bg-indigo-600 text-white px-4 py-2.5 rounded-lg hover:bg-indigo-700 disabled:bg-gray-400 disabled:cursor-not-allowed text-sm">
+            <i class="fas fa-paper-plane"></i>
+          </button>
+        </div>
+        <!-- 提案質問ボタン -->
+        <div id="suggested-questions" class="hidden mt-2 flex flex-wrap gap-1.5"></div>
+        <!-- アクションボタン -->
+        <div class="mt-2 flex gap-2">
+          <button onclick="goToDraft()" class="text-xs px-3 py-1.5 bg-green-50 text-green-700 rounded-full hover:bg-green-100">
             <i class="fas fa-file-alt mr-1"></i>申請書を作成
+          </button>
+          <button onclick="askAboutRequirements()" class="text-xs px-3 py-1.5 bg-blue-50 text-blue-700 rounded-full hover:bg-blue-100">
+            <i class="fas fa-clipboard-check mr-1"></i>申請要件を確認
+          </button>
+          <button onclick="askAboutDocuments()" class="text-xs px-3 py-1.5 bg-purple-50 text-purple-700 rounded-full hover:bg-purple-100">
+            <i class="fas fa-folder-open mr-1"></i>必要書類を確認
           </button>
         </div>
       </div>
@@ -344,6 +385,7 @@ chatPages.get('/chat', (c) => {
     
     var sessionId = existingSessionId || null;
     var sessionCompleted = false;
+    var consultingMode = false;
     var totalQuestions = 0;
     var answeredQuestions = 0;
     var currentInputType = 'boolean';
@@ -629,13 +671,23 @@ chatPages.get('/chat', (c) => {
         }
         
         // セッション完了チェック
-        if (session.status === 'completed') {
-          sessionCompleted = true;
-          document.getElementById('input-area').classList.add('hidden');
-          document.getElementById('completion-area').classList.remove('hidden');
-          document.getElementById('session-status').innerHTML = '<i class="fas fa-check mr-1"></i>完了';
-          document.getElementById('session-status').className = 'text-xs px-2 py-1 rounded-full bg-green-100 text-green-700';
-          updateProgress(totalQuestions, totalQuestions);
+        if (session.status === 'completed' || session.status === 'consulting') {
+          if (session.status === 'consulting') {
+            // Phase 19: コンシェルジュモードで再開
+            consultingMode = true;
+            document.getElementById('input-area').classList.add('hidden');
+            document.getElementById('consulting-input-area').classList.remove('hidden');
+            document.getElementById('session-status').innerHTML = '<i class="fas fa-robot mr-1"></i>AI相談モード';
+            document.getElementById('session-status').className = 'text-xs px-2 py-1 rounded-full bg-indigo-100 text-indigo-700';
+            updateProgress(totalQuestions, totalQuestions);
+          } else {
+            sessionCompleted = true;
+            document.getElementById('input-area').classList.add('hidden');
+            document.getElementById('completion-area').classList.remove('hidden');
+            document.getElementById('session-status').innerHTML = '<i class="fas fa-check mr-1"></i>基本情報収集完了';
+            document.getElementById('session-status').className = 'text-xs px-2 py-1 rounded-full bg-green-100 text-green-700';
+            updateProgress(totalQuestions, totalQuestions);
+          }
         }
         
       } catch (error) {
@@ -653,7 +705,10 @@ chatPages.get('/chat', (c) => {
     var lastQuestionText = '';
     
     async function sendMessage() {
-      if (sessionCompleted) return;
+      if (sessionCompleted || consultingMode) {
+        if (consultingMode) { sendConsultingMessage(); return; }
+        return;
+      }
       
       var input = document.getElementById('message-input');
       var content = input.value.trim();
@@ -711,16 +766,32 @@ chatPages.get('/chat', (c) => {
         }
         
         // セッション完了チェック
-        if (res.data.session_completed) {
-          sessionCompleted = true;
-          document.getElementById('input-area').classList.add('hidden');
-          document.getElementById('completion-area').classList.remove('hidden');
-          document.getElementById('quick-answers').classList.add('hidden');
-          document.getElementById('precheck-missing').classList.add('hidden');
-          document.getElementById('precheck-ok').classList.remove('hidden');
-          document.getElementById('session-status').innerHTML = '<i class="fas fa-check mr-1"></i>完了';
-          document.getElementById('session-status').className = 'text-xs px-2 py-1 rounded-full bg-green-100 text-green-700';
-          updateProgress(totalQuestions, totalQuestions);
+        if (res.data.session_completed || res.data.consulting_mode) {
+          if (res.data.consulting_mode) {
+            // Phase 19: コンシェルジュモードへ移行
+            switchToConsulting();
+            
+            // 提案質問を表示
+            if (res.data.suggested_questions && res.data.suggested_questions.length > 0) {
+              showSuggestedQuestions(res.data.suggested_questions);
+            }
+          }
+          
+          if (res.data.remaining_questions <= 0 && !consultingMode) {
+            // 構造化質問完了 → コンシェルジュ移行を提示
+            document.getElementById('input-area').classList.add('hidden');
+            document.getElementById('completion-area').classList.remove('hidden');
+            document.getElementById('quick-answers').classList.add('hidden');
+            document.getElementById('precheck-missing').classList.add('hidden');
+            document.getElementById('session-status').innerHTML = '<i class="fas fa-check mr-1"></i>基本情報収集完了';
+            document.getElementById('session-status').className = 'text-xs px-2 py-1 rounded-full bg-green-100 text-green-700';
+            updateProgress(totalQuestions, totalQuestions);
+          }
+        }
+        
+        // コンサルティングモードでの提案質問更新
+        if (consultingMode && res.data.suggested_questions && res.data.suggested_questions.length > 0) {
+          showSuggestedQuestions(res.data.suggested_questions);
         }
         
       } catch (error) {
@@ -741,6 +812,113 @@ chatPages.get('/chat', (c) => {
     // 申請書作成へ
     function goToDraft() {
       window.location.href = '/draft?session_id=' + sessionId;
+    }
+    
+    // Phase 19: コンシェルジュモードへ切り替え
+    function switchToConsulting() {
+      consultingMode = true;
+      sessionCompleted = false;
+      
+      // UIモード切り替え
+      document.getElementById('input-area').classList.add('hidden');
+      document.getElementById('completion-area').classList.add('hidden');
+      document.getElementById('consulting-input-area').classList.remove('hidden');
+      document.getElementById('quick-answers').classList.add('hidden');
+      
+      // ヘッダーステータス更新
+      document.getElementById('session-status').innerHTML = '<i class="fas fa-robot mr-1"></i>AI相談モード';
+      document.getElementById('session-status').className = 'text-xs px-2 py-1 rounded-full bg-indigo-100 text-indigo-700';
+      
+      // コンシェルジュ歓迎メッセージ
+      addMessage('assistant', '基本情報の確認が完了しました！ここからはAIコンシェルジュとして、補助金申請に関するあらゆるご相談にお応えします。\n\n例えば：\n・申請要件の詳しい解説\n・事業計画の方向性のアドバイス\n・必要書類の準備のコツ\n・採択率を上げるポイント\n\n何でもお気軽にお聞きください。');
+      
+      // フォーカス
+      var input = document.getElementById('consulting-input');
+      if (input) input.focus();
+    }
+    
+    // Phase 19: コンシェルジュモードでメッセージ送信
+    async function sendConsultingMessage() {
+      var input = document.getElementById('consulting-input');
+      var content = input.value.trim();
+      if (!content) return;
+      
+      input.value = '';
+      addMessage('user', content);
+      
+      // 提案質問を非表示
+      document.getElementById('suggested-questions').classList.add('hidden');
+      
+      var sendBtn = document.getElementById('consulting-send-btn');
+      sendBtn.disabled = true;
+      document.getElementById('typing-indicator').classList.remove('hidden');
+      
+      try {
+        var res = await api('/api/chat/sessions/' + sessionId + '/message', {
+          method: 'POST',
+          body: JSON.stringify({ content: content })
+        });
+        
+        if (!res.success) throw new Error(res.error?.message || 'メッセージ送信に失敗しました');
+        
+        document.getElementById('typing-indicator').classList.add('hidden');
+        addMessage('assistant', res.data.assistant_message.content);
+        
+        // 提案質問を表示
+        if (res.data.suggested_questions && res.data.suggested_questions.length > 0) {
+          showSuggestedQuestions(res.data.suggested_questions);
+        }
+        
+      } catch (error) {
+        console.error('Consulting message error:', error);
+        document.getElementById('typing-indicator').classList.add('hidden');
+        addMessage('system', 'エラー: ' + error.message);
+      } finally {
+        sendBtn.disabled = false;
+        input.focus();
+      }
+    }
+    
+    // Phase 19: 提案質問ボタンを表示
+    function showSuggestedQuestions(questions) {
+      var container = document.getElementById('suggested-questions');
+      container.classList.remove('hidden');
+      container.innerHTML = questions.map(function(q) {
+        return '<button onclick="askSuggested(\'' + escapeHtml(q).replace(/'/g, "\\'") + '\')" ' +
+          'class="text-xs px-3 py-1.5 bg-indigo-50 text-indigo-700 rounded-full hover:bg-indigo-100 truncate max-w-xs">' +
+          '<i class="fas fa-lightbulb mr-1"></i>' + escapeHtml(q.substring(0, 40)) + (q.length > 40 ? '...' : '') +
+          '</button>';
+      }).join('');
+    }
+    
+    // Phase 19: 提案質問をクリック
+    function askSuggested(question) {
+      var input = document.getElementById('consulting-input') || document.getElementById('message-input');
+      if (input) {
+        input.value = question;
+        if (consultingMode) {
+          sendConsultingMessage();
+        } else {
+          sendMessage();
+        }
+      }
+    }
+    
+    // Phase 19: クイック相談ボタン
+    function askAboutRequirements() {
+      var input = document.getElementById('consulting-input');
+      if (input) {
+        input.value = 'この補助金の申請要件を詳しく教えてください。うちの会社で満たせそうですか？';
+        sendConsultingMessage();
+      }
+    }
+    
+    function askAboutDocuments() {
+      var input = document.getElementById('consulting-input');
+      if (input) {
+        input.value = '申請に必要な書類を教えてください。準備のコツがあれば教えてほしいです。';
+        sendConsultingMessage();
+      }
     }
     
     // 初期化

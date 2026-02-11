@@ -53,9 +53,10 @@ export interface Env {
   GOOGLE_CLOUD_API_KEY?: string;
   
   // ========================================
-  // OpenAI API (P4-3: 差分抽出)
+  // OpenAI API (P4-3: 差分抽出 + Phase 19: AIコンシェルジュ)
   // ========================================
   OPENAI_API_KEY?: string;
+  OPENAI_BASE_URL?: string;  // カスタムベースURL（プロキシ対応）
   
   // ========================================
   // Cron Secret (外部Cronサービス認証)

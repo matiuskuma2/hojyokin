@@ -19,6 +19,12 @@ import {
   type NormalizedSubsidyDetail,
   type WallChatQuestion,
 } from '../lib/ssot';
+import {
+  generateAIResponse,
+  type ConversationContext,
+  type ChatMessage as AIChatMessage,
+  type CompanyContext,
+} from '../lib/ai-concierge';
 
 const chat = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -925,11 +931,13 @@ chat.post('/sessions/:id/message', async (c) => {
       }, 404);
     }
     
+    // Phase 19: completedセッションでもconsultingに移行可能
     if (session.status === 'completed') {
-      return c.json<ApiResponse<null>>({
-        success: false,
-        error: { code: 'SESSION_COMPLETED', message: 'This session is already completed' }
-      }, 400);
+      // consultingモードに移行
+      await c.env.DB.prepare(`
+        UPDATE chat_sessions SET status = 'consulting', updated_at = datetime('now') WHERE id = ?
+      `).bind(sessionId).run();
+      session.status = 'consulting';
     }
     
     const now = new Date().toISOString();
@@ -955,7 +963,6 @@ chat.post('/sessions/:id/message', async (c) => {
     if (currentKey) {
       const structuredValue = parseAnswer(content);
       
-      // chat_factsに保存（次回以降聞かない）
       const factId = crypto.randomUUID();
       await c.env.DB.prepare(`
         INSERT OR REPLACE INTO chat_facts (id, user_id, company_id, subsidy_id, fact_key, fact_value, source, session_id, created_at, updated_at)
@@ -973,8 +980,7 @@ chat.post('/sessions/:id/message', async (c) => {
       ).run();
     }
     
-    // 次の質問を生成
-    // P1-5: JSON.parse の例外処理
+    // missing_items 取得
     let missingItems: MissingItem[] = [];
     try {
       missingItems = JSON.parse(session.missing_items || '[]');
@@ -984,35 +990,188 @@ chat.post('/sessions/:id/message', async (c) => {
     
     // 回答済みの質問を除外
     const answeredFacts = await c.env.DB.prepare(`
-      SELECT fact_key FROM chat_facts
+      SELECT fact_key, fact_value FROM chat_facts
       WHERE company_id = ? AND (subsidy_id = ? OR subsidy_id IS NULL)
     `).bind(session.company_id, session.subsidy_id).all();
     
     const answeredKeys = new Set((answeredFacts.results || []).map((f: any) => f.fact_key));
+    const factsMap: Record<string, string> = {};
+    for (const f of (answeredFacts.results || []) as any[]) {
+      factsMap[f.fact_key] = f.fact_value;
+    }
     const remainingItems = missingItems.filter(item => !answeredKeys.has(item.key));
+    
+    // === Phase 19: AIコンシェルジュ統合 ===
+    const isConsultingMode = session.status === 'consulting' || remainingItems.length === 0;
     
     let responseContent: string;
     let responseKey: string | null = null;
     let sessionCompleted = false;
+    let mode: 'structured' | 'free' = 'structured';
+    let suggestedQuestions: string[] | undefined;
     
-    if (remainingItems.length > 0) {
-      // 次の質問（Phase 19-D: より自然な応答）
-      const nextQuestion = remainingItems[0];
-      const encouragement = answeredKeys.size <= 1 ? 'ありがとうございます。' : 
-        answeredKeys.size <= 3 ? '順調に進んでいます！' :
-        `あと${remainingItems.length}件です。もう少しです！`;
-      responseContent = `${encouragement}\n\n${formatQuestion(nextQuestion)}`;
-      responseKey = nextQuestion.key;
-    } else {
-      // 全ての質問に回答済み（Phase 19-D: サマリー付き完了メッセージ）
-      const factCount = answeredKeys.size;
-      responseContent = `お疲れさまでした！${factCount}件の情報収集が完了しました。\n\n✅ 申請に必要な情報が揃いました。\n\n「申請書を作成」ボタンをクリックして、ドラフト作成に進んでください。事前にいただいた情報をもとに、申請書を効率的に作成できます。`;
-      sessionCompleted = true;
+    // 補助金情報を取得（AI回答生成用）
+    const ssotResult = await getNormalizedSubsidyDetail(c.env.DB, session.subsidy_id);
+    const normalized = ssotResult?.normalized || null;
+    
+    // 企業情報を取得
+    const companyInfo = await c.env.DB.prepare(`
+      SELECT c.*, cp.established_date, cp.capital as profile_capital, cp.annual_revenue as profile_revenue
+      FROM companies c
+      LEFT JOIN company_profile cp ON c.id = cp.company_id
+      WHERE c.id = ?
+    `).bind(session.company_id).first() as any;
+    
+    const companyContext: CompanyContext = {
+      id: companyInfo?.id || session.company_id,
+      name: companyInfo?.name || '不明',
+      prefecture: companyInfo?.prefecture || '不明',
+      city: companyInfo?.city,
+      industry_major: companyInfo?.industry_major || '不明',
+      employee_count: companyInfo?.employee_count || 0,
+      capital: companyInfo?.capital || companyInfo?.profile_capital,
+      annual_revenue: companyInfo?.annual_revenue || companyInfo?.profile_revenue,
+      established_date: companyInfo?.established_date,
+    };
+    
+    // 会話履歴を取得（最新10件）
+    const historyMessages = await c.env.DB.prepare(`
+      SELECT role, content FROM chat_messages
+      WHERE session_id = ? AND role IN ('user', 'assistant')
+      ORDER BY created_at DESC
+      LIMIT 10
+    `).bind(sessionId).all();
+    
+    const history: AIChatMessage[] = (historyMessages.results || []).reverse().map((m: any) => ({
+      role: m.role as 'user' | 'assistant',
+      content: m.content,
+    }));
+    
+    if (isConsultingMode) {
+      // === 自由会話モード（AIコンシェルジュ） ===
+      mode = 'free';
       
-      // セッションを完了に更新
-      await c.env.DB.prepare(`
-        UPDATE chat_sessions SET status = 'completed', updated_at = ? WHERE id = ?
-      `).bind(now, sessionId).run();
+      // 構造化質問が完了した直後でまだconsultingに移行していない場合
+      if (session.status === 'collecting' && remainingItems.length === 0) {
+        await c.env.DB.prepare(`
+          UPDATE chat_sessions SET status = 'consulting', updated_at = ? WHERE id = ?
+        `).bind(now, sessionId).run();
+      }
+      
+      const ctx: ConversationContext = {
+        mode: 'free',
+        subsidy: normalized,
+        company: companyContext,
+        facts: factsMap,
+        history,
+        remainingQuestions: [],
+        sessionStatus: 'consulting',
+      };
+      
+      try {
+        const aiResponse = await generateAIResponse(c.env, ctx, content);
+        responseContent = aiResponse.content;
+        suggestedQuestions = aiResponse.suggested_questions;
+        
+        // 使用トークン記録
+        if (aiResponse.tokens_used) {
+          const eventId = crypto.randomUUID();
+          try {
+            await c.env.DB.prepare(`
+              INSERT INTO usage_events (
+                id, user_id, company_id, event_type, provider,
+                tokens_in, tokens_out, estimated_cost_usd, metadata, created_at
+              ) VALUES (?, ?, ?, 'CHAT_AI_RESPONSE', 'openai', ?, ?, ?, ?, datetime('now'))
+            `).bind(
+              eventId,
+              user.id,
+              session.company_id,
+              aiResponse.tokens_used.prompt,
+              aiResponse.tokens_used.completion,
+              ((aiResponse.tokens_used.prompt * 0.00015 + aiResponse.tokens_used.completion * 0.0006) / 1000),
+              JSON.stringify({ session_id: sessionId, mode: 'free' })
+            ).run();
+          } catch (e) {
+            console.error('Failed to record AI usage:', e);
+          }
+        }
+      } catch (aiError) {
+        console.error('[Chat AI] Error:', aiError);
+        responseContent = '申し訳ありません、一時的に回答を生成できませんでした。もう一度お試しください。';
+      }
+      
+    } else {
+      // === 構造化質問フェーズ（AI強化版） ===
+      mode = 'structured';
+      const nextQuestion = remainingItems[0];
+      
+      // AIで自然な応答を生成試行
+      if (c.env.OPENAI_API_KEY) {
+        const ctx: ConversationContext = {
+          mode: 'structured',
+          subsidy: normalized,
+          company: companyContext,
+          facts: factsMap,
+          history,
+          remainingQuestions: remainingItems.map(i => ({
+            key: i.key,
+            label: i.label,
+            input_type: i.input_type,
+            options: i.options,
+            source: i.source,
+            priority: i.priority,
+          })),
+          sessionStatus: 'collecting',
+        };
+        
+        // AIにユーザー回答への反応 + 次の質問を生成させる
+        const promptForAI = `ユーザーの回答: 「${content}」
+
+この回答に対する短い反応（共感・補足）を入れてから、次の質問を自然に聴いてください。
+次の質問: 「${nextQuestion.label}」 (回答タイプ: ${nextQuestion.input_type})`;
+        
+        try {
+          const aiResponse = await generateAIResponse(c.env, ctx, promptForAI);
+          responseContent = aiResponse.content;
+          
+          if (aiResponse.tokens_used) {
+            const eventId = crypto.randomUUID();
+            try {
+              await c.env.DB.prepare(`
+                INSERT INTO usage_events (
+                  id, user_id, company_id, event_type, provider,
+                  tokens_in, tokens_out, estimated_cost_usd, metadata, created_at
+                ) VALUES (?, ?, ?, 'CHAT_AI_RESPONSE', 'openai', ?, ?, ?, ?, datetime('now'))
+              `).bind(
+                eventId,
+                user.id,
+                session.company_id,
+                aiResponse.tokens_used.prompt,
+                aiResponse.tokens_used.completion,
+                ((aiResponse.tokens_used.prompt * 0.00015 + aiResponse.tokens_used.completion * 0.0006) / 1000),
+                JSON.stringify({ session_id: sessionId, mode: 'structured' })
+              ).run();
+            } catch (e) {
+              console.error('Failed to record AI usage:', e);
+            }
+          }
+        } catch (aiError) {
+          console.error('[Chat AI Structured] Error:', aiError);
+          // AIフォールバック: 従来型応答
+          const encouragement = answeredKeys.size <= 1 ? 'ありがとうございます。' : 
+            answeredKeys.size <= 3 ? '順調に進んでいます！' :
+            `あと${remainingItems.length}件です。もう少しです！`;
+          responseContent = `${encouragement}\n\n${formatQuestion(nextQuestion)}`;
+        }
+      } else {
+        // OPENAI_API_KEYがない場合: 従来型応答
+        const encouragement = answeredKeys.size <= 1 ? 'ありがとうございます。' : 
+          answeredKeys.size <= 3 ? '順調に進んでいます！' :
+          `あと${remainingItems.length}件です。もう少しです！`;
+        responseContent = `${encouragement}\n\n${formatQuestion(nextQuestion)}`;
+      }
+      
+      responseKey = nextQuestion.key;
     }
     
     // アシスタントメッセージを保存
@@ -1039,8 +1198,11 @@ chat.post('/sessions/:id/message', async (c) => {
           structured_key: responseKey,
           created_at: now
         },
-        session_completed: sessionCompleted,
-        remaining_questions: remainingItems.length - 1
+        session_completed: false,  // Phase 19: 構造化質問完了後もconsultingモードで継続
+        mode,
+        remaining_questions: remainingItems.length > 0 ? remainingItems.length - 1 : 0,
+        suggested_questions: suggestedQuestions,
+        consulting_mode: isConsultingMode,
       }
     });
     
