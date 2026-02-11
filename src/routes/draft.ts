@@ -902,9 +902,7 @@ draft.post('/generate', async (c) => {
       SELECT c.*, cp.corp_type, cp.founding_year, cp.business_summary,
              cp.main_products, cp.main_customers, cp.competitive_advantage,
              cp.is_profitable, cp.past_subsidies_json, cp.certifications_json,
-             cp.notes as profile_notes,
-             cp.capital as profile_capital, cp.annual_revenue as profile_revenue,
-             cp.established_date as profile_established_date
+             cp.notes as profile_notes
       FROM companies c
       LEFT JOIN company_profile cp ON c.id = cp.company_id
       WHERE c.id = ?
@@ -943,9 +941,9 @@ draft.post('/generate', async (c) => {
       city: companyRow?.city || '',
       employeeCount: companyRow?.employee_count || 0,
       industry: companyRow?.industry_major || '',
-      capital: companyRow?.capital || companyRow?.profile_capital || null,
-      annualRevenue: companyRow?.annual_revenue || companyRow?.profile_revenue || null,
-      establishedDate: companyRow?.established_date || companyRow?.profile_established_date || '',
+      capital: companyRow?.capital || null,
+      annualRevenue: companyRow?.annual_revenue || null,
+      establishedDate: companyRow?.established_date || '',
       mainProducts: companyRow?.main_products || '',
       mainCustomers: companyRow?.main_customers || '',
       competitiveAdvantage: companyRow?.competitive_advantage || '',

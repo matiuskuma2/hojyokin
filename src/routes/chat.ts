@@ -1126,9 +1126,7 @@ chat.post('/sessions/:id/message', async (c) => {
     const companyInfo = await c.env.DB.prepare(`
       SELECT c.*, cp.corp_type, cp.founding_year, cp.business_summary, 
              cp.main_products, cp.main_customers, cp.competitive_advantage,
-             cp.is_profitable, cp.past_subsidies_json, cp.certifications_json,
-             cp.established_date as profile_established_date,
-             cp.capital as profile_capital, cp.annual_revenue as profile_revenue
+             cp.is_profitable, cp.past_subsidies_json, cp.certifications_json
       FROM companies c
       LEFT JOIN company_profile cp ON c.id = cp.company_id
       WHERE c.id = ?
@@ -1157,9 +1155,9 @@ chat.post('/sessions/:id/message', async (c) => {
       city: companyInfo?.city,
       industry_major: companyInfo?.industry_major || '不明',
       employee_count: companyInfo?.employee_count || 0,
-      capital: companyInfo?.capital || companyInfo?.profile_capital,
-      annual_revenue: companyInfo?.annual_revenue || companyInfo?.profile_revenue,
-      established_date: companyInfo?.established_date || companyInfo?.profile_established_date,
+      capital: companyInfo?.capital,
+      annual_revenue: companyInfo?.annual_revenue,
+      established_date: companyInfo?.established_date,
       profile: {
         corp_type: companyInfo?.corp_type || undefined,
         founding_year: companyInfo?.founding_year || undefined,
