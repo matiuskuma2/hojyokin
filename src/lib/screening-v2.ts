@@ -3,15 +3,9 @@
  * 
  * Freeze-MATCH-0: 入力を (CompanySSOT, NormalizedSubsidyDetail) に統一
  * Freeze-MATCH-2: missing_fields を出力に追加
+ * Phase 24 MATCH-1/2/3: 中小企業基本法準拠の業種別SME判定テーブル実装
  * 
  * 企業情報と補助金データを比較し、マッチ度・リスク・判定を算出
- * 
- * // TODO: 要確認 - 業種別の従業員数上限（製造業20人 vs 商業5人）の小規模事業者判定
- * //   現在は一律20人で判定。中小企業基本法の定義に合わせる必要あり。
- * //   受け入れ基準: 業種コード→上限マッピングテーブルの追加、テストケース5件以上
- * // TODO: 要確認 - 資本金チェックの業種別上限（製造3億、卸売1億、サービス5千万、小売5千万）
- * //   現在は一律3億円で判定。業種別に分岐する必要あり。
- * //   受け入れ基準: CAPITAL_LIMITS定数テーブル追加、業種マッチング関数の更新
  */
 
 import type {
@@ -84,6 +78,152 @@ const PREFECTURE_CODES: Record<string, string> = {
   '41': '佐賀県', '42': '長崎県', '43': '熊本県', '44': '大分県', '45': '宮崎県',
   '46': '鹿児島県', '47': '沖縄県',
 };
+
+// ============================================================
+// 中小企業基本法 業種別判定テーブル (Phase 24 MATCH-1/2/3)
+// ============================================================
+
+/**
+ * SME業種カテゴリ
+ * 中小企業基本法 第2条に基づく4カテゴリ
+ */
+export type SmeIndustryCategory = 'manufacturing' | 'wholesale' | 'service' | 'retail';
+
+/**
+ * 業種別の中小企業定義テーブル
+ * 出典: 中小企業基本法 第2条第1項
+ * https://www.chusho.meti.go.jp/soshiki/teigi.html
+ */
+export interface SmeThresholds {
+  /** 業種カテゴリ日本語名 */
+  label: string;
+  /** 資本金上限（円） */
+  capitalLimit: number;
+  /** 従業員上限（常時使用する従業員数） */
+  employeeLimit: number;
+  /** 小規模事業者の従業員上限 */
+  smallScaleEmployeeLimit: number;
+}
+
+/**
+ * 中小企業基本法に基づく業種別判定テーブル
+ * 
+ * | 業種 | 資本金上限 | 従業員上限 | 小規模上限 |
+ * |------|-----------|-----------|----------|
+ * | 製造業・建設業・運輸業等 | 3億円 | 300人 | 20人 |
+ * | 卸売業 | 1億円 | 100人 | 5人 |
+ * | サービス業 | 5千万円 | 100人 | 5人 |
+ * | 小売業 | 5千万円 | 50人 | 5人 |
+ */
+export const SME_THRESHOLDS: Record<SmeIndustryCategory, SmeThresholds> = {
+  manufacturing: {
+    label: '製造業・建設業・運輸業等',
+    capitalLimit:  300_000_000,   // 3億円
+    employeeLimit: 300,
+    smallScaleEmployeeLimit: 20,
+  },
+  wholesale: {
+    label: '卸売業',
+    capitalLimit:  100_000_000,   // 1億円
+    employeeLimit: 100,
+    smallScaleEmployeeLimit: 5,
+  },
+  service: {
+    label: 'サービス業',
+    capitalLimit:   50_000_000,   // 5千万円
+    employeeLimit: 100,
+    smallScaleEmployeeLimit: 5,
+  },
+  retail: {
+    label: '小売業',
+    capitalLimit:   50_000_000,   // 5千万円
+    employeeLimit:  50,
+    smallScaleEmployeeLimit: 5,
+  },
+};
+
+/**
+ * industry_major 文字列 → SmeIndustryCategory への変換マップ
+ * dashboard/agency の <select> オプション値と一致させる
+ */
+const INDUSTRY_CATEGORY_MAP: Record<string, SmeIndustryCategory> = {
+  // manufacturing カテゴリ
+  '製造業':     'manufacturing',
+  '建設業':     'manufacturing',
+  '運輸業':     'manufacturing',
+  '情報通信業': 'manufacturing',  // 製造業等に分類（中小企業庁ガイダンス）
+  '鉱業':       'manufacturing',
+  '電気・ガス': 'manufacturing',
+  // wholesale
+  '卸売業':     'wholesale',
+  // service
+  'サービス業': 'service',
+  '宿泊業':     'service',
+  '飲食業':     'service',       // 飲食サービス業
+  '医療福祉':   'service',
+  '教育':       'service',
+  '不動産業':   'service',
+  '娯楽業':     'service',
+  // retail
+  '小売業':     'retail',
+};
+
+/**
+ * industry_major 文字列から SmeIndustryCategory を判定
+ * マップに存在しない場合は最も緩い基準（manufacturing）を適用（安全側）
+ */
+export function resolveIndustryCategory(industryMajor: string | null): SmeIndustryCategory {
+  if (!industryMajor) return 'manufacturing'; // デフォルト: 最も緩い基準
+  const trimmed = industryMajor.trim();
+  // 完全一致
+  if (INDUSTRY_CATEGORY_MAP[trimmed]) {
+    return INDUSTRY_CATEGORY_MAP[trimmed];
+  }
+  // 部分一致（「○○業」→ マップキーに含むか）
+  for (const [key, cat] of Object.entries(INDUSTRY_CATEGORY_MAP)) {
+    if (trimmed.includes(key) || key.includes(trimmed)) {
+      return cat;
+    }
+  }
+  // フォールバック: 安全側として最も緩い基準
+  return 'manufacturing';
+}
+
+/**
+ * 企業が中小企業かどうかを判定（資本金 OR 従業員数のいずれかで判定）
+ * 中小企業基本法: 資本金上限以下 OR 従業員数上限以下 → 中小企業
+ */
+export function isSmeByLaw(
+  capital: number | null,
+  employeeCount: number,
+  category: SmeIndustryCategory
+): { isSme: boolean; isSmallScale: boolean; thresholds: SmeThresholds; reason: string } {
+  const t = SME_THRESHOLDS[category];
+  
+  const capitalOk = capital !== null ? capital <= t.capitalLimit : true; // 不明時は通過
+  const employeeOk = employeeCount <= t.employeeLimit;
+  const isSme = capitalOk || employeeOk; // OR条件（いずれか満たせばOK）
+  const isSmallScale = employeeCount <= t.smallScaleEmployeeLimit;
+
+  let reason: string;
+  if (isSme && isSmallScale) {
+    reason = `小規模事業者に該当（${t.label}: 従業員${employeeCount}名 ≤ ${t.smallScaleEmployeeLimit}人）`;
+  } else if (isSme) {
+    reason = `中小企業に該当（${t.label}: `;
+    const parts: string[] = [];
+    if (capital !== null) parts.push(`資本金${formatCurrency(capital)} ≤ ${formatCurrency(t.capitalLimit)}`);
+    if (employeeOk) parts.push(`従業員${employeeCount}名 ≤ ${t.employeeLimit}人`);
+    reason += parts.join(' / ') + '）';
+  } else {
+    reason = `中小企業の要件を超過（${t.label}: `;
+    const parts: string[] = [];
+    if (capital !== null && !capitalOk) parts.push(`資本金${formatCurrency(capital)} > ${formatCurrency(t.capitalLimit)}`);
+    if (!employeeOk) parts.push(`従業員${employeeCount}名 > ${t.employeeLimit}人`);
+    reason += parts.join(' / ') + '）';
+  }
+
+  return { isSme, isSmallScale, thresholds: t, reason };
+}
 
 // ============================================================
 // メイン関数
@@ -388,19 +528,22 @@ function checkEmployeeMatchV2(company: CompanySSOT, subsidy: NormalizedSubsidyDe
     };
   }
 
+  // 業種別SME判定テーブルを使用した判定 (Phase 24 MATCH-1/2/3)
+  const industryCategory = resolveIndustryCategory(company.industry_major);
+  const smeResult = isSmeByLaw(company.capital, employeeCount, industryCategory);
+
   // ルールテキストから判定
   let isMatch = true;
   for (const rule of employeeRules) {
     const ruleText = rule.rule_text || '';
     
-    // 「小規模」「中小企業」などのキーワードマッチング
-    // TODO: 要確認 - 小規模事業者の従業員上限は業種により異なる（製造業等20人、商業・サービス業5人）
-    //   中小企業基本法に準拠した判定が必要。現在は一律の簡易判定。
-    //   テストケース: 製造業15人→OK, サービス業8人→NG(小規模), 製造業25人→NG(小規模)
-    if (ruleText.includes('小規模') && employeeCount > 20) {
+    // 「小規模」キーワード → 業種別の小規模事業者上限で判定
+    if (ruleText.includes('小規模') && !smeResult.isSmallScale) {
       isMatch = false;
-    } else if (ruleText.includes('中小') && employeeCount > 300) {
+    // 「中小」キーワード → 業種別の中小企業上限で判定
+    } else if (ruleText.includes('中小') && !smeResult.isSme) {
       isMatch = false;
+    // 「中堅」キーワード → 2000人以下（中堅企業は業種による差異なし）
     } else if (ruleText.includes('中堅') && employeeCount > 2000) {
       isMatch = false;
     }
@@ -420,8 +563,8 @@ function checkEmployeeMatchV2(company: CompanySSOT, subsidy: NormalizedSubsidyDe
       field: 'target_number_of_employees',
       matched: isMatch,
       reason: isMatch
-        ? `従業員規模（${employeeCount}名）が対象範囲内です`
-        : `従業員規模（${employeeCount}名）が対象外の可能性があります`,
+        ? `従業員規模（${employeeCount}名）が対象範囲内です — ${smeResult.reason}`
+        : `従業員規模（${employeeCount}名）が対象外の可能性があります — ${smeResult.reason}`,
     },
     scoreAdjustment: isMatch ? 10 : -25,
   };
@@ -554,25 +697,27 @@ function checkCapitalV2(company: CompanySSOT, subsidy: NormalizedSubsidyDetail):
     };
   }
 
-  // 簡易中小企業判定（資本金3億円以下）
-  // TODO: 要確認 - 業種別の資本金上限: 製造業等3億、卸売業1億、サービス業5千万、小売業5千万
-  //   中小企業基本法に準拠した判定が必要。industry_major との組み合わせで分岐。
-  //   テストケース: 製造業2億→OK, 卸売業1.5億→NG, サービス業4千万→OK
-  const isSme = company.capital <= 300000000;
+  // 業種別中小企業判定 (Phase 24 MATCH-1/2/3)
+  const industryCategory = resolveIndustryCategory(company.industry_major);
+  const smeResult = isSmeByLaw(company.capital, company.employee_count, industryCategory);
+  const thresholds = smeResult.thresholds;
+
+  // 資本金のみで判定（資本金上限以下か）
+  const capitalOk = company.capital <= thresholds.capitalLimit;
 
   return {
     reason: {
       field: 'capital',
-      matched: isSme,
-      reason: isSme
-        ? `資本金（${formatCurrency(company.capital)}）は中小企業の範囲内です`
-        : `資本金（${formatCurrency(company.capital)}）が上限を超えている可能性があります`,
+      matched: capitalOk,
+      reason: capitalOk
+        ? `資本金（${formatCurrency(company.capital)}）は${thresholds.label}の中小企業上限（${formatCurrency(thresholds.capitalLimit)}）以下です`
+        : `資本金（${formatCurrency(company.capital)}）が${thresholds.label}の中小企業上限（${formatCurrency(thresholds.capitalLimit)}）を超えています`,
     },
-    scoreAdjustment: isSme ? 5 : -20,
-    risk: isSme ? undefined : {
+    scoreAdjustment: capitalOk ? 5 : -20,
+    risk: capitalOk ? undefined : {
       type: 'COMPLIANCE',
       level: 'MEDIUM',
-      message: '資本金が中小企業の上限を超えている可能性があります',
+      message: `資本金が${thresholds.label}の中小企業上限（${formatCurrency(thresholds.capitalLimit)}）を超えている可能性があります`,
     },
   };
 }

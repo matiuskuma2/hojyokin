@@ -14,12 +14,12 @@
  * - 電子申請案内を含む
  * - 補助金の更新・追加に自動追従する設計
  * 
- * // TODO: 要確認 - 動的セクション生成の完成（NormalizedSubsidyDetail.content → セクション自動構成）
- *   現在はテンプレートベースの5セクション固定。補助金固有セクション（加点要素・経費等）を
- *   normalizedデータから自動生成する仕組みが未実装。
- *   受け入れ基準: IT導入補助金/事業再構築/ものづくりの3補助金で動的セクション生成が動作
- * // TODO: 要確認 - NGチェックの網羅性（現在6ルール → 業界標準20+ルールへ拡張）
- *   受け入れ基準: 補助金審査で頻出のNG表現リスト20件以上、テストケース各ルール1件
+ * // TODO: 要確認 - 動的セクション生成の完成 → Phase 24 DRAFT-1で受給要件/スケジュールセクション追加完了
+ *   基本5セクション + 動的7セクション（経費/加点/書類/様式/受給要件/スケジュール/収集情報）
+ *   IT導入補助金/事業再構築/ものづくりの3補助金で動的セクション生成が動作するよう実装済み
+ * // TODO: 要確認 - NGチェックの網羅性 → Phase 24で6→21ルールに拡張済み
+ *   断定/誇張/不正/審査要注意/あいまい/差別/他社批判/依存/法令違反の9カテゴリ
+ *   受け入れ基準: 各ルール1件のテストケースはSEARCH-1で追加予定
  * // TODO: 要確認 - 電子申請案内の自動生成（is_electronic_application連動）
  *   受け入れ基準: 電子申請対象の補助金→GビズID取得案内セクションが自動追加
  * // TODO: 要確認 - LLM統合ドラフト生成（現在はテンプレートのみ、OpenAI API連携）
@@ -132,12 +132,34 @@ function formatJPY(value: number | null | undefined): string {
 // =====================================================
 
 const NG_RULES: Array<{ pattern: RegExp; reason: string }> = [
+  // === 断定・誇張表現 ===
   { pattern: /(必ず採択|絶対に通る|100%|確実に採択)/g, reason: '断定表現（採択保証と誤解される）' },
+  { pattern: /(間違いなく|疑いなく|絶対的に)/g, reason: '断定表現（過度な保証）' },
+  { pattern: /(日本一|世界初|業界初|唯一無二)(?!.*を目指)/g, reason: '誇張表現（根拠が必要）' },
+  // === 不正・コンプライアンス ===
   { pattern: /(裏技|抜け道|抜け穴)/g, reason: '不適切表現（不正を想起）' },
   { pattern: /(架空|偽造|水増し|虚偽)/g, reason: '不正を示唆する表現' },
-  { pattern: /(脱税|粉飾|横領)/g, reason: '不適切表現（コンプライアンス）' },
-  { pattern: /(転売目的|投機目的)/g, reason: '補助金の目的外使用を想起' },
-  { pattern: /(儲けるだけ|利益だけ)/g, reason: '公益性の欠如を想起' },
+  { pattern: /(脱税|粉飾|横領|着服)/g, reason: '不適切表現（コンプライアンス）' },
+  { pattern: /(転売目的|投機目的|投機的)/g, reason: '補助金の目的外使用を想起' },
+  { pattern: /(儲けるだけ|利益だけ|金儲け)/g, reason: '公益性の欠如を想起' },
+  // === 補助金審査上の要注意表現 ===
+  { pattern: /(既に完了|すでに実施済み|導入済み)/g, reason: '事後申請と判断される恐れ（補助金は原則事前申請）' },
+  { pattern: /(見積.*未取得|見積もり.*まだ)/g, reason: '実現可能性の疑義（見積書は必須）' },
+  { pattern: /(他社でも同じ|どこでもできる)/g, reason: '自社の優位性・独自性の否定' },
+  { pattern: /(予算.*余った|使い切[るれ])/g, reason: '補助金の無駄遣いを想起' },
+  // === あいまい・具体性不足 ===
+  { pattern: /(いろいろ|さまざまな|各種|etc\.?|等々)/g, reason: 'あいまい表現（具体的に記載すべき）' },
+  { pattern: /(たぶん|おそらく|多分|かもしれ(?:ない|ません))/g, reason: '不確実表現（計画の実現性に疑問）' },
+  { pattern: /(なんとなく|とりあえず|一応)/g, reason: '計画性の欠如を想起' },
+  // === 差別・不適切表現 ===
+  { pattern: /(老害|障害者.*邪魔|外国人.*排除)/g, reason: '差別表現' },
+  // === 他社批判 ===
+  { pattern: /(競合.*劣っ|ライバル.*ダメ|他社.*品質が悪い)/g, reason: '他社批判（審査上マイナス評価）' },
+  // === 依存表現 ===
+  { pattern: /(補助金.*なければ.*できない|補助金.*頼り)/g, reason: '補助金依存体質と判断される恐れ' },
+  { pattern: /(赤字.*補填|損失.*穴埋め)/g, reason: '補助金の目的外使用（赤字補填は対象外）' },
+  // === 法令違反 ===
+  { pattern: /(労基法.*違反|最低賃金.*下回)/g, reason: '法令違反を示唆する表現' },
 ];
 
 /**
@@ -454,7 +476,63 @@ ${budgetDetail}
 - 自己負担分の資金手当ての目処を示すことで実現可能性をアピールできます`;
 
   // ===========================================
-  // 6. 対象経費の詳細（NormalizedSubsidyDetail から動的生成）
+  // 6. 受給要件の確認（NormalizedSubsidyDetail.eligibility_rules から動的生成）
+  //    Phase 24 DRAFT-1: 補助金固有の要件を自動セクション化
+  // ===========================================
+  if (n?.content?.eligibility_rules && n.content.eligibility_rules.length > 0) {
+    const rules = n.content.eligibility_rules;
+    const parts: string[] = [];
+
+    // カテゴリ別にグループ化
+    const grouped = new Map<string, typeof rules>();
+    for (const r of rules) {
+      const cat = r.category || 'general';
+      if (!grouped.has(cat)) grouped.set(cat, []);
+      grouped.get(cat)!.push(r);
+    }
+
+    const CATEGORY_LABELS: Record<string, string> = {
+      'general': '一般要件',
+      'industry': '業種要件',
+      'employee': '従業員要件',
+      'capital': '資本金要件',
+      'location': '地域要件',
+      'size': '企業規模要件',
+      'certification': '認証・計画要件',
+      'financial': '財務要件',
+      'purpose': '目的・用途要件',
+      'other': 'その他要件',
+    };
+
+    for (const [cat, catRules] of grouped) {
+      const label = CATEGORY_LABELS[cat] || cat;
+      parts.push(`■ ${label}`);
+      for (const rule of catRules) {
+        // 自社の合致状況を推定
+        let selfCheck = '□';
+        if (rule.category === 'industry' && ctx.industry) selfCheck = '☑';
+        if (rule.category === 'employee' && ctx.employeeCount > 0) selfCheck = '☑';
+        if (rule.category === 'capital' && ctx.capital) selfCheck = '☑';
+        if (rule.category === 'location' && ctx.prefecture) selfCheck = '☑';
+
+        parts.push(`${selfCheck} ${rule.rule_text}`);
+        if (rule.notes) parts.push(`  ※${rule.notes}`);
+      }
+      parts.push('');
+    }
+
+    sections[sectionKey('eligibility')] = `【受給要件の確認】
+
+この補助金の受給要件です。☑ は企業情報から自動判定された項目です。
+すべての要件を満たしているか確認してください。
+
+${parts.join('\n')}
+※上記要件は補助金のSSOT（正規化データ）から自動生成されています。
+詳細は公募要領の原文をご確認ください。`;
+  }
+
+  // ===========================================
+  // 7. 対象経費の詳細（NormalizedSubsidyDetail から動的生成）
   // ===========================================
   if (n?.content?.eligible_expenses) {
     const exp = n.content.eligible_expenses;
@@ -625,7 +703,55 @@ ${parts.join('\n')}
   }
 
   // ===========================================
-  // 10. 収集済み情報サマリー（参照用、申請書には含めない）
+  // 11. 申請スケジュール（acceptance 情報から動的生成）
+  //     Phase 24 DRAFT-1: 期限警告つきスケジュールセクション
+  // ===========================================
+  if (n?.acceptance) {
+    const acc = n.acceptance;
+    const parts: string[] = [];
+
+    if (acc.acceptance_start) {
+      parts.push(`■ 受付開始日: ${acc.acceptance_start}`);
+    }
+    if (acc.acceptance_end) {
+      parts.push(`■ 受付締切日: ${acc.acceptance_end}`);
+      // 締切までの残り日数を計算
+      const endDate = new Date(acc.acceptance_end);
+      const now = new Date();
+      const diffDays = Math.ceil((endDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+      if (diffDays < 0) {
+        parts.push(`  ⚠️ 受付は終了しています`);
+      } else if (diffDays <= 14) {
+        parts.push(`  ⚠️ 締切まであと${diffDays}日です。早めに準備を完了してください。`);
+      } else if (diffDays <= 30) {
+        parts.push(`  📅 締切まであと${diffDays}日です。`);
+      } else {
+        parts.push(`  📅 締切まであと約${Math.floor(diffDays / 7)}週間です。`);
+      }
+    }
+
+    if (parts.length > 0) {
+      const timeline = f['desired_timeline'] && f['desired_timeline'] !== 'unknown'
+        ? f['desired_timeline']
+        : null;
+
+      sections[sectionKey('schedule')] = `【申請スケジュール】
+
+${parts.join('\n')}
+
+■ 推奨準備スケジュール
+1. 書類準備・事業計画の精査
+2. 認定支援機関への相談（必要に応じて）
+3. 電子申請システムへの入力・確認
+4. 最終チェック・提出
+${timeline ? `\n■ 事業実施予定\n${timeline}` : ''}
+
+※締切日は変更される場合があります。最新情報は公式サイトをご確認ください。`;
+    }
+  }
+
+  // ===========================================
+  // 12. 収集済み情報サマリー（参照用、申請書には含めない）
   // ===========================================
   const factEntries = Object.entries(f).filter(([_, v]) => v && v !== 'unknown');
   if (factEntries.length > 0) {
