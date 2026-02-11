@@ -56,7 +56,8 @@ export interface Env {
   // OpenAI API (P4-3: 差分抽出 + Phase 19: AIコンシェルジュ)
   // ========================================
   OPENAI_API_KEY?: string;
-  OPENAI_BASE_URL?: string;  // カスタムベースURL（プロキシ対応）
+  OPENAI_BASE_URL?: string;  // カスタムベースURL（デフォルト: https://api.openai.com/v1）
+  OPENAI_MODEL?: string;     // モデル名（デフォルト: gpt-4o-mini）
   
   // ========================================
   // Cron Secret (外部Cronサービス認証)
