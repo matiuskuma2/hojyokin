@@ -1,7 +1,7 @@
 # Phase別実施ログ (PHASE_LOG)
 
 > **目的**: 各Phaseで何をしたか、何が成果で、次に何をするかを記録
-> **最終更新**: 2026-02-11 (Phase 19)
+> **最終更新**: 2026-02-11 (Phase 19-QA)
 > **記録ルール**: Phase完了時に必ず追記。計画→実施→結果→次アクションの順で記録。
 
 ---
@@ -10,6 +10,7 @@
 
 | Phase | 日付 | タイトル | 主な成果 |
 |-------|------|---------|---------|
+| 19-QA | 2026-02-11 | 壁打ちチャット品質改善 | 固定質問Yes/No偏重解消, フォールバック12件拡張, AI回答品質チューニング(company_profile動的注入/電子申請分岐/加点戦略), コード品質8項目チェック(入力検証/UPSERT修正/JSON.parse安全化), DBマイグレーション(fact_type/metadata/UNIQUEインデックス) |
 | 19-AI | 2026-02-11 | AIコンシェルジュ壁打ちチャット | OpenAI API連携, 構造化質問+自由会話ハイブリッド, コンシェルジュモードUI, 提案質問ボタン, フォールバック応答 |
 | 19 | 2026-02-11 | 補助金詳細ページ充実 + 壁打ちチャット機能強化 | 概要タブリッチ化(目的/電子申請/公式URL/タイムライン), 壁打ちUI全面刷新(進捗バー/概要パネル/収集情報サマリー/カテゴリ表示), 対話フロー改善(概要付き初期メッセージ/応答多様化) |
 | 18 | 2026-02-10 | データ品質一掃 + 期限切れ自動管理 + izumi大規模クロール | manual 100%, 期限切れ1535件非表示, izumi crawl 9097件+, expire-check/data-freshness新設 |
@@ -33,6 +34,67 @@
 | 3 | 2026-02-05 | Go-Tech・事業再構築追加 | 省エネ補助金・両立支援等追加 |
 | 2 | 2026-02-05 | デジタル化・AI補助金 | セキュリティ枠追加 |
 | 1 | 2026-02-02 | SSOT移行 | subsidy_canonical + snapshot体制確立 |
+
+---
+
+## Phase 19-QA: 壁打ちチャット品質改善 (2026-02-11)
+
+### 計画
+Phase 19-AI で実装したAIコンシェルジュの品質を、コード品質ガイドライン8項目に基づき全面改善する。
+
+### 実施内容
+
+#### 1. 固定質問の品質チェック・聞き取り不足の補完
+- `determineInputType()` のデフォルトを `boolean` → `text` に変更
+  - 以前: 不明カテゴリは全てYes/No質問になっていた（boolean偏重）
+  - 改善: text をデフォルトにし、明示的にbooleanカテゴリのもののみYes/No
+- フォールバック質問を8件→12件に拡張
+  - text×4: 事業内容(business_purpose)、経営課題(current_challenge)、期待効果、投資タイムライン
+  - number×3: 投資額(investment_amount)、従業員数、年商
+  - boolean×5: 税金滞納、過去補助金受給、GビズID、事業計画書、賃上げ予定
+- 質問優先度の最適化: 事業内容→投資額→経営課題を最優先（申請書の核心情報）
+
+#### 2. AI回答品質チューニング
+- **company_profile 全情報をAIに動的注入**
+  - 法人格、創業年、事業概要、主力商品・サービス、主要顧客、強み
+  - 黒字/赤字、過去の補助金受給歴、取得認証
+  - → AIが企業の実態を踏まえた具体的アドバイスを生成可能に
+- **電子申請フロー専用のプロンプト分岐**: portal_name/portal_url をAIコンテキストに追加
+- **フォールバック応答の高品質化**: 電子申請/加点項目/事業計画の3トピック追加
+- **FACT_KEY_LABELS**: 9項目→18項目に拡張（投資目的、投資額、経営課題、希望時期など）
+- **CompanyContext型の拡張**: profile オブジェクトに詳細型を定義
+
+#### 3. コード品質8項目チェック（AI駆動開発ガイドライン適用）
+1. **入力安全性**: content → sanitizedContent (trim + 2000文字上限)、空文字チェック
+2. **ロジック正確性**: parseAnswer を完全一致ベースに改修（「ある」等の誤変換防止）、unknown対応
+3. **エラーハンドリング**: evaluateAutoRule の JSON.parse を try-catch で保護
+4. **型検証**: employee_count/capital の typeof number チェック、Array.isArray(params.excluded)
+5. **セキュリティ**: フロントエンド XSS対策の確認（escapeHtml 既存でOK）
+6. **DB**: INSERT OR REPLACE → ON CONFLICT UPSERT（ID一貫性の確保）
+7. **パフォーマンス**: chat_sessions に company_id+subsidy_id+status の複合インデックス追加
+8. **依存関係**: CompanyContext 型を profile: { corp_type, founding_year, ... } に正式拡張
+
+#### 4. DBマイグレーション (0125_chat_quality_upgrade.sql)
+- chat_facts: fact_type, metadata, fact_category カラム追加（型付きfact保存）
+- chat_facts: company_id+subsidy_id+fact_key のUNIQUEインデックス（UPSERT対応）
+- company_documents: session_id, uploaded_via カラム追加（壁打ちからのアップロード対応準備）
+- chat_sessions: 複合インデックス最適化
+
+#### 5. UI改善
+- コンシェルジュモードに「採択のコツ」「スケジュール確認」ボタン追加
+- 歓迎メッセージの内容充実（加点項目取得戦略、スケジュール管理）
+
+### 結果
+- 変更: 4ファイル修正 (+372行/-74行)、1マイグレーション追加
+- 本番デプロイ: hojyokin.pages.dev ✅
+- 本番DB: 0125マイグレーション適用済み ✅ (7コマンド実行成功)
+- GitHub: 0b20aa0 pushed ✅
+
+### 次のアクション
+1. 本番でAI回答品質を検証（実際のセッションで確認）
+2. 資料アップロード機能の実装（R2連携→company_documents保存→壁打ちfact反映）
+3. chat_factsのprofileカテゴリをcompany_profileへ自動反映するバッチ処理
+4. SSEストリーミング対応でUX向上
 
 ---
 
