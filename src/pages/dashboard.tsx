@@ -758,7 +758,14 @@ pages.get('/dashboard', (c) => {
                   var drafts = Array.isArray(draftRes.data) ? draftRes.data : (draftRes.data.drafts || []);
                   if (draftCountEl) draftCountEl.textContent = drafts.length;
                   if (draftHintEl) draftHintEl.textContent = drafts.length > 0 ? '作成済みのドラフトを確認' : '壁打ち後に作成できます';
-                  if (draftLinkEl && drafts.length > 0) draftLinkEl.classList.remove('hidden');
+                  if (draftLinkEl && drafts.length > 0) {
+                    // Phase 22: 直近のドラフトのsession_idでリンクを動的設定
+                    var latestDraft = drafts[0];
+                    if (latestDraft && latestDraft.session_id) {
+                      draftLinkEl.href = '/draft?session_id=' + encodeURIComponent(latestDraft.session_id);
+                    }
+                    draftLinkEl.classList.remove('hidden');
+                  }
                 } else {
                   if (draftCountEl) draftCountEl.textContent = '0';
                   if (draftHintEl) draftHintEl.textContent = '壁打ち後に作成できます';

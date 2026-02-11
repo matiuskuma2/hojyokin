@@ -649,6 +649,58 @@ ${summaryLines.join('\n')}`;
 }
 
 // =====================================================
+// GET /api/draft - ドラフト一覧取得
+// Phase 22: ダッシュボードからの呼び出し用
+// =====================================================
+
+draft.get('/', async (c) => {
+  const user = c.get('user')!;
+  const db = c.env.DB;
+
+  try {
+    const result = await db.prepare(`
+      SELECT ad.id, ad.session_id, ad.company_id, ad.subsidy_id,
+             ad.status, ad.version, ad.created_at, ad.updated_at,
+             cs.subsidy_title,
+             sc.title as subsidy_cache_title,
+             c.name as company_name
+      FROM application_drafts ad
+      LEFT JOIN chat_sessions cs ON ad.session_id = cs.id
+      LEFT JOIN subsidy_cache sc ON ad.subsidy_id = sc.id
+      LEFT JOIN companies c ON ad.company_id = c.id
+      WHERE ad.user_id = ?
+      ORDER BY ad.updated_at DESC
+      LIMIT 50
+    `).bind(user.id).all();
+
+    const drafts = (result.results || []).map((d: any) => ({
+      id: d.id,
+      session_id: d.session_id,
+      company_id: d.company_id,
+      subsidy_id: d.subsidy_id,
+      status: d.status,
+      version: d.version,
+      created_at: d.created_at,
+      updated_at: d.updated_at,
+      subsidy_title: d.subsidy_title || d.subsidy_cache_title || '（補助金名不明）',
+      company_name: d.company_name || '（会社名不明）',
+    }));
+
+    return c.json<ApiResponse<any>>({
+      success: true,
+      data: drafts
+    });
+
+  } catch (error) {
+    console.error('List drafts error:', error);
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'INTERNAL_ERROR', message: 'Failed to list drafts' }
+    }, 500);
+  }
+});
+
+// =====================================================
 // POST /api/draft/generate - ドラフト生成
 // =====================================================
 

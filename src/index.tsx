@@ -402,6 +402,8 @@ app.route('/api/chat', chatRoutes);
 
 // ドラフトルート（S4: 申請書ドラフト生成）
 app.route('/api/draft', draftRoutes);
+// Phase 22: ダッシュボードが /api/drafts (複数形) を呼ぶため互換マウント
+app.route('/api/drafts', draftRoutes);
 
 // Agency（士業）ルート
 app.route('/api/agency', agencyRoutes);

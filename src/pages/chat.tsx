@@ -687,8 +687,10 @@ chatPages.get('/chat', (c) => {
     // セッション初期化
     async function initSession() {
       try {
-        // 補助金概要パネルを並行で読み込み
-        loadSubsidyOverview();
+        // 新規モードの場合は補助金概要パネルを並行で読み込み（subsidyIdが既知のため）
+        if (!isResumeMode) {
+          loadSubsidyOverview();
+        }
         
         var res;
         if (isResumeMode && existingSessionId) {
@@ -702,6 +704,8 @@ chatPages.get('/chat', (c) => {
           if (res.data.session) {
             subsidyId = res.data.session.subsidy_id;
             companyId = res.data.session.company_id;
+            // Phase 22: 復元モードではセッション取得後に概要を読み込む
+            loadSubsidyOverview();
           }
         } else {
           console.log('[壁打ち] 新規セッション作成モード');
