@@ -1812,24 +1812,28 @@ subsidyPages.get('/subsidies/:id', (c) => {
           </div>
         </div>
         
-        <!-- 基本情報カード -->
+        <!-- 基本情報カード（Phase 19-A 拡張） -->
         <div class="border-t px-6 py-4 bg-gray-50">
-          <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <div class="grid grid-cols-2 md:grid-cols-5 gap-4">
             <div>
-              <div class="text-xs text-gray-500 mb-1">申請締切</div>
+              <div class="text-xs text-gray-500 mb-1"><i class="fas fa-clock text-orange-400 mr-1"></i>申請締切</div>
               <div id="info-deadline" class="font-semibold text-gray-800">-</div>
             </div>
             <div>
-              <div class="text-xs text-gray-500 mb-1">補助上限額</div>
+              <div class="text-xs text-gray-500 mb-1"><i class="fas fa-coins text-yellow-500 mr-1"></i>補助上限額</div>
               <div id="info-max-limit" class="font-semibold text-gray-800">-</div>
             </div>
             <div>
-              <div class="text-xs text-gray-500 mb-1">補助率</div>
+              <div class="text-xs text-gray-500 mb-1"><i class="fas fa-percentage text-blue-500 mr-1"></i>補助率</div>
               <div id="info-rate" class="font-semibold text-gray-800">-</div>
             </div>
             <div>
-              <div class="text-xs text-gray-500 mb-1">対象地域</div>
+              <div class="text-xs text-gray-500 mb-1"><i class="fas fa-map-marker-alt text-red-400 mr-1"></i>対象地域</div>
               <div id="info-area" class="font-semibold text-gray-800">-</div>
+            </div>
+            <div>
+              <div class="text-xs text-gray-500 mb-1"><i class="fas fa-signal text-green-500 mr-1"></i>壁打ち対応</div>
+              <div id="info-wallchat" class="font-semibold text-gray-800">-</div>
             </div>
           </div>
         </div>
@@ -1872,17 +1876,105 @@ subsidyPages.get('/subsidies/:id', (c) => {
         
         <!-- タブコンテンツ -->
         <div class="p-6">
-          <!-- 概要タブ -->
+          <!-- 概要タブ（Phase 19-A: リッチ化） -->
           <div id="tab-overview" class="tab-content" style="display:block">
             <div class="prose max-w-none">
-              <h3 class="text-lg font-semibold mb-3">補助金の概要</h3>
-              <div id="overview-content" class="text-gray-700 whitespace-pre-wrap"></div>
+              <!-- 概要セクション -->
+              <div class="mb-6">
+                <h3 class="text-lg font-semibold mb-3 flex items-center">
+                  <i class="fas fa-info-circle text-green-600 mr-2"></i>補助金の概要
+                </h3>
+                <div id="overview-content" class="text-gray-700 whitespace-pre-wrap leading-relaxed bg-gray-50 p-4 rounded-lg border-l-4 border-green-500"></div>
+              </div>
               
-              <h3 class="text-lg font-semibold mt-6 mb-3">補助対象事業</h3>
-              <div id="target-content" class="text-gray-700 whitespace-pre-wrap"></div>
+              <!-- 目的セクション -->
+              <div id="purpose-section" class="hidden mb-6">
+                <h3 class="text-lg font-semibold mb-3 flex items-center">
+                  <i class="fas fa-bullseye text-blue-600 mr-2"></i>補助金の目的
+                </h3>
+                <div id="purpose-content" class="text-gray-700 whitespace-pre-wrap bg-blue-50 p-4 rounded-lg border-l-4 border-blue-400"></div>
+              </div>
               
-              <h3 class="text-lg font-semibold mt-6 mb-3">添付ファイル</h3>
-              <div id="attachments-list" class="space-y-2"></div>
+              <!-- 対象事業セクション -->
+              <div id="target-section" class="mb-6">
+                <h3 class="text-lg font-semibold mb-3 flex items-center">
+                  <i class="fas fa-building text-purple-600 mr-2"></i>補助対象事業
+                </h3>
+                <div id="target-content" class="text-gray-700 whitespace-pre-wrap bg-purple-50 p-4 rounded-lg border-l-4 border-purple-400"></div>
+              </div>
+              
+              <!-- 申請期間タイムライン -->
+              <div id="timeline-section" class="hidden mb-6">
+                <h3 class="text-lg font-semibold mb-3 flex items-center">
+                  <i class="fas fa-calendar-alt text-orange-600 mr-2"></i>申請期間
+                </h3>
+                <div id="timeline-content" class="bg-orange-50 p-4 rounded-lg border-l-4 border-orange-400">
+                  <div class="flex items-center justify-between">
+                    <div class="text-center">
+                      <div class="text-xs text-gray-500">受付開始</div>
+                      <div id="timeline-start" class="font-semibold text-gray-800">-</div>
+                    </div>
+                    <div class="flex-1 mx-4">
+                      <div class="relative h-2 bg-gray-200 rounded-full">
+                        <div id="timeline-progress" class="absolute h-2 bg-orange-500 rounded-full" style="width:0%"></div>
+                      </div>
+                      <div id="timeline-remaining" class="text-center text-xs text-orange-600 mt-1"></div>
+                    </div>
+                    <div class="text-center">
+                      <div class="text-xs text-gray-500">受付終了</div>
+                      <div id="timeline-end" class="font-semibold text-gray-800">-</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              
+              <!-- 電子申請情報 -->
+              <div id="electronic-section" class="hidden mb-6">
+                <h3 class="text-lg font-semibold mb-3 flex items-center">
+                  <i class="fas fa-laptop text-indigo-600 mr-2"></i>電子申請情報
+                </h3>
+                <div id="electronic-content" class="bg-indigo-50 border border-indigo-200 rounded-lg p-4">
+                  <div class="flex items-start">
+                    <div class="bg-indigo-100 rounded-full p-2 mr-3">
+                      <i class="fas fa-globe text-indigo-600"></i>
+                    </div>
+                    <div class="flex-1">
+                      <p id="electronic-system" class="font-medium text-indigo-800"></p>
+                      <p id="electronic-notes" class="text-sm text-indigo-700 mt-1"></p>
+                      <a id="electronic-url" href="#" target="_blank" class="hidden mt-2 inline-flex items-center text-sm text-indigo-600 hover:text-indigo-800 font-medium">
+                        <i class="fas fa-external-link-alt mr-1"></i>申請システムを開く
+                      </a>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              
+              <!-- 公式リンク・公募要領 -->
+              <div id="links-section" class="hidden mb-6">
+                <h3 class="text-lg font-semibold mb-3 flex items-center">
+                  <i class="fas fa-link text-teal-600 mr-2"></i>公式リンク
+                </h3>
+                <div id="links-list" class="grid grid-cols-1 md:grid-cols-2 gap-3"></div>
+              </div>
+              
+              <!-- 添付ファイル -->
+              <div class="mb-6">
+                <h3 class="text-lg font-semibold mb-3 flex items-center">
+                  <i class="fas fa-paperclip text-gray-600 mr-2"></i>添付ファイル
+                </h3>
+                <div id="attachments-list" class="space-y-2"></div>
+              </div>
+              
+              <!-- データソース情報 -->
+              <div id="source-section" class="hidden">
+                <div class="bg-gray-50 border border-gray-200 rounded-lg p-3 text-xs text-gray-500">
+                  <div class="flex items-center justify-between flex-wrap gap-2">
+                    <span id="source-info"><i class="fas fa-database mr-1"></i>データソース: -</span>
+                    <span id="source-schema"><i class="fas fa-code-branch mr-1"></i>スキーマ: -</span>
+                    <span id="source-wallchat"><i class="fas fa-comments mr-1"></i>壁打ち: -</span>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
           
@@ -2453,8 +2545,19 @@ subsidyPages.get('/subsidies/:id', (c) => {
         const targetArea = n?.display?.target_area_text || s?.target_area;
         document.getElementById('info-area').textContent = targetArea || '全国';
         
+        // 壁打ち対応状況
+        const wallChatReady = n?.wall_chat?.ready ?? data.wall_chat_ready ?? false;
+        const infoWallchat = document.getElementById('info-wallchat');
+        if (wallChatReady) {
+          infoWallchat.innerHTML = '<span class="text-green-600"><i class="fas fa-check-circle mr-1"></i>対応済</span>';
+        } else {
+          const missing = n?.wall_chat?.missing || data.wall_chat_missing || [];
+          infoWallchat.innerHTML = '<span class="text-yellow-600"><i class="fas fa-clock mr-1"></i>準備中</span>' +
+            (missing.length > 0 ? '<span class="text-xs text-gray-400 ml-1">(' + missing.join(',') + ')</span>' : '');
+        }
+        
         // ========================================
-        // 概要・対象事業も normalized 優先
+        // 概要・対象事業も normalized 優先（Phase 19-A リッチ化）
         // ========================================
         // Safe extraction of overview summary (may be string or object)
         let overviewText = n?.overview?.summary;
@@ -2469,8 +2572,126 @@ subsidyPages.get('/subsidies/:id', (c) => {
         }
         document.getElementById('overview-content').textContent = String(overviewText);
         
-        const targetText = n?.overview?.target_business || s?.target || s?.target_businesses || '対象事業情報なし';
-        document.getElementById('target-content').textContent = targetText;
+        // 目的（purpose）
+        const purposeText = n?.overview?.purpose;
+        if (purposeText && typeof purposeText === 'string' && purposeText.length > 5) {
+          document.getElementById('purpose-section').classList.remove('hidden');
+          document.getElementById('purpose-content').textContent = purposeText;
+        }
+        
+        // 対象事業
+        const targetText = n?.overview?.target_business || s?.target || s?.target_businesses || '';
+        if (targetText && targetText.length > 3) {
+          document.getElementById('target-content').textContent = targetText;
+        } else {
+          document.getElementById('target-section').classList.add('hidden');
+        }
+        
+        // 申請期間タイムライン
+        const startDate = n?.acceptance?.acceptance_start;
+        const endDateStr = n?.acceptance?.acceptance_end || s?.acceptance_end_datetime;
+        if (endDateStr) {
+          const section = document.getElementById('timeline-section');
+          section.classList.remove('hidden');
+          
+          const start = startDate ? new Date(startDate) : null;
+          const end = new Date(endDateStr);
+          const now = new Date();
+          
+          document.getElementById('timeline-start').textContent = start && !isNaN(start.getTime()) 
+            ? start.toLocaleDateString('ja-JP') : '未定';
+          document.getElementById('timeline-end').textContent = !isNaN(end.getTime()) 
+            ? end.toLocaleDateString('ja-JP') : '未定';
+          
+          if (start && !isNaN(start.getTime()) && !isNaN(end.getTime())) {
+            const totalDays = Math.max(1, (end - start) / (1000*60*60*24));
+            const elapsedDays = Math.max(0, (now - start) / (1000*60*60*24));
+            const pct = Math.min(100, Math.max(0, (elapsedDays / totalDays) * 100));
+            document.getElementById('timeline-progress').style.width = pct + '%';
+            
+            const remainDays = Math.ceil((end - now) / (1000*60*60*24));
+            if (remainDays > 0) {
+              document.getElementById('timeline-remaining').textContent = 'あと' + remainDays + '日';
+              document.getElementById('timeline-remaining').className = 
+                'text-center text-xs mt-1 ' + (remainDays <= 14 ? 'text-red-600 font-bold' : 'text-orange-600');
+            } else {
+              document.getElementById('timeline-remaining').textContent = '受付終了';
+              document.getElementById('timeline-remaining').className = 'text-center text-xs mt-1 text-red-600 font-bold';
+              document.getElementById('timeline-progress').style.width = '100%';
+              document.getElementById('timeline-progress').className = 'absolute h-2 bg-red-400 rounded-full';
+            }
+          }
+        }
+        
+        // 電子申請情報
+        const ea = n?.electronic_application;
+        if (ea && ea.is_electronic_application) {
+          document.getElementById('electronic-section').classList.remove('hidden');
+          document.getElementById('electronic-system').textContent = ea.portal_name || '電子申請が必要です';
+          document.getElementById('electronic-notes').textContent = ea.notes || 'この補助金はオンラインでの電子申請が必要です。';
+          if (ea.portal_url) {
+            const urlEl = document.getElementById('electronic-url');
+            urlEl.href = ea.portal_url;
+            urlEl.classList.remove('hidden');
+          }
+        }
+        
+        // 公式リンク
+        const provenance = n?.provenance;
+        const kouboUrls = provenance?.koubo_source_urls || [];
+        const pdfUrls = provenance?.pdf_urls || [];
+        const allLinks = [];
+        
+        kouboUrls.forEach(function(u, i) {
+          if (u && u.match(/^https?:\\/\\//)) {
+            allLinks.push({ 
+              url: u, 
+              label: i === 0 ? '公式ページ' : '関連ページ ' + (i+1), 
+              icon: 'fa-globe', 
+              color: 'teal' 
+            });
+          }
+        });
+        pdfUrls.forEach(function(u, i) {
+          if (u && u.match(/^https?:\\/\\//)) {
+            const name = decodeURIComponent(u.split('/').pop() || '').replace(/\\?.*$/, '');
+            allLinks.push({ 
+              url: u, 
+              label: name.length > 30 ? name.substring(0,30) + '...' : (name || '公募要領PDF ' + (i+1)), 
+              icon: 'fa-file-pdf', 
+              color: 'red' 
+            });
+          }
+        });
+        
+        if (allLinks.length > 0) {
+          document.getElementById('links-section').classList.remove('hidden');
+          document.getElementById('links-list').innerHTML = allLinks.map(function(link) {
+            return '<a href="' + encodeURI(link.url) + '" target="_blank" rel="noopener noreferrer" ' +
+              'class="flex items-center p-3 bg-white border rounded-lg hover:shadow-md transition-shadow group">' +
+              '<i class="fas ' + link.icon + ' text-' + link.color + '-500 mr-3 text-lg"></i>' +
+              '<div class="flex-1 min-w-0">' +
+              '<span class="text-sm font-medium text-gray-800 group-hover:text-' + link.color + '-600 truncate block">' + escapeHtml(link.label) + '</span>' +
+              '<span class="text-xs text-gray-400 truncate block">' + escapeHtml(link.url.replace(/^https?:\\/\\//, '').substring(0, 50)) + '</span>' +
+              '</div>' +
+              '<i class="fas fa-external-link-alt text-gray-400 group-hover:text-' + link.color + '-500 ml-2"></i>' +
+              '</a>';
+          }).join('');
+        }
+        
+        // データソース情報
+        const meta = data.meta;
+        if (meta) {
+          document.getElementById('source-section').classList.remove('hidden');
+          document.getElementById('source-info').innerHTML = 
+            '<i class="fas fa-database mr-1"></i>ソース: ' + escapeHtml(n?.source?.primary_source_type || data.source || '-');
+          document.getElementById('source-schema').innerHTML = 
+            '<i class="fas fa-code-branch mr-1"></i>スキーマ: v' + escapeHtml(meta.schema_version || '-');
+          const wcReady = data.wall_chat_ready;
+          document.getElementById('source-wallchat').innerHTML = 
+            '<i class="fas fa-comments mr-1"></i>壁打ち: ' + 
+            (wcReady ? '<span class="text-green-600">準備完了</span>' : '<span class="text-yellow-600">準備中</span>');
+        }
         
         // 添付ファイル
         // v1.0 Freeze: normalized.content.attachments 優先

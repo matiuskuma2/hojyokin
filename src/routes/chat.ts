@@ -664,21 +664,36 @@ chat.post('/sessions', async (c) => {
     
     // A-3-5: 初期システムメッセージ作成（normalized から取得）
     const subsidyTitle = normalized?.display.title || '選択された補助金';
+    const subsidyRate = normalized?.display.subsidy_rate_text || '';
+    const subsidyMaxLimit = normalized?.display.subsidy_max_limit;
+    const overviewSummary = normalized?.overview.summary || '';
+    
     let systemMessage: string;
     
     // 電子申請の案内を追加 (v3)
     const electronicNotice = precheckResult.electronic_application?.is_electronic
-      ? `\n\n【📋 電子申請について】\nこの補助金は「${precheckResult.electronic_application.system_name || '電子申請システム'}」での申請が必要です。` +
-        `ここでは申請前の準備（要件確認・情報整理）をサポートしますが、実際の申請書類は電子申請システム上で作成してください。` +
+      ? `\n\n📋 **電子申請について**\nこの補助金は「${precheckResult.electronic_application.system_name || '電子申請システム'}」での申請が必要です。` +
+        `ここでは申請前の準備（要件確認・情報整理）をサポートします。` +
         (precheckResult.electronic_application.url ? `\n申請先: ${precheckResult.electronic_application.url}` : '')
+      : '';
+    
+    // Phase 19-D: 概要付きの充実したシステムメッセージ
+    const overviewNote = overviewSummary 
+      ? `\n\n📝 **補助金の概要**\n${overviewSummary.substring(0, 200)}${overviewSummary.length > 200 ? '...' : ''}`
+      : '';
+    
+    const infoNote = (subsidyMaxLimit || subsidyRate)
+      ? `\n\n💰 **基本情報**` +
+        (subsidyMaxLimit ? `\n・補助上限: ${subsidyMaxLimit >= 100000000 ? (subsidyMaxLimit / 100000000).toFixed(1) + '億円' : subsidyMaxLimit >= 10000 ? Math.floor(subsidyMaxLimit / 10000) + '万円' : subsidyMaxLimit + '円'}` : '') +
+        (subsidyRate ? `\n・補助率: ${subsidyRate}` : '')
       : '';
     
     if (precheckResult.status === 'NG') {
       systemMessage = `申し訳ございません。「${subsidyTitle}」への申請要件を満たしていない可能性があります。\n\n【該当しない理由】\n${precheckResult.blocked_reasons.map(r => `・${r}`).join('\n')}\n\n条件を満たせる場合は、会社情報を更新してから再度お試しください。${electronicNotice}`;
     } else if (precheckResult.missing_items.length > 0) {
-      systemMessage = `「${subsidyTitle}」への申請準備を進めます。\n\n会社情報を確認したところ、以下の点について追加で確認が必要です。順番にお答えください。${electronicNotice}`;
+      systemMessage = `「${subsidyTitle}」への申請準備を進めます！${overviewNote}${infoNote}\n\n会社情報を確認しました。${precheckResult.missing_items.length}件の質問にお答えいただくことで、申請可否を判定し、申請書のドラフト作成に進むことができます。${electronicNotice}`;
     } else {
-      systemMessage = `「${subsidyTitle}」への申請準備が整っています。\n\n必要な情報は揃っていますので、申請書ドラフトの作成に進むことができます。${electronicNotice}`;
+      systemMessage = `「${subsidyTitle}」への申請準備が整っています。${overviewNote}${infoNote}\n\n必要な情報は揃っていますので、申請書ドラフトの作成に進むことができます。${electronicNotice}`;
     }
     
     const systemMsgId = crypto.randomUUID();
@@ -981,13 +996,17 @@ chat.post('/sessions/:id/message', async (c) => {
     let sessionCompleted = false;
     
     if (remainingItems.length > 0) {
-      // 次の質問
+      // 次の質問（Phase 19-D: より自然な応答）
       const nextQuestion = remainingItems[0];
-      responseContent = `ありがとうございます。\n\n次の質問です。\n\n${formatQuestion(nextQuestion)}`;
+      const encouragement = answeredKeys.size <= 1 ? 'ありがとうございます。' : 
+        answeredKeys.size <= 3 ? '順調に進んでいます！' :
+        `あと${remainingItems.length}件です。もう少しです！`;
+      responseContent = `${encouragement}\n\n${formatQuestion(nextQuestion)}`;
       responseKey = nextQuestion.key;
     } else {
-      // 全ての質問に回答済み
-      responseContent = `ありがとうございました。必要な情報が揃いました。\n\n申請書ドラフトの作成に進むことができます。\n「申請書を作成」ボタンをクリックして、次のステップに進んでください。`;
+      // 全ての質問に回答済み（Phase 19-D: サマリー付き完了メッセージ）
+      const factCount = answeredKeys.size;
+      responseContent = `お疲れさまでした！${factCount}件の情報収集が完了しました。\n\n✅ 申請に必要な情報が揃いました。\n\n「申請書を作成」ボタンをクリックして、ドラフト作成に進んでください。事前にいただいた情報をもとに、申請書を効率的に作成できます。`;
       sessionCompleted = true;
       
       // セッションを完了に更新

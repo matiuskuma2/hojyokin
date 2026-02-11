@@ -3,6 +3,13 @@
  * 
  * /chat - 補助金申請に向けた壁打ちチャット画面
  * パラメータ: subsidy_id, company_id
+ * 
+ * Phase 19-B: 機能充実
+ * - 補助金概要パネル追加
+ * - 進捗バー（回答状況の可視化）
+ * - 質問カテゴリ表示
+ * - 完了時のサマリー表示
+ * - クイック回答の多様化（boolean/number/text対応）
  */
 
 import { Hono } from 'hono';
@@ -26,11 +33,14 @@ chatPages.get('/chat', (c) => {
   <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet">
   <style>
     .chat-container { 
-      height: calc(100vh - 200px); 
-      min-height: 400px;
+      height: calc(100vh - 360px); 
+      min-height: 300px;
+    }
+    @media (max-width: 768px) {
+      .chat-container { height: calc(100vh - 280px); }
     }
     .message-bubble {
-      max-width: 80%;
+      max-width: 85%;
     }
     .typing-indicator span {
       animation: typing 1.4s infinite ease-in-out;
@@ -41,74 +51,117 @@ chatPages.get('/chat', (c) => {
       0%, 60%, 100% { transform: translateY(0); }
       30% { transform: translateY(-5px); }
     }
+    .progress-ring { transition: stroke-dashoffset 0.5s ease; }
+    .slide-in { animation: slideIn 0.3s ease-out; }
+    @keyframes slideIn {
+      from { opacity: 0; transform: translateY(10px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    .category-badge { font-size: 10px; letter-spacing: 0.5px; }
   </style>
 </head>
 <body class="bg-gray-50 min-h-screen">
   <!-- Header -->
-  <nav class="bg-white shadow-sm border-b">
+  <nav class="bg-white shadow-sm border-b sticky top-0 z-50">
     <div class="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8">
-      <div class="flex items-center justify-between h-16">
-        <div class="flex items-center space-x-4">
-          <a href="/subsidies" class="text-gray-500 hover:text-gray-700">
+      <div class="flex items-center justify-between h-14">
+        <div class="flex items-center space-x-3">
+          <a href="/subsidies" id="back-link" class="text-gray-500 hover:text-gray-700 p-2">
             <i class="fas fa-arrow-left"></i>
           </a>
-          <div>
-            <h1 class="font-bold text-lg text-gray-800">
-              <i class="fas fa-comments text-green-600 mr-2"></i>壁打ちチャット
+          <div class="min-w-0">
+            <h1 class="font-bold text-base text-gray-800 truncate">
+              <i class="fas fa-comments text-green-600 mr-1"></i>壁打ちチャット
             </h1>
-            <p id="subsidy-title" class="text-sm text-gray-500 truncate max-w-md">読み込み中...</p>
+            <p id="subsidy-title" class="text-xs text-gray-500 truncate max-w-xs sm:max-w-md">読み込み中...</p>
           </div>
         </div>
-        <div class="flex items-center space-x-3">
-          <span id="session-status" class="text-sm px-3 py-1 rounded-full bg-blue-100 text-blue-700">
+        <div class="flex items-center space-x-2">
+          <span id="session-status" class="text-xs px-2 py-1 rounded-full bg-blue-100 text-blue-700">
             <i class="fas fa-spinner fa-spin mr-1"></i>準備中
           </span>
-          <button onclick="location.href='/dashboard'" class="text-sm text-gray-600 hover:text-gray-900">
-            <i class="fas fa-home mr-1"></i>ダッシュボード
-          </button>
         </div>
       </div>
     </div>
   </nav>
   
-  <main class="max-w-5xl mx-auto py-4 px-4 sm:px-6 lg:px-8">
+  <main class="max-w-5xl mx-auto py-3 px-4 sm:px-6 lg:px-8">
+    <!-- 補助金概要パネル（Phase 19-B: 新機能） -->
+    <div id="subsidy-overview-panel" class="hidden mb-3">
+      <div class="bg-gradient-to-r from-green-50 to-blue-50 border border-green-200 rounded-lg p-4">
+        <div class="flex items-start justify-between">
+          <div class="flex-1 min-w-0">
+            <h2 id="overview-title" class="font-bold text-gray-800 truncate"></h2>
+            <p id="overview-summary" class="text-sm text-gray-600 mt-1 line-clamp-2"></p>
+            <div class="flex flex-wrap gap-3 mt-2">
+              <span id="overview-limit" class="text-xs bg-white px-2 py-1 rounded shadow-sm">
+                <i class="fas fa-coins text-yellow-500 mr-1"></i>上限: -
+              </span>
+              <span id="overview-rate" class="text-xs bg-white px-2 py-1 rounded shadow-sm">
+                <i class="fas fa-percentage text-blue-500 mr-1"></i>補助率: -
+              </span>
+              <span id="overview-deadline" class="text-xs bg-white px-2 py-1 rounded shadow-sm">
+                <i class="fas fa-clock text-orange-500 mr-1"></i>締切: -
+              </span>
+            </div>
+          </div>
+          <button onclick="toggleOverviewPanel()" class="text-gray-400 hover:text-gray-600 ml-2 p-1" title="パネルを閉じる">
+            <i class="fas fa-chevron-up" id="overview-toggle-icon"></i>
+          </button>
+        </div>
+      </div>
+    </div>
+    
+    <!-- 進捗バー（Phase 19-B: 新機能） -->
+    <div id="progress-section" class="hidden mb-3">
+      <div class="bg-white rounded-lg shadow-sm border p-3">
+        <div class="flex items-center justify-between mb-2">
+          <span class="text-xs font-medium text-gray-600">
+            <i class="fas fa-tasks mr-1"></i>回答進捗
+          </span>
+          <span id="progress-text" class="text-xs text-gray-500">0 / 0 件完了</span>
+        </div>
+        <div class="w-full bg-gray-200 rounded-full h-2">
+          <div id="progress-bar" class="bg-green-500 h-2 rounded-full transition-all duration-500" style="width: 0%"></div>
+        </div>
+        <div id="progress-categories" class="flex flex-wrap gap-1 mt-2"></div>
+      </div>
+    </div>
+
     <!-- 事前判定結果パネル -->
-    <div id="precheck-panel" class="hidden mb-4">
-      <div id="precheck-ng" class="hidden bg-red-50 border-l-4 border-red-500 p-4 rounded-r-lg">
+    <div id="precheck-panel" class="hidden mb-3">
+      <div id="precheck-ng" class="hidden bg-red-50 border-l-4 border-red-500 p-3 rounded-r-lg">
         <div class="flex items-start">
-          <i class="fas fa-exclamation-circle text-red-500 text-xl mr-3 mt-0.5"></i>
+          <i class="fas fa-exclamation-circle text-red-500 text-lg mr-2 mt-0.5"></i>
           <div>
-            <h3 class="font-semibold text-red-800">この補助金には申請できません</h3>
-            <ul id="blocked-reasons" class="mt-2 text-sm text-red-700 list-disc list-inside"></ul>
-            <a href="/subsidies" class="inline-block mt-3 text-sm text-red-600 hover:text-red-800">
+            <h3 class="font-semibold text-red-800 text-sm">この補助金には申請できません</h3>
+            <ul id="blocked-reasons" class="mt-1 text-xs text-red-700 list-disc list-inside"></ul>
+            <a href="/subsidies" class="inline-block mt-2 text-xs text-red-600 hover:text-red-800">
               <i class="fas fa-arrow-left mr-1"></i>他の補助金を探す
             </a>
           </div>
         </div>
       </div>
       
-      <div id="precheck-ok" class="hidden bg-green-50 border-l-4 border-green-500 p-4 rounded-r-lg">
+      <div id="precheck-ok" class="hidden bg-green-50 border-l-4 border-green-500 p-3 rounded-r-lg">
         <div class="flex items-center">
-          <i class="fas fa-check-circle text-green-500 text-xl mr-3"></i>
-          <div>
-            <h3 class="font-semibold text-green-800">申請要件を満たしています</h3>
-            <p class="text-sm text-green-700 mt-1">申請書のドラフト作成に進むことができます。</p>
+          <i class="fas fa-check-circle text-green-500 text-lg mr-2"></i>
+          <div class="flex-1">
+            <h3 class="font-semibold text-green-800 text-sm">申請要件を満たしています</h3>
+            <p class="text-xs text-green-700 mt-0.5">申請書のドラフト作成に進むことができます。</p>
           </div>
-          <button onclick="goToDraft()" class="ml-auto bg-green-600 text-white px-4 py-2 rounded-md hover:bg-green-700 text-sm">
+          <button onclick="goToDraft()" class="ml-3 bg-green-600 text-white px-3 py-1.5 rounded-md hover:bg-green-700 text-xs whitespace-nowrap">
             <i class="fas fa-file-alt mr-1"></i>申請書を作成
           </button>
         </div>
       </div>
       
-      <div id="precheck-missing" class="hidden bg-blue-50 border-l-4 border-blue-500 p-4 rounded-r-lg">
+      <div id="precheck-missing" class="hidden bg-blue-50 border-l-4 border-blue-500 p-3 rounded-r-lg">
         <div class="flex items-start">
-          <i class="fas fa-info-circle text-blue-500 text-xl mr-3 mt-0.5"></i>
+          <i class="fas fa-info-circle text-blue-500 text-lg mr-2 mt-0.5"></i>
           <div>
-            <h3 class="font-semibold text-blue-800">追加の確認が必要です</h3>
-            <p class="text-sm text-blue-700 mt-1">以下の質問にお答えください。回答に応じて申請可否を判定します。</p>
-            <div id="missing-count" class="mt-2 text-sm text-blue-600">
-              <i class="fas fa-question-circle mr-1"></i>残り <span id="remaining-questions">-</span> 件の質問
-            </div>
+            <h3 class="font-semibold text-blue-800 text-sm">追加の確認が必要です</h3>
+            <p class="text-xs text-blue-700 mt-0.5">以下の質問にお答えください。回答に応じて申請可否を判定します。</p>
           </div>
         </div>
       </div>
@@ -117,7 +170,7 @@ chatPages.get('/chat', (c) => {
     <!-- チャットエリア -->
     <div class="bg-white rounded-lg shadow chat-container flex flex-col">
       <!-- メッセージリスト -->
-      <div id="messages" class="flex-1 overflow-y-auto p-4 space-y-4">
+      <div id="messages" class="flex-1 overflow-y-auto p-4 space-y-3">
         <div id="loading-messages" class="flex items-center justify-center py-12">
           <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-green-600"></div>
         </div>
@@ -129,66 +182,101 @@ chatPages.get('/chat', (c) => {
           <span class="w-2 h-2 bg-gray-400 rounded-full mr-1"></span>
           <span class="w-2 h-2 bg-gray-400 rounded-full mr-1"></span>
           <span class="w-2 h-2 bg-gray-400 rounded-full mr-2"></span>
-          アシスタントが入力中...
+          アシスタントが確認中...
         </div>
       </div>
       
       <!-- 入力エリア -->
-      <div id="input-area" class="border-t p-4">
-        <div class="flex items-center space-x-3">
+      <div id="input-area" class="border-t p-3">
+        <!-- 質問カテゴリ表示 -->
+        <div id="current-category" class="hidden mb-2">
+          <span class="category-badge inline-flex items-center px-2 py-0.5 rounded-full bg-gray-100 text-gray-600 uppercase tracking-wider">
+            <i class="fas fa-tag mr-1"></i><span id="category-label">一般</span>
+          </span>
+        </div>
+        
+        <div class="flex items-center space-x-2">
           <div class="flex-1">
             <input type="text" id="message-input" 
                    placeholder="メッセージを入力..." 
-                   class="w-full px-4 py-3 border rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent"
-                   onkeypress="if(event.key==='Enter')sendMessage()">
+                   class="w-full px-3 py-2.5 border rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent text-sm"
+                   onkeypress="if(event.key==='Enter')sendMessage()"
+                   autocomplete="off">
           </div>
           <button onclick="sendMessage()" id="send-btn"
-                  class="bg-green-600 text-white px-6 py-3 rounded-lg hover:bg-green-700 disabled:bg-gray-400 disabled:cursor-not-allowed">
+                  class="bg-green-600 text-white px-4 py-2.5 rounded-lg hover:bg-green-700 disabled:bg-gray-400 disabled:cursor-not-allowed text-sm">
             <i class="fas fa-paper-plane"></i>
           </button>
         </div>
         
-        <!-- クイック回答ボタン -->
-        <div id="quick-answers" class="hidden mt-3 flex flex-wrap gap-2">
-          <button onclick="quickAnswer('はい')" class="px-4 py-2 bg-blue-100 text-blue-700 rounded-full hover:bg-blue-200 text-sm">
-            <i class="fas fa-check mr-1"></i>はい
-          </button>
-          <button onclick="quickAnswer('いいえ')" class="px-4 py-2 bg-gray-100 text-gray-700 rounded-full hover:bg-gray-200 text-sm">
-            <i class="fas fa-times mr-1"></i>いいえ
-          </button>
-          <button onclick="quickAnswer('わからない')" class="px-4 py-2 bg-yellow-100 text-yellow-700 rounded-full hover:bg-yellow-200 text-sm">
-            <i class="fas fa-question mr-1"></i>わからない
-          </button>
+        <!-- クイック回答ボタン（入力タイプに応じて動的に変化） -->
+        <div id="quick-answers" class="hidden mt-2 flex flex-wrap gap-1.5">
+          <!-- デフォルト: boolean型 -->
+          <div id="quick-boolean" class="flex gap-1.5">
+            <button onclick="quickAnswer('はい')" class="px-3 py-1.5 bg-green-100 text-green-700 rounded-full hover:bg-green-200 text-xs font-medium">
+              <i class="fas fa-check mr-1"></i>はい
+            </button>
+            <button onclick="quickAnswer('いいえ')" class="px-3 py-1.5 bg-red-50 text-red-600 rounded-full hover:bg-red-100 text-xs font-medium">
+              <i class="fas fa-times mr-1"></i>いいえ
+            </button>
+            <button onclick="quickAnswer('わからない')" class="px-3 py-1.5 bg-yellow-50 text-yellow-700 rounded-full hover:bg-yellow-100 text-xs font-medium">
+              <i class="fas fa-question mr-1"></i>わからない
+            </button>
+          </div>
+          <!-- number型のヒント -->
+          <div id="quick-number" class="hidden">
+            <span class="text-xs text-gray-400"><i class="fas fa-info-circle mr-1"></i>数値を入力してください</span>
+          </div>
+          <!-- text型のヒント -->
+          <div id="quick-text" class="hidden">
+            <span class="text-xs text-gray-400"><i class="fas fa-info-circle mr-1"></i>自由にお答えください</span>
+          </div>
         </div>
       </div>
       
       <!-- 完了時のアクション -->
-      <div id="completion-area" class="hidden border-t p-4 bg-gray-50">
+      <div id="completion-area" class="hidden border-t p-4 bg-gradient-to-r from-green-50 to-emerald-50">
         <div class="flex items-center justify-between">
           <div>
-            <h4 class="font-semibold text-gray-800">確認完了</h4>
-            <p class="text-sm text-gray-600">必要な情報が揃いました。申請書の作成に進めます。</p>
+            <h4 class="font-semibold text-gray-800 text-sm">
+              <i class="fas fa-check-circle text-green-600 mr-1"></i>確認完了
+            </h4>
+            <p class="text-xs text-gray-600">必要な情報が揃いました。申請書の作成に進めます。</p>
           </div>
-          <button onclick="goToDraft()" class="bg-green-600 text-white px-6 py-3 rounded-lg hover:bg-green-700">
-            <i class="fas fa-file-alt mr-2"></i>申請書を作成
+          <button onclick="goToDraft()" class="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 text-sm font-medium">
+            <i class="fas fa-file-alt mr-1"></i>申請書を作成
           </button>
         </div>
       </div>
     </div>
     
+    <!-- 収集済み情報サマリー（Phase 19-B: 新機能） -->
+    <div id="facts-summary" class="hidden mt-3">
+      <div class="bg-white rounded-lg shadow-sm border">
+        <div class="p-3 border-b bg-gray-50 flex items-center justify-between cursor-pointer" onclick="toggleFactsSummary()">
+          <h4 class="text-sm font-medium text-gray-700">
+            <i class="fas fa-clipboard-list text-green-600 mr-1"></i>収集済み情報
+            <span id="facts-count" class="ml-1 text-xs text-gray-400">(0件)</span>
+          </h4>
+          <i class="fas fa-chevron-down text-gray-400" id="facts-toggle-icon"></i>
+        </div>
+        <div id="facts-list" class="p-3 space-y-2 hidden"></div>
+      </div>
+    </div>
+    
     <!-- 会社・補助金情報サマリー -->
-    <div id="info-summary" class="hidden mt-4 grid grid-cols-1 md:grid-cols-2 gap-4">
-      <div class="bg-white rounded-lg shadow p-4">
-        <h4 class="text-sm font-medium text-gray-500 mb-2"><i class="fas fa-building mr-1"></i>会社情報</h4>
-        <div id="company-info" class="text-sm text-gray-700 space-y-1">
+    <div id="info-summary" class="hidden mt-3 grid grid-cols-1 md:grid-cols-2 gap-3">
+      <div class="bg-white rounded-lg shadow-sm border p-3">
+        <h4 class="text-xs font-medium text-gray-500 mb-1.5"><i class="fas fa-building mr-1"></i>会社情報</h4>
+        <div id="company-info" class="text-xs text-gray-700 space-y-0.5">
           <p><strong>会社名:</strong> <span id="company-name">-</span></p>
           <p><strong>所在地:</strong> <span id="company-prefecture">-</span></p>
           <p><strong>従業員数:</strong> <span id="company-employees">-</span>人</p>
         </div>
       </div>
-      <div class="bg-white rounded-lg shadow p-4">
-        <h4 class="text-sm font-medium text-gray-500 mb-2"><i class="fas fa-coins mr-1"></i>補助金情報</h4>
-        <div id="subsidy-info" class="text-sm text-gray-700 space-y-1">
+      <div class="bg-white rounded-lg shadow-sm border p-3">
+        <h4 class="text-xs font-medium text-gray-500 mb-1.5"><i class="fas fa-coins mr-1"></i>補助金情報</h4>
+        <div id="subsidy-info" class="text-xs text-gray-700 space-y-0.5">
           <p><strong>補助上限:</strong> <span id="subsidy-max">-</span></p>
           <p><strong>申請締切:</strong> <span id="subsidy-deadline">-</span></p>
         </div>
@@ -208,41 +296,25 @@ chatPages.get('/chat', (c) => {
     // グローバルAPI呼び出しヘルパー
     window.api = async function(path, options) {
       options = options || {};
-      
       var headers = {
         'Content-Type': 'application/json',
         'Authorization': 'Bearer ' + token
       };
-      
       if (options.headers) {
-        for (var key in options.headers) {
-          headers[key] = options.headers[key];
-        }
+        for (var key in options.headers) { headers[key] = options.headers[key]; }
       }
-      
-      var fetchOptions = {
-        method: options.method || 'GET',
-        headers: headers
-      };
-      
-      if (options.body) {
-        fetchOptions.body = options.body;
-      }
-      
+      var fetchOptions = { method: options.method || 'GET', headers: headers };
+      if (options.body) { fetchOptions.body = options.body; }
       try {
         var res = await fetch(path, fetchOptions);
         var data = await res.json();
-        
-        // 認証エラー時は自動ログアウト
         if (res.status === 401 || (data && data.error && data.error.code === 'UNAUTHORIZED')) {
-          console.warn('認証エラー: 自動ログアウトします');
           localStorage.removeItem('token');
           localStorage.removeItem('user');
           alert('セッションの有効期限が切れました。再度ログインしてください。');
           window.location.href = '/login';
           return data;
         }
-        
         return data;
       } catch (err) {
         console.error('API呼び出しエラー:', err);
@@ -254,91 +326,33 @@ chatPages.get('/chat', (c) => {
     var params = new URLSearchParams(window.location.search);
     var subsidyId = params.get('subsidy_id');
     var companyId = params.get('company_id');
-    var existingSessionId = params.get('session_id'); // ドラフト画面からの戻りをサポート
+    var existingSessionId = params.get('session_id');
     var fromContext = params.get('from');
     var backUrl = params.get('back');
     
     // P0-1凍結: fromパラメータに応じて戻りリンクを動的に変更
     if (fromContext === 'agency' && backUrl) {
-      // ヘッダーの戻るリンク
-      var backArrow = document.querySelector('nav a[href="/subsidies"]');
-      if (backArrow) {
-        backArrow.href = backUrl;
-      }
-      // ダッシュボードリンク
-      var dashboardBtn = document.querySelector('button[onclick*="/dashboard"]');
-      if (dashboardBtn) {
-        dashboardBtn.setAttribute('onclick', "location.href='/agency'");
-        dashboardBtn.innerHTML = '<i class="fas fa-building mr-1"></i>士業ダッシュボード';
-      }
-      // エラー時の戻るリンク
-      var errorBackLink = document.querySelector('#precheck-ng a[href="/subsidies"]');
-      if (errorBackLink) {
-        errorBackLink.href = backUrl;
-        errorBackLink.textContent = '士業ダッシュボードへ戻る';
-      }
+      var backArrow = document.getElementById('back-link');
+      if (backArrow) backArrow.href = backUrl;
     }
     
-    // ⚠️ session_id がある場合はセッション復元モード、それ以外は新規作成モード
     var isResumeMode = !!existingSessionId;
-    
-    // session_id がない場合のみ subsidy_id と company_id を必須とする
     if (!isResumeMode && (!subsidyId || !companyId)) {
       alert('補助金または会社が指定されていません');
-      // P0-1凍結: 士業からのアクセス時は士業ダッシュボードへ戻る
       window.location.href = (fromContext === 'agency' && backUrl) ? backUrl : '/subsidies';
     }
     
     var sessionId = existingSessionId || null;
     var sessionCompleted = false;
-    
-    // メッセージを追加
-    function addMessage(role, content, animate = true) {
-      const messagesDiv = document.getElementById('messages');
-      const loadingDiv = document.getElementById('loading-messages');
-      if (loadingDiv) loadingDiv.remove();
-      
-      const msgDiv = document.createElement('div');
-      msgDiv.className = 'flex ' + (role === 'user' ? 'justify-end' : 'justify-start');
-      if (animate) msgDiv.style.opacity = '0';
-      
-      const bubbleClass = role === 'user' 
-        ? 'bg-green-600 text-white' 
-        : role === 'system'
-          ? 'bg-gray-200 text-gray-800'
-          : 'bg-white border border-gray-200 text-gray-800';
-      
-      const icon = role === 'user' 
-        ? '<i class="fas fa-user text-green-200 mr-2"></i>'
-        : role === 'system'
-          ? '<i class="fas fa-info-circle text-gray-400 mr-2"></i>'
-          : '<i class="fas fa-robot text-green-600 mr-2"></i>';
-      
-      msgDiv.innerHTML = \`
-        <div class="message-bubble \${bubbleClass} rounded-lg px-4 py-3 shadow-sm">
-          <div class="flex items-start">
-            \${icon}
-            <div class="whitespace-pre-wrap">\${escapeHtml(content)}</div>
-          </div>
-        </div>
-      \`;
-      
-      messagesDiv.appendChild(msgDiv);
-      
-      if (animate) {
-        requestAnimationFrame(() => {
-          msgDiv.style.transition = 'opacity 0.3s ease';
-          msgDiv.style.opacity = '1';
-        });
-      }
-      
-      // スクロール
-      messagesDiv.scrollTop = messagesDiv.scrollHeight;
-    }
+    var totalQuestions = 0;
+    var answeredQuestions = 0;
+    var currentInputType = 'boolean';
+    var collectedFacts = [];
+    var overviewCollapsed = false;
     
     // HTMLエスケープ
     function escapeHtml(text) {
-      const div = document.createElement('div');
+      var div = document.createElement('div');
       div.textContent = text;
       return div.innerHTML;
     }
@@ -355,39 +369,184 @@ chatPages.get('/chat', (c) => {
     function formatDate(dateStr) {
       if (!dateStr) return '-';
       try {
-        const date = new Date(dateStr);
-        return date.toLocaleDateString('ja-JP', { year: 'numeric', month: 'long', day: 'numeric' });
-      } catch {
-        return dateStr;
+        return new Date(dateStr).toLocaleDateString('ja-JP', { year: 'numeric', month: 'long', day: 'numeric' });
+      } catch { return dateStr; }
+    }
+    
+    // メッセージを追加（Phase 19-B: カテゴリバッジ対応）
+    function addMessage(role, content, animate, category) {
+      animate = animate !== false;
+      var messagesDiv = document.getElementById('messages');
+      var loadingDiv = document.getElementById('loading-messages');
+      if (loadingDiv) loadingDiv.remove();
+      
+      var msgDiv = document.createElement('div');
+      msgDiv.className = 'flex ' + (role === 'user' ? 'justify-end' : 'justify-start') + (animate ? ' slide-in' : '');
+      
+      var bubbleClass = role === 'user' 
+        ? 'bg-green-600 text-white' 
+        : role === 'system'
+          ? 'bg-gray-100 text-gray-800 border border-gray-200'
+          : 'bg-white border border-gray-200 text-gray-800 shadow-sm';
+      
+      var icon = role === 'user' 
+        ? '<div class="w-6 h-6 rounded-full bg-green-500 flex items-center justify-center mr-2 flex-shrink-0"><i class="fas fa-user text-white text-xs"></i></div>'
+        : role === 'system'
+          ? '<div class="w-6 h-6 rounded-full bg-gray-300 flex items-center justify-center mr-2 flex-shrink-0"><i class="fas fa-info text-gray-600 text-xs"></i></div>'
+          : '<div class="w-6 h-6 rounded-full bg-green-100 flex items-center justify-center mr-2 flex-shrink-0"><i class="fas fa-robot text-green-600 text-xs"></i></div>';
+      
+      var categoryHtml = (category && role === 'assistant') 
+        ? '<div class="mb-1"><span class="category-badge inline-flex items-center px-1.5 py-0.5 rounded bg-gray-100 text-gray-500"><i class="fas fa-tag mr-1"></i>' + escapeHtml(category) + '</span></div>'
+        : '';
+      
+      msgDiv.innerHTML = 
+        '<div class="message-bubble ' + bubbleClass + ' rounded-lg px-3 py-2.5">' +
+          '<div class="flex items-start">' +
+            icon +
+            '<div class="min-w-0">' +
+              categoryHtml +
+              '<div class="whitespace-pre-wrap text-sm leading-relaxed">' + escapeHtml(content) + '</div>' +
+            '</div>' +
+          '</div>' +
+        '</div>';
+      
+      messagesDiv.appendChild(msgDiv);
+      messagesDiv.scrollTop = messagesDiv.scrollHeight;
+    }
+    
+    // 進捗バー更新
+    function updateProgress(answered, total) {
+      totalQuestions = total;
+      answeredQuestions = answered;
+      
+      var section = document.getElementById('progress-section');
+      if (total <= 0) {
+        section.classList.add('hidden');
+        return;
+      }
+      section.classList.remove('hidden');
+      
+      var pct = Math.round((answered / total) * 100);
+      document.getElementById('progress-bar').style.width = pct + '%';
+      document.getElementById('progress-text').textContent = answered + ' / ' + total + ' 件完了 (' + pct + '%)';
+    }
+    
+    // クイック回答の入力タイプ切替
+    function setInputType(type) {
+      currentInputType = type;
+      var quickArea = document.getElementById('quick-answers');
+      quickArea.classList.remove('hidden');
+      
+      document.getElementById('quick-boolean').classList.add('hidden');
+      document.getElementById('quick-number').classList.add('hidden');
+      document.getElementById('quick-text').classList.add('hidden');
+      
+      if (type === 'boolean') {
+        document.getElementById('quick-boolean').classList.remove('hidden');
+      } else if (type === 'number') {
+        document.getElementById('quick-number').classList.remove('hidden');
+        document.getElementById('message-input').type = 'number';
+        document.getElementById('message-input').placeholder = '数値を入力...';
+      } else {
+        document.getElementById('quick-text').classList.remove('hidden');
+        document.getElementById('message-input').type = 'text';
+        document.getElementById('message-input').placeholder = '自由に記入してください...';
+      }
+    }
+    
+    // 概要パネル折りたたみ
+    function toggleOverviewPanel() {
+      var panel = document.getElementById('subsidy-overview-panel');
+      var icon = document.getElementById('overview-toggle-icon');
+      overviewCollapsed = !overviewCollapsed;
+      
+      if (overviewCollapsed) {
+        panel.querySelector('.flex-1').classList.add('hidden');
+        panel.querySelector('.flex.flex-wrap').classList.add('hidden');
+        icon.className = 'fas fa-chevron-down';
+      } else {
+        panel.querySelector('.flex-1').classList.remove('hidden');
+        icon.className = 'fas fa-chevron-up';
+      }
+    }
+    
+    // 収集済み情報の折りたたみ
+    function toggleFactsSummary() {
+      var list = document.getElementById('facts-list');
+      var icon = document.getElementById('facts-toggle-icon');
+      list.classList.toggle('hidden');
+      icon.className = list.classList.contains('hidden') ? 'fas fa-chevron-down text-gray-400' : 'fas fa-chevron-up text-gray-400';
+    }
+    
+    // 収集済み情報を更新
+    function updateFactsSummary(key, question, answer) {
+      collectedFacts.push({ key: key, question: question, answer: answer });
+      
+      var container = document.getElementById('facts-summary');
+      container.classList.remove('hidden');
+      document.getElementById('facts-count').textContent = '(' + collectedFacts.length + '件)';
+      
+      var listEl = document.getElementById('facts-list');
+      var factHtml = '<div class="flex items-start text-xs">' +
+        '<i class="fas fa-check-circle text-green-500 mr-2 mt-0.5"></i>' +
+        '<div><span class="text-gray-500">' + escapeHtml(question.substring(0, 50)) + '</span>' +
+        '<br><span class="font-medium text-gray-800">' + escapeHtml(String(answer)) + '</span></div>' +
+        '</div>';
+      listEl.innerHTML += factHtml;
+    }
+    
+    // 補助金概要パネルの読み込み
+    async function loadSubsidyOverview() {
+      if (!subsidyId) return;
+      try {
+        var res = await api('/api/subsidies/' + subsidyId + (companyId ? '?company_id=' + companyId : ''));
+        if (res.success && res.data) {
+          var n = res.data.normalized;
+          var s = res.data.subsidy;
+          
+          var panel = document.getElementById('subsidy-overview-panel');
+          panel.classList.remove('hidden');
+          
+          document.getElementById('overview-title').textContent = n?.display?.title || s?.title || '-';
+          
+          var summary = n?.overview?.summary || s?.subsidy_summary || s?.outline || '';
+          if (typeof summary === 'object') summary = summary.summary || '';
+          document.getElementById('overview-summary').textContent = summary.substring(0, 150) + (summary.length > 150 ? '...' : '');
+          
+          var maxLimit = n?.display?.subsidy_max_limit ?? s?.subsidy_max_limit;
+          document.getElementById('overview-limit').innerHTML = '<i class="fas fa-coins text-yellow-500 mr-1"></i>上限: ' + formatCurrency(maxLimit);
+          
+          var rate = n?.display?.subsidy_rate_text || s?.subsidy_rate;
+          document.getElementById('overview-rate').innerHTML = '<i class="fas fa-percentage text-blue-500 mr-1"></i>補助率: ' + (rate || '-');
+          
+          var deadline = n?.acceptance?.acceptance_end || s?.acceptance_end_datetime;
+          document.getElementById('overview-deadline').innerHTML = '<i class="fas fa-clock text-orange-500 mr-1"></i>締切: ' + formatDate(deadline);
+        }
+      } catch (e) {
+        console.warn('補助金概要の読み込み失敗:', e);
       }
     }
     
     // セッション初期化
-    // ⚠️ session_id がある場合は既存セッションを復元、ない場合は新規作成
     async function initSession() {
       try {
-        let res;
+        // 補助金概要パネルを並行で読み込み
+        loadSubsidyOverview();
         
+        var res;
         if (isResumeMode && existingSessionId) {
-          // 既存セッションを取得（ドラフト画面からの戻り）
-          console.log('[壁打ち] セッション復元モード: ', existingSessionId);
+          console.log('[壁打ち] セッション復元モード:', existingSessionId);
           res = await api('/api/chat/sessions/' + existingSessionId);
-          
           if (!res.success) {
-            console.error('[壁打ち] セッション復元失敗:', res.error);
-            // セッションが見つからない場合は補助金一覧に戻る
-            alert('セッションが見つかりませんでした。補助金一覧から再度お試しください。');
+            alert('セッションが見つかりませんでした。');
             window.location.href = '/subsidies';
             return;
           }
-          
-          // セッション復元成功時、subsidy_id と company_id を設定
           if (res.data.session) {
             subsidyId = res.data.session.subsidy_id;
             companyId = res.data.session.company_id;
           }
         } else {
-          // 新規セッション作成（事前判定を含む）
           console.log('[壁打ち] 新規セッション作成モード');
           res = await api('/api/chat/sessions', {
             method: 'POST',
@@ -395,94 +554,93 @@ chatPages.get('/chat', (c) => {
           });
         }
         
-        if (!res.success) {
-          throw new Error(res.error?.message || 'セッション作成に失敗しました');
-        }
+        if (!res.success) throw new Error(res.error?.message || 'セッション作成に失敗しました');
         
-        const { session, messages, precheck, is_new } = res.data;
+        var data = res.data;
+        var session = data.session;
+        var messages = data.messages;
+        var precheck = data.precheck;
         sessionId = session.id;
         
-        // 補助金タイトル設定
-        const subsidyTitle = session.subsidy_title || '補助金詳細';
-        document.getElementById('subsidy-title').textContent = subsidyTitle;
+        // 補助金タイトル
+        document.getElementById('subsidy-title').textContent = session.subsidy_title || '補助金';
         
-        // 事前判定結果の表示（precheckが存在する場合のみ）
+        // 進捗バー初期化
+        if (precheck && precheck.missing_items) {
+          totalQuestions = precheck.missing_items.length;
+          updateProgress(0, totalQuestions);
+        }
+        
+        // 事前判定結果の表示
         if (precheck && precheck.status) {
           document.getElementById('precheck-panel').classList.remove('hidden');
-        
+          
           if (precheck.status === 'NG') {
             document.getElementById('precheck-ng').classList.remove('hidden');
-            const reasonsList = document.getElementById('blocked-reasons');
-            reasonsList.innerHTML = (precheck.blocked_reasons || []).map(r => '<li>' + escapeHtml(r) + '</li>').join('');
+            document.getElementById('blocked-reasons').innerHTML = 
+              (precheck.blocked_reasons || []).map(function(r) { return '<li>' + escapeHtml(r) + '</li>'; }).join('');
             document.getElementById('input-area').classList.add('hidden');
             document.getElementById('session-status').innerHTML = '<i class="fas fa-ban mr-1"></i>申請不可';
-            document.getElementById('session-status').className = 'text-sm px-3 py-1 rounded-full bg-red-100 text-red-700';
+            document.getElementById('session-status').className = 'text-xs px-2 py-1 rounded-full bg-red-100 text-red-700';
           } else if (precheck.status === 'OK') {
             document.getElementById('precheck-ok').classList.remove('hidden');
             document.getElementById('input-area').classList.add('hidden');
             document.getElementById('completion-area').classList.remove('hidden');
             document.getElementById('session-status').innerHTML = '<i class="fas fa-check mr-1"></i>申請可能';
-            document.getElementById('session-status').className = 'text-sm px-3 py-1 rounded-full bg-green-100 text-green-700';
+            document.getElementById('session-status').className = 'text-xs px-2 py-1 rounded-full bg-green-100 text-green-700';
             sessionCompleted = true;
           } else {
             document.getElementById('precheck-missing').classList.remove('hidden');
-            document.getElementById('remaining-questions').textContent = precheck.missing_items ? precheck.missing_items.length : '?';
             document.getElementById('quick-answers').classList.remove('hidden');
-            document.getElementById('session-status').innerHTML = '<i class="fas fa-comments mr-1"></i>確認中';
-            document.getElementById('session-status').className = 'text-sm px-3 py-1 rounded-full bg-blue-100 text-blue-700';
+            document.getElementById('session-status').innerHTML = '<i class="fas fa-comments mr-1"></i>確認中 (' + (precheck.missing_items ? precheck.missing_items.length : '?') + '問)';
+            document.getElementById('session-status').className = 'text-xs px-2 py-1 rounded-full bg-blue-100 text-blue-700';
+            
+            // 最初の質問のinput_typeでクイック回答を設定
+            if (precheck.missing_items && precheck.missing_items.length > 0) {
+              setInputType(precheck.missing_items[0].input_type || 'boolean');
+            }
           }
           
-          // 会社・補助金情報サマリー（グレースフルデグレード対応）
+          // 会社・補助金情報
           if (precheck.company_info) {
             document.getElementById('company-name').textContent = precheck.company_info.name || '-';
             document.getElementById('company-prefecture').textContent = precheck.company_info.prefecture || '-';
             document.getElementById('company-employees').textContent = precheck.company_info.employee_count || '-';
-          } else {
-            // company_info がない場合は「読み込み中」を表示
-            document.getElementById('company-name').textContent = '(未取得)';
-            document.getElementById('company-prefecture').textContent = '-';
-            document.getElementById('company-employees').textContent = '-';
           }
           if (precheck.subsidy_info) {
             document.getElementById('subsidy-max').textContent = formatCurrency(precheck.subsidy_info.max_amount);
             document.getElementById('subsidy-deadline').textContent = formatDate(precheck.subsidy_info.acceptance_end);
-          } else {
-            // subsidy_info がない場合は「未取得」を表示
-            document.getElementById('subsidy-max').textContent = '(未取得)';
-            document.getElementById('subsidy-deadline').textContent = '-';
           }
         } else {
-          // precheckがない場合のデフォルト処理
           document.getElementById('precheck-panel').classList.remove('hidden');
           document.getElementById('precheck-missing').classList.remove('hidden');
-          document.getElementById('remaining-questions').textContent = '不明';
           document.getElementById('quick-answers').classList.remove('hidden');
           document.getElementById('session-status').innerHTML = '<i class="fas fa-comments mr-1"></i>確認中';
-          document.getElementById('session-status').className = 'text-sm px-3 py-1 rounded-full bg-blue-100 text-blue-700';
+          document.getElementById('session-status').className = 'text-xs px-2 py-1 rounded-full bg-blue-100 text-blue-700';
         }
         document.getElementById('info-summary').classList.remove('hidden');
         
         // メッセージ表示
-        const loadingDiv = document.getElementById('loading-messages');
+        var loadingDiv = document.getElementById('loading-messages');
         if (loadingDiv) loadingDiv.remove();
         
-        for (const msg of messages) {
-          addMessage(msg.role, msg.content, false);
+        for (var i = 0; i < messages.length; i++) {
+          addMessage(messages[i].role, messages[i].content, false);
         }
         
-        // セッションが完了している場合
+        // セッション完了チェック
         if (session.status === 'completed') {
           sessionCompleted = true;
           document.getElementById('input-area').classList.add('hidden');
           document.getElementById('completion-area').classList.remove('hidden');
           document.getElementById('session-status').innerHTML = '<i class="fas fa-check mr-1"></i>完了';
-          document.getElementById('session-status').className = 'text-sm px-3 py-1 rounded-full bg-green-100 text-green-700';
+          document.getElementById('session-status').className = 'text-xs px-2 py-1 rounded-full bg-green-100 text-green-700';
+          updateProgress(totalQuestions, totalQuestions);
         }
         
       } catch (error) {
         console.error('Init session error:', error);
         alert('エラー: ' + error.message);
-        // ⚠️ subsidyId/companyId がない場合は補助金一覧へ、ある場合は詳細ページへ
         if (subsidyId && companyId) {
           window.location.href = '/subsidies/' + encodeURIComponent(subsidyId) + '?company_id=' + encodeURIComponent(companyId);
         } else {
@@ -492,45 +650,65 @@ chatPages.get('/chat', (c) => {
     }
     
     // メッセージ送信
+    var lastQuestionText = '';
+    
     async function sendMessage() {
       if (sessionCompleted) return;
       
-      const input = document.getElementById('message-input');
-      const content = input.value.trim();
+      var input = document.getElementById('message-input');
+      var content = input.value.trim();
       if (!content) return;
       
-      // 入力クリア
       input.value = '';
+      input.type = 'text';
+      input.placeholder = 'メッセージを入力...';
       
-      // ユーザーメッセージ表示
       addMessage('user', content);
       
-      // 送信ボタン無効化
-      const sendBtn = document.getElementById('send-btn');
-      sendBtn.disabled = true;
+      // 収集済み情報に追加
+      if (lastQuestionText) {
+        updateFactsSummary('q_' + answeredQuestions, lastQuestionText, content);
+      }
       
-      // タイピングインジケーター表示
+      var sendBtn = document.getElementById('send-btn');
+      sendBtn.disabled = true;
       document.getElementById('typing-indicator').classList.remove('hidden');
       
       try {
-        const res = await api('/api/chat/sessions/' + sessionId + '/message', {
+        var res = await api('/api/chat/sessions/' + sessionId + '/message', {
           method: 'POST',
-          body: JSON.stringify({ content })
+          body: JSON.stringify({ content: content })
         });
         
-        if (!res.success) {
-          throw new Error(res.error?.message || 'メッセージ送信に失敗しました');
-        }
+        if (!res.success) throw new Error(res.error?.message || 'メッセージ送信に失敗しました');
         
-        // タイピングインジケーター非表示
         document.getElementById('typing-indicator').classList.add('hidden');
         
         // アシスタントメッセージ表示
         addMessage('assistant', res.data.assistant_message.content);
+        lastQuestionText = res.data.assistant_message.content.split('\\n')[0]; // 最初の行を質問テキストとして保存
         
-        // 残り質問数更新
-        const remaining = res.data.remaining_questions;
-        document.getElementById('remaining-questions').textContent = remaining + 1;
+        // 進捗更新
+        var remaining = res.data.remaining_questions;
+        answeredQuestions = totalQuestions - remaining - 1;
+        if (answeredQuestions < 0) answeredQuestions = 0;
+        updateProgress(answeredQuestions + 1, totalQuestions);
+        
+        // ステータス更新
+        document.getElementById('session-status').innerHTML = 
+          '<i class="fas fa-comments mr-1"></i>確認中 (残' + (remaining + 1) + '問)';
+        
+        // 次の質問のinput_typeを推測
+        var msgContent = res.data.assistant_message.content;
+        if (msgContent.includes('「はい」または「いいえ」')) {
+          setInputType('boolean');
+        } else if (msgContent.includes('数値でお答え')) {
+          setInputType('number');
+        } else if (msgContent.includes('以下から選択')) {
+          setInputType('boolean'); // select は boolean UIで代用
+        } else {
+          setInputType('text');
+        }
         
         // セッション完了チェック
         if (res.data.session_completed) {
@@ -541,7 +719,8 @@ chatPages.get('/chat', (c) => {
           document.getElementById('precheck-missing').classList.add('hidden');
           document.getElementById('precheck-ok').classList.remove('hidden');
           document.getElementById('session-status').innerHTML = '<i class="fas fa-check mr-1"></i>完了';
-          document.getElementById('session-status').className = 'text-sm px-3 py-1 rounded-full bg-green-100 text-green-700';
+          document.getElementById('session-status').className = 'text-xs px-2 py-1 rounded-full bg-green-100 text-green-700';
+          updateProgress(totalQuestions, totalQuestions);
         }
         
       } catch (error) {
