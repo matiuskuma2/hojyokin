@@ -524,6 +524,17 @@ chatPages.get('/chat', (c) => {
       return div.innerHTML;
     }
     
+    // マークダウン記法を除去（AIがプレーンテキスト指示を無視する場合の対策）
+    function stripMarkdown(text) {
+      if (!text) return '';
+      return text
+        .replace(/\\*\\*([^*]+)\\*\\*/g, '$1')
+        .replace(/\\*([^*]+)\\*/g, '$1')
+        .replace(/^#{1,6}\\s+/gm, '')
+        .replace(/^[-*+]\\s+/gm, '・')
+        .replace(/\x60([^\x60]+)\x60/g, '$1');
+    }
+    
     // 通貨フォーマット
     function formatCurrency(value) {
       if (!value) return '-';
@@ -572,7 +583,7 @@ chatPages.get('/chat', (c) => {
             icon +
             '<div class="min-w-0">' +
               categoryHtml +
-              '<div class="whitespace-pre-wrap text-sm leading-relaxed">' + escapeHtml(content) + '</div>' +
+              '<div class="whitespace-pre-wrap text-sm leading-relaxed">' + escapeHtml(stripMarkdown(content)) + '</div>' +
             '</div>' +
           '</div>' +
         '</div>';

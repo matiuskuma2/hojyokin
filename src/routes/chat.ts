@@ -641,15 +641,24 @@ chat.post('/sessions', async (c) => {
     
     if (existingSession) {
       // 既存セッションを返す（全メッセージ + precheck情報付き）
+      const existSession = existingSession as any;
       const messages = await c.env.DB.prepare(`
         SELECT * FROM chat_messages WHERE session_id = ? ORDER BY created_at ASC
-      `).bind((existingSession as any).id).all();
+      `).bind(existSession.id).all();
       
       // precheck情報を再構築（復元用）
       let missingItems: MissingItem[] = [];
       try {
-        missingItems = JSON.parse((existingSession as any).missing_items || '[]');
+        missingItems = JSON.parse(existSession.missing_items || '[]');
       } catch { }
+      
+      // 会社・補助金情報を取得（下部パネル表示用）
+      const existCompany = await c.env.DB.prepare(`
+        SELECT id, name, prefecture, employee_count FROM companies WHERE id = ?
+      `).bind(existSession.company_id).first() as any;
+      
+      const existSsot = await getNormalizedSubsidyDetail(c.env.DB, existSession.subsidy_id);
+      const existNormalized = existSsot?.normalized || null;
       
       return c.json<ApiResponse<any>>({
         success: true,
@@ -661,6 +670,18 @@ chat.post('/sessions', async (c) => {
             eligible: true,
             blocked_reasons: [],
             missing_items: missingItems,
+            company_info: existCompany ? {
+              id: existCompany.id,
+              name: existCompany.name,
+              prefecture: existCompany.prefecture,
+              employee_count: existCompany.employee_count,
+            } : undefined,
+            subsidy_info: existNormalized ? {
+              id: existNormalized.ids.canonical_id,
+              title: existNormalized.display.title,
+              acceptance_end: existNormalized.acceptance.acceptance_end || undefined,
+              max_amount: existNormalized.display.subsidy_max_limit || undefined,
+            } : undefined,
           },
           is_new: false
         }
@@ -945,10 +966,19 @@ chat.get('/sessions/:id', async (c) => {
     `).bind(sessionId).all();
     
     // precheck情報を再構築（復元用）
+    const sess = session as any;
     let missingItems: MissingItem[] = [];
     try {
-      missingItems = JSON.parse((session as any).missing_items || '[]');
+      missingItems = JSON.parse(sess.missing_items || '[]');
     } catch { }
+    
+    // 会社・補助金情報を取得（下部パネル表示用）
+    const detailCompany = await c.env.DB.prepare(`
+      SELECT id, name, prefecture, employee_count FROM companies WHERE id = ?
+    `).bind(sess.company_id).first() as any;
+    
+    const detailSsot = await getNormalizedSubsidyDetail(c.env.DB, sess.subsidy_id);
+    const detailNormalized = detailSsot?.normalized || null;
     
     return c.json<ApiResponse<any>>({
       success: true,
@@ -960,6 +990,18 @@ chat.get('/sessions/:id', async (c) => {
           eligible: true,
           blocked_reasons: [],
           missing_items: missingItems,
+          company_info: detailCompany ? {
+            id: detailCompany.id,
+            name: detailCompany.name,
+            prefecture: detailCompany.prefecture,
+            employee_count: detailCompany.employee_count,
+          } : undefined,
+          subsidy_info: detailNormalized ? {
+            id: detailNormalized.ids.canonical_id,
+            title: detailNormalized.display.title,
+            acceptance_end: detailNormalized.acceptance.acceptance_end || undefined,
+            max_amount: detailNormalized.display.subsidy_max_limit || undefined,
+          } : undefined,
         },
       }
     });
