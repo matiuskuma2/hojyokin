@@ -1020,11 +1020,12 @@ chat.post('/sessions/:id/message', async (c) => {
       VALUES (?, ?, 'user', ?, ?, ?)
     `).bind(userMsgId, sessionId, sanitizedContent, currentKey, now).run();
     
-    // 回答を構造化して保存
+    // Phase 20: 回答バリデーション付きで構造化保存
+    let answerValidation: { valid: boolean; reason?: string } = { valid: true };
+    let currentItemInputType = 'text';
+    let currentItemLabel = '';
+    
     if (currentKey) {
-      const structuredValue = parseAnswer(sanitizedContent);
-      
-      // Phase 19-QA: fact_type と metadata を含めて保存
       // missing_items から現在の質問の型情報を取得
       let factType = 'text';
       let factCategory = 'general';
@@ -1034,42 +1035,53 @@ chat.post('/sessions/:id/message', async (c) => {
         const currentMissingItems: MissingItem[] = JSON.parse(session.missing_items || '[]');
         const currentItem = currentMissingItems.find(item => item.key === currentKey);
         if (currentItem) {
-          factType = currentItem.input_type || 'text';
+          currentItemInputType = currentItem.input_type || 'text';
+          currentItemLabel = currentItem.label || '';
+          factType = currentItemInputType;
           factCategory = currentItem.source === 'profile' ? 'profile' : 
                         currentItem.source === 'eligibility' ? 'eligibility' : 'general';
-          factMetadata = {
-            input_type: currentItem.input_type,
-            question_label: currentItem.label,
-            raw_answer: sanitizedContent,
-            parsed_answer: structuredValue,
-          };
         }
       } catch { /* missing_items parse failure - non-critical */ }
       
-      const factId = crypto.randomUUID();
-      await c.env.DB.prepare(`
-        INSERT INTO chat_facts (id, user_id, company_id, subsidy_id, fact_key, fact_value, fact_type, fact_category, metadata, source, session_id, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'chat', ?, ?, ?)
-        ON CONFLICT(company_id, subsidy_id, fact_key) DO UPDATE SET
-          fact_value = excluded.fact_value,
-          fact_type = excluded.fact_type,
-          metadata = excluded.metadata,
-          session_id = excluded.session_id,
-          updated_at = excluded.updated_at
-      `).bind(
-        factId,
-        user.id,
-        session.company_id,
-        session.subsidy_id,
-        currentKey,
-        structuredValue,
-        factType,
-        factCategory,
-        JSON.stringify(factMetadata),
-        sessionId,
-        now,
-        now
-      ).run();
+      // Phase 20: 回答バリデーション
+      answerValidation = validateAnswer(sanitizedContent, currentItemInputType);
+      
+      if (answerValidation.valid) {
+        // バリデーション通過: input_type を渡して適切にパース
+        const structuredValue = parseAnswer(sanitizedContent, currentItemInputType);
+        factMetadata = {
+          input_type: currentItemInputType,
+          question_label: currentItemLabel,
+          raw_answer: sanitizedContent,
+          parsed_answer: structuredValue,
+        };
+        
+        const factId = crypto.randomUUID();
+        await c.env.DB.prepare(`
+          INSERT INTO chat_facts (id, user_id, company_id, subsidy_id, fact_key, fact_value, fact_type, fact_category, metadata, source, session_id, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'chat', ?, ?, ?)
+          ON CONFLICT(company_id, subsidy_id, fact_key) DO UPDATE SET
+            fact_value = excluded.fact_value,
+            fact_type = excluded.fact_type,
+            metadata = excluded.metadata,
+            session_id = excluded.session_id,
+            updated_at = excluded.updated_at
+        `).bind(
+          factId,
+          user.id,
+          session.company_id,
+          session.subsidy_id,
+          currentKey,
+          structuredValue,
+          factType,
+          factCategory,
+          JSON.stringify(factMetadata),
+          sessionId,
+          now,
+          now
+        ).run();
+      }
+      // answerValidation.valid === false の場合は fact を保存せず、再質問する
     }
     
     // missing_items 取得
@@ -1094,7 +1106,9 @@ chat.post('/sessions/:id/message', async (c) => {
     const remainingItems = missingItems.filter(item => !answeredKeys.has(item.key));
     
     // === Phase 19: AIコンシェルジュ統合 ===
-    const isConsultingMode = session.status === 'consulting' || remainingItems.length === 0;
+    // Phase 20: バリデーション失敗時は再質問（同じ質問をもう一度聞く）
+    const answerWasInvalid = !answerValidation.valid && currentKey;
+    const isConsultingMode = !answerWasInvalid && (session.status === 'consulting' || remainingItems.length === 0);
     
     let responseContent: string;
     let responseKey: string | null = null;
@@ -1226,7 +1240,22 @@ chat.post('/sessions/:id/message', async (c) => {
     } else {
       // === 構造化質問フェーズ（AI強化版） ===
       mode = 'structured';
-      const nextQuestion = remainingItems[0];
+      
+      // Phase 20: バリデーション失敗時は同じ質問を再度聞く
+      let targetQuestion: MissingItem;
+      let isRetry = false;
+      
+      if (answerWasInvalid) {
+        // 現在の質問を再度聞く（回答がまだ保存されていないので remaining に含まれている）
+        const currentMissingItems: MissingItem[] = JSON.parse(session.missing_items || '[]');
+        const retryItem = currentMissingItems.find(item => item.key === currentKey);
+        targetQuestion = retryItem || remainingItems[0];
+        isRetry = true;
+      } else {
+        targetQuestion = remainingItems[0];
+      }
+      
+      const nextQuestion = targetQuestion;
       
       // AIで自然な応答を生成試行
       if (c.env.OPENAI_API_KEY) {
@@ -1247,11 +1276,33 @@ chat.post('/sessions/:id/message', async (c) => {
           sessionStatus: 'collecting',
         };
         
-        // AIにユーザー回答への反応 + 次の質問を生成させる
-        const promptForAI = `ユーザーの回答: 「${sanitizedContent}」
+        // Phase 20: バリデーション失敗時は再質問を促すプロンプト
+        let promptForAI: string;
+        if (isRetry && answerValidation.reason) {
+          const retryHints: Record<string, string> = {
+            'number_got_boolean': `ユーザーが「${sanitizedContent}」と答えましたが、この質問は数値（数字）での回答が必要です。「はい・いいえ」ではなく、具体的な数字で教えてもらうよう丁寧に聞き直してください。`,
+            'number_no_digits': `ユーザーが「${sanitizedContent}」と答えましたが、数値が含まれていません。具体的な数字で教えてもらうよう丁寧に聞き直してください。`,
+            'text_got_boolean': `ユーザーが「${sanitizedContent}」と答えましたが、この質問は具体的な内容（文章）での回答が必要です。もう少し具体的に教えてもらうよう丁寧に聞き直してください。`,
+            'text_too_short': `ユーザーの回答が短すぎます。もう少し具体的に教えてもらうよう丁寧に聞き直してください。`,
+          };
+          promptForAI = `${retryHints[answerValidation.reason] || 'ユーザーの回答が質問の形式に合っていません。丁寧に聞き直してください。'}
+
+質問: 「${nextQuestion.label}」 (回答タイプ: ${nextQuestion.input_type})
+
+重要: ユーザーを責めない。「もう少し詳しく」「具体的に」と優しく促す。回答例を示すとよい。`;
+        } else {
+          // 通常の次の質問への遷移
+          promptForAI = `ユーザーの回答: 「${sanitizedContent}」
 
 この回答に対する短い反応（共感・補足）を入れてから、次の質問を自然に聴いてください。
-次の質問: 「${nextQuestion.label}」 (回答タイプ: ${nextQuestion.input_type})`;
+次の質問: 「${nextQuestion.label}」 (回答タイプ: ${nextQuestion.input_type})
+
+重要ルール:
+- 「ありがとうございます。次の質問です。」のような機械的な応答は禁止
+- ユーザーの回答内容に触れて、共感や補足情報を1-2文入れる
+- その上で自然な流れで次の質問に移る
+- 回答タイプに応じた回答例を添える（numberなら「例: 300万円」など）`;
+        }
         
         try {
           const aiResponse = await generateAIResponse(c.env, ctx, promptForAI);
@@ -1272,7 +1323,7 @@ chat.post('/sessions/:id/message', async (c) => {
                 aiResponse.tokens_used.prompt,
                 aiResponse.tokens_used.completion,
                 ((aiResponse.tokens_used.prompt * 0.00015 + aiResponse.tokens_used.completion * 0.0006) / 1000),
-                JSON.stringify({ session_id: sessionId, mode: 'structured' })
+                JSON.stringify({ session_id: sessionId, mode: 'structured', is_retry: isRetry })
               ).run();
             } catch (e) {
               console.error('Failed to record AI usage:', e);
@@ -1280,18 +1331,12 @@ chat.post('/sessions/:id/message', async (c) => {
           }
         } catch (aiError) {
           console.error('[Chat AI Structured] Error:', aiError);
-          // AIフォールバック: 従来型応答
-          const encouragement = answeredKeys.size <= 1 ? 'ありがとうございます。' : 
-            answeredKeys.size <= 3 ? '順調に進んでいます！' :
-            `あと${remainingItems.length}件です。もう少しです！`;
-          responseContent = `${encouragement}\n\n${formatQuestion(nextQuestion)}`;
+          // AIフォールバック: 改良型応答
+          responseContent = buildFallbackStructuredResponse(sanitizedContent, nextQuestion, answeredKeys.size, remainingItems.length, isRetry, answerValidation.reason);
         }
       } else {
-        // OPENAI_API_KEYがない場合: 従来型応答
-        const encouragement = answeredKeys.size <= 1 ? 'ありがとうございます。' : 
-          answeredKeys.size <= 3 ? '順調に進んでいます！' :
-          `あと${remainingItems.length}件です。もう少しです！`;
-        responseContent = `${encouragement}\n\n${formatQuestion(nextQuestion)}`;
+        // OPENAI_API_KEYがない場合: 改良型フォールバック応答
+        responseContent = buildFallbackStructuredResponse(sanitizedContent, nextQuestion, answeredKeys.size, remainingItems.length, isRetry, answerValidation.reason);
       }
       
       responseKey = nextQuestion.key;
@@ -1323,9 +1368,13 @@ chat.post('/sessions/:id/message', async (c) => {
         },
         session_completed: false,  // Phase 19: 構造化質問完了後もconsultingモードで継続
         mode,
-        remaining_questions: remainingItems.length > 0 ? remainingItems.length - 1 : 0,
+        // Phase 20: バリデーション失敗時は remaining を減らさない
+        remaining_questions: answerWasInvalid ? remainingItems.length : (remainingItems.length > 0 ? remainingItems.length - 1 : 0),
         suggested_questions: suggestedQuestions,
         consulting_mode: isConsultingMode,
+        // Phase 20: フロントエンドにバリデーション結果を通知
+        answer_invalid: answerWasInvalid ? true : undefined,
+        answer_invalid_reason: answerValidation.reason || undefined,
       }
     });
     
@@ -1339,48 +1388,174 @@ chat.post('/sessions/:id/message', async (c) => {
 });
 
 /**
- * 回答のパース（Yes/No → true/false 等）
+ * 回答のパース（input_type を考慮した型安全なパース）
  * 
- * Phase 19-QA: コンテキスト非依存の安全なパース
- * - 完全一致のみでboolean変換（部分一致による誤変換を防止）
- * - 数値は明確なパターンのみ抽出
- * - 2000文字を超える入力はトリム済み前提
+ * Phase 20: input_type を受け取り、型に合わない回答を検出
+ * - boolean 質問: はい/いいえ系のみ true/false に変換
+ * - number 質問: 数値のみ抽出、非数値は raw テキストとして保持
+ * - text 質問: そのまま保持
+ * - 全型共通: 「わからない」系は 'unknown'
  */
-function parseAnswer(content: string): string {
+function parseAnswer(content: string, inputType?: string): string {
   const trimmed = content.trim();
   if (trimmed.length === 0) return '';
   
   const lower = trimmed.toLowerCase();
   
-  // Yes/No判定: 完全一致のみ（文中の「ある」「いる」を誤変換しない）
-  const truePatterns = ['はい', 'yes', 'true', '○', 'あります', 'できます', 'います', '該当します'];
-  const falsePatterns = ['いいえ', 'no', 'false', '×', 'ありません', 'できません', 'いません', '該当しません', 'ない'];
-  
-  if (truePatterns.includes(lower)) {
-    return 'true';
-  }
-  if (falsePatterns.includes(lower)) {
-    return 'false';
-  }
-  
-  // 「わからない」系は明示的に保存
+  // 「わからない」系は全型で共通処理
   if (['わからない', 'わかりません', '不明', '未定'].includes(lower)) {
     return 'unknown';
   }
   
-  // 純粋な数値（「100」「1,000」「1000万」等）
-  const numOnly = trimmed.replace(/[,，]/g, '');
-  if (/^\d+(\.\d+)?$/.test(numOnly)) {
-    return numOnly;
-  }
-  // 「1000万」「3億」等の日本語数値
-  const jpNumMatch = numOnly.match(/^(\d+(?:\.\d+)?)\s*(?:万|億|千)?(?:円)?$/);
-  if (jpNumMatch) {
-    return jpNumMatch[1];
+  const truePatterns = ['はい', 'yes', 'true', '○', 'あります', 'できます', 'います', '該当します'];
+  const falsePatterns = ['いいえ', 'no', 'false', '×', 'ありません', 'できません', 'いません', '該当しません', 'ない'];
+  
+  if (inputType === 'boolean') {
+    // boolean 質問: はい/いいえ系のみ変換、それ以外はそのまま保持（再質問トリガー）
+    if (truePatterns.includes(lower)) return 'true';
+    if (falsePatterns.includes(lower)) return 'false';
+    // boolean 質問に対する非boolean回答 → そのまま返す（バリデーションで検出）
+    return trimmed;
   }
   
-  // そのまま返す（テキスト回答）
+  if (inputType === 'number') {
+    // number 質問: 数値を抽出
+    const numOnly = trimmed.replace(/[,，\s]/g, '');
+    if (/^\d+(\.\d+)?$/.test(numOnly)) return numOnly;
+    // 「1000万」「3億」等の日本語数値
+    const jpNumMatch = numOnly.match(/^(\d+(?:\.\d+)?)\s*(万|億|千)?(円)?$/);
+    if (jpNumMatch) {
+      let val = parseFloat(jpNumMatch[1]);
+      if (jpNumMatch[2] === '億') val *= 100000000;
+      else if (jpNumMatch[2] === '万') val *= 10000;
+      else if (jpNumMatch[2] === '千') val *= 1000;
+      return String(val);
+    }
+    // 文中から数値を抽出試行（「約50名」「10人」等）
+    const numInText = trimmed.match(/(\d+(?:[.,]\d+)?)\s*(?:名|人|万円|円|万|億|千|個|台|件)?/);
+    if (numInText) {
+      return numInText[1].replace(/[,，]/g, '');
+    }
+    // boolean 回答を number 質問に誤入力した場合 → そのまま返す（バリデーションで検出）
+    return trimmed;
+  }
+  
+  // text / select / デフォルト: boolean 変換せず、そのまま保持
+  // （text 質問に「はい」と答えた場合、それ自体が回答として有用でない可能性がある）
+  if (inputType === 'text') {
+    // 「はい」「いいえ」だけの回答は text 質問には不十分 → そのまま返す（バリデーションで検出）
+    return trimmed;
+  }
+  
+  // inputType 不明の場合: 従来の変換ロジック
+  if (truePatterns.includes(lower)) return 'true';
+  if (falsePatterns.includes(lower)) return 'false';
+  
+  const numOnly = trimmed.replace(/[,，]/g, '');
+  if (/^\d+(\.\d+)?$/.test(numOnly)) return numOnly;
+  
   return trimmed;
+}
+
+/**
+ * 回答のバリデーション: input_type に対して回答が適切かチェック
+ * 
+ * Phase 20: 不適切な回答を検出し、再質問を促す
+ * 戻り値: { valid: true } or { valid: false, reason: string }
+ */
+function validateAnswer(content: string, inputType: string): { valid: boolean; reason?: string } {
+  const trimmed = content.trim().toLowerCase();
+  
+  // 「わからない」は全型で有効
+  if (['わからない', 'わかりません', '不明', '未定'].includes(trimmed)) {
+    return { valid: true };
+  }
+  
+  const booleanWords = ['はい', 'yes', 'true', '○', 'いいえ', 'no', 'false', '×',
+    'あります', 'できます', 'います', '該当します',
+    'ありません', 'できません', 'いません', '該当しません', 'ない'];
+  
+  if (inputType === 'number') {
+    // boolean 回答は number 質問に不適切
+    if (booleanWords.includes(trimmed)) {
+      return { valid: false, reason: 'number_got_boolean' };
+    }
+    // 最低限、数字が含まれているか
+    if (!/\d/.test(content)) {
+      return { valid: false, reason: 'number_no_digits' };
+    }
+    return { valid: true };
+  }
+  
+  if (inputType === 'text') {
+    // 「はい」「いいえ」だけの回答は text 質問に不十分
+    if (booleanWords.includes(trimmed)) {
+      return { valid: false, reason: 'text_got_boolean' };
+    }
+    // 1文字回答は不十分
+    if (content.trim().length < 2) {
+      return { valid: false, reason: 'text_too_short' };
+    }
+    return { valid: true };
+  }
+  
+  // boolean, select, その他 → 全て有効
+  return { valid: true };
+}
+
+/**
+ * 構造化質問フェーズの改良型フォールバック応答
+ * 
+ * Phase 20: 機械的な「ありがとうございます。次の質問です。」を排除
+ * バリデーション失敗時の再質問、回答に対する反応の多様化
+ */
+function buildFallbackStructuredResponse(
+  userAnswer: string,
+  nextQuestion: MissingItem,
+  answeredCount: number,
+  remainingCount: number,
+  isRetry: boolean,
+  retryReason?: string,
+): string {
+  // バリデーション失敗時: 丁寧に聞き直す
+  if (isRetry) {
+    if (retryReason === 'number_got_boolean' || retryReason === 'number_no_digits') {
+      const examples: Record<string, string> = {
+        'employee_count': '例えば「10名」「50」のように教えてください',
+        'annual_revenue': '例えば「5000万円」「3億」のように教えてください',
+        'investment_amount': '例えば「500万円」「1000」のように教えてください',
+      };
+      const hint = Object.entries(examples).find(([k]) => nextQuestion.key.includes(k))?.[1] 
+        || '具体的な数字で教えていただけますか？';
+      return `すみません、この質問は数値でお答えいただけると助かります。${hint}\n\n${nextQuestion.label}`;
+    }
+    if (retryReason === 'text_got_boolean' || retryReason === 'text_too_short') {
+      return `ありがとうございます。この質問はもう少し具体的に教えていただけると、より的確なアドバイスができます。\n\n${nextQuestion.label}`;
+    }
+    return `すみません、もう少し具体的に教えていただけますか？\n\n${nextQuestion.label}`;
+  }
+  
+  // 通常の応答: 回答に対する反応 + 次の質問
+  const reactions = [
+    'ご回答ありがとうございます。',
+    '承知しました。',
+    'なるほど、分かりました。',
+    '確認できました。',
+    'ありがとうございます、把握しました。',
+  ];
+  
+  // 進捗に応じた追加コメント
+  let progressComment = '';
+  if (remainingCount <= 2) {
+    progressComment = '\nもうすぐ全ての確認が完了します！';
+  } else if (remainingCount <= 4) {
+    progressComment = '\n残りわずかです。もう少しお付き合いください。';
+  } else if (answeredCount === 0) {
+    progressComment = '';
+  }
+  
+  const reaction = reactions[answeredCount % reactions.length];
+  return `${reaction}${progressComment}\n\n${formatQuestion(nextQuestion)}`;
 }
 
 export default chat;

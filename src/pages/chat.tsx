@@ -726,10 +726,9 @@ chatPages.get('/chat', (c) => {
       
       addMessage('user', content);
       
-      // 収集済み情報に追加
-      if (lastQuestionText) {
-        updateFactsSummary('q_' + answeredQuestions, lastQuestionText, content);
-      }
+      // Phase 20: 送信時は一旦 lastQuestionText を保存（バリデーション結果で使うかどうか判断）
+      var pendingQuestion = lastQuestionText;
+      var pendingContent = content;
       
       var sendBtn = document.getElementById('send-btn');
       sendBtn.disabled = true;
@@ -749,11 +748,21 @@ chatPages.get('/chat', (c) => {
         addMessage('assistant', res.data.assistant_message.content);
         lastQuestionText = res.data.assistant_message.content.split('\\n')[0]; // 最初の行を質問テキストとして保存
         
-        // 進捗更新
+        // Phase 20: バリデーション失敗時は進捗を更新しない（同じ質問を再度聞いている）
         var remaining = res.data.remaining_questions;
-        answeredQuestions = totalQuestions - remaining - 1;
-        if (answeredQuestions < 0) answeredQuestions = 0;
-        updateProgress(answeredQuestions + 1, totalQuestions);
+        if (res.data.answer_invalid) {
+          // 回答が不適切だった場合: 進捗は変えない、入力タイプも維持
+          console.log('[壁打ち] 回答バリデーション失敗:', res.data.answer_invalid_reason);
+        } else {
+          // 正常回答: 進捗を更新 & 収集済み情報に追加
+          answeredQuestions = totalQuestions - remaining - 1;
+          if (answeredQuestions < 0) answeredQuestions = 0;
+          updateProgress(answeredQuestions + 1, totalQuestions);
+          
+          if (pendingQuestion) {
+            updateFactsSummary('q_' + answeredQuestions, pendingQuestion, pendingContent);
+          }
+        }
         
         // ステータス更新
         document.getElementById('session-status').innerHTML = 
