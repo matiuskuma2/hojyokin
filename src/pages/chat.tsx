@@ -277,7 +277,7 @@ chatPages.get('/chat', (c) => {
         <!-- 提案質問ボタン -->
         <div id="suggested-questions" class="hidden mt-2 flex flex-wrap gap-1.5"></div>
         <!-- アクションボタン -->
-        <div class="mt-2 flex gap-2">
+        <div class="mt-2 flex gap-2 flex-wrap">
           <button onclick="goToDraft()" class="text-xs px-3 py-1.5 bg-green-50 text-green-700 rounded-full hover:bg-green-100">
             <i class="fas fa-file-alt mr-1"></i>申請書を作成
           </button>
@@ -286,6 +286,12 @@ chatPages.get('/chat', (c) => {
           </button>
           <button onclick="askAboutDocuments()" class="text-xs px-3 py-1.5 bg-purple-50 text-purple-700 rounded-full hover:bg-purple-100">
             <i class="fas fa-folder-open mr-1"></i>必要書類を確認
+          </button>
+          <button onclick="askAboutStrategy()" class="text-xs px-3 py-1.5 bg-orange-50 text-orange-700 rounded-full hover:bg-orange-100">
+            <i class="fas fa-lightbulb mr-1"></i>採択のコツ
+          </button>
+          <button onclick="askAboutSchedule()" class="text-xs px-3 py-1.5 bg-teal-50 text-teal-700 rounded-full hover:bg-teal-100">
+            <i class="fas fa-calendar-alt mr-1"></i>スケジュール確認
           </button>
         </div>
       </div>
@@ -830,7 +836,7 @@ chatPages.get('/chat', (c) => {
       document.getElementById('session-status').className = 'text-xs px-2 py-1 rounded-full bg-indigo-100 text-indigo-700';
       
       // コンシェルジュ歓迎メッセージ
-      addMessage('assistant', '基本情報の確認が完了しました！ここからはAIコンシェルジュとして、補助金申請に関するあらゆるご相談にお応えします。\n\n例えば：\n・申請要件の詳しい解説\n・事業計画の方向性のアドバイス\n・必要書類の準備のコツ\n・採択率を上げるポイント\n\n何でもお気軽にお聞きください。');
+      addMessage('assistant', '基本情報の確認が完了しました！ここからはAIコンシェルジュとして、補助金申請に関するあらゆるご相談にお応えします。\n\n例えば：\n・申請要件の詳しい解説\n・事業計画の方向性と書き方のコツ\n・必要書類の準備のポイント\n・採択率を上げるための加点項目の取得戦略\n・申請スケジュールの管理\n\n何でもお気軽にお聞きください。一緒に申請の準備を進めましょう！');
       
       // フォーカス
       var input = document.getElementById('consulting-input');
@@ -917,6 +923,23 @@ chatPages.get('/chat', (c) => {
       var input = document.getElementById('consulting-input');
       if (input) {
         input.value = '申請に必要な書類を教えてください。準備のコツがあれば教えてほしいです。';
+        sendConsultingMessage();
+      }
+    }
+    
+    // Phase 19-QA: 追加の相談ショートカット
+    function askAboutStrategy() {
+      var input = document.getElementById('consulting-input');
+      if (input) {
+        input.value = '採択率を上げるためのポイントや加点項目の取得戦略を教えてください。うちの会社でできることはありますか？';
+        sendConsultingMessage();
+      }
+    }
+    
+    function askAboutSchedule() {
+      var input = document.getElementById('consulting-input');
+      if (input) {
+        input.value = '申請のスケジュールを教えてください。準備にどのくらいの期間が必要ですか？';
         sendConsultingMessage();
       }
     }

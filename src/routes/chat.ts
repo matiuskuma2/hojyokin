@@ -340,38 +340,49 @@ function performPrecheck(
 
 /**
  * AUTO判定ルールの評価
+ * 
+ * Phase 19-QA: JSON.parse の安全性確保、型検証強化
  */
 function evaluateAutoRule(rule: any, company: Record<string, any>): { blocked: boolean; reason: string } {
-  const params = rule.parameters ? JSON.parse(rule.parameters) : {};
+  let params: Record<string, any> = {};
+  try {
+    params = rule.parameters ? JSON.parse(rule.parameters) : {};
+  } catch (e) {
+    console.warn(`[Chat] Invalid rule parameters JSON for rule ${rule.id}:`, e);
+    return { blocked: false, reason: '' };
+  }
+  
   const category = rule.category;
   
   // 従業員数チェック
   if (category === 'employee_count' || rule.rule_text?.includes('従業員')) {
-    if (params.max && company.employee_count > params.max) {
+    const empCount = typeof company.employee_count === 'number' ? company.employee_count : 0;
+    if (typeof params.max === 'number' && empCount > params.max) {
       return { blocked: true, reason: `従業員数が上限（${params.max}人）を超えています` };
     }
-    if (params.min && company.employee_count < params.min) {
+    if (typeof params.min === 'number' && empCount < params.min) {
       return { blocked: true, reason: `従業員数が下限（${params.min}人）を下回っています` };
     }
   }
   
   // 資本金チェック
   if (category === 'capital' || rule.rule_text?.includes('資本金')) {
-    if (params.max && company.capital && company.capital > params.max) {
+    const cap = typeof company.capital === 'number' ? company.capital : null;
+    if (typeof params.max === 'number' && cap != null && cap > params.max) {
       return { blocked: true, reason: `資本金が上限（${formatCurrency(params.max)}）を超えています` };
     }
   }
   
   // 業種チェック
   if (category === 'industry' || rule.rule_text?.includes('業種')) {
-    if (params.excluded && params.excluded.includes(company.industry_major)) {
+    if (Array.isArray(params.excluded) && company.industry_major && params.excluded.includes(company.industry_major)) {
       return { blocked: true, reason: '対象外の業種です' };
     }
   }
   
   // 地域チェック
   if (category === 'region' || rule.rule_text?.includes('地域')) {
-    if (params.prefectures && !params.prefectures.includes(company.prefecture)) {
+    if (Array.isArray(params.prefectures) && company.prefecture && !params.prefectures.includes(company.prefecture)) {
       return { blocked: true, reason: '対象地域外です' };
     }
   }
@@ -381,10 +392,17 @@ function evaluateAutoRule(rule: any, company: Record<string, any>): { blocked: b
 
 /**
  * 入力タイプの判定
+ * 
+ * Phase 19-QA: デフォルトを 'text' に変更（boolean 偏重の解消）
+ * カテゴリが明示的に boolean である場合のみ boolean を返す
  */
 function determineInputType(category: string): 'boolean' | 'number' | 'text' | 'select' {
-  const booleanCategories = ['has_employees', 'past_subsidy', 'tax_arrears', 'profitable'];
-  const numberCategories = ['employee_count', 'capital', 'revenue'];
+  if (!category) return 'text';
+  
+  const booleanCategories = ['has_employees', 'past_subsidy', 'tax_arrears', 'profitable',
+    'has_certification', 'has_license', 'is_registered'];
+  const numberCategories = ['employee_count', 'capital', 'revenue', 'amount', 'count',
+    'age', 'year', 'sales', 'budget'];
   
   if (booleanCategories.some(c => category?.includes(c))) {
     return 'boolean';
@@ -392,7 +410,8 @@ function determineInputType(category: string): 'boolean' | 'number' | 'text' | '
   if (numberCategories.some(c => category?.includes(c))) {
     return 'number';
   }
-  return 'boolean'; // デフォルトはYes/No
+  // Phase 19-QA: デフォルトは text（boolean 偏重を解消）
+  return 'text';
 }
 
 /**
@@ -446,37 +465,69 @@ function generateAdditionalQuestions(
   }
   
   // ===== 2. フォールバック質問（多様化: boolean/number/text） =====
-  // 補助金固有の質問が無い場合の汎用質問
+  // Phase 19-QA: 聞き取り不足を補完
+  // 補助金申請に必要な情報を網羅的に収集するための汎用質問
   
+  // --- 事業内容（最重要: 申請書の核心） ---
+  if (!existingFacts.has('business_purpose')) {
+    questions.push({
+      key: 'business_purpose',
+      label: '今回の補助金で実施したい事業内容を簡単に教えてください。（例：新製品開発、設備導入、IT化推進など）',
+      input_type: 'text',
+      source: 'profile',
+      priority: 1
+    });
+  }
+
+  if (!existingFacts.has('investment_amount')) {
+    questions.push({
+      key: 'investment_amount',
+      label: '予定している投資額（設備費・開発費など）はおおよそいくらですか？（万円単位でお答えください）',
+      input_type: 'number',
+      source: 'profile',
+      priority: 2
+    });
+  }
+  
+  if (!existingFacts.has('current_challenge')) {
+    questions.push({
+      key: 'current_challenge',
+      label: '現在の経営課題は何ですか？（例：人手不足、生産性低下、売上減少、後継者問題など）',
+      input_type: 'text',
+      source: 'profile',
+      priority: 3
+    });
+  }
+
   // --- 基本確認（boolean） ---
+  if (!existingFacts.has('tax_arrears') && company.tax_arrears === null) {
+    questions.push({
+      key: 'tax_arrears',
+      label: '税金の滞納はありませんか？（法人税、消費税、社会保険料など）',
+      input_type: 'boolean',
+      source: 'profile',
+      priority: 4
+    });
+  }
+  
   if (!existingFacts.has('past_subsidy_same_type') && !company.past_subsidies_json) {
     questions.push({
       key: 'past_subsidy_same_type',
       label: '過去3年以内に同種の補助金を受給していますか？',
       input_type: 'boolean',
       source: 'profile',
-      priority: 1
+      priority: 5
     });
   }
-  
-  if (!existingFacts.has('tax_arrears') && company.tax_arrears === null) {
-    questions.push({
-      key: 'tax_arrears',
-      label: '税金の滞納はありませんか？',
-      input_type: 'boolean',
-      source: 'profile',
-      priority: 1
-    });
-  }
-  
+
   // --- 数値情報（number） ---
   if (!existingFacts.has('employee_count') && !company.employee_count) {
     questions.push({
       key: 'employee_count',
-      label: '現在の従業員数は何名ですか？（役員を除く）',
+      label: '現在の従業員数は何名ですか？（役員を除くパート・アルバイト含む）',
       input_type: 'number',
       source: 'profile',
-      priority: 2
+      priority: 6
     });
   }
   
@@ -486,59 +537,59 @@ function generateAdditionalQuestions(
       label: '直近1年間の年商（売上高）はいくらですか？（万円単位でお答えください）',
       input_type: 'number',
       source: 'profile',
-      priority: 3
+      priority: 7
     });
   }
-  
-  // --- 自由記述（text） ---
-  if (!existingFacts.has('business_purpose')) {
-    questions.push({
-      key: 'business_purpose',
-      label: '今回の補助金で実施したい事業内容を簡単に教えてください。',
-      input_type: 'text',
-      source: 'profile',
-      priority: 4
-    });
-  }
-  
+
+  // --- 効果・期待（text: 申請書に直結） ---
   if (!existingFacts.has('expected_effect')) {
     questions.push({
       key: 'expected_effect',
-      label: '補助金を活用することで期待する効果は何ですか？（例：生産性向上、人手不足解消、売上増加など）',
+      label: '補助金を活用することで期待する効果を具体的に教えてください。（例：売上20%増加、作業時間50%削減など、数値目標があればより良い）',
       input_type: 'text',
       source: 'profile',
-      priority: 5
+      priority: 8
     });
   }
-  
-  // --- 追加確認（boolean） ---
+
+  // --- 申請準備状況（boolean + text） ---
+  if (!existingFacts.has('has_gbiz_id')) {
+    questions.push({
+      key: 'has_gbiz_id',
+      label: 'GビズIDプライムアカウントを取得済みですか？（電子申請に必要です）',
+      input_type: 'boolean',
+      source: 'profile',
+      priority: 9
+    });
+  }
+
   if (!existingFacts.has('has_business_plan')) {
     questions.push({
       key: 'has_business_plan',
       label: '事業計画書を作成していますか？（または作成予定がありますか？）',
       input_type: 'boolean',
       source: 'profile',
-      priority: 6
+      priority: 10
     });
   }
-  
-  if (!existingFacts.has('has_gbiz_id')) {
+
+  if (!existingFacts.has('desired_timeline')) {
     questions.push({
-      key: 'has_gbiz_id',
-      label: 'GビズIDプライムアカウントを取得済みですか？',
-      input_type: 'boolean',
+      key: 'desired_timeline',
+      label: '事業の実施時期はいつ頃を予定していますか？（例：2026年4月〜9月）',
+      input_type: 'text',
       source: 'profile',
-      priority: 7
+      priority: 11
     });
   }
-  
+
   if (!existingFacts.has('is_wage_raise_planned')) {
     questions.push({
       key: 'is_wage_raise_planned',
-      label: '今後1年以内に賃上げを予定していますか？',
+      label: '今後1年以内に賃上げ（給与のベースアップ）を予定していますか？（加点項目になる可能性があります）',
       input_type: 'boolean',
       source: 'profile',
-      priority: 8
+      priority: 12
     });
   }
   
@@ -912,10 +963,20 @@ chat.post('/sessions/:id/message', async (c) => {
   try {
     const { content } = await c.req.json();
     
+    // Phase 19-QA: 入力安全性の強化
     if (!content || typeof content !== 'string') {
       return c.json<ApiResponse<null>>({
         success: false,
         error: { code: 'VALIDATION_ERROR', message: 'content is required' }
+      }, 400);
+    }
+    
+    // 文字列の正規化とサニタイズ
+    const sanitizedContent = content.trim().slice(0, 2000); // 最大2000文字
+    if (sanitizedContent.length === 0) {
+      return c.json<ApiResponse<null>>({
+        success: false,
+        error: { code: 'VALIDATION_ERROR', message: 'content must not be empty' }
       }, 400);
     }
     
@@ -957,16 +1018,44 @@ chat.post('/sessions/:id/message', async (c) => {
     await c.env.DB.prepare(`
       INSERT INTO chat_messages (id, session_id, role, content, structured_key, created_at)
       VALUES (?, ?, 'user', ?, ?, ?)
-    `).bind(userMsgId, sessionId, content, currentKey, now).run();
+    `).bind(userMsgId, sessionId, sanitizedContent, currentKey, now).run();
     
     // 回答を構造化して保存
     if (currentKey) {
-      const structuredValue = parseAnswer(content);
+      const structuredValue = parseAnswer(sanitizedContent);
+      
+      // Phase 19-QA: fact_type と metadata を含めて保存
+      // missing_items から現在の質問の型情報を取得
+      let factType = 'text';
+      let factCategory = 'general';
+      let factMetadata: Record<string, any> = {};
+      
+      try {
+        const currentMissingItems: MissingItem[] = JSON.parse(session.missing_items || '[]');
+        const currentItem = currentMissingItems.find(item => item.key === currentKey);
+        if (currentItem) {
+          factType = currentItem.input_type || 'text';
+          factCategory = currentItem.source === 'profile' ? 'profile' : 
+                        currentItem.source === 'eligibility' ? 'eligibility' : 'general';
+          factMetadata = {
+            input_type: currentItem.input_type,
+            question_label: currentItem.label,
+            raw_answer: sanitizedContent,
+            parsed_answer: structuredValue,
+          };
+        }
+      } catch { /* missing_items parse failure - non-critical */ }
       
       const factId = crypto.randomUUID();
       await c.env.DB.prepare(`
-        INSERT OR REPLACE INTO chat_facts (id, user_id, company_id, subsidy_id, fact_key, fact_value, source, session_id, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, 'chat', ?, ?, ?)
+        INSERT INTO chat_facts (id, user_id, company_id, subsidy_id, fact_key, fact_value, fact_type, fact_category, metadata, source, session_id, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'chat', ?, ?, ?)
+        ON CONFLICT(company_id, subsidy_id, fact_key) DO UPDATE SET
+          fact_value = excluded.fact_value,
+          fact_type = excluded.fact_type,
+          metadata = excluded.metadata,
+          session_id = excluded.session_id,
+          updated_at = excluded.updated_at
       `).bind(
         factId,
         user.id,
@@ -974,6 +1063,9 @@ chat.post('/sessions/:id/message', async (c) => {
         session.subsidy_id,
         currentKey,
         structuredValue,
+        factType,
+        factCategory,
+        JSON.stringify(factMetadata),
         sessionId,
         now,
         now
@@ -1014,14 +1106,34 @@ chat.post('/sessions/:id/message', async (c) => {
     const ssotResult = await getNormalizedSubsidyDetail(c.env.DB, session.subsidy_id);
     const normalized = ssotResult?.normalized || null;
     
-    // 企業情報を取得
+    // 企業情報を取得（Phase 19-QA: company_profile の全情報をAIに渡す）
     const companyInfo = await c.env.DB.prepare(`
-      SELECT c.*, cp.established_date, cp.capital as profile_capital, cp.annual_revenue as profile_revenue
+      SELECT c.*, cp.corp_type, cp.founding_year, cp.business_summary, 
+             cp.main_products, cp.main_customers, cp.competitive_advantage,
+             cp.is_profitable, cp.past_subsidies_json, cp.certifications_json,
+             cp.established_date as profile_established_date,
+             cp.capital as profile_capital, cp.annual_revenue as profile_revenue
       FROM companies c
       LEFT JOIN company_profile cp ON c.id = cp.company_id
       WHERE c.id = ?
     `).bind(session.company_id).first() as any;
     
+    // Phase 19-QA: company_profile のパース済み情報
+    let pastSubsidies: string[] = [];
+    let certifications: string[] = [];
+    try {
+      if (companyInfo?.past_subsidies_json) {
+        const parsed = JSON.parse(companyInfo.past_subsidies_json);
+        pastSubsidies = Array.isArray(parsed) ? parsed.map((s: any) => typeof s === 'string' ? s : s.name || '') : [];
+      }
+    } catch { /* ignore parse errors */ }
+    try {
+      if (companyInfo?.certifications_json) {
+        const parsed = JSON.parse(companyInfo.certifications_json);
+        certifications = Array.isArray(parsed) ? parsed.map((s: any) => typeof s === 'string' ? s : s.name || '') : [];
+      }
+    } catch { /* ignore parse errors */ }
+
     const companyContext: CompanyContext = {
       id: companyInfo?.id || session.company_id,
       name: companyInfo?.name || '不明',
@@ -1031,7 +1143,18 @@ chat.post('/sessions/:id/message', async (c) => {
       employee_count: companyInfo?.employee_count || 0,
       capital: companyInfo?.capital || companyInfo?.profile_capital,
       annual_revenue: companyInfo?.annual_revenue || companyInfo?.profile_revenue,
-      established_date: companyInfo?.established_date,
+      established_date: companyInfo?.established_date || companyInfo?.profile_established_date,
+      profile: {
+        corp_type: companyInfo?.corp_type || undefined,
+        founding_year: companyInfo?.founding_year || undefined,
+        business_summary: companyInfo?.business_summary || undefined,
+        main_products: companyInfo?.main_products || undefined,
+        main_customers: companyInfo?.main_customers || undefined,
+        competitive_advantage: companyInfo?.competitive_advantage || undefined,
+        is_profitable: companyInfo?.is_profitable != null ? Boolean(companyInfo.is_profitable) : undefined,
+        past_subsidies: pastSubsidies.length > 0 ? pastSubsidies : undefined,
+        certifications: certifications.length > 0 ? certifications : undefined,
+      },
     };
     
     // 会話履歴を取得（最新10件）
@@ -1069,7 +1192,7 @@ chat.post('/sessions/:id/message', async (c) => {
       };
       
       try {
-        const aiResponse = await generateAIResponse(c.env, ctx, content);
+        const aiResponse = await generateAIResponse(c.env, ctx, sanitizedContent);
         responseContent = aiResponse.content;
         suggestedQuestions = aiResponse.suggested_questions;
         
@@ -1125,7 +1248,7 @@ chat.post('/sessions/:id/message', async (c) => {
         };
         
         // AIにユーザー回答への反応 + 次の質問を生成させる
-        const promptForAI = `ユーザーの回答: 「${content}」
+        const promptForAI = `ユーザーの回答: 「${sanitizedContent}」
 
 この回答に対する短い反応（共感・補足）を入れてから、次の質問を自然に聴いてください。
 次の質問: 「${nextQuestion.label}」 (回答タイプ: ${nextQuestion.input_type})`;
@@ -1187,7 +1310,7 @@ chat.post('/sessions/:id/message', async (c) => {
         user_message: {
           id: userMsgId,
           role: 'user',
-          content,
+          content: sanitizedContent,
           structured_key: currentKey,
           created_at: now
         },
@@ -1217,26 +1340,47 @@ chat.post('/sessions/:id/message', async (c) => {
 
 /**
  * 回答のパース（Yes/No → true/false 等）
+ * 
+ * Phase 19-QA: コンテキスト非依存の安全なパース
+ * - 完全一致のみでboolean変換（部分一致による誤変換を防止）
+ * - 数値は明確なパターンのみ抽出
+ * - 2000文字を超える入力はトリム済み前提
  */
 function parseAnswer(content: string): string {
-  const lower = content.toLowerCase().trim();
+  const trimmed = content.trim();
+  if (trimmed.length === 0) return '';
   
-  // Yes/No判定
-  if (['はい', 'yes', 'あります', 'ある', 'できます', 'できる', 'いる', 'います', '該当', '該当します', 'true', '○'].includes(lower)) {
+  const lower = trimmed.toLowerCase();
+  
+  // Yes/No判定: 完全一致のみ（文中の「ある」「いる」を誤変換しない）
+  const truePatterns = ['はい', 'yes', 'true', '○', 'あります', 'できます', 'います', '該当します'];
+  const falsePatterns = ['いいえ', 'no', 'false', '×', 'ありません', 'できません', 'いません', '該当しません', 'ない'];
+  
+  if (truePatterns.includes(lower)) {
     return 'true';
   }
-  if (['いいえ', 'no', 'ない', 'ありません', 'できない', 'できません', 'いない', 'いません', '該当しない', '該当しません', 'false', '×'].includes(lower)) {
+  if (falsePatterns.includes(lower)) {
     return 'false';
   }
   
-  // 数値判定
-  const numMatch = content.match(/(\d+)/);
-  if (numMatch) {
-    return numMatch[1];
+  // 「わからない」系は明示的に保存
+  if (['わからない', 'わかりません', '不明', '未定'].includes(lower)) {
+    return 'unknown';
   }
   
-  // そのまま返す
-  return content;
+  // 純粋な数値（「100」「1,000」「1000万」等）
+  const numOnly = trimmed.replace(/[,，]/g, '');
+  if (/^\d+(\.\d+)?$/.test(numOnly)) {
+    return numOnly;
+  }
+  // 「1000万」「3億」等の日本語数値
+  const jpNumMatch = numOnly.match(/^(\d+(?:\.\d+)?)\s*(?:万|億|千)?(?:円)?$/);
+  if (jpNumMatch) {
+    return jpNumMatch[1];
+  }
+  
+  // そのまま返す（テキスト回答）
+  return trimmed;
 }
 
 export default chat;

@@ -2,12 +2,14 @@
  * AI コンシェルジュ - 補助金申請アドバイザー
  * 
  * Phase 19: 壁打ちチャットをAIコンシェルジュ化
+ * Phase 19-QA: 品質改善 - システムプロンプト強化・企業情報活用・電子申請分岐
  * 
  * 機能:
- * - 企業情報 + 補助金情報を踏まえた文脈的な回答生成
+ * - 企業情報(company_profile含む) + 補助金情報を踏まえた文脈的な回答生成
  * - 会話履歴を保持したマルチターン対話
  * - 構造化質問（Phase 1）+ 自由会話（Phase 2）のハイブリッド
- * - ストリーミング応答対応
+ * - 電子申請/紙申請に応じたアドバイス切り替え
+ * - フォールバック応答の高品質化
  */
 
 import type { Env } from '../types';
@@ -45,7 +47,18 @@ export interface CompanyContext {
   annual_revenue?: number;
   established_date?: string;
   /** company_profile の追加情報 */
-  profile?: Record<string, any>;
+  profile?: {
+    corp_type?: string;        // 法人格
+    founding_year?: number;    // 創業年
+    business_summary?: string; // 事業概要
+    main_products?: string;    // 主要製品・サービス
+    main_customers?: string;   // 主要顧客層
+    competitive_advantage?: string; // 強み
+    is_profitable?: boolean;   // 黒字か
+    past_subsidies?: string[];  // 過去の補助金歴
+    certifications?: string[]; // 認証
+    [key: string]: any;
+  };
 }
 
 export interface ChatMessage {
@@ -116,6 +129,11 @@ ${factsInfo || 'まだ収集した情報はありません'}
 7. 嘘やでっち上げは絶対にしない。分からないことは「確認が必要です」と伝える`;
   }
   
+  // 電子申請の注意事項
+  const electronicNote = ctx.subsidy?.electronic_application?.is_electronic_application
+    ? `\n\n## 電子申請について\nこの補助金は「${ctx.subsidy.electronic_application.portal_name || '電子申請システム'}」での申請が必要です。\n- 申請書類はシステム上で作成・提出します\n- 壁打ちでは申請前の準備（要件確認・情報整理）をサポート\n${ctx.subsidy.electronic_application.portal_url ? '- 申請先: ' + ctx.subsidy.electronic_application.portal_url : ''}`
+    : '';
+
   // Free mode (コンシェルジュ相談モード)
   return `あなたは補助金申請の専門AIコンシェルジュ「ホジョラク」です。
 
@@ -126,12 +144,13 @@ ${factsInfo || 'まだ収集した情報はありません'}
 - 申請書類の書き方のヒント
 - スケジュール管理のサポート
 - 不安や疑問への丁寧な回答
+- 加点項目の取得戦略
 
 ## 対象企業
 ${companyInfo}
 
 ## 対象補助金
-${subsidyInfo}
+${subsidyInfo}${electronicNote}
 
 ## これまでの収集情報
 ${factsInfo || 'まだ収集した情報はありません'}
@@ -144,7 +163,9 @@ ${factsInfo || 'まだ収集した情報はありません'}
 5. 回答の最後に、関連する相談ポイントや次のアクションを1-2つ提案
 6. マークダウン書式は使わない（プレーンテキスト）
 7. 嘘やでっち上げは絶対にしない。分からないことは「公式サイトで最新情報をご確認ください」と案内
-8. ユーザーに寄り添い、「一緒に進めましょう」という姿勢を忘れない`;
+8. ユーザーに寄り添い、「一緒に進めましょう」という姿勢を忘れない
+9. 企業の事業概要・強み・課題がある場合は、それを踏まえた具体的なアドバイスを行う
+10. 申請書のストーリーライン（現状→課題→取組→効果）を意識した助言を行う`;
 }
 
 function formatSubsidyInfo(s: NormalizedSubsidyDetail): string {
@@ -236,6 +257,23 @@ function formatCompanyInfo(c: CompanyContext): string {
     parts.push(`設立: ${c.established_date}`);
   }
   
+  // Phase 19-QA: company_profile の詳細情報をAIに提供
+  if (c.profile) {
+    if (c.profile.corp_type) parts.push(`法人格: ${c.profile.corp_type}`);
+    if (c.profile.founding_year) parts.push(`創業年: ${c.profile.founding_year}年`);
+    if (c.profile.business_summary) parts.push(`事業概要: ${c.profile.business_summary}`);
+    if (c.profile.main_products) parts.push(`主要製品・サービス: ${c.profile.main_products}`);
+    if (c.profile.main_customers) parts.push(`主要顧客: ${c.profile.main_customers}`);
+    if (c.profile.competitive_advantage) parts.push(`強み: ${c.profile.competitive_advantage}`);
+    if (c.profile.is_profitable != null) parts.push(`黒字: ${c.profile.is_profitable ? 'はい' : 'いいえ'}`);
+    if (c.profile.past_subsidies && c.profile.past_subsidies.length > 0) {
+      parts.push(`過去の補助金: ${c.profile.past_subsidies.join(', ')}`);
+    }
+    if (c.profile.certifications && c.profile.certifications.length > 0) {
+      parts.push(`取得認証: ${c.profile.certifications.join(', ')}`);
+    }
+  }
+  
   return parts.join('\n');
 }
 
@@ -261,6 +299,16 @@ const FACT_KEY_LABELS: Record<string, string> = {
   'has_business_plan': '事業計画書の有無',
   'has_gbiz_id': 'GビズIDプライムの取得状況',
   'is_wage_raise_planned': '賃上げ予定',
+  'is_invoice_registered': 'インボイス登録状況',
+  'capital': '資本金',
+  'founding_year': '創業年',
+  'corp_type': '法人格',
+  'has_keiei_kakushin': '経営革新計画の承認状況',
+  'has_jigyou_keizoku': '事業継続力強化計画の認定状況',
+  'investment_purpose': '投資の目的',
+  'investment_amount': '投資予定額',
+  'current_challenge': '現在の経営課題',
+  'desired_timeline': '申請希望時期',
 };
 
 // =====================================================
@@ -467,14 +515,58 @@ function generateFallbackResponse(
     };
   }
   
+  // 電子申請について
+  if (lowerMsg.match(/(電子申請|gbiz|gビズ|jgrants|ポータル|オンライン申請)/)) {
+    const ea = ctx.subsidy?.electronic_application;
+    if (ea?.is_electronic_application) {
+      return {
+        content: `この補助金は「${ea.portal_name || '電子申請システム'}」での申請が必要です。\n\n申請の流れ：\n1. GビズIDプライムアカウントを取得（未取得の場合、2〜3週間かかります）\n2. ${ea.portal_name || '電子申請システム'}にログイン\n3. 申請書類をシステム上で作成・入力\n4. 添付書類をアップロードして提出\n\n${ea.portal_url ? '申請先URL: ' + ea.portal_url + '\n\n' : ''}GビズIDの取得がまだの方は、早めの手続きをおすすめします。`,
+        suggested_questions: [
+          'GビズIDの取得方法を教えてください',
+          '添付書類はどうすればいいですか？',
+        ],
+      };
+    }
+    return {
+      content: 'この補助金の申請方法の詳細は公式サイトでご確認ください。多くの補助金では電子申請（GビズIDプライムが必要）が求められます。\n\nGビズIDの取得には2〜3週間かかるため、早めに準備を始めることをおすすめします。',
+    };
+  }
+  
+  // 加点項目について
+  if (lowerMsg.match(/(加点|ポイント|採択率|有利|審査|配点)/)) {
+    const bonus = ctx.subsidy?.content.bonus_points || [];
+    if (bonus.length > 0) {
+      const bonusTexts = bonus.slice(0, 5).map(b => `・${b.name}${b.description ? ': ' + b.description : ''}`).join('\n');
+      return {
+        content: `「${subsidyTitle}」の主な加点項目です。\n\n${bonusTexts}\n\n${companyName}様の状況に合わせて、取得可能な加点項目を確認しましょう。加点を多く取ることで採択率が大幅に向上します。`,
+        suggested_questions: ['加点項目の具体的な取得方法を教えてください'],
+      };
+    }
+    return {
+      content: '加点項目の詳細は公募要領をご確認ください。一般的に、賃上げ計画、経営革新計画の承認、DX推進などが加点対象になることが多いです。\n\n具体的な加点項目がわかれば、取得のアドバイスもできます。',
+    };
+  }
+
+  // 事業計画について
+  if (lowerMsg.match(/(事業計画|計画書|ストーリー|採択される|書き方|コツ)/)) {
+    const purpose = ctx.subsidy?.overview.purpose || '';
+    return {
+      content: `事業計画書は補助金申請の核心です。採択されるためのポイントをお伝えします。\n\n基本構成（ストーリーライン）：\n1. 現状分析: ${companyName}様の${ctx.company.industry_major}での現在の課題\n2. 課題の特定: なぜこの投資が必要なのか\n3. 取り組み内容: 補助金で何をするのか具体的に\n4. 期待効果: 数値目標（売上○%増、生産性○%向上など）\n${purpose ? '\nこの補助金の目的: ' + purpose.substring(0, 100) : ''}\n\n審査員に「この企業を支援すれば効果がある」と思わせることが重要です。具体的にどんな事業をお考えですか？`,
+      suggested_questions: [
+        '数値目標の立て方を教えてください',
+        '審査員はどこを見ていますか？',
+      ],
+    };
+  }
+
   // デフォルト応答
   return {
-    content: `ご質問ありがとうございます。「${subsidyTitle}」への申請に関して、以下のようなことをサポートできます。\n\n・申請要件の確認\n・必要書類の整理\n・申請スケジュールの管理\n・事業計画の方向性\n\n何についてお聞きになりたいですか？`,
+    content: `ご質問ありがとうございます。「${subsidyTitle}」への申請に関して、以下のようなことをサポートできます。\n\n・申請要件の確認と自社適合チェック\n・必要書類の整理と準備のコツ\n・申請スケジュールの管理\n・事業計画書の方向性と書き方\n・加点項目の取得戦略\n・電子申請の手続き\n\n何についてお聞きになりたいですか？`,
     suggested_questions: [
       'この補助金の申請要件を教えてください',
       '必要な書類は何ですか？',
-      '補助金額と補助率を教えてください',
-      '申請の流れを教えてください',
+      '採択率を上げるコツを教えてください',
+      '事業計画書の書き方を教えてください',
     ],
   };
 }
