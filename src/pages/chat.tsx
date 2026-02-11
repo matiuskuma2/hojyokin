@@ -461,9 +461,9 @@ chatPages.get('/chat', (c) => {
       }
       var fetchOptions = { method: options.method || 'GET', headers: headers };
       if (options.body) { fetchOptions.body = options.body; }
-      // AbortController でタイムアウト制御（15秒）
+      // AbortController でタイムアウト制御（30秒: AI応答生成に時間がかかるため）
       var controller = new AbortController();
-      var timeoutId = setTimeout(function() { controller.abort(); }, 15000);
+      var timeoutId = setTimeout(function() { controller.abort(); }, 30000);
       fetchOptions.signal = controller.signal;
       try {
         var res = await fetch(path, fetchOptions);
@@ -1025,14 +1025,18 @@ chatPages.get('/chat', (c) => {
     // Phase 20: SSEストリーミング受信
     async function tryStreamingResponse(content) {
       try {
+        var streamController = new AbortController();
+        var streamTimeoutId = setTimeout(function() { streamController.abort(); }, 30000);
         var response = await fetch('/api/chat/sessions/' + sessionId + '/message/stream', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
             'Authorization': 'Bearer ' + token
           },
-          body: JSON.stringify({ content: content })
+          body: JSON.stringify({ content: content }),
+          signal: streamController.signal
         });
+        clearTimeout(streamTimeoutId);
         
         // SSE非対応の場合（構造化フェーズなど）
         if (!response.ok || !response.headers.get('content-type')?.includes('text/event-stream')) {

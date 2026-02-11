@@ -1256,7 +1256,7 @@ chat.post('/sessions/:id/message', async (c) => {
       mode = 'structured';
       
       // Phase 20: バリデーション失敗時は同じ質問を再度聞く
-      let targetQuestion: MissingItem;
+      let targetQuestion: MissingItem | undefined;
       let isRetry = false;
       
       if (answerWasInvalid) {
@@ -1270,6 +1270,19 @@ chat.post('/sessions/:id/message', async (c) => {
       }
       
       const nextQuestion = targetQuestion;
+      
+      // Phase 24-fix: nextQuestion が undefined の場合の安全な処理
+      if (!nextQuestion) {
+        console.warn('[Chat] No next question available, switching to consulting mode');
+        // 質問がない場合はコンシェルジュモードに移行
+        responseContent = '基本情報の確認が完了しました。何かご不明な点があれば、お気軽にご質問ください。';
+        responseKey = null;
+        mode = 'free';
+        // セッションステータスを更新
+        await c.env.DB.prepare(`
+          UPDATE chat_sessions SET status = 'consulting', updated_at = ? WHERE id = ?
+        `).bind(now, sessionId).run();
+      } else {
       
       // AIで自然な応答を生成試行
       if (c.env.OPENAI_API_KEY) {
@@ -1346,14 +1359,15 @@ chat.post('/sessions/:id/message', async (c) => {
         } catch (aiError) {
           console.error('[Chat AI Structured] Error:', aiError);
           // AIフォールバック: 改良型応答
-          responseContent = buildFallbackStructuredResponse(sanitizedContent, nextQuestion, answeredKeys.size, remainingItems.length, isRetry, answerValidation.reason);
+          responseContent = buildFallbackStructuredResponse(sanitizedContent, nextQuestion!, answeredKeys.size, remainingItems.length, isRetry, answerValidation.reason);
         }
       } else {
         // OPENAI_API_KEYがない場合: 改良型フォールバック応答
-        responseContent = buildFallbackStructuredResponse(sanitizedContent, nextQuestion, answeredKeys.size, remainingItems.length, isRetry, answerValidation.reason);
+        responseContent = buildFallbackStructuredResponse(sanitizedContent, nextQuestion!, answeredKeys.size, remainingItems.length, isRetry, answerValidation.reason);
       }
       
       responseKey = nextQuestion.key;
+      } // end of nextQuestion exists block
     }
     
     // アシスタントメッセージを保存
@@ -1393,10 +1407,13 @@ chat.post('/sessions/:id/message', async (c) => {
     });
     
   } catch (error) {
-    console.error('Send message error:', error);
+    const errMsg = error instanceof Error ? error.message : String(error);
+    const errStack = error instanceof Error ? error.stack : '';
+    console.error('Send message error:', errMsg);
+    console.error('Send message stack:', errStack);
     return c.json<ApiResponse<null>>({
       success: false,
-      error: { code: 'INTERNAL_ERROR', message: 'Failed to send message' }
+      error: { code: 'INTERNAL_ERROR', message: 'Failed to send message: ' + errMsg.slice(0, 100) }
     }, 500);
   }
 });
@@ -1680,10 +1697,12 @@ chat.post('/sessions/:id/message/stream', async (c) => {
     });
     
   } catch (error) {
-    console.error('Stream message error:', error);
+    const errMsg = error instanceof Error ? error.message : String(error);
+    console.error('Stream message error:', errMsg);
+    console.error('Stream message stack:', error instanceof Error ? error.stack : '');
     return c.json<ApiResponse<null>>({
       success: false,
-      error: { code: 'INTERNAL_ERROR', message: 'Failed to stream message' }
+      error: { code: 'INTERNAL_ERROR', message: 'Failed to stream message: ' + errMsg.slice(0, 100) }
     }, 500);
   }
 });
