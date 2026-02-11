@@ -151,6 +151,9 @@ ${factsInfo || 'まだ収集した情報はありません'}
     ? `\n\n## 電子申請について\nこの補助金は「${ctx.subsidy.electronic_application.portal_name || '電子申請システム'}」での申請が必要です。\n- 申請書類はシステム上で作成・提出します\n- 壁打ちでは申請前の準備（要件確認・情報整理）をサポート\n${ctx.subsidy.electronic_application.portal_url ? '- 申請先: ' + ctx.subsidy.electronic_application.portal_url : ''}`
     : '';
 
+  // Phase 20: 未回答・不完全な重要項目の検出
+  const missingInfo = detectMissingCriticalInfo(ctx);
+
   // Free mode (コンシェルジュ相談モード)
   return `あなたは補助金申請の専門AIコンシェルジュ「ホジョラク」です。
 
@@ -162,6 +165,7 @@ ${factsInfo || 'まだ収集した情報はありません'}
 - スケジュール管理のサポート
 - 不安や疑問への丁寧な回答
 - 加点項目の取得戦略
+${missingInfo ? `\n## まだ確認できていない重要情報\n以下の項目はまだ具体的な回答が得られていません。会話の自然な流れの中で、さりげなく確認してください（無理に聞かないこと。関連する話題が出たときに聞くのがベスト）:\n${missingInfo}` : ''}
 
 ## 対象企業
 ${companyInfo}
@@ -327,6 +331,67 @@ const FACT_KEY_LABELS: Record<string, string> = {
   'current_challenge': '現在の経営課題',
   'desired_timeline': '申請希望時期',
 };
+
+// =====================================================
+// 未回答・不完全情報の検出
+// =====================================================
+
+/**
+ * Phase 20: 申請書作成に必要な重要情報のうち、未回答・不完全なものを検出
+ * 
+ * コンシェルジュモードのシステムプロンプトに注入し、
+ * AIが自然な会話の中で不足情報を補完できるようにする
+ */
+function detectMissingCriticalInfo(ctx: ConversationContext): string | null {
+  const facts = ctx.facts;
+  const company = ctx.company;
+  const missing: string[] = [];
+  
+  // === 最重要: 申請書の核心 ===
+  if (!facts['business_purpose'] && !company.profile?.business_summary) {
+    missing.push('- 補助金で実施したい事業内容（具体的な計画）');
+  }
+  if (!facts['investment_amount']) {
+    missing.push('- 投資予定額（設備費・開発費など、おおよその金額）');
+  }
+  if (!facts['expected_effect']) {
+    missing.push('- 期待する効果（売上増加、コスト削減などの数値目標）');
+  }
+  if (!facts['current_challenge'] && !company.profile?.competitive_advantage) {
+    missing.push('- 現在の経営課題（なぜこの投資が必要か）');
+  }
+  
+  // === 重要: 申請要件の確認 ===
+  if (!facts['tax_arrears']) {
+    missing.push('- 税金の滞納がないか');
+  }
+  if (!facts['has_gbiz_id'] && ctx.subsidy?.electronic_application?.is_electronic_application) {
+    missing.push('- GビズIDプライムの取得状況（電子申請に必須）');
+  }
+  
+  // === 中重要: 加点・戦略 ===
+  if (!facts['desired_timeline']) {
+    missing.push('- 事業の実施スケジュール');
+  }
+  if (!facts['has_business_plan']) {
+    missing.push('- 事業計画書の作成状況');
+  }
+  
+  // 「unknown」のfactも不完全とみなす
+  for (const [key, value] of Object.entries(facts)) {
+    if (value === 'unknown') {
+      const label = FACT_KEY_LABELS[key];
+      if (label) {
+        missing.push(`- ${label}（前回「わからない」とのことでしたが、確認できましたか？）`);
+      }
+    }
+  }
+  
+  if (missing.length === 0) return null;
+  
+  // 最大5件に制限（プロンプトが長くなりすぎないように）
+  return missing.slice(0, 5).join('\n');
+}
 
 // =====================================================
 // AI回答生成（OpenAI互換API呼び出し）
