@@ -739,7 +739,15 @@ chatPages.get('/chat', (c) => {
         // 進捗バー初期化
         if (precheck && precheck.missing_items) {
           totalQuestions = precheck.missing_items.length;
-          updateProgress(0, totalQuestions);
+          // 復元時: ユーザーの回答数から進捗を計算
+          var userMsgCount = 0;
+          if (messages && messages.length > 0) {
+            for (var mi = 0; mi < messages.length; mi++) {
+              if (messages[mi].role === 'user') userMsgCount++;
+            }
+          }
+          answeredQuestions = Math.min(userMsgCount, totalQuestions);
+          updateProgress(answeredQuestions, totalQuestions);
         }
         
         // 事前判定結果の表示

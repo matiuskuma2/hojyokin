@@ -630,23 +630,38 @@ chat.post('/sessions', async (c) => {
       }, 400);
     }
     
-    // 既存のアクティブセッションをチェック
+    // 既存のアクティブセッションをチェック（collecting または consulting）
     const existingSession = await c.env.DB.prepare(`
-      SELECT * FROM chat_sessions
-      WHERE company_id = ? AND subsidy_id = ? AND status = 'collecting'
+      SELECT cs.*, sc.title as subsidy_title FROM chat_sessions cs
+      LEFT JOIN subsidy_cache sc ON cs.subsidy_id = sc.id
+      WHERE cs.company_id = ? AND cs.subsidy_id = ? AND cs.status IN ('collecting', 'consulting', 'completed')
+      ORDER BY cs.updated_at DESC
+      LIMIT 1
     `).bind(targetCompanyId, subsidy_id).first();
     
     if (existingSession) {
-      // 既存セッションを返す
+      // 既存セッションを返す（全メッセージ + precheck情報付き）
       const messages = await c.env.DB.prepare(`
         SELECT * FROM chat_messages WHERE session_id = ? ORDER BY created_at ASC
       `).bind((existingSession as any).id).all();
+      
+      // precheck情報を再構築（復元用）
+      let missingItems: MissingItem[] = [];
+      try {
+        missingItems = JSON.parse((existingSession as any).missing_items || '[]');
+      } catch { }
       
       return c.json<ApiResponse<any>>({
         success: true,
         data: {
           session: existingSession,
           messages: messages.results || [],
+          precheck: {
+            status: 'OK_WITH_MISSING',
+            eligible: true,
+            blocked_reasons: [],
+            missing_items: missingItems,
+          },
           is_new: false
         }
       });
@@ -929,11 +944,23 @@ chat.get('/sessions/:id', async (c) => {
       SELECT * FROM chat_messages WHERE session_id = ? ORDER BY created_at ASC
     `).bind(sessionId).all();
     
+    // precheck情報を再構築（復元用）
+    let missingItems: MissingItem[] = [];
+    try {
+      missingItems = JSON.parse((session as any).missing_items || '[]');
+    } catch { }
+    
     return c.json<ApiResponse<any>>({
       success: true,
       data: {
         session,
-        messages: messages.results || []
+        messages: messages.results || [],
+        precheck: {
+          status: 'OK_WITH_MISSING',
+          eligible: true,
+          blocked_reasons: [],
+          missing_items: missingItems,
+        },
       }
     });
     

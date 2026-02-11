@@ -427,7 +427,7 @@ export async function generateAIResponse(
         'Authorization': `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
-        model: 'gpt-4o-mini',
+        model: 'gpt-5',
         messages,
         temperature: 0.7,
         max_tokens: 1000,
@@ -491,7 +491,7 @@ export async function generateAIResponseStream(
         'Authorization': `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
-        model: 'gpt-4o-mini',
+        model: 'gpt-5',
         messages,
         temperature: 0.7,
         max_tokens: 1000,
