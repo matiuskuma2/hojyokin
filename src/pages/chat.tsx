@@ -449,7 +449,7 @@ chatPages.get('/chat', (c) => {
       window.location.href = '/login';
     }
     
-    // グローバルAPI呼び出しヘルパー
+    // グローバルAPI呼び出しヘルパー（15秒タイムアウト付き）
     window.api = async function(path, options) {
       options = options || {};
       var headers = {
@@ -461,8 +461,13 @@ chatPages.get('/chat', (c) => {
       }
       var fetchOptions = { method: options.method || 'GET', headers: headers };
       if (options.body) { fetchOptions.body = options.body; }
+      // AbortController でタイムアウト制御（15秒）
+      var controller = new AbortController();
+      var timeoutId = setTimeout(function() { controller.abort(); }, 15000);
+      fetchOptions.signal = controller.signal;
       try {
         var res = await fetch(path, fetchOptions);
+        clearTimeout(timeoutId);
         var data = await res.json();
         if (res.status === 401 || (data && data.error && data.error.code === 'UNAUTHORIZED')) {
           localStorage.removeItem('token');
@@ -473,6 +478,11 @@ chatPages.get('/chat', (c) => {
         }
         return data;
       } catch (err) {
+        clearTimeout(timeoutId);
+        if (err.name === 'AbortError') {
+          console.error('API呼び出しタイムアウト:', path);
+          return { success: false, error: { code: 'TIMEOUT', message: 'サーバーへの接続がタイムアウトしました。しばらくしてから再度お試しください。' } };
+        }
         console.error('API呼び出しエラー:', err);
         return { success: false, error: { code: 'NETWORK_ERROR', message: '通信エラーが発生しました' } };
       }
@@ -958,7 +968,7 @@ chatPages.get('/chat', (c) => {
       document.getElementById('session-status').className = 'text-xs px-2 py-1 rounded-full bg-indigo-100 text-indigo-700';
       
       // コンシェルジュ歓迎メッセージ
-      addMessage('assistant', '基本情報の確認が完了しました！ここからはAIコンシェルジュとして、補助金申請に関するあらゆるご相談にお応えします。\n\n例えば：\n・申請要件の詳しい解説\n・事業計画の方向性と書き方のコツ\n・必要書類の準備のポイント\n・採択率を上げるための加点項目の取得戦略\n・申請スケジュールの管理\n\n何でもお気軽にお聞きください。一緒に申請の準備を進めましょう！');
+      addMessage('assistant', '基本情報の確認が完了しました！ここからはAIコンシェルジュとして、補助金申請に関するあらゆるご相談にお応えします。' + '\\n\\n例えば：\\n・申請要件の詳しい解説\\n・事業計画の方向性と書き方のコツ\\n・必要書類の準備のポイント\\n・採択率を上げるための加点項目の取得戦略\\n・申請スケジュールの管理\\n\\n何でもお気軽にお聞きください。一緒に申請の準備を進めましょう！');
       
       // フォーカス
       var input = document.getElementById('consulting-input');
@@ -1098,7 +1108,7 @@ chatPages.get('/chat', (c) => {
       var container = document.getElementById('suggested-questions');
       container.classList.remove('hidden');
       container.innerHTML = questions.map(function(q) {
-        return '<button onclick="askSuggested(\'' + escapeHtml(q).replace(/'/g, "\\'") + '\')" ' +
+        return '<button onclick="askSuggested(' + "'" + escapeHtml(q).replace(/'/g, "&apos;") + "'" + ')" ' +
           'class="text-xs px-3 py-1.5 bg-indigo-50 text-indigo-700 rounded-full hover:bg-indigo-100 truncate max-w-xs">' +
           '<i class="fas fa-lightbulb mr-1"></i>' + escapeHtml(q.substring(0, 40)) + (q.length > 40 ? '...' : '') +
           '</button>';
