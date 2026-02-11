@@ -2084,7 +2084,23 @@ chat.post('/sessions/:id/upload', async (c) => {
 
 chat.get('/documents/:companyId', async (c) => {
   const user = c.get('user')!;
+  const company = c.get('company');
   const companyId = c.req.param('companyId');
+  
+  // 認可チェック: ユーザーが所属する会社の書類のみアクセス可能
+  if (!company || company.id !== companyId) {
+    // ミドルウェアで取得した company と不一致 → 追加検証
+    const membership = await c.env.DB.prepare(`
+      SELECT 1 FROM user_companies WHERE user_id = ? AND company_id = ?
+    `).bind(user.id, companyId).first();
+    
+    if (!membership) {
+      return c.json<ApiResponse<null>>({
+        success: false,
+        error: { code: 'FORBIDDEN', message: 'この企業の書類へのアクセス権がありません' }
+      }, 403);
+    }
+  }
   
   try {
     const docs = await c.env.DB.prepare(`

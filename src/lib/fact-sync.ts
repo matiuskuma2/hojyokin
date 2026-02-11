@@ -13,6 +13,61 @@
 /**
  * fact_key → company_profile カラムのマッピング
  */
+/**
+ * 金額文字列を円単位に正規化
+ * 
+ * 壁打ちチャットでの回答パターン:
+ * - "5000" → 万円入力と推定: 5000万円 = 50,000,000
+ * - "5000万" → 5000万円 = 50,000,000
+ * - "3億" → 3億円 = 300,000,000
+ * - "50000000" → 5000万（既に円単位、1,000,000以上はそのまま）
+ * 
+ * 判定ロジック:
+ * - 「億」を含む → 億円換算
+ * - 「万」を含む → 万円換算
+ * - 数値のみで 1,000,000 以上 → 既に円単位とみなす
+ * - 数値のみで 1,000,000 未満 → 万円入力と推定して変換
+ * 
+ * // TODO: 要確認 — AIコンシェルジュが fact_value に保存する形式に依存。
+ * 現在は構造化質問で数値入力を促しているため、数値文字列が主。
+ * 自由入力で「3億5000万」のような複合表現は未対応。
+ */
+function parseMoneyToYen(v: string): number | null {
+  if (!v || v.trim() === '') return null;
+  
+  const cleaned = v.replace(/[,、\s]/g, '');
+  
+  // 「億」が含まれる場合
+  const okuMatch = cleaned.match(/([\d.]+)\s*億/);
+  if (okuMatch) {
+    const oku = parseFloat(okuMatch[1]);
+    if (isNaN(oku)) return null;
+    // 「億」の後に「万」がある場合（例: "3億5000万"）
+    const manAfterOku = cleaned.match(/億.*?([\d.]+)\s*万/);
+    const manPart = manAfterOku ? parseFloat(manAfterOku[1]) * 10000 : 0;
+    return oku * 100000000 + manPart;
+  }
+  
+  // 「万」が含まれる場合
+  const manMatch = cleaned.match(/([\d.]+)\s*万/);
+  if (manMatch) {
+    const man = parseFloat(manMatch[1]);
+    if (isNaN(man)) return null;
+    return man * 10000;
+  }
+  
+  // 数値のみ
+  const num = parseFloat(cleaned);
+  if (isNaN(num)) return null;
+  
+  // 1,000,000（100万）以上はすでに円単位と見なす
+  // 1,000,000 未満は万円入力と推定
+  if (num >= 1000000) {
+    return num;
+  }
+  return num * 10000;
+}
+
 const FACT_TO_PROFILE_MAP: Record<string, {
   table: 'company_profile' | 'companies';
   column: string;
@@ -30,22 +85,13 @@ const FACT_TO_PROFILE_MAP: Record<string, {
     table: 'companies',
     column: 'annual_revenue',
     type: 'number',
-    transform: (v) => {
-      const num = parseFloat(v);
-      if (isNaN(num)) return null;
-      // 万円単位で入力された場合を考慮
-      return num >= 100 ? num * 10000 : num;
-    },
+    transform: (v) => parseMoneyToYen(v),
   },
   'capital': {
     table: 'companies',
     column: 'capital',
     type: 'number',
-    transform: (v) => {
-      const num = parseFloat(v);
-      if (isNaN(num)) return null;
-      return num >= 100 ? num * 10000 : num;
-    },
+    transform: (v) => parseMoneyToYen(v),
   },
   
   // === company_profile テーブル ===
@@ -221,10 +267,11 @@ export async function syncFactsToProfile(
           WHERE company_id = ?
         `).bind(...values, companyId).run();
       } else {
-        // INSERT
-        const columns = ['company_id', ...Object.keys(profileUpdates)];
+        // INSERT（created_at, updated_at を含める）
+        const columns = ['company_id', ...Object.keys(profileUpdates), 'created_at', 'updated_at'];
         const placeholders = columns.map(() => '?').join(', ');
-        const values = [companyId, ...Object.values(profileUpdates)];
+        const now = new Date().toISOString();
+        const values = [companyId, ...Object.values(profileUpdates), now, now];
         
         await db.prepare(`
           INSERT INTO company_profile (${columns.join(', ')})
