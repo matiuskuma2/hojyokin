@@ -1802,9 +1802,11 @@ subsidyPages.get('/subsidies', (c) => {
         // 現在は選択されたフィルターをログに出力（実際のフィルタリングは検索APIパラメータで行う）
         console.log('Applied filters:', selectedFilters);
         
-        // TODO: 検索APIにフィルターパラメータを渡す
-        // 現在のJグランツAPIは詳細フィルターをサポートしていないため、
-        // 将来的にsource_registry等から取得するデータに対してフィルタリングを行う
+        // TODO: 要確認 - 検索APIにフィルターパラメータを渡す
+        // 現在のJグランツAPIは詳細フィルター（発行機関・業種カテゴリ等）をサポートしていない。
+        // 方式案: (1) サーバー側でフィルタ後にページング, (2) 全件取得→クライアント側フィルタ
+        // 受け入れ基準: 基本フィルター(issuer/region/category)が検索結果に反映されること
+        // テストケース: 発行機関＝東京都 → 東京都の補助金のみ表示
         
         // フィルターパネルを閉じる
         const panel = document.getElementById('advanced-filter-panel');

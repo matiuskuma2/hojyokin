@@ -5,6 +5,13 @@
  * Freeze-MATCH-2: missing_fields を出力に追加
  * 
  * 企業情報と補助金データを比較し、マッチ度・リスク・判定を算出
+ * 
+ * // TODO: 要確認 - 業種別の従業員数上限（製造業20人 vs 商業5人）の小規模事業者判定
+ * //   現在は一律20人で判定。中小企業基本法の定義に合わせる必要あり。
+ * //   受け入れ基準: 業種コード→上限マッピングテーブルの追加、テストケース5件以上
+ * // TODO: 要確認 - 資本金チェックの業種別上限（製造3億、卸売1億、サービス5千万、小売5千万）
+ * //   現在は一律3億円で判定。業種別に分岐する必要あり。
+ * //   受け入れ基準: CAPITAL_LIMITS定数テーブル追加、業種マッチング関数の更新
  */
 
 import type {
@@ -387,6 +394,9 @@ function checkEmployeeMatchV2(company: CompanySSOT, subsidy: NormalizedSubsidyDe
     const ruleText = rule.rule_text || '';
     
     // 「小規模」「中小企業」などのキーワードマッチング
+    // TODO: 要確認 - 小規模事業者の従業員上限は業種により異なる（製造業等20人、商業・サービス業5人）
+    //   中小企業基本法に準拠した判定が必要。現在は一律の簡易判定。
+    //   テストケース: 製造業15人→OK, サービス業8人→NG(小規模), 製造業25人→NG(小規模)
     if (ruleText.includes('小規模') && employeeCount > 20) {
       isMatch = false;
     } else if (ruleText.includes('中小') && employeeCount > 300) {
@@ -545,6 +555,9 @@ function checkCapitalV2(company: CompanySSOT, subsidy: NormalizedSubsidyDetail):
   }
 
   // 簡易中小企業判定（資本金3億円以下）
+  // TODO: 要確認 - 業種別の資本金上限: 製造業等3億、卸売業1億、サービス業5千万、小売業5千万
+  //   中小企業基本法に準拠した判定が必要。industry_major との組み合わせで分岐。
+  //   テストケース: 製造業2億→OK, 卸売業1.5億→NG, サービス業4千万→OK
   const isSme = company.capital <= 300000000;
 
   return {

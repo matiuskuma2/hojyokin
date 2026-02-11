@@ -7,6 +7,13 @@
  * - DB detail_json（生） / API型 / フロント参照名 のズレを根絶
  * - 5制度のマッピングを一元化
  * - 推測禁止: wall_chat.questions の input_type 推測は禁止（未定義は text 固定）
+ * 
+ * // TODO: 要確認 - detail_jsonにキーが存在しないケースのデフォルト値ポリシー
+ *   例: eligible_expenses が未定義の場合に空配列vs null のどちらが正しいか。
+ *   受け入れ基準: 全フィールドのデフォルト値ルールをFreezeドキュメントに追記
+ * // TODO: 要確認 - subsidy_rate_text の正規化ルール
+ *   "1/2", "2/3以内", "50%", "定額"など表記ゆれが大きい。
+ *   受け入れ基準: rate_textのパースルールを定義し、数値比較可能にする（Phase 25候補）
  */
 
 import type { ResolveSubsidyRefResult, SourceLink, SourceType } from './resolveSubsidyRef';

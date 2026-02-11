@@ -36,7 +36,12 @@ subsidies.use('/*', requireAuth);
 // キャッシュ設定（同接1000対応）
 // ============================================================
 // TODO: 要確認 - キャッシュTTLの妥当性。データ更新頻度に応じて調整が必要
+//   JGrants APIの更新頻度は日次（深夜バッチ）。TTL 120秒は検索体験優先の設定。
+//   受け入れ基準: JGrants更新サイクルをヒアリングし、TTLを120〜300秒の範囲で確定
+//   リスク: 締切直前データが古い可能性。acceptance_end_datetime が今日〜3日後の場合は短TTL推奨
 // TODO: 要確認 - キャッシュ無効化戦略（補助金データ更新時のキャッシュバスト）
+//   受け入れ基準: admin-opsのSSOT更新処理にcache.delete呼び出しを追加、テストケース実装
+//   方式案: (1) TTL自然失効, (2) SSOT更新時にpurge API呼び出し, (3) バージョンタグ付きキー
 const SEARCH_CACHE_TTL = 120; // 2分（検索結果キャッシュ）
 
 /**
@@ -124,6 +129,8 @@ subsidies.get('/search', requireCompanyAccess(), async (c) => {
     
     // P0-2-1: debug パラメータ（super_adminのみ有効）
     // TODO: 要確認 - debugパラメータのCSRFトークンバリデーション
+    //   受け入れ基準: super_admin以外がdebug=1を使った場合に400を返す（現在は暗黙に無視）
+    //   テストケース: 一般ユーザーがdebug=1→結果に影響なし、super_adminがdebug=1→allowUnready=true
     const debug = c.req.query('debug') === '1';
     const noCache = c.req.query('no_cache') === '1';
     const user = getCurrentUser(c);
@@ -309,6 +316,7 @@ subsidies.get('/search', requireCompanyAccess(), async (c) => {
     
     // === usage_events に検索イベントを必ず記録 ===
     // user は上で既に取得済み（P0-2-1 debug用）
+    const totalSearchTime = Date.now() - searchStartTime;
     const eventId = uuidv4();
     try {
       await db.prepare(`
@@ -323,12 +331,19 @@ subsidies.get('/search', requireCompanyAccess(), async (c) => {
         JSON.stringify({
           keyword: keyword || null,
           acceptance,
+          prefecture: prefecture || null,
           results_count: sortedResults.length,
           total_count: totalCount,
           source,
           proceed_count: sortedResults.filter(r => r.evaluation.status === 'PROCEED').length,
           caution_count: sortedResults.filter(r => r.evaluation.status === 'CAUTION').length,
           no_count: sortedResults.filter(r => r.evaluation.status === 'DO_NOT_PROCEED').length,
+          // KPI: パフォーマンス計測 (P50/P95/P99 算出用)
+          perf_ms: {
+            total: totalSearchTime,
+            search_and_ssot: parallelTime,
+            nsd_normalize: nsdTime,
+          },
         })
       ).run();
     } catch (eventError) {
@@ -386,6 +401,8 @@ subsidies.get('/search', requireCompanyAccess(), async (c) => {
         has_more: offset + limit < totalCount,
         source, // データソース（live / mock / cache）
         gate: searchResponse.gate || 'searchable-only', // P0-2-1: 品質ゲート
+        // KPI計測用: 応答時間をフロントに返す（ユーザー体感把握用）
+        perf_total_ms: totalSearchTime,
       },
     };
     
@@ -708,15 +725,17 @@ subsidies.get('/:subsidy_id', async (c) => {
       }, error.statusCode >= 500 ? 502 : 400);
     }
     
-    // TODO: 要確認 - 本番環境ではdebug_message/debug_stackを削除すること（情報漏洩リスク）
-    // セキュリティ: スタックトレースの外部露出は攻撃ベクトルになりうる
+    // SEC-1: 本番環境ではdebug情報を返さない（情報漏洩防止）
+    const isProduction = (c.env as any).ENVIRONMENT === 'production' || (c.env as any).JGRANTS_MODE === 'cached-only';
     return c.json<ApiResponse<null>>({
       success: false,
       error: {
         code: 'INTERNAL_ERROR',
         message: 'Failed to get subsidy detail',
-        debug_message: errorMessage,
-        debug_stack: errorStack?.split('\n').slice(0, 5).join(' | '),
+        ...(isProduction ? {} : {
+          debug_message: errorMessage,
+          debug_stack: errorStack?.split('\n').slice(0, 5).join(' | '),
+        }),
       },
     }, 500);
   }

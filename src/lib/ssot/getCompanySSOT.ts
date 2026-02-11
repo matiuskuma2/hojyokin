@@ -5,6 +5,14 @@
  * 
  * companies + company_profile + chat_facts を統合した読み取り専用ビュー
  * screening.ts はこれのみを参照する
+ * 
+ * // TODO: 要確認 - employee_band を employee_count から自動計算する仕組み
+ *   現在 employee_band は companies テーブルから読み取りのみ。
+ *   employee_count が設定されていれば employee_band を自動導出すべき。
+ *   受け入れ基準: employee_count→employee_band変換関数の追加、テスト5件
+ * // TODO: 要確認 - certifications/past_subsidies のJSON形式バリデーション
+ *   safeJsonParseArray は壊れたJSONに対してnull許容だが、ユーザーに修正を促す仕組みがない。
+ *   受け入れ基準: パースエラー時にmissing_fieldsにバリデーションエラーとして追加
  */
 
 import type { D1Database } from '@cloudflare/workers-types';
