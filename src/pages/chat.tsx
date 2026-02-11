@@ -1000,24 +1000,19 @@ chatPages.get('/chat', (c) => {
       document.getElementById('typing-indicator').classList.remove('hidden');
       
       try {
-        // Phase 20: SSEストリーミングを試行
-        var streamSuccess = await tryStreamingResponse(content);
+        // 通常のJSON APIでメッセージ送信（SSEストリーミングは日本語破損のため無効化）
+        var res = await api('/api/chat/sessions/' + sessionId + '/message', {
+          method: 'POST',
+          body: JSON.stringify({ content: content })
+        });
         
-        if (!streamSuccess) {
-          // フォールバック: 通常のJSON API
-          var res = await api('/api/chat/sessions/' + sessionId + '/message', {
-            method: 'POST',
-            body: JSON.stringify({ content: content })
-          });
-          
-          if (!res.success) throw new Error(res.error?.message || 'メッセージ送信に失敗しました');
-          
-          document.getElementById('typing-indicator').classList.add('hidden');
-          addMessage('assistant', res.data.assistant_message.content);
-          
-          if (res.data.suggested_questions && res.data.suggested_questions.length > 0) {
-            showSuggestedQuestions(res.data.suggested_questions);
-          }
+        if (!res.success) throw new Error(res.error?.message || 'メッセージ送信に失敗しました');
+        
+        document.getElementById('typing-indicator').classList.add('hidden');
+        addMessage('assistant', res.data.assistant_message.content);
+        
+        if (res.data.suggested_questions && res.data.suggested_questions.length > 0) {
+          showSuggestedQuestions(res.data.suggested_questions);
         }
         
       } catch (error) {
