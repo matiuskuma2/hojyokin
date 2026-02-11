@@ -26,6 +26,7 @@ import {
   type ChatMessage as AIChatMessage,
   type CompanyContext,
 } from '../lib/ai-concierge';
+import { syncFactsToProfile } from '../lib/fact-sync';
 
 const chat = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -1194,6 +1195,18 @@ chat.post('/sessions/:id/message', async (c) => {
         await c.env.DB.prepare(`
           UPDATE chat_sessions SET status = 'consulting', updated_at = ? WHERE id = ?
         `).bind(now, sessionId).run();
+        
+        // Phase 20: chat_facts → company_profile 自動反映
+        try {
+          const syncResult = await syncFactsToProfile(c.env.DB, session.company_id, session.subsidy_id);
+          console.log(`[Chat] Facts synced to profile: ${syncResult.synced} items, ${syncResult.errors.length} errors`);
+          if (syncResult.errors.length > 0) {
+            console.warn('[Chat] Sync errors:', syncResult.errors);
+          }
+        } catch (syncError) {
+          console.error('[Chat] Facts sync failed:', syncError);
+          // 同期失敗はクリティカルではないので続行
+        }
       }
       
       const ctx: ConversationContext = {
