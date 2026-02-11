@@ -518,7 +518,8 @@ agencyPages.get('/agency', (c) => {
         const config = {
           'PROCEED': { bg: 'bg-green-100', text: 'text-green-800', border: 'border-green-500', icon: 'fa-check-circle', label: '推奨' },
           'CAUTION': { bg: 'bg-yellow-100', text: 'text-yellow-800', border: 'border-yellow-500', icon: 'fa-exclamation-triangle', label: '注意' },
-          'NO': { bg: 'bg-red-100', text: 'text-red-800', border: 'border-red-500', icon: 'fa-times-circle', label: '非推奨' }
+          'NO': { bg: 'bg-red-100', text: 'text-red-800', border: 'border-red-500', icon: 'fa-times-circle', label: '非推奨' },
+          'DO_NOT_PROCEED': { bg: 'bg-red-100', text: 'text-red-800', border: 'border-red-500', icon: 'fa-times-circle', label: '非推奨' }
         };
         const c = config[status] || config['CAUTION'];
         return '<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ' + c.bg + ' ' + c.text + '"><i class="fas ' + c.icon + ' mr-1"></i>' + c.label + (score ? ' ' + score + '%' : '') + '</span>';

@@ -139,8 +139,13 @@ export async function getCompanySSOT(
   companyId: string,
   subsidyId?: string
 ): Promise<CompanySSOT | null> {
-  // 1. companies テーブルから基本情報を取得
-  const company = await db
+  // ============================================================
+  // P2-2: 3つのDBクエリを並列実行（パフォーマンス改善）
+  // companies + company_profile + chat_facts を同時に取得
+  // ============================================================
+  
+  // 1. companies テーブルクエリ
+  const companyPromise = db
     .prepare(`
       SELECT 
         id, name, postal_code, prefecture, city,
@@ -165,12 +170,8 @@ export async function getCompanySSOT(
       annual_revenue: number | null;
     }>();
   
-  if (!company) {
-    return null;
-  }
-  
-  // 2. company_profile テーブルから詳細情報を取得
-  const profile = await db
+  // 2. company_profile テーブルクエリ
+  const profilePromise = db
     .prepare(`
       SELECT 
         corp_number, corp_type, founding_year, founding_month,
@@ -199,20 +200,8 @@ export async function getCompanySSOT(
       main_customers: string | null;
     }>();
   
-  // ============================================================
-  // 3. chat_facts テーブルからファクト情報を取得
-  // 
+  // 3. chat_facts テーブルクエリ
   // Freeze-Company-SSOT-1: chat_facts 集約ルール凍結
-  // 
-  // 集約ルール:
-  //   1. ORDER BY updated_at DESC で最新順にソート
-  //   2. 同じ fact_key がある場合は最初の（最新の）値を採用
-  //   3. subsidyId 指定時: subsidy_id = ? OR subsidy_id IS NULL を対象
-  //      → 補助金固有の回答 > 全般的回答の優先順
-  //   4. subsidyId 未指定時: subsidy_id IS NULL のみを対象
-  //
-  // 再現性: 同じ companyId + subsidyId で呼び出せば同じ結果
-  // ============================================================
   const factsQuery = subsidyId
     ? `SELECT fact_key, fact_value, updated_at FROM chat_facts 
        WHERE company_id = ? AND (subsidy_id = ? OR subsidy_id IS NULL)
@@ -223,9 +212,20 @@ export async function getCompanySSOT(
        WHERE company_id = ? AND subsidy_id IS NULL
        ORDER BY updated_at DESC`;
   
-  const factsResult = subsidyId
-    ? await db.prepare(factsQuery).bind(companyId, subsidyId, subsidyId).all<ChatFact>()
-    : await db.prepare(factsQuery).bind(companyId).all<ChatFact>();
+  const factsPromise = subsidyId
+    ? db.prepare(factsQuery).bind(companyId, subsidyId, subsidyId).all<ChatFact>()
+    : db.prepare(factsQuery).bind(companyId).all<ChatFact>();
+  
+  // 全クエリを並列実行
+  const [company, profile, factsResult] = await Promise.all([
+    companyPromise,
+    profilePromise,
+    factsPromise,
+  ]);
+  
+  if (!company) {
+    return null;
+  }
   
   // Freeze-Company-SSOT-1: 同じキーは最初の（優先度が高い）ものを採用
   const factsMap = new Map<string, string>();

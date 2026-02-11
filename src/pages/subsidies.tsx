@@ -252,7 +252,7 @@ subsidyPages.get('/subsidies', (c) => {
     
     <!-- 検索・フィルターパネル -->
     <div class="bg-white rounded-lg shadow p-6 mb-6">
-      <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+      <div class="grid grid-cols-1 md:grid-cols-5 gap-4">
         <!-- 会社選択 -->
         <div>
           <label class="block text-sm font-medium text-gray-700 mb-1">対象会社</label>
@@ -264,8 +264,65 @@ subsidyPages.get('/subsidies', (c) => {
         <!-- キーワード -->
         <div>
           <label class="block text-sm font-medium text-gray-700 mb-1">キーワード</label>
-          <input type="text" id="keyword" placeholder="例: IT導入、省エネ、人材育成" 
+          <input type="text" id="keyword" placeholder="例: IT導入 省エネ（複数語AND）" 
                  class="w-full px-3 py-2 border rounded-md focus:ring-2 focus:ring-green-500">
+          <p class="text-xs text-gray-400 mt-0.5">スペース区切りで絞り込み</p>
+        </div>
+        
+        <!-- 都道府県フィルター（復活・強化） -->
+        <div>
+          <label class="block text-sm font-medium text-gray-700 mb-1">対象地域</label>
+          <select id="prefecture-filter" class="w-full px-3 py-2 border rounded-md focus:ring-2 focus:ring-green-500">
+            <option value="">会社所在地（自動）</option>
+            <option value="全国">全国（国の補助金）</option>
+            <option value="北海道">北海道</option>
+            <option value="青森県">青森県</option>
+            <option value="岩手県">岩手県</option>
+            <option value="宮城県">宮城県</option>
+            <option value="秋田県">秋田県</option>
+            <option value="山形県">山形県</option>
+            <option value="福島県">福島県</option>
+            <option value="茨城県">茨城県</option>
+            <option value="栃木県">栃木県</option>
+            <option value="群馬県">群馬県</option>
+            <option value="埼玉県">埼玉県</option>
+            <option value="千葉県">千葉県</option>
+            <option value="東京都">東京都</option>
+            <option value="神奈川県">神奈川県</option>
+            <option value="新潟県">新潟県</option>
+            <option value="富山県">富山県</option>
+            <option value="石川県">石川県</option>
+            <option value="福井県">福井県</option>
+            <option value="山梨県">山梨県</option>
+            <option value="長野県">長野県</option>
+            <option value="岐阜県">岐阜県</option>
+            <option value="静岡県">静岡県</option>
+            <option value="愛知県">愛知県</option>
+            <option value="三重県">三重県</option>
+            <option value="滋賀県">滋賀県</option>
+            <option value="京都府">京都府</option>
+            <option value="大阪府">大阪府</option>
+            <option value="兵庫県">兵庫県</option>
+            <option value="奈良県">奈良県</option>
+            <option value="和歌山県">和歌山県</option>
+            <option value="鳥取県">鳥取県</option>
+            <option value="島根県">島根県</option>
+            <option value="岡山県">岡山県</option>
+            <option value="広島県">広島県</option>
+            <option value="山口県">山口県</option>
+            <option value="徳島県">徳島県</option>
+            <option value="香川県">香川県</option>
+            <option value="愛媛県">愛媛県</option>
+            <option value="高知県">高知県</option>
+            <option value="福岡県">福岡県</option>
+            <option value="佐賀県">佐賀県</option>
+            <option value="長崎県">長崎県</option>
+            <option value="熊本県">熊本県</option>
+            <option value="大分県">大分県</option>
+            <option value="宮崎県">宮崎県</option>
+            <option value="鹿児島県">鹿児島県</option>
+            <option value="沖縄県">沖縄県</option>
+          </select>
         </div>
         
         <!-- 受付状況 -->
@@ -363,7 +420,7 @@ subsidyPages.get('/subsidies', (c) => {
                   <option value="">すべて</option>
                   <option value="PROCEED">推奨（PROCEED）</option>
                   <option value="CAUTION">注意（CAUTION）</option>
-                  <option value="NO">非推奨（NO）</option>
+                  <option value="DO_NOT_PROCEED">非推奨</option>
                 </select>
               </div>
               <div>
@@ -957,6 +1014,7 @@ subsidyPages.get('/subsidies', (c) => {
         var keywordEl = document.getElementById('keyword');
         var acceptanceEl = document.getElementById('acceptance');
         var sortEl = document.getElementById('sort');
+        var prefectureEl = document.getElementById('prefecture-filter');
         
         var params = new URLSearchParams({
           company_id: companyId,
@@ -967,6 +1025,12 @@ subsidyPages.get('/subsidies', (c) => {
           limit: limit.toString(),
           offset: offset.toString()
         });
+        
+        // 都道府県フィルター（空=会社所在地自動、指定=明示的フィルター）
+        var prefectureValue = prefectureEl ? prefectureEl.value : '';
+        if (prefectureValue) {
+          params.set('prefecture', prefectureValue);
+        }
         
         document.getElementById('loading').classList.remove('hidden');
         
@@ -1015,21 +1079,27 @@ subsidyPages.get('/subsidies', (c) => {
         }
         
         // ===== パフォーマンス最適化: ステータスカウントを1回の走査で計算 =====
+        // P0-1: DO_NOT_PROCEED を正式ステータスとして使用（'NO' はレガシー互換）
         statusCounts = { PROCEED: 0, CAUTION: 0, NO: 0 };
         results.forEach(r => {
           if (r && r.evaluation) {
             const status = r.evaluation.status;
             if (status === 'PROCEED') statusCounts.PROCEED++;
             else if (status === 'CAUTION') statusCounts.CAUTION++;
-            else statusCounts.NO++;
+            else statusCounts.NO++; // DO_NOT_PROCEED, NO, その他すべて
           }
         });
         
         const statusFilter = document.getElementById('status-filter').value;
         
         // ===== パフォーマンス最適化: フィルタ結果をキャッシュ =====
+        // P0-1: DO_NOT_PROCEED フィルターは NO もマッチ（レガシー互換）
         if (statusFilter) {
-          filteredResults = results.filter(r => r && r.evaluation && r.evaluation.status === statusFilter);
+          if (statusFilter === 'DO_NOT_PROCEED') {
+            filteredResults = results.filter(r => r && r.evaluation && (r.evaluation.status === 'DO_NOT_PROCEED' || r.evaluation.status === 'NO'));
+          } else {
+            filteredResults = results.filter(r => r && r.evaluation && r.evaluation.status === statusFilter);
+          }
         } else {
           filteredResults = results;
         }

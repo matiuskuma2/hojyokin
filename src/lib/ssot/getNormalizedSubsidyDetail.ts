@@ -90,26 +90,24 @@ export async function getNormalizedSubsidyDetail(
     }
 
     // ========================================
-    // Step 2: canonical / snapshot / cache 取得
+    // Step 2: canonical / snapshot / cache 取得（並列化 P2-3）
+    // Performance: 3つのDBクエリを並列実行して遅延削減
     // ========================================
-    const canonicalRow = await db
-      .prepare('SELECT * FROM subsidy_canonical WHERE id = ?')
-      .bind(ref.canonical_id)
-      .first<Record<string, unknown>>();
-
-    const snapshotRow = ref.snapshot_id
-      ? await db
-          .prepare('SELECT * FROM subsidy_snapshot WHERE id = ?')
-          .bind(ref.snapshot_id)
-          .first<Record<string, unknown>>()
-      : null;
-
-    const cacheRow = ref.cache_id
-      ? await db
-          .prepare('SELECT * FROM subsidy_cache WHERE id = ?')
-          .bind(ref.cache_id)
-          .first<Record<string, unknown>>()
-      : null;
+    const [canonicalRow, snapshotRow, cacheRow] = await Promise.all([
+      db.prepare('SELECT * FROM subsidy_canonical WHERE id = ?')
+        .bind(ref.canonical_id)
+        .first<Record<string, unknown>>(),
+      ref.snapshot_id
+        ? db.prepare('SELECT * FROM subsidy_snapshot WHERE id = ?')
+            .bind(ref.snapshot_id)
+            .first<Record<string, unknown>>()
+        : Promise.resolve(null),
+      ref.cache_id
+        ? db.prepare('SELECT * FROM subsidy_cache WHERE id = ?')
+            .bind(ref.cache_id)
+            .first<Record<string, unknown>>()
+        : Promise.resolve(null),
+    ]);
 
     // detail_json パース（snapshotRow 優先、fallback で cacheRow）
     // Freeze-GET-1: snapshotRow.detail_json に wall_chat_questions 等が格納されているため

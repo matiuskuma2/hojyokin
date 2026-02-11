@@ -210,10 +210,23 @@ export class JGrantsAdapter {
         query += ` AND s.is_accepting = 1`;
       }
       
-      // キーワード検索
+      // キーワード検索（P3: トークン分割による部分一致 AND 検索）
+      // スペース区切りで複数トークンに分割し、すべてのトークンに一致する結果を返す
       if (params.keyword) {
-        query += ` AND (c.name LIKE ? OR c.name_normalized LIKE ?)`;
-        bindings.push(`%${params.keyword}%`, `%${params.keyword}%`);
+        const tokens = params.keyword
+          .replace(/\u3000/g, ' ')  // 全角スペース → 半角
+          .split(/\s+/)
+          .map(t => t.trim())
+          .filter(t => t.length > 0)
+          .slice(0, 5); // 最大5トークン（DoS対策）
+        
+        if (tokens.length > 0) {
+          for (const token of tokens) {
+            // 各トークンは name, name_normalized, issuer_name のいずれかに部分一致
+            query += ` AND (c.name LIKE ? OR c.name_normalized LIKE ? OR c.issuer_name LIKE ?)`;
+            bindings.push(`%${token}%`, `%${token}%`, `%${token}%`);
+          }
+        }
       }
       
       // 地域フィルタ
@@ -737,8 +750,18 @@ export class JGrantsAdapter {
       }
       
       if (params.keyword) {
-        whereClause += ` AND title LIKE ?`;
-        baseBindings.push(`%${params.keyword}%`);
+        // P3: トークン分割による部分一致 AND 検索（cache backend版）
+        const tokens = params.keyword
+          .replace(/\u3000/g, ' ')
+          .split(/\s+/)
+          .map(t => t.trim())
+          .filter(t => t.length > 0)
+          .slice(0, 5);
+        
+        for (const token of tokens) {
+          whereClause += ` AND (title LIKE ? OR subsidy_executing_organization LIKE ?)`;
+          baseBindings.push(`%${token}%`, `%${token}%`);
+        }
       }
       
       // ============================================================

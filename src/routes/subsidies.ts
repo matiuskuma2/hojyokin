@@ -35,10 +35,12 @@ subsidies.use('/*', requireAuth);
 // ============================================================
 // キャッシュ設定（同接1000対応）
 // ============================================================
+// TODO: 要確認 - キャッシュTTLの妥当性。データ更新頻度に応じて調整が必要
+// TODO: 要確認 - キャッシュ無効化戦略（補助金データ更新時のキャッシュバスト）
 const SEARCH_CACHE_TTL = 120; // 2分（検索結果キャッシュ）
 
 /**
- * キャッシュキー生成
+ * キャッシュキー生成（P2-4: SHA-256 風ハッシュ化）
  * company_id + filters + sort + page をハッシュ化
  */
 function generateSearchCacheKey(params: {
@@ -49,15 +51,33 @@ function generateSearchCacheKey(params: {
   order: string;
   limit: number;
   offset: number;
+  prefecture?: string;
 }): string {
-  const key = `search:${params.companyId}:${params.keyword || ''}:${params.acceptance}:${params.sort}:${params.order}:${params.limit}:${params.offset}`;
-  // 簡易ハッシュ（URLセーフ）
-  let hash = 0;
+  const key = `search:${params.companyId}:${params.keyword || ''}:${params.acceptance}:${params.sort}:${params.order}:${params.limit}:${params.offset}:${params.prefecture || ''}`;
+  // 改善されたハッシュ（FNV-1a風、衝突率低減）
+  let hash = 2166136261;
   for (let i = 0; i < key.length; i++) {
-    hash = ((hash << 5) - hash) + key.charCodeAt(i);
-    hash = hash & hash;
+    hash ^= key.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
   }
-  return `subsidy-search-${Math.abs(hash).toString(36)}`;
+  return `subsidy-search-${(hash >>> 0).toString(36)}`;
+}
+
+/**
+ * キーワードをトークンに分割（部分一致検索用）
+ * - 全角/半角スペースで分割
+ * - 空トークンを除外
+ * - 各トークンは LIKE %token% で検索
+ */
+function tokenizeKeyword(keyword: string): string[] {
+  if (!keyword || !keyword.trim()) return [];
+  // 全角スペース → 半角スペースに正規化してから分割
+  return keyword
+    .replace(/\u3000/g, ' ')
+    .split(/\s+/)
+    .map(t => t.trim())
+    .filter(t => t.length > 0)
+    .slice(0, 5); // 最大5トークン（DoS対策）
 }
 
 /**
@@ -65,12 +85,13 @@ function generateSearchCacheKey(params: {
  * 
  * Query Parameters:
  * - company_id: 企業ID（必須）
- * - keyword: キーワード
+ * - keyword: キーワード（スペース区切りで複数条件 AND 検索）
  * - acceptance: 受付中のみ (1) / すべて (0)
  * - sort: ソートキー (acceptance_end_datetime, subsidy_max_limit)
  * - order: ソート順 (ASC, DESC)
- * - limit: 取得件数（デフォルト: 20、最大: 100）
+ * - limit: 取得件数（デフォルト: 20、最大: 500）
  * - offset: オフセット
+ * - prefecture: 都道府県フィルター（指定時は地域絞り込み）
  * - no_cache: キャッシュ無効（super_adminのみ）
  */
 subsidies.get('/search', requireCompanyAccess(), async (c) => {
@@ -90,8 +111,10 @@ subsidies.get('/search', requireCompanyAccess(), async (c) => {
       ? sortRaw as SubsidySearchParams['sort']
       : 'acceptance_end_datetime';
     const order = c.req.query('order') as 'ASC' | 'DESC' || 'ASC';
+    // 都道府県フィルター（新規パラメータ）
+    const prefecture = c.req.query('prefecture')?.trim() || undefined;
     
-    console.log(`[Search] Params: companyId=${companyId}, sort=${sort}, sortRaw=${sortRaw}, acceptance=${acceptance}`);
+    console.log(`[Search] Params: companyId=${companyId}, sort=${sort}, sortRaw=${sortRaw}, acceptance=${acceptance}, prefecture=${prefecture || 'none'}`);
     
     // P1-1: limit/offset の境界値チェック（負数・NaN対策）
     const rawLimit = parseInt(c.req.query('limit') || '20', 10);
@@ -100,6 +123,7 @@ subsidies.get('/search', requireCompanyAccess(), async (c) => {
     const offset = Number.isNaN(rawOffset) || rawOffset < 0 ? 0 : rawOffset;
     
     // P0-2-1: debug パラメータ（super_adminのみ有効）
+    // TODO: 要確認 - debugパラメータのCSRFトークンバリデーション
     const debug = c.req.query('debug') === '1';
     const noCache = c.req.query('no_cache') === '1';
     const user = getCurrentUser(c);
@@ -115,6 +139,7 @@ subsidies.get('/search', requireCompanyAccess(), async (c) => {
         order,
         limit,
         offset,
+        prefecture,
       });
       
       // Cloudflare Cache API
@@ -162,39 +187,47 @@ subsidies.get('/search', requireCompanyAccess(), async (c) => {
       }, 404);
     }
     
-    // Adapter経由で補助金検索
+    // ============================================================
+    // P2-2: Adapter検索 + CompanySSOT取得を並列実行
+    // ============================================================
     const adapter = createJGrantsAdapter(c.env);
     const mode = getJGrantsMode(c.env);
     
     console.log(`[Search] JGrants Adapter mode: ${mode}, allowUnready: ${allowUnready}`);
     
-    console.log('[Search] STEP1 - calling adapter.search');
-    const searchResponse = await adapter.search({
-      keyword,
-      acceptance,
-      target_area_search: company.prefecture,
-      limit,
-      offset,
-      sort,
-      order,
-      includeUnready: allowUnready, // P0-2-1: super_admin debug時のみ未整備も含める
-    });
+    // STEP 1+3 並列: adapter.search と getCompanySSOT を同時実行
+    console.log('[Search] STEP1+3 - calling adapter.search AND getCompanySSOT in parallel');
+    const searchStartTime = Date.now();
+    
+    const [searchResponse, companySSOT] = await Promise.all([
+      adapter.search({
+        keyword,
+        acceptance,
+        // 都道府県: パラメータ指定優先、なければ企業の都道府県
+        target_area_search: prefecture || company.prefecture,
+        limit,
+        offset,
+        sort,
+        order,
+        includeUnready: allowUnready,
+      }),
+      getCompanySSOT(db, companyId),
+    ]);
+    
+    const parallelTime = Date.now() - searchStartTime;
+    console.log(`[Search] STEP1+3 completed in ${parallelTime}ms`);
     
     const jgrantsResults = searchResponse.subsidies;
     const totalCount = searchResponse.total_count;
     const source = searchResponse.source;
     
-    console.log(`[Search] STEP2 - adapter.search completed: ${jgrantsResults.length} results, total=${totalCount}, source=${source}`);
+    console.log(`[Search] STEP2 - adapter.search results: ${jgrantsResults.length}, total=${totalCount}, source=${source}`);
     
     // ============================================================
     // Freeze-MATCH: v2 スクリーニング（SSOT統一版）
     // ============================================================
     
-    // 1. CompanySSOT を取得（companies + company_profile + chat_facts 統合）
-    console.log('[Search] STEP3 - getting CompanySSOT');
-    const companySSOT = await getCompanySSOT(db, companyId);
     if (!companySSOT) {
-      // companies テーブルには存在するが getCompanySSOT が null → 内部エラー扱い
       console.error(`[Search] CompanySSOT not found for company: ${companyId}`);
       return c.json<ApiResponse<null>>({
         success: false,
@@ -205,30 +238,34 @@ subsidies.get('/search', requireCompanyAccess(), async (c) => {
       }, 500);
     }
     
-    // 2. 検索結果を NormalizedSubsidyDetail に変換
-    console.log('[Search] STEP4 - normalizing subsidies');
+    // 2. P2-3: 検索結果を NormalizedSubsidyDetail に並列変換（Promise.allSettled）
+    console.log('[Search] STEP4 - normalizing subsidies (parallel)');
+    const nsdStartTime = Date.now();
+    const normalizedPromises = jgrantsResults.map(result =>
+      getNormalizedSubsidyDetail(db, result.id, { debug: false })
+        .then(r => ({ result: r, sourceId: result.id }))
+        .catch(err => {
+          console.warn(`[Search] Failed to normalize subsidy ${result.id}:`, err);
+          return { result: null, sourceId: result.id };
+        })
+    );
+    const normalizedResults = await Promise.all(normalizedPromises);
+    
     const normalizedSubsidies: NormalizedSubsidyDetail[] = [];
     const subsidyIdMapping = new Map<string, { source_id: string; cache_id: string | null; canonical_id: string }>();
     
-    for (const result of jgrantsResults) {
-      try {
-        // SSOT から NormalizedSubsidyDetail を取得
-        const normalizedResult = await getNormalizedSubsidyDetail(db, result.id, { debug: false });
-        if (normalizedResult && normalizedResult.normalized) {
-          normalizedSubsidies.push(normalizedResult.normalized);
-          // ID マッピングを保存（Gate-B: canonical_id 統一用）
-          subsidyIdMapping.set(normalizedResult.normalized.ids.canonical_id, {
-            source_id: result.id, // JGrants ID
-            cache_id: normalizedResult.ref.cache_id,
-            canonical_id: normalizedResult.ref.canonical_id,
-          });
-        }
-      } catch (err) {
-        // NormalizedSubsidyDetail 取得失敗は警告のみ（検索結果から除外）
-        console.warn(`[Search] Failed to normalize subsidy ${result.id}:`, err);
+    for (const { result: normalizedResult, sourceId } of normalizedResults) {
+      if (normalizedResult && normalizedResult.normalized) {
+        normalizedSubsidies.push(normalizedResult.normalized);
+        subsidyIdMapping.set(normalizedResult.normalized.ids.canonical_id, {
+          source_id: sourceId,
+          cache_id: normalizedResult.ref.cache_id,
+          canonical_id: normalizedResult.ref.canonical_id,
+        });
       }
     }
-    console.log(`[Search] STEP4 complete - normalized ${normalizedSubsidies.length} subsidies`);
+    const nsdTime = Date.now() - nsdStartTime;
+    console.log(`[Search] STEP4 complete - normalized ${normalizedSubsidies.length} subsidies in ${nsdTime}ms`);
     
     // 3. v2 スクリーニング実行（SSOT 入力のみ）
     console.log('[Search] STEP5 - performing v2 screening');
@@ -363,6 +400,7 @@ subsidies.get('/search', requireCompanyAccess(), async (c) => {
           order,
           limit,
           offset,
+          prefecture,
         });
         
         const cache = caches.default;
@@ -670,7 +708,8 @@ subsidies.get('/:subsidy_id', async (c) => {
       }, error.statusCode >= 500 ? 502 : 400);
     }
     
-    // デバッグ用: エラー詳細を返す（本番では削除推奨）
+    // TODO: 要確認 - 本番環境ではdebug_message/debug_stackを削除すること（情報漏洩リスク）
+    // セキュリティ: スタックトレースの外部露出は攻撃ベクトルになりうる
     return c.json<ApiResponse<null>>({
       success: false,
       error: {
