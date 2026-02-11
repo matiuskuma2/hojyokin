@@ -291,7 +291,7 @@ subsidies.get('/search', requireCompanyAccess(), async (c) => {
           source,
           proceed_count: sortedResults.filter(r => r.evaluation.status === 'PROCEED').length,
           caution_count: sortedResults.filter(r => r.evaluation.status === 'CAUTION').length,
-          no_count: sortedResults.filter(r => r.evaluation.status === 'NO').length,
+          no_count: sortedResults.filter(r => r.evaluation.status === 'DO_NOT_PROCEED').length,
         })
       ).run();
     } catch (eventError) {
@@ -691,7 +691,8 @@ subsidies.get('/evaluations/:company_id', requireCompanyAccess(), async (c) => {
   const companyId = c.req.param('company_id');
   
   // P0-3: status パラメータのバリデーション
-  const VALID_STATUSES = ['PROCEED', 'CAUTION', 'NO', 'DO_NOT_PROCEED'];
+  // Note: 'NO' はレガシー互換。新規データは 'DO_NOT_PROCEED' のみ使用
+  const VALID_STATUSES = ['PROCEED', 'CAUTION', 'DO_NOT_PROCEED', 'NO'];
   const rawStatus = c.req.query('status');
   const status = rawStatus && VALID_STATUSES.includes(rawStatus) ? rawStatus : null;
   

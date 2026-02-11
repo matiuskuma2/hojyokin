@@ -64,16 +64,6 @@ export interface MissingFieldResult {
   reason: string;
 }
 
-// 従業員帯の数値範囲マッピング
-const EMPLOYEE_BAND_RANGES: Record<string, [number, number]> = {
-  '1-5': [1, 5],
-  '6-20': [6, 20],
-  '21-50': [21, 50],
-  '51-100': [51, 100],
-  '101-300': [101, 300],
-  '301+': [301, Infinity],
-};
-
 // 都道府県コードと名称のマッピング
 const PREFECTURE_CODES: Record<string, string> = {
   '01': '北海道', '02': '青森県', '03': '岩手県', '04': '宮城県', '05': '秋田県',
@@ -626,7 +616,15 @@ function checkEligibilityRulesV2(company: CompanySSOT, rules: EligibilityRule[])
   const reasons: MatchReason[] = [];
   const risks: RiskFlag[] = [];
   const missing: MissingFieldResult[] = [];
+  const missingFieldSet = new Set<string>(); // 重複排除用
   let scoreAdjustment = 0;
+
+  const addMissing = (item: MissingFieldResult) => {
+    if (!missingFieldSet.has(item.field)) {
+      missingFieldSet.add(item.field);
+      missing.push(item);
+    }
+  };
 
   for (const rule of rules) {
     if (rule.check_type !== 'AUTO') continue;
@@ -637,7 +635,7 @@ function checkEligibilityRulesV2(company: CompanySSOT, rules: EligibilityRule[])
     // 税金滞納チェック
     if (category.includes('tax') || ruleText.includes('税金') || ruleText.includes('滞納')) {
       if (company.facts.tax_arrears === null) {
-        missing.push({
+        addMissing({
           field: 'tax_arrears',
           source: 'fact',
           severity: 'important',
@@ -662,7 +660,7 @@ function checkEligibilityRulesV2(company: CompanySSOT, rules: EligibilityRule[])
     // 過去補助金受給チェック
     if (category.includes('past_subsidy') || ruleText.includes('過去') || ruleText.includes('受給')) {
       if (company.facts.past_subsidy_same_type === null) {
-        missing.push({
+        addMissing({
           field: 'past_subsidy_same_type',
           source: 'fact',
           severity: 'optional',
@@ -687,7 +685,7 @@ function checkEligibilityRulesV2(company: CompanySSOT, rules: EligibilityRule[])
     // 賃上げ関連チェック
     if (category.includes('wage') || ruleText.includes('賃上げ') || ruleText.includes('給与')) {
       if (company.facts.plans_wage_raise === null) {
-        missing.push({
+        addMissing({
           field: 'plans_wage_raise',
           source: 'fact',
           severity: 'optional',
