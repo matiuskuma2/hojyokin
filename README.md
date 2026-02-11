@@ -3,7 +3,7 @@
 ## 📋 プロジェクト概要
 
 - **Name**: subsidy-matching (hojyokin)
-- **Version**: 5.6.0 (Phase 16 - 全ソースwall_chat_ready大幅改善 + 本番デプロイ)
+- **Version**: 6.0.0 (Phase 23 - 検索パフォーマンス・精度強化・TODO体系化)
 - **Goal**: 企業情報を登録するだけで、最適な補助金・助成金を自動でマッチング＆申請書ドラフト作成
 - **管理者**: モギモギ（関屋紘之）
 - **本番URL**: https://hojyokin.pages.dev
@@ -18,6 +18,7 @@
 |-------------|------|--------|
 | **[SANDBOX_RECOVERY.md](docs/SANDBOX_RECOVERY.md)** | サンドボックス完全復活手順 | 最重要 |
 | **[PROJECT_RULES.md](docs/PROJECT_RULES.md)** | 全体ルール・命名規則・記録方法 | 最重要 |
+| **[IMPROVEMENT_PLAN.md](docs/IMPROVEMENT_PLAN.md)** | TODO体系化・改善ロードマップ・KPI | 重要 |
 | **[PHASE_LOG.md](docs/PHASE_LOG.md)** | Phase別の計画・実施・成果・次アクション | 重要 |
 | **[CRAWL_RULES.md](docs/CRAWL_RULES.md)** | クロール運用ルール・壁打ち結果 | 重要 |
 | **[DB_SCHEMA_OVERVIEW.md](docs/DB_SCHEMA_OVERVIEW.md)** | 主要テーブル・ER図・マイグレーション | 重要 |
@@ -28,25 +29,16 @@
 
 ---
 
-## 📊 現在のデータ状況 (2026-02-09 Phase 16)
+## 📊 現在のデータ状況 (2026-02-11 Phase 23)
 
 | 指標 | 値 |
 |------|-----|
-| 補助金マスタ (subsidy_cache) | **22,258件** |
+| 補助金マスタ (subsidy_cache) | **22,274件** |
 | 正規化済み (subsidy_canonical) | 3,470件 |
-| 定点観測対象 (koubo_monitors) | 685件 |
-| 定点観測 active | **473件** (69.1%) |
-| 定点観測 url_lost | 158件 |
-| 定点観測 needs_manual | **54件** |
-| PDF Coverage | **69.1%** (473/685) |
 | 受付中補助金 (ssot_accepting) | **186件** |
-| wall_chat_ready | **21,430件 (96.3%)** |
-| searchable_count | **19,408件** |
-| jGrants ready率 | **74.8%** (2,196/2,934) |
-| 受付中jGrants ready率 | **98.4%** (186/189) |
-| manual ready率 | **97.9%** (571/583) |
-| jnet21 ready率 | **100%** (24/24) |
-| Cron API稼働状況 | **本番5本全稼働** |
+| cache_accepting | **203件** |
+| searchable_count | **19,272件** |
+| // TODO: 要確認 | **25件**（受入基準・テストケース付） |
 
 ### バックアップ
 
@@ -62,7 +54,21 @@
 
 ---
 
-### 🎉 最新: Phase 16 - 全ソースwall_chat_ready大幅改善 (v5.5.0)
+### 🎉 最新: Phase 23 - 検索パフォーマンス・精度強化・TODO体系化 (v6.0.0)
+
+**Phase 23 成果 (2026-02-11)**:
+- **パフォーマンス**: Promise.all並列化 5箇所（検索処理全体で推定60-70%遅延削減）
+- **検索機能**: トークン分割AND検索、都道府県フィルターUI、issuer_name検索追加
+- **KPI計測**: usage_eventsに応答時間(perf_ms.total/search_and_ssot/nsd_normalize)記録
+- **セキュリティ**: SEC-1修正（本番環境でdebug情報非露出）
+- **TODO体系化**: 25件の // TODO: 要確認 を受入基準・テストケース付きで配置
+- **改善計画**: IMPROVEMENT_PLAN.md（フェーズ別ロードマップ・リスク分析付き）
+- **バグ修正**: DO_NOT_PROCEEDステータスの士業ダッシュボード・フィルター統一
+
+**Phase 22 成果 (2026-02-11)**:
+- E2Eデータフロー完全マッピング、BUG修正3件、コードレビュー、テストケース定義
+
+### 🎉 Phase 16 - 全ソースwall_chat_ready大幅改善 (v5.5.0)
 
 **Phase 16 成果 (2026-02-09)**:
 - **Ready率全体: 91.4% → 96.3%** (+4.9pp、+1,085件ready化)
