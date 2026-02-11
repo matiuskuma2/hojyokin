@@ -58,6 +58,17 @@ chatPages.get('/chat', (c) => {
       to { opacity: 1; transform: translateY(0); }
     }
     .category-badge { font-size: 10px; letter-spacing: 0.5px; }
+    /* Phase 20: ストリーミングカーソル */
+    #streaming-content::after {
+      content: '▌';
+      animation: blink 0.7s infinite;
+      color: #10b981;
+      font-weight: bold;
+    }
+    @keyframes blink {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0; }
+    }
   </style>
 </head>
 <body class="bg-gray-50 min-h-screen">
@@ -852,7 +863,7 @@ chatPages.get('/chat', (c) => {
       if (input) input.focus();
     }
     
-    // Phase 19: コンシェルジュモードでメッセージ送信
+    // Phase 19: コンシェルジュモードでメッセージ送信（Phase 20: SSEストリーミング対応）
     async function sendConsultingMessage() {
       var input = document.getElementById('consulting-input');
       var content = input.value.trim();
@@ -869,19 +880,24 @@ chatPages.get('/chat', (c) => {
       document.getElementById('typing-indicator').classList.remove('hidden');
       
       try {
-        var res = await api('/api/chat/sessions/' + sessionId + '/message', {
-          method: 'POST',
-          body: JSON.stringify({ content: content })
-        });
+        // Phase 20: SSEストリーミングを試行
+        var streamSuccess = await tryStreamingResponse(content);
         
-        if (!res.success) throw new Error(res.error?.message || 'メッセージ送信に失敗しました');
-        
-        document.getElementById('typing-indicator').classList.add('hidden');
-        addMessage('assistant', res.data.assistant_message.content);
-        
-        // 提案質問を表示
-        if (res.data.suggested_questions && res.data.suggested_questions.length > 0) {
-          showSuggestedQuestions(res.data.suggested_questions);
+        if (!streamSuccess) {
+          // フォールバック: 通常のJSON API
+          var res = await api('/api/chat/sessions/' + sessionId + '/message', {
+            method: 'POST',
+            body: JSON.stringify({ content: content })
+          });
+          
+          if (!res.success) throw new Error(res.error?.message || 'メッセージ送信に失敗しました');
+          
+          document.getElementById('typing-indicator').classList.add('hidden');
+          addMessage('assistant', res.data.assistant_message.content);
+          
+          if (res.data.suggested_questions && res.data.suggested_questions.length > 0) {
+            showSuggestedQuestions(res.data.suggested_questions);
+          }
         }
         
       } catch (error) {
@@ -891,6 +907,87 @@ chatPages.get('/chat', (c) => {
       } finally {
         sendBtn.disabled = false;
         input.focus();
+      }
+    }
+    
+    // Phase 20: SSEストリーミング受信
+    async function tryStreamingResponse(content) {
+      try {
+        var response = await fetch('/api/chat/sessions/' + sessionId + '/message/stream', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer ' + token
+          },
+          body: JSON.stringify({ content: content })
+        });
+        
+        // SSE非対応の場合（構造化フェーズなど）
+        if (!response.ok || !response.headers.get('content-type')?.includes('text/event-stream')) {
+          return false;
+        }
+        
+        document.getElementById('typing-indicator').classList.add('hidden');
+        
+        // ストリーミングメッセージバブルを作成
+        var messagesDiv = document.getElementById('messages');
+        var msgDiv = document.createElement('div');
+        msgDiv.className = 'flex justify-start slide-in';
+        msgDiv.innerHTML = 
+          '<div class="message-bubble bg-white border border-gray-200 text-gray-800 shadow-sm rounded-lg px-3 py-2.5">' +
+            '<div class="flex items-start">' +
+              '<div class="w-6 h-6 rounded-full bg-green-100 flex items-center justify-center mr-2 flex-shrink-0"><i class="fas fa-robot text-green-600 text-xs"></i></div>' +
+              '<div class="min-w-0">' +
+                '<div class="whitespace-pre-wrap text-sm leading-relaxed" id="streaming-content"></div>' +
+              '</div>' +
+            '</div>' +
+          '</div>';
+        messagesDiv.appendChild(msgDiv);
+        
+        var streamingEl = document.getElementById('streaming-content');
+        var fullContent = '';
+        
+        var reader = response.body.getReader();
+        var decoder = new TextDecoder();
+        var buffer = '';
+        
+        while (true) {
+          var result = await reader.read();
+          if (result.done) break;
+          
+          buffer += decoder.decode(result.value, { stream: true });
+          var lines = buffer.split('\\n');
+          buffer = lines.pop() || ''; // 不完全な最終行はバッファに残す
+          
+          for (var i = 0; i < lines.length; i++) {
+            var line = lines[i];
+            if (line.startsWith('data: ')) {
+              try {
+                var data = JSON.parse(line.substring(6));
+                
+                if (data.type === 'token') {
+                  fullContent += data.content;
+                  streamingEl.textContent = fullContent;
+                  messagesDiv.scrollTop = messagesDiv.scrollHeight;
+                } else if (data.type === 'done') {
+                  // ストリーミング完了
+                  streamingEl.textContent = fullContent;
+                  streamingEl.removeAttribute('id'); // ID解除
+                  
+                  if (data.suggested_questions && data.suggested_questions.length > 0) {
+                    showSuggestedQuestions(data.suggested_questions);
+                  }
+                }
+              } catch (e) { /* ignore parse errors */ }
+            }
+          }
+        }
+        
+        return true;
+        
+      } catch (e) {
+        console.warn('[壁打ち] SSEストリーミング失敗、フォールバック:', e);
+        return false;
       }
     }
     

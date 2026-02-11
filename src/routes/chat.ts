@@ -21,6 +21,7 @@ import {
 } from '../lib/ssot';
 import {
   generateAIResponse,
+  generateAIResponseStream,
   type ConversationContext,
   type ChatMessage as AIChatMessage,
   type CompanyContext,
@@ -1386,6 +1387,305 @@ chat.post('/sessions/:id/message', async (c) => {
     }, 500);
   }
 });
+
+// =====================================================
+// POST /api/chat/sessions/:id/message/stream - SSEストリーミング
+// Phase 20: AI回答をリアルタイム表示（コンシェルジュモード専用）
+// =====================================================
+
+chat.post('/sessions/:id/message/stream', async (c) => {
+  const user = c.get('user')!;
+  const sessionId = c.req.param('id');
+  
+  if (!UUID_REGEX.test(sessionId)) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'VALIDATION_ERROR', message: 'Invalid session ID format' }
+    }, 400);
+  }
+  
+  try {
+    const { content } = await c.req.json();
+    
+    if (!content || typeof content !== 'string') {
+      return c.json<ApiResponse<null>>({
+        success: false,
+        error: { code: 'VALIDATION_ERROR', message: 'content is required' }
+      }, 400);
+    }
+    
+    const sanitizedContent = content.trim().slice(0, 2000);
+    if (sanitizedContent.length === 0) {
+      return c.json<ApiResponse<null>>({
+        success: false,
+        error: { code: 'VALIDATION_ERROR', message: 'content must not be empty' }
+      }, 400);
+    }
+    
+    // セッション取得
+    const session = await c.env.DB.prepare(`
+      SELECT * FROM chat_sessions WHERE id = ? AND user_id = ?
+    `).bind(sessionId, user.id).first() as any;
+    
+    if (!session) {
+      return c.json<ApiResponse<null>>({
+        success: false,
+        error: { code: 'NOT_FOUND', message: 'Session not found' }
+      }, 404);
+    }
+    
+    // ストリーミングはコンシェルジュモード（free）でのみ対応
+    if (session.status !== 'consulting' && session.status !== 'completed') {
+      // 構造化質問フェーズは通常のエンドポイントにフォールバック
+      return c.json<ApiResponse<null>>({
+        success: false,
+        error: { code: 'NOT_STREAMING', message: 'Streaming only available in consulting mode' }
+      }, 400);
+    }
+    
+    // completedセッションでもconsultingに移行
+    if (session.status === 'completed') {
+      await c.env.DB.prepare(`
+        UPDATE chat_sessions SET status = 'consulting', updated_at = datetime('now') WHERE id = ?
+      `).bind(sessionId).run();
+    }
+    
+    const now = new Date().toISOString();
+    
+    // ユーザーメッセージを保存
+    const userMsgId = crypto.randomUUID();
+    await c.env.DB.prepare(`
+      INSERT INTO chat_messages (id, session_id, role, content, created_at)
+      VALUES (?, ?, 'user', ?, ?)
+    `).bind(userMsgId, sessionId, sanitizedContent, now).run();
+    
+    // 企業・補助金情報取得
+    const ssotResult = await getNormalizedSubsidyDetail(c.env.DB, session.subsidy_id);
+    const normalized = ssotResult?.normalized || null;
+    
+    const companyInfo = await c.env.DB.prepare(`
+      SELECT c.*, cp.corp_type, cp.founding_year, cp.business_summary,
+             cp.main_products, cp.main_customers, cp.competitive_advantage,
+             cp.is_profitable, cp.past_subsidies_json, cp.certifications_json
+      FROM companies c
+      LEFT JOIN company_profile cp ON c.id = cp.company_id
+      WHERE c.id = ?
+    `).bind(session.company_id).first() as any;
+    
+    let pastSubsidies: string[] = [];
+    let certifications: string[] = [];
+    try {
+      if (companyInfo?.past_subsidies_json) {
+        pastSubsidies = JSON.parse(companyInfo.past_subsidies_json);
+      }
+    } catch { }
+    try {
+      if (companyInfo?.certifications_json) {
+        certifications = JSON.parse(companyInfo.certifications_json);
+      }
+    } catch { }
+    
+    const companyContext: CompanyContext = {
+      id: companyInfo?.id || session.company_id,
+      name: companyInfo?.name || '不明',
+      prefecture: companyInfo?.prefecture || '不明',
+      city: companyInfo?.city,
+      industry_major: companyInfo?.industry_major || '不明',
+      employee_count: companyInfo?.employee_count || 0,
+      capital: companyInfo?.capital,
+      annual_revenue: companyInfo?.annual_revenue,
+      established_date: companyInfo?.established_date,
+      profile: {
+        corp_type: companyInfo?.corp_type || undefined,
+        founding_year: companyInfo?.founding_year || undefined,
+        business_summary: companyInfo?.business_summary || undefined,
+        main_products: companyInfo?.main_products || undefined,
+        main_customers: companyInfo?.main_customers || undefined,
+        competitive_advantage: companyInfo?.competitive_advantage || undefined,
+        is_profitable: companyInfo?.is_profitable != null ? Boolean(companyInfo.is_profitable) : undefined,
+        past_subsidies: pastSubsidies.length > 0 ? pastSubsidies : undefined,
+        certifications: certifications.length > 0 ? certifications : undefined,
+      },
+    };
+    
+    // facts 取得
+    const answeredFacts = await c.env.DB.prepare(`
+      SELECT fact_key, fact_value FROM chat_facts
+      WHERE company_id = ? AND (subsidy_id = ? OR subsidy_id IS NULL)
+    `).bind(session.company_id, session.subsidy_id).all();
+    
+    const factsMap: Record<string, string> = {};
+    for (const f of (answeredFacts.results || []) as any[]) {
+      factsMap[f.fact_key] = f.fact_value;
+    }
+    
+    // 会話履歴
+    const historyMessages = await c.env.DB.prepare(`
+      SELECT role, content FROM chat_messages
+      WHERE session_id = ? AND role IN ('user', 'assistant')
+      ORDER BY created_at DESC
+      LIMIT 10
+    `).bind(sessionId).all();
+    
+    const history: AIChatMessage[] = (historyMessages.results || []).reverse().map((m: any) => ({
+      role: m.role as 'user' | 'assistant',
+      content: m.content,
+    }));
+    
+    const ctx: ConversationContext = {
+      mode: 'free',
+      subsidy: normalized,
+      company: companyContext,
+      facts: factsMap,
+      history,
+      remainingQuestions: [],
+      sessionStatus: 'consulting',
+    };
+    
+    // ストリーミングレスポンスを取得
+    const stream = await generateAIResponseStream(c.env, ctx, sanitizedContent);
+    
+    if (!stream) {
+      // ストリーミング不可: 通常APIでフォールバック
+      const aiResponse = await generateAIResponse(c.env, ctx, sanitizedContent);
+      
+      // メッセージ保存
+      const assistantMsgId = crypto.randomUUID();
+      await c.env.DB.prepare(`
+        INSERT INTO chat_messages (id, session_id, role, content, created_at)
+        VALUES (?, ?, 'assistant', ?, ?)
+      `).bind(assistantMsgId, sessionId, aiResponse.content, now).run();
+      
+      return c.json<ApiResponse<any>>({
+        success: true,
+        data: {
+          user_message: { id: userMsgId, role: 'user', content: sanitizedContent, created_at: now },
+          assistant_message: { id: assistantMsgId, role: 'assistant', content: aiResponse.content, created_at: now },
+          mode: 'free',
+          consulting_mode: true,
+          suggested_questions: aiResponse.suggested_questions,
+          streamed: false,
+        }
+      });
+    }
+    
+    // SSEストリーミングレスポンス
+    const assistantMsgId = crypto.randomUUID();
+    let fullContent = '';
+    
+    const encoder = new TextEncoder();
+    const decoder = new TextDecoder();
+    
+    const sseStream = new ReadableStream({
+      async start(controller) {
+        // 初期イベント: user_message情報
+        const initEvent = `data: ${JSON.stringify({
+          type: 'init',
+          user_message: { id: userMsgId, role: 'user', content: sanitizedContent, created_at: now },
+          assistant_message_id: assistantMsgId,
+        })}\n\n`;
+        controller.enqueue(encoder.encode(initEvent));
+        
+        const reader = stream.getReader();
+        
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            
+            const chunk = decoder.decode(value, { stream: true });
+            // OpenAI SSEフォーマットをパース
+            const lines = chunk.split('\n');
+            for (const line of lines) {
+              if (line.startsWith('data: ')) {
+                const data = line.slice(6);
+                if (data === '[DONE]') {
+                  continue;
+                }
+                try {
+                  const parsed = JSON.parse(data);
+                  const delta = parsed.choices?.[0]?.delta?.content;
+                  if (delta) {
+                    fullContent += delta;
+                    const tokenEvent = `data: ${JSON.stringify({ type: 'token', content: delta })}\n\n`;
+                    controller.enqueue(encoder.encode(tokenEvent));
+                  }
+                } catch { /* ignore parse errors in stream */ }
+              }
+            }
+          }
+        } catch (streamError) {
+          console.error('[Chat SSE] Stream read error:', streamError);
+        }
+        
+        // 完了イベント
+        try {
+          // メッセージをDBに保存
+          await c.env.DB.prepare(`
+            INSERT INTO chat_messages (id, session_id, role, content, created_at)
+            VALUES (?, ?, 'assistant', ?, ?)
+          `).bind(assistantMsgId, sessionId, fullContent, now).run();
+          
+          // 使用トークンの概算記録
+          const eventId = crypto.randomUUID();
+          await c.env.DB.prepare(`
+            INSERT INTO usage_events (
+              id, user_id, company_id, event_type, provider,
+              tokens_in, tokens_out, estimated_cost_usd, metadata, created_at
+            ) VALUES (?, ?, ?, 'CHAT_AI_RESPONSE', 'openai', 0, 0, 0, ?, datetime('now'))
+          `).bind(
+            eventId,
+            user.id,
+            session.company_id,
+            JSON.stringify({ session_id: sessionId, mode: 'free', streamed: true, content_length: fullContent.length })
+          ).run();
+        } catch (saveError) {
+          console.error('[Chat SSE] Save error:', saveError);
+        }
+        
+        // suggested_questions を抽出して完了イベントを送信
+        const suggestedQuestions = extractSuggestedQuestionsFromContent(fullContent);
+        const doneEvent = `data: ${JSON.stringify({
+          type: 'done',
+          assistant_message: { id: assistantMsgId, role: 'assistant', content: fullContent, created_at: now },
+          consulting_mode: true,
+          suggested_questions: suggestedQuestions,
+        })}\n\n`;
+        controller.enqueue(encoder.encode(doneEvent));
+        
+        controller.close();
+      },
+    });
+    
+    return new Response(sseStream, {
+      headers: {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'Access-Control-Allow-Origin': '*',
+      },
+    });
+    
+  } catch (error) {
+    console.error('Stream message error:', error);
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'INTERNAL_ERROR', message: 'Failed to stream message' }
+    }, 500);
+  }
+});
+
+/**
+ * suggested_questions をAI回答文から抽出
+ */
+function extractSuggestedQuestionsFromContent(content: string): string[] {
+  const questions: string[] = [];
+  const matches = content.match(/[^\n。！]*(?:ですか|でしょうか|ましょうか|いかがですか)[？?]/g);
+  if (matches) {
+    questions.push(...matches.slice(-2));
+  }
+  return questions;
+}
 
 /**
  * 回答のパース（input_type を考慮した型安全なパース）
