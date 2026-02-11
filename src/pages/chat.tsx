@@ -214,6 +214,10 @@ chatPages.get('/chat', (c) => {
                    onkeypress="if(event.key==='Enter')sendMessage()"
                    autocomplete="off">
           </div>
+          <button onclick="openUploadDialog()" title="資料をアップロード"
+                  class="bg-gray-100 text-gray-600 px-3 py-2.5 rounded-lg hover:bg-gray-200 text-sm">
+            <i class="fas fa-paperclip"></i>
+          </button>
           <button onclick="sendMessage()" id="send-btn"
                   class="bg-green-600 text-white px-4 py-2.5 rounded-lg hover:bg-green-700 disabled:bg-gray-400 disabled:cursor-not-allowed text-sm">
             <i class="fas fa-paper-plane"></i>
@@ -280,6 +284,10 @@ chatPages.get('/chat', (c) => {
                    onkeypress="if(event.key==='Enter')sendConsultingMessage()"
                    autocomplete="off">
           </div>
+          <button onclick="openUploadDialog()" title="資料をアップロード"
+                  class="bg-gray-100 text-gray-600 px-3 py-2.5 rounded-lg hover:bg-gray-200 text-sm">
+            <i class="fas fa-paperclip"></i>
+          </button>
           <button onclick="sendConsultingMessage()" id="consulting-send-btn"
                   class="bg-indigo-600 text-white px-4 py-2.5 rounded-lg hover:bg-indigo-700 disabled:bg-gray-400 disabled:cursor-not-allowed text-sm">
             <i class="fas fa-paper-plane"></i>
@@ -341,6 +349,96 @@ chatPages.get('/chat', (c) => {
       </div>
     </div>
   </main>
+  
+  <!-- 隠しファイル入力 -->
+  <input type="file" id="file-upload-input" class="hidden"
+         accept=".pdf,.jpg,.jpeg,.png,.gif,.webp,.docx,.xlsx,.doc,.xls,.txt,.csv"
+         onchange="handleFileSelected(event)">
+  
+  <!-- アップロードモーダル -->
+  <div id="upload-modal" class="hidden fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center">
+    <div class="bg-white rounded-xl shadow-xl max-w-md w-full mx-4 p-6">
+      <div class="flex items-center justify-between mb-4">
+        <h3 class="text-lg font-bold text-gray-800">
+          <i class="fas fa-cloud-upload-alt text-blue-500 mr-2"></i>資料アップロード
+        </h3>
+        <button onclick="closeUploadModal()" class="text-gray-400 hover:text-gray-600 p-1">
+          <i class="fas fa-times text-lg"></i>
+        </button>
+      </div>
+      
+      <div id="upload-drop-zone" class="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center hover:border-blue-400 transition cursor-pointer"
+           onclick="document.getElementById('file-upload-input').click()"
+           ondragover="event.preventDefault(); this.classList.add('border-blue-500', 'bg-blue-50')"
+           ondragleave="this.classList.remove('border-blue-500', 'bg-blue-50')"
+           ondrop="handleFileDrop(event)">
+        <i class="fas fa-file-upload text-gray-400 text-3xl mb-3"></i>
+        <p class="text-sm text-gray-600">クリックまたはドラッグ&ドロップでファイルを選択</p>
+        <p class="text-xs text-gray-400 mt-1">PDF / 画像 / Word / Excel（最大10MB）</p>
+      </div>
+      
+      <!-- 選択済みファイル表示 -->
+      <div id="selected-file-info" class="hidden mt-4 p-3 bg-gray-50 rounded-lg">
+        <div class="flex items-center">
+          <i id="selected-file-icon" class="fas fa-file text-blue-500 text-lg mr-3"></i>
+          <div class="flex-1 min-w-0">
+            <p id="selected-file-name" class="text-sm font-medium text-gray-800 truncate"></p>
+            <p id="selected-file-size" class="text-xs text-gray-500"></p>
+          </div>
+          <button onclick="clearSelectedFile()" class="text-gray-400 hover:text-red-500 ml-2">
+            <i class="fas fa-times"></i>
+          </button>
+        </div>
+      </div>
+      
+      <!-- 書類種別選択 -->
+      <div id="doc-type-selector" class="hidden mt-4">
+        <label class="block text-sm font-medium text-gray-700 mb-2">書類の種類</label>
+        <select id="doc-type-select" class="w-full border rounded-lg px-3 py-2 text-sm">
+          <option value="other">その他の資料</option>
+          <option value="financial_statement">決算書（貸借対照表・損益計算書）</option>
+          <option value="tax_return">確定申告書</option>
+          <option value="business_plan">事業計画書</option>
+          <option value="registration">登記簿謄本（履歴事項全部証明書）</option>
+          <option value="quotation">見積書・請求書</option>
+        </select>
+      </div>
+      
+      <!-- アップロードボタン -->
+      <div class="mt-4 flex gap-2">
+        <button id="upload-submit-btn" onclick="submitUpload()" disabled
+                class="flex-1 bg-blue-600 text-white px-4 py-2.5 rounded-lg hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed text-sm font-medium">
+          <i class="fas fa-upload mr-1"></i>アップロード
+        </button>
+        <button onclick="closeUploadModal()"
+                class="px-4 py-2.5 border rounded-lg hover:bg-gray-50 text-sm text-gray-600">
+          キャンセル
+        </button>
+      </div>
+      
+      <!-- アップロード進捗 -->
+      <div id="upload-progress" class="hidden mt-4">
+        <div class="flex items-center">
+          <div class="animate-spin rounded-full h-5 w-5 border-b-2 border-blue-600 mr-3"></div>
+          <span class="text-sm text-gray-600">アップロード中...</span>
+        </div>
+      </div>
+    </div>
+  </div>
+  
+  <!-- アップロード済み書類パネル -->
+  <div id="uploaded-docs-panel" class="hidden max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 mt-3 mb-3">
+    <div class="bg-white rounded-lg shadow-sm border">
+      <div class="p-3 border-b bg-gray-50 flex items-center justify-between cursor-pointer" onclick="toggleDocsPanel()">
+        <h4 class="text-sm font-medium text-gray-700">
+          <i class="fas fa-folder-open text-blue-500 mr-1"></i>アップロード済み資料
+          <span id="docs-count" class="ml-1 text-xs text-gray-400">(0件)</span>
+        </h4>
+        <i class="fas fa-chevron-down text-gray-400" id="docs-toggle-icon"></i>
+      </div>
+      <div id="docs-list" class="p-3 space-y-2 hidden"></div>
+    </div>
+  </div>
   
   <script>
     // ============================================================
@@ -1050,8 +1148,202 @@ chatPages.get('/chat', (c) => {
       }
     }
     
+    // ============================================================
+    // Phase 20: 資料アップロード機能
+    // ============================================================
+    var selectedFile = null;
+    var uploadedDocs = [];
+    
+    function openUploadDialog() {
+      if (!sessionId) {
+        alert('チャットセッションが開始されていません');
+        return;
+      }
+      document.getElementById('upload-modal').classList.remove('hidden');
+      clearSelectedFile();
+    }
+    
+    function closeUploadModal() {
+      document.getElementById('upload-modal').classList.add('hidden');
+      clearSelectedFile();
+    }
+    
+    function clearSelectedFile() {
+      selectedFile = null;
+      document.getElementById('file-upload-input').value = '';
+      document.getElementById('selected-file-info').classList.add('hidden');
+      document.getElementById('doc-type-selector').classList.add('hidden');
+      document.getElementById('upload-submit-btn').disabled = true;
+      document.getElementById('upload-drop-zone').classList.remove('hidden');
+    }
+    
+    function handleFileSelected(event) {
+      var file = event.target.files[0];
+      if (file) showSelectedFile(file);
+    }
+    
+    function handleFileDrop(event) {
+      event.preventDefault();
+      event.currentTarget.classList.remove('border-blue-500', 'bg-blue-50');
+      var file = event.dataTransfer.files[0];
+      if (file) showSelectedFile(file);
+    }
+    
+    function showSelectedFile(file) {
+      // サイズ検証
+      if (file.size > 10 * 1024 * 1024) {
+        alert('ファイルサイズは10MB以下にしてください');
+        return;
+      }
+      
+      selectedFile = file;
+      
+      // ファイルアイコンを決定
+      var iconMap = {
+        'application/pdf': 'fa-file-pdf text-red-500',
+        'image/jpeg': 'fa-file-image text-purple-500',
+        'image/png': 'fa-file-image text-purple-500',
+        'image/gif': 'fa-file-image text-purple-500',
+        'image/webp': 'fa-file-image text-purple-500',
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'fa-file-word text-blue-600',
+        'application/msword': 'fa-file-word text-blue-600',
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'fa-file-excel text-green-600',
+        'application/vnd.ms-excel': 'fa-file-excel text-green-600',
+        'text/csv': 'fa-file-csv text-green-600',
+      };
+      var iconClass = iconMap[file.type] || 'fa-file text-gray-500';
+      
+      document.getElementById('selected-file-icon').className = 'fas ' + iconClass + ' text-lg mr-3';
+      document.getElementById('selected-file-name').textContent = file.name;
+      document.getElementById('selected-file-size').textContent = (file.size / 1024 / 1024).toFixed(2) + ' MB';
+      
+      document.getElementById('upload-drop-zone').classList.add('hidden');
+      document.getElementById('selected-file-info').classList.remove('hidden');
+      document.getElementById('doc-type-selector').classList.remove('hidden');
+      document.getElementById('upload-submit-btn').disabled = false;
+      
+      // ファイル名から書類種別を自動推測
+      var name = file.name.toLowerCase();
+      var select = document.getElementById('doc-type-select');
+      if (name.includes('決算') || name.includes('貸借') || name.includes('損益') || name.includes('bs') || name.includes('pl')) {
+        select.value = 'financial_statement';
+      } else if (name.includes('確定申告') || name.includes('tax')) {
+        select.value = 'tax_return';
+      } else if (name.includes('事業計画') || name.includes('business')) {
+        select.value = 'business_plan';
+      } else if (name.includes('登記') || name.includes('登記簿') || name.includes('謄本')) {
+        select.value = 'registration';
+      } else if (name.includes('見積') || name.includes('請求') || name.includes('quotation') || name.includes('invoice')) {
+        select.value = 'quotation';
+      } else {
+        select.value = 'other';
+      }
+    }
+    
+    async function submitUpload() {
+      if (!selectedFile || !sessionId) return;
+      
+      var submitBtn = document.getElementById('upload-submit-btn');
+      submitBtn.disabled = true;
+      document.getElementById('upload-progress').classList.remove('hidden');
+      
+      try {
+        var formData = new FormData();
+        formData.append('file', selectedFile);
+        formData.append('doc_type', document.getElementById('doc-type-select').value);
+        
+        var response = await fetch('/api/chat/sessions/' + sessionId + '/upload', {
+          method: 'POST',
+          headers: {
+            'Authorization': 'Bearer ' + token
+          },
+          body: formData
+        });
+        
+        var result = await response.json();
+        
+        if (!result.success) {
+          throw new Error(result.error?.message || 'アップロードに失敗しました');
+        }
+        
+        // モーダルを閉じる
+        closeUploadModal();
+        
+        // チャットにメッセージを追加
+        addMessage('user', result.data.user_message.content);
+        addMessage('assistant', result.data.assistant_message.content);
+        
+        // アップロード済み書類リストを更新
+        uploadedDocs.push(result.data.document);
+        updateDocsPanel();
+        
+      } catch (error) {
+        console.error('Upload error:', error);
+        alert('アップロードエラー: ' + error.message);
+      } finally {
+        submitBtn.disabled = false;
+        document.getElementById('upload-progress').classList.add('hidden');
+      }
+    }
+    
+    function updateDocsPanel() {
+      if (uploadedDocs.length === 0) {
+        document.getElementById('uploaded-docs-panel').classList.add('hidden');
+        return;
+      }
+      
+      document.getElementById('uploaded-docs-panel').classList.remove('hidden');
+      document.getElementById('docs-count').textContent = '(' + uploadedDocs.length + '件)';
+      
+      var docTypeLabels = {
+        'financial_statement': '決算書',
+        'tax_return': '確定申告書',
+        'business_plan': '事業計画書',
+        'registration': '登記簿謄本',
+        'quotation': '見積書',
+        'other': 'その他',
+      };
+      
+      var listEl = document.getElementById('docs-list');
+      listEl.innerHTML = uploadedDocs.map(function(doc) {
+        var label = docTypeLabels[doc.doc_type] || doc.doc_type;
+        var sizeMB = (doc.size_bytes / 1024 / 1024).toFixed(1);
+        return '<div class="flex items-center text-xs p-2 bg-gray-50 rounded">' +
+          '<i class="fas fa-file text-blue-500 mr-2"></i>' +
+          '<div class="flex-1 min-w-0">' +
+            '<span class="font-medium truncate block">' + escapeHtml(doc.original_filename) + '</span>' +
+            '<span class="text-gray-400">' + label + ' / ' + sizeMB + 'MB</span>' +
+          '</div>' +
+          '<span class="text-green-500 ml-2"><i class="fas fa-check-circle"></i></span>' +
+        '</div>';
+      }).join('');
+    }
+    
+    function toggleDocsPanel() {
+      var list = document.getElementById('docs-list');
+      var icon = document.getElementById('docs-toggle-icon');
+      list.classList.toggle('hidden');
+      icon.className = list.classList.contains('hidden') ? 'fas fa-chevron-down text-gray-400' : 'fas fa-chevron-up text-gray-400';
+    }
+    
+    // セッション初期化時にアップロード済み書類も取得
+    async function loadUploadedDocs() {
+      if (!companyId) return;
+      try {
+        var res = await api('/api/chat/documents/' + companyId);
+        if (res.success && res.data && res.data.length > 0) {
+          uploadedDocs = res.data;
+          updateDocsPanel();
+        }
+      } catch (e) {
+        console.warn('書類一覧の取得失敗:', e);
+      }
+    }
+    
     // 初期化
     initSession();
+    // 書類リスト取得（非同期で並行実行）
+    loadUploadedDocs();
   </script>
 </body>
 </html>

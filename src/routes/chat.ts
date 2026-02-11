@@ -1871,4 +1871,242 @@ function buildFallbackStructuredResponse(
   return `${reaction}${progressComment}\n\n${formatQuestion(nextQuestion)}`;
 }
 
+// =====================================================
+// POST /api/chat/sessions/:id/upload - 資料アップロード
+// Phase 20: R2連携でチャット経由の書類アップロード
+// =====================================================
+
+chat.post('/sessions/:id/upload', async (c) => {
+  const user = c.get('user')!;
+  const sessionId = c.req.param('id');
+  
+  if (!UUID_REGEX.test(sessionId)) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'VALIDATION_ERROR', message: 'Invalid session ID format' }
+    }, 400);
+  }
+  
+  try {
+    // セッション取得
+    const session = await c.env.DB.prepare(`
+      SELECT * FROM chat_sessions WHERE id = ? AND user_id = ?
+    `).bind(sessionId, user.id).first() as any;
+    
+    if (!session) {
+      return c.json<ApiResponse<null>>({
+        success: false,
+        error: { code: 'NOT_FOUND', message: 'Session not found' }
+      }, 404);
+    }
+    
+    // multipart/form-data からファイルを取得
+    const formData = await c.req.formData();
+    const file = formData.get('file') as File | null;
+    const docType = (formData.get('doc_type') as string) || 'other';
+    
+    if (!file || !(file instanceof File)) {
+      return c.json<ApiResponse<null>>({
+        success: false,
+        error: { code: 'VALIDATION_ERROR', message: 'ファイルが選択されていません' }
+      }, 400);
+    }
+    
+    // ファイルサイズ制限（10MB）
+    const MAX_SIZE = 10 * 1024 * 1024;
+    if (file.size > MAX_SIZE) {
+      return c.json<ApiResponse<null>>({
+        success: false,
+        error: { code: 'FILE_TOO_LARGE', message: 'ファイルサイズは10MB以下にしてください' }
+      }, 400);
+    }
+    
+    // 許可するファイルタイプ
+    const ALLOWED_TYPES = [
+      'application/pdf',
+      'image/jpeg', 'image/png', 'image/gif', 'image/webp',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document', // docx
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', // xlsx
+      'application/msword', // doc
+      'application/vnd.ms-excel', // xls
+      'text/plain', 'text/csv',
+    ];
+    
+    if (!ALLOWED_TYPES.includes(file.type)) {
+      return c.json<ApiResponse<null>>({
+        success: false,
+        error: { code: 'INVALID_FILE_TYPE', message: 'このファイル形式はサポートされていません。PDF、画像、Word、Excelファイルをアップロードしてください。' }
+      }, 400);
+    }
+    
+    // R2にアップロード
+    const docId = crypto.randomUUID();
+    const ext = file.name.split('.').pop() || 'bin';
+    const r2Key = `documents/${session.company_id}/${docId}.${ext}`;
+    
+    const arrayBuffer = await file.arrayBuffer();
+    await c.env.R2_KNOWLEDGE.put(r2Key, arrayBuffer, {
+      httpMetadata: {
+        contentType: file.type,
+      },
+      customMetadata: {
+        originalFilename: file.name,
+        docType: docType,
+        companyId: session.company_id,
+        sessionId: sessionId,
+        uploadedBy: user.id,
+      },
+    });
+    
+    // DBに記録
+    const now = new Date().toISOString();
+    await c.env.DB.prepare(`
+      INSERT INTO company_documents (
+        id, company_id, doc_type, original_filename, content_type, size_bytes,
+        storage_backend, r2_key, status, session_id, uploaded_via, uploaded_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, 'r2', ?, 'uploaded', ?, 'chat', ?, ?)
+    `).bind(
+      docId,
+      session.company_id,
+      docType,
+      file.name,
+      file.type,
+      file.size,
+      r2Key,
+      sessionId,
+      now,
+      now
+    ).run();
+    
+    // チャットメッセージに記録（アシスタントメッセージとして通知）
+    const DOC_TYPE_LABELS: Record<string, string> = {
+      'financial_statement': '決算書',
+      'tax_return': '確定申告書',
+      'business_plan': '事業計画書',
+      'registration': '登記簿謄本',
+      'quotation': '見積書',
+      'other': 'その他の資料',
+    };
+    const docLabel = DOC_TYPE_LABELS[docType] || docType;
+    
+    // ユーザーメッセージ（アップロード通知）
+    const userMsgId = crypto.randomUUID();
+    await c.env.DB.prepare(`
+      INSERT INTO chat_messages (id, session_id, role, content, created_at)
+      VALUES (?, ?, 'user', ?, ?)
+    `).bind(
+      userMsgId,
+      sessionId,
+      `📎 ${file.name}（${docLabel}）をアップロードしました`,
+      now
+    ).run();
+    
+    // アシスタント確認メッセージ
+    const assistantMsgId = crypto.randomUUID();
+    const sizeMB = (file.size / 1024 / 1024).toFixed(1);
+    const confirmMsg = `ファイルを受け取りました。\n\n📄 ${file.name}\n📂 種類: ${docLabel}\n💾 サイズ: ${sizeMB}MB\n\nこの書類は申請準備の参考資料として保存しました。申請書ドラフト作成時に活用いたします。\n\n他にも準備している書類があればアップロードしてください。`;
+    
+    await c.env.DB.prepare(`
+      INSERT INTO chat_messages (id, session_id, role, content, created_at)
+      VALUES (?, ?, 'assistant', ?, ?)
+    `).bind(assistantMsgId, sessionId, confirmMsg, now).run();
+    
+    // chat_facts にドキュメント関連factを記録
+    const factId = crypto.randomUUID();
+    await c.env.DB.prepare(`
+      INSERT INTO chat_facts (
+        id, user_id, company_id, subsidy_id, fact_key, fact_value,
+        fact_type, fact_category, metadata, source, session_id, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, 'file', 'document', ?, 'chat', ?, ?, ?)
+      ON CONFLICT(company_id, subsidy_id, fact_key) DO UPDATE SET
+        fact_value = excluded.fact_value,
+        metadata = excluded.metadata,
+        updated_at = excluded.updated_at
+    `).bind(
+      factId,
+      user.id,
+      session.company_id,
+      session.subsidy_id,
+      `doc_uploaded_${docType}`,
+      'true',
+      JSON.stringify({
+        document_id: docId,
+        filename: file.name,
+        doc_type: docType,
+        size_bytes: file.size,
+        content_type: file.type,
+        r2_key: r2Key,
+      }),
+      sessionId,
+      now,
+      now
+    ).run();
+    
+    return c.json<ApiResponse<any>>({
+      success: true,
+      data: {
+        document: {
+          id: docId,
+          doc_type: docType,
+          original_filename: file.name,
+          content_type: file.type,
+          size_bytes: file.size,
+          status: 'uploaded',
+          uploaded_at: now,
+        },
+        user_message: {
+          id: userMsgId,
+          role: 'user',
+          content: `📎 ${file.name}（${docLabel}）をアップロードしました`,
+          created_at: now,
+        },
+        assistant_message: {
+          id: assistantMsgId,
+          role: 'assistant',
+          content: confirmMsg,
+          created_at: now,
+        },
+      }
+    });
+    
+  } catch (error) {
+    console.error('Upload error:', error);
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'INTERNAL_ERROR', message: 'ファイルのアップロードに失敗しました' }
+    }, 500);
+  }
+});
+
+// =====================================================
+// GET /api/chat/documents/:companyId - 企業の書類一覧
+// =====================================================
+
+chat.get('/documents/:companyId', async (c) => {
+  const user = c.get('user')!;
+  const companyId = c.req.param('companyId');
+  
+  try {
+    const docs = await c.env.DB.prepare(`
+      SELECT id, doc_type, original_filename, content_type, size_bytes, status,
+             session_id, uploaded_via, uploaded_at
+      FROM company_documents
+      WHERE company_id = ?
+      ORDER BY uploaded_at DESC
+      LIMIT 50
+    `).bind(companyId).all();
+    
+    return c.json<ApiResponse<any>>({
+      success: true,
+      data: docs.results || []
+    });
+  } catch (error) {
+    console.error('Get documents error:', error);
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'INTERNAL_ERROR', message: 'Failed to get documents' }
+    }, 500);
+  }
+});
+
 export default chat;
