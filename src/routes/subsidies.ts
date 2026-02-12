@@ -272,7 +272,10 @@ subsidies.get('/search', requireCompanyAccess(), async (c) => {
       }
     }
     const nsdTime = Date.now() - nsdStartTime;
-    console.log(`[Search] STEP4 complete - normalized ${normalizedSubsidies.length} subsidies in ${nsdTime}ms`);
+    const fetchedCount = jgrantsResults.length;
+    const normalizedCount = normalizedSubsidies.length;
+    const normalizationFailedCount = fetchedCount - normalizedCount;
+    console.log(`[Search] STEP4 complete - normalized ${normalizedCount}/${fetchedCount} subsidies in ${nsdTime}ms (${normalizationFailedCount} failed)`);
     
     // 3. v2 スクリーニング実行（SSOT 入力のみ）
     console.log('[Search] STEP5 - performing v2 screening');
@@ -398,7 +401,13 @@ subsidies.get('/search', requireCompanyAccess(), async (c) => {
         total: totalCount,
         page: Math.floor(offset / limit) + 1,
         limit,
+        offset,
         has_more: offset + limit < totalCount,
+        // 件数内訳（フロントエンドの正確な表示に必要）
+        fetched_count: fetchedCount,         // API/DBから取得した件数
+        normalized_count: normalizedCount,    // 正規化成功件数
+        screened_count: sortedResults.length, // スクリーニング後の件数（= data.length）
+        normalization_failed: normalizationFailedCount, // 正規化失敗件数
         source, // データソース（live / mock / cache）
         gate: searchResponse.gate || 'searchable-only', // P0-2-1: 品質ゲート
         // KPI計測用: 応答時間をフロントに返す（ユーザー体感把握用）

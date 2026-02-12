@@ -609,6 +609,19 @@ subsidyPages.get('/subsidies', (c) => {
       </div>
     </div>
     
+    <!-- もっと読み込む -->
+    <div id="load-more-container" class="hidden mt-6 text-center">
+      <div id="load-more-info" class="text-sm text-gray-500 mb-2"></div>
+      <button id="load-more-btn" onclick="loadMoreResults()" 
+              class="bg-green-600 text-white px-6 py-3 rounded-lg hover:bg-green-700 transition-colors shadow-md">
+        <i class="fas fa-plus-circle mr-2"></i>もっと読み込む
+      </button>
+      <div id="load-more-loading" class="hidden">
+        <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-green-600 mx-auto"></div>
+        <p class="mt-2 text-sm text-gray-500">追加読み込み中...</p>
+      </div>
+    </div>
+    
     <!-- ページネーション -->
     <div id="pagination" class="hidden mt-6 flex justify-center space-x-2">
     </div>
@@ -632,6 +645,11 @@ subsidyPages.get('/subsidies', (c) => {
       let filteredResults = []; // フィルタ済み結果キャッシュ
       let statusCounts = { PROCEED: 0, CAUTION: 0, NO: 0 }; // ステータスカウントキャッシュ
       const isMobile = window.innerWidth < 640; // モバイル判定
+      
+      // ===== サーバー側ページネーション =====
+      let currentMeta = null;   // 最新のmetaデータ
+      let allLoadedResults = []; // サーバーから読み込んだ全結果（累積）
+      let isLoadingMore = false; // 追加読み込み中フラグ
       
       // 検索モード切替
       // ⚠️ 重要: 「全件表示」モードはソート順を変更するだけでなく、表示件数も500件に自動設定
@@ -1001,13 +1019,17 @@ subsidyPages.get('/subsidies', (c) => {
         }
         
         currentPage = page;
+        displayPage = 1; // 新しい検索時はクライアント表示ページをリセット
+        allLoadedResults = []; // 累積結果をリセット
+        currentMeta = null;
+        
         var limitEl = document.getElementById('limit');
         var limitValue = limitEl ? limitEl.value : '50';
         // 'all' または無効な値の場合は500（バックエンド最大値）を使用
         var limit = (limitValue === 'all' || isNaN(parseInt(limitValue))) ? 500 : Math.min(parseInt(limitValue), 500);
         // limit が 0 以下の場合は 50 をデフォルトとして使用
         if (limit <= 0) limit = 50;
-        var offset = (page - 1) * limit;
+        var offset = 0; // 新規検索は常にoffset=0
         
         var keywordEl = document.getElementById('keyword');
         var acceptanceEl = document.getElementById('acceptance');
@@ -1036,8 +1058,11 @@ subsidyPages.get('/subsidies', (c) => {
           const res = await api('/api/subsidies/search?' + params);
           
           if (res.success) {
+            allLoadedResults = res.data; // 初回結果を保存
             currentResults = res.data;
+            currentMeta = res.meta;
             renderResults(res.data, res.meta);
+            updateLoadMoreButton(res.meta);
           } else {
             document.getElementById('subsidies-list').innerHTML = 
               '<div class="bg-red-50 rounded-lg p-4 text-red-600"><i class="fas fa-exclamation-circle mr-2"></i>' + 
@@ -1049,6 +1074,93 @@ subsidyPages.get('/subsidies', (c) => {
             '<div class="bg-red-50 rounded-lg p-4 text-red-600"><i class="fas fa-exclamation-circle mr-2"></i>検索中にエラーが発生しました</div>';
         } finally {
           document.getElementById('loading').classList.add('hidden');
+        }
+      }
+      
+      // もっと読み込む機能
+      window.loadMoreResults = async function() {
+        if (isLoadingMore || !currentMeta || !currentMeta.has_more) return;
+        
+        isLoadingMore = true;
+        var btn = document.getElementById('load-more-btn');
+        var loading = document.getElementById('load-more-loading');
+        btn.classList.add('hidden');
+        loading.classList.remove('hidden');
+        
+        try {
+          var companyId = document.getElementById('company-select').value;
+          var limitEl = document.getElementById('limit');
+          var limitValue = limitEl ? limitEl.value : '50';
+          var limit = (limitValue === 'all' || isNaN(parseInt(limitValue))) ? 500 : Math.min(parseInt(limitValue), 500);
+          if (limit <= 0) limit = 50;
+          
+          // 次のページのoffsetを計算
+          var nextOffset = (currentMeta.offset || 0) + (currentMeta.limit || limit);
+          
+          var keywordEl = document.getElementById('keyword');
+          var acceptanceEl = document.getElementById('acceptance');
+          var sortEl = document.getElementById('sort');
+          var prefectureEl = document.getElementById('prefecture-filter');
+          
+          var params = new URLSearchParams({
+            company_id: companyId,
+            keyword: keywordEl ? keywordEl.value || '' : '',
+            acceptance: acceptanceEl ? acceptanceEl.value || '1' : '1',
+            sort: sortEl ? sortEl.value || 'score' : 'score',
+            order: sortEl && sortEl.value === 'score' ? 'DESC' : 'ASC',
+            limit: limit.toString(),
+            offset: nextOffset.toString()
+          });
+          
+          var prefectureValue = prefectureEl ? prefectureEl.value : '';
+          if (prefectureValue) {
+            params.set('prefecture', prefectureValue);
+          }
+          
+          const res = await api('/api/subsidies/search?' + params);
+          
+          if (res.success && res.data.length > 0) {
+            // 累積結果に追加
+            allLoadedResults = allLoadedResults.concat(res.data);
+            currentResults = allLoadedResults;
+            currentMeta = res.meta;
+            
+            // 再描画（累積結果で）
+            renderResults(allLoadedResults, {
+              ...res.meta,
+              // meta.total は全体件数のまま
+              total: res.meta.total,
+            });
+            updateLoadMoreButton(res.meta);
+          } else {
+            // 追加データなし
+            updateLoadMoreButton({ ...currentMeta, has_more: false });
+          }
+        } catch (e) {
+          console.error('Load more error:', e);
+          btn.classList.remove('hidden');
+        } finally {
+          isLoadingMore = false;
+          loading.classList.add('hidden');
+        }
+      }
+      
+      // 「もっと読み込む」ボタンの表示更新
+      function updateLoadMoreButton(meta) {
+        var container = document.getElementById('load-more-container');
+        var btn = document.getElementById('load-more-btn');
+        var info = document.getElementById('load-more-info');
+        
+        if (meta && meta.has_more) {
+          container.classList.remove('hidden');
+          btn.classList.remove('hidden');
+          var loadedCount = allLoadedResults.length;
+          var totalCount = meta.total || 0;
+          var remaining = totalCount - ((meta.offset || 0) + (meta.limit || 500));
+          if (remaining < 0) remaining = 0;
+          info.textContent = loadedCount + '件読み込み済み / 該当' + totalCount.toLocaleString() + '件（残り約' + remaining.toLocaleString() + '件）';
+        } else {
+          container.classList.add('hidden');
         }
       }
       
@@ -1115,12 +1227,20 @@ subsidyPages.get('/subsidies', (c) => {
         
         // サマリー更新（キャッシュされたカウントを使用）
         document.getElementById('result-summary').classList.remove('hidden');
-        // 件数表示: 取得件数（スクリーニング後）/ API総件数
+        // 件数表示: 取得・スクリーニング済み件数 / API総件数
         var displayedCount = filteredResults.length;
         var apiTotal = meta?.total || filteredResults.length;
+        var screenedCount = meta?.screened_count || displayedCount;
+        var fetchedCount = meta?.fetched_count || screenedCount;
+        var normFailedCount = meta?.normalization_failed || 0;
         var countDisplay = document.getElementById('result-count-display');
-        if (apiTotal > displayedCount) {
-          countDisplay.innerHTML = '<strong>' + displayedCount + '</strong>件を表示中（該当 <strong>' + apiTotal.toLocaleString() + '</strong>件）';
+        
+        // allLoadedResults は累積読み込み件数
+        var totalLoaded = allLoadedResults.length;
+        
+        if (apiTotal > totalLoaded) {
+          // まだ全件読み込んでいない場合
+          countDisplay.innerHTML = '<strong>' + totalLoaded + '</strong>件を読み込み済み（該当 <strong>' + apiTotal.toLocaleString() + '</strong>件中）';
         } else {
           countDisplay.innerHTML = '<strong>' + displayedCount + '</strong>件の補助金が見つかりました';
         }

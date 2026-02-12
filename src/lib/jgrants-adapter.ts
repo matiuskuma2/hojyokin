@@ -255,6 +255,10 @@ export class JGrantsAdapter {
         query += ` ORDER BY CASE WHEN s.acceptance_end IS NULL THEN 1 ELSE 0 END, s.acceptance_end ASC, c.id ASC`;
       }
       
+      // ページネーション前のWHERE句をカウント用に保存
+      const queryBeforePagination = query;
+      const bindingsBeforePagination = [...bindings];
+      
       // ページネーション
       const limit = params.limit || 20;
       const offset = params.offset || 0;
@@ -271,15 +275,13 @@ export class JGrantsAdapter {
       // SSOT行をSubsidyオブジェクトに変換
       const subsidies = subsidyRows.map(row => this.ssotRowToSubsidy(row));
       
-      // 総件数を取得（別クエリ）
-      const countQuery = `
-        SELECT COUNT(*) as count
-        FROM subsidy_canonical c
-        JOIN subsidy_snapshot s ON s.id = c.latest_snapshot_id
-        WHERE c.is_active = 1
-        ${!params.includeUnready ? 'AND s.is_accepting = 1' : ''}
-      `;
-      const countResult = await this.db.prepare(countQuery).first<{ count: number }>();
+      // 総件数を取得（同じWHERE句を使用してフィルタ条件込みの正確なカウント）
+      // queryBeforePagination にはキーワード・地域・受付中フィルタが全て含まれる
+      const countQuery = queryBeforePagination.replace(
+        /SELECT[\s\S]*?FROM subsidy_canonical/,
+        'SELECT COUNT(*) as count FROM subsidy_canonical'
+      ).replace(/ORDER BY[\s\S]*$/, ''); // ORDER BY以降を削除
+      const countResult = await this.db.prepare(countQuery).bind(...bindingsBeforePagination).first<{ count: number }>();
       const totalCount = countResult?.count || 0;
       
       return {
