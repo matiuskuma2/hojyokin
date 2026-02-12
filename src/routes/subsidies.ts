@@ -266,25 +266,97 @@ subsidies.get('/search', requireCompanyAccess(), async (c) => {
       // ============================================================
       // Cache Backend 高速パス: 正規化をスキップ
       // cache行から直接 NormalizedSubsidyDetail を構築してスクリーニング
+      //
+      // 地雷1対策: canonical_id を1バッチSQLで一括解決する
+      //   → 解決できないものは canonical_id=null とし evaluation_runs に保存しない
+      //   → SSOT Gate（canonical_id固定）を壊さない
       // ============================================================
       console.log('[Search] STEP4-FAST - cache backend: building NSD from search results directly');
       const nsdStartTime = Date.now();
       
       fetchedCount = jgrantsResults.length;
       
-      // cache行からminimal NormalizedSubsidyDetail を構築
+      // --------------------------------------------------
+      // STEP4a: canonical_id 一括解決（バッチSQL）
+      // subsidy_cache.id → subsidy_canonical.latest_cache_id でマッピング
+      // D1 の IN 句制限を考慮し100件ずつチャンク実行
+      // --------------------------------------------------
+      const cacheIds = jgrantsResults.map(r => r.id);
+      const canonicalMap = new Map<string, { canonical_id: string; snapshot_id: string | null }>();
+      const CHUNK_SIZE = 100;
+      
+      for (let i = 0; i < cacheIds.length; i += CHUNK_SIZE) {
+        const chunk = cacheIds.slice(i, i + CHUNK_SIZE);
+        const placeholders = chunk.map(() => '?').join(',');
+        try {
+          const rows = await db.prepare(`
+            SELECT id AS canonical_id, latest_cache_id, latest_snapshot_id
+            FROM subsidy_canonical
+            WHERE latest_cache_id IN (${placeholders})
+          `).bind(...chunk).all();
+          
+          for (const row of (rows.results || []) as any[]) {
+            canonicalMap.set(row.latest_cache_id, {
+              canonical_id: row.canonical_id,
+              snapshot_id: row.latest_snapshot_id || null,
+            });
+          }
+        } catch (batchErr) {
+          console.warn(`[Search] canonical batch resolve chunk ${i} failed:`, batchErr);
+        }
+      }
+      
+      // source_link 経由でも解決を試みる（canonical.latest_cache_id がない場合のフォールバック）
+      const unresolvedIds = cacheIds.filter(id => !canonicalMap.has(id));
+      if (unresolvedIds.length > 0) {
+        for (let i = 0; i < unresolvedIds.length; i += CHUNK_SIZE) {
+          const chunk = unresolvedIds.slice(i, i + CHUNK_SIZE);
+          const placeholders = chunk.map(() => '?').join(',');
+          try {
+            const rows = await db.prepare(`
+              SELECT sl.source_id, sl.canonical_id, c.latest_snapshot_id
+              FROM subsidy_source_link sl
+              JOIN subsidy_canonical c ON c.id = sl.canonical_id
+              WHERE sl.source_type = 'jgrants' AND sl.source_id IN (${placeholders})
+            `).bind(...chunk).all();
+            
+            for (const row of (rows.results || []) as any[]) {
+              if (!canonicalMap.has(row.source_id)) {
+                canonicalMap.set(row.source_id, {
+                  canonical_id: row.canonical_id,
+                  snapshot_id: row.latest_snapshot_id || null,
+                });
+              }
+            }
+          } catch (batchErr) {
+            console.warn(`[Search] source_link batch resolve chunk ${i} failed:`, batchErr);
+          }
+        }
+      }
+      
+      const resolvedCount = canonicalMap.size;
+      const unresolvedCount = cacheIds.length - resolvedCount;
+      console.log(`[Search] STEP4a canonical resolve: ${resolvedCount}/${cacheIds.length} resolved, ${unresolvedCount} unresolved`);
+      
+      // --------------------------------------------------
+      // STEP4b: minimal NSD 構築（canonical_id 確定済み）
+      // --------------------------------------------------
       const minimalNSDs: NormalizedSubsidyDetail[] = jgrantsResults.map(result => {
         const r = result as any;
+        const resolved = canonicalMap.get(result.id);
+        
         return {
           schema_version: '1.0' as const,
           ids: {
             input_id: result.id,
-            canonical_id: r.canonical_id || result.id,
+            // 地雷1対策: canonical_id はバッチ解決の結果を使用
+            // 解決できない場合は null（偽装しない）
+            canonical_id: resolved?.canonical_id || null as any,
             cache_id: result.id,
-            snapshot_id: null,
+            snapshot_id: resolved?.snapshot_id || null,
           },
           source: {
-            primary_source_type: r.source_type || 'jgrants' as any,
+            primary_source_type: 'jgrants' as any,
             primary_source_id: result.id,
             links: [],
           },
@@ -357,22 +429,34 @@ subsidies.get('/search', requireCompanyAccess(), async (c) => {
       console.log(`[Search] STEP6 complete - sorted ${sortedResultsV2.length} results`);
       
       // フロントエンド互換形式に変換
-      sortedResults = sortedResultsV2.map(v2Result => ({
-        subsidy: {
-          id: v2Result.subsidy_canonical_id,
-          source: 'jgrants' as const,
-          title: v2Result.subsidy_title,
-          subsidy_max_limit: v2Result.subsidy_summary.subsidy_max_limit,
-          subsidy_rate: v2Result.subsidy_summary.subsidy_rate_text,
-          target_area_search: v2Result.subsidy_summary.target_area_text,
-          acceptance_end_datetime: v2Result.subsidy_summary.acceptance_end,
-          wall_chat_ready: v2Result.subsidy_summary.wall_chat_ready,
-          canonical_id: v2Result.subsidy_canonical_id,
-          source_id: v2Result.subsidy_canonical_id,
-        },
-        evaluation: v2Result.evaluation,
-        missing_fields: v2Result.missing_fields,
-      }));
+      // 地雷1対策: canonical_id が解決できたものだけ正式ID、できないものは cache_id で表示（ただし評価保存対象外）
+      sortedResults = sortedResultsV2.map(v2Result => {
+        const cacheId = minimalNSDs.find(n => n.ids.canonical_id === v2Result.subsidy_canonical_id || n.ids.cache_id === v2Result.subsidy_canonical_id)?.ids.cache_id || v2Result.subsidy_canonical_id;
+        const resolved = canonicalMap.get(cacheId);
+        const hasCanonical = !!resolved;
+        
+        return {
+          subsidy: {
+            // 一覧表示用ID: canonical解決済みならcanonical_id、未解決ならcache_id
+            id: resolved?.canonical_id || cacheId,
+            source: 'jgrants' as const,
+            title: v2Result.subsidy_title,
+            subsidy_max_limit: v2Result.subsidy_summary.subsidy_max_limit,
+            subsidy_rate: v2Result.subsidy_summary.subsidy_rate_text,
+            target_area_search: v2Result.subsidy_summary.target_area_text,
+            acceptance_end_datetime: v2Result.subsidy_summary.acceptance_end,
+            wall_chat_ready: v2Result.subsidy_summary.wall_chat_ready,
+            canonical_id: resolved?.canonical_id || null,
+            source_id: cacheId,
+            // 地雷2対策: 簡易判定フラグ（eligibility_rulesなし）
+            screening_mode: 'fast' as const,
+          },
+          evaluation: v2Result.evaluation,
+          missing_fields: v2Result.missing_fields,
+          // 内部フラグ: canonical解決済みか
+          _has_canonical: hasCanonical,
+        };
+      });
       
       screeningVersion = 'v2-cache';
       
@@ -493,43 +577,61 @@ subsidies.get('/search', requireCompanyAccess(), async (c) => {
     // 評価結果をD1に保存（バッチ）
     // Gate-A: screening_version を保存
     // Gate-B: canonical_id + source_id + cache_id を分離保存
+    // Gate-C: canonical_id が確定できないものは保存しない（SSOT Gate準拠）
     // ============================================================
     if (sortedResults.length > 0) {
-      const evaluationStatements = sortedResults.map((result: any) => {
-        const evalId = uuidv4();
-        
-        const canonicalId = result.subsidy?.canonical_id || result.subsidy?.id;
-        const sourceId = result.subsidy?.source_id || null;
-        const cacheId = isCacheBackend ? result.subsidy?.id : null;
-        
-        return db.prepare(`
-          INSERT OR REPLACE INTO evaluation_runs 
-          (id, company_id, subsidy_id, subsidy_source_id, subsidy_cache_id, 
-           status, match_score, match_reasons, risk_flags, explanation, 
-           screening_version, missing_fields_json, created_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
-        `).bind(
-          evalId,
-          companyId,
-          canonicalId,
-          sourceId,
-          cacheId,
-          result.evaluation.status,
-          result.evaluation.score,
-          JSON.stringify(result.evaluation.match_reasons),
-          JSON.stringify(result.evaluation.risk_flags),
-          result.evaluation.explanation,
-          screeningVersion,
-          JSON.stringify(result.missing_fields || [])
-        );
-      });
+      // 地雷1対策: canonical_id 確定済みの結果のみ evaluation_runs に保存
+      const savableResults = isCacheBackend
+        ? sortedResults.filter((r: any) => r._has_canonical !== false && r.subsidy?.canonical_id)
+        : sortedResults;
       
-      await db.batch(evaluationStatements);
+      if (savableResults.length < sortedResults.length) {
+        console.log(`[Search] evaluation_runs: saving ${savableResults.length}/${sortedResults.length} (${sortedResults.length - savableResults.length} skipped: no canonical_id)`);
+      }
+      
+      if (savableResults.length > 0) {
+        const evaluationStatements = savableResults.map((result: any) => {
+          const evalId = uuidv4();
+          
+          const canonicalId = result.subsidy?.canonical_id || result.subsidy?.id;
+          const sourceId = result.subsidy?.source_id || null;
+          const cacheId = isCacheBackend ? (result.subsidy?.source_id || result.subsidy?.id) : null;
+          
+          return db.prepare(`
+            INSERT OR REPLACE INTO evaluation_runs 
+            (id, company_id, subsidy_id, subsidy_source_id, subsidy_cache_id, 
+             status, match_score, match_reasons, risk_flags, explanation, 
+             screening_version, missing_fields_json, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+          `).bind(
+            evalId,
+            companyId,
+            canonicalId,
+            sourceId,
+            cacheId,
+            result.evaluation.status,
+            result.evaluation.score,
+            JSON.stringify(result.evaluation.match_reasons),
+            JSON.stringify(result.evaluation.risk_flags),
+            result.evaluation.explanation,
+            screeningVersion,
+            JSON.stringify(result.missing_fields || [])
+          );
+        });
+        
+        await db.batch(evaluationStatements);
+      }
     }
+    
+    // _has_canonical は内部フラグなのでレスポンスから除外
+    const cleanedResults = sortedResults.map((r: any) => {
+      const { _has_canonical, ...rest } = r;
+      return rest;
+    });
     
     const responseData: ApiResponse<MatchResult[]> = {
       success: true,
-      data: sortedResults,
+      data: cleanedResults,
       meta: {
         total: totalCount,
         page: Math.floor(offset / limit) + 1,
@@ -539,17 +641,20 @@ subsidies.get('/search', requireCompanyAccess(), async (c) => {
         // 件数内訳（フロントエンドの正確な表示に必要）
         fetched_count: fetchedCount,         // API/DBから取得した件数
         normalized_count: normalizedCount,    // 正規化成功件数
-        screened_count: sortedResults.length, // スクリーニング後の件数（= data.length）
+        screened_count: cleanedResults.length, // スクリーニング後の件数（= data.length）
         normalization_failed: normalizationFailedCount, // 正規化失敗件数
         source, // データソース（live / mock / cache）
         gate: searchResponse.gate || 'searchable-only', // P0-2-1: 品質ゲート
+        // 地雷1/2対策: スクリーニングモード情報
+        screening_mode: isCacheBackend ? 'fast' : 'precise', // fast=簡易判定, precise=精密判定
+        screening_version: screeningVersion,
         // KPI計測用: 応答時間をフロントに返す（ユーザー体感把握用）
         perf_total_ms: totalSearchTime,
       },
     };
     
     // キャッシュに保存（同接1000対策）
-    if (!noCache && companyId && sortedResults.length > 0) {
+    if (!noCache && companyId && cleanedResults.length > 0) {
       try {
         const cacheKey = generateSearchCacheKey({
           companyId,

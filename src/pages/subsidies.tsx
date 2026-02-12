@@ -1146,6 +1146,7 @@ subsidyPages.get('/subsidies', (c) => {
       }
       
       // 「もっと読み込む」ボタンの表示更新
+      // 地雷3対策: 件数表示を3カウント分離（混ぜない）
       function updateLoadMoreButton(meta) {
         var container = document.getElementById('load-more-container');
         var btn = document.getElementById('load-more-btn');
@@ -1156,11 +1157,22 @@ subsidyPages.get('/subsidies', (c) => {
           btn.classList.remove('hidden');
           var loadedCount = allLoadedResults.length;
           var totalCount = meta.total || 0;
-          var remaining = totalCount - ((meta.offset || 0) + (meta.limit || 500));
-          if (remaining < 0) remaining = 0;
-          info.textContent = loadedCount + '件読み込み済み / 該当' + totalCount.toLocaleString() + '件（残り約' + remaining.toLocaleString() + '件）';
+          // 地雷3対策: サーバー取得の残りを正しく計算
+          var serverFetched = (meta.offset || 0) + (meta.limit || 500);
+          var remaining = Math.max(0, totalCount - serverFetched);
+          info.innerHTML = 
+            '<span class="font-medium">' + loadedCount + '</span>件読み込み済み' +
+            ' / 該当 <span class="font-medium">' + totalCount.toLocaleString() + '</span>件' +
+            '<span class="text-gray-400 ml-1">（残り約' + remaining.toLocaleString() + '件）</span>';
         } else {
-          container.classList.add('hidden');
+          if (allLoadedResults.length > 0 && meta) {
+            // 全件読み込み完了
+            container.classList.remove('hidden');
+            btn.classList.add('hidden');
+            info.innerHTML = '<i class="fas fa-check-circle text-green-500 mr-1"></i>全 ' + allLoadedResults.length + '件を読み込み済み';
+          } else {
+            container.classList.add('hidden');
+          }
         }
       }
       
@@ -1227,22 +1239,29 @@ subsidyPages.get('/subsidies', (c) => {
         
         // サマリー更新（キャッシュされたカウントを使用）
         document.getElementById('result-summary').classList.remove('hidden');
-        // 件数表示: 取得・スクリーニング済み件数 / API総件数
+        
+        // 地雷3対策: 3カウント表記を明確に分離
+        // ① 該当総数（DB条件一致）= meta.total
+        // ② 読み込み済み（サーバー取得累計）= allLoadedResults.length
+        // ③ 表示中（クライアントフィルタ後）= filteredResults.length
         var displayedCount = filteredResults.length;
         var apiTotal = meta?.total || filteredResults.length;
-        var screenedCount = meta?.screened_count || displayedCount;
-        var fetchedCount = meta?.fetched_count || screenedCount;
-        var normFailedCount = meta?.normalization_failed || 0;
+        var totalLoaded = allLoadedResults.length;
         var countDisplay = document.getElementById('result-count-display');
         
-        // allLoadedResults は累積読み込み件数
-        var totalLoaded = allLoadedResults.length;
+        // 地雷2対策: 簡易判定モードの場合バッジを表示
+        var screeningMode = meta?.screening_mode || 'precise';
+        var screeningBadge = screeningMode === 'fast' 
+          ? ' <span class="px-1.5 py-0.5 bg-blue-100 text-blue-700 rounded text-xs" title="要件データなしの簡易判定です。詳細ページで精密な判定が可能です"><i class="fas fa-bolt mr-0.5"></i>簡易判定</span>'
+          : '';
         
         if (apiTotal > totalLoaded) {
-          // まだ全件読み込んでいない場合
-          countDisplay.innerHTML = '<strong>' + totalLoaded + '</strong>件を読み込み済み（該当 <strong>' + apiTotal.toLocaleString() + '</strong>件中）';
+          // まだ全件読み込んでいない
+          countDisplay.innerHTML = '表示 <strong>' + displayedCount + '</strong>件' +
+            ' / 読み込み <strong>' + totalLoaded + '</strong>件' +
+            ' / 該当 <strong>' + apiTotal.toLocaleString() + '</strong>件' + screeningBadge;
         } else {
-          countDisplay.innerHTML = '<strong>' + displayedCount + '</strong>件の補助金が見つかりました';
+          countDisplay.innerHTML = '<strong>' + displayedCount + '</strong>件の補助金が見つかりました' + screeningBadge;
         }
         document.getElementById('data-source').textContent = 'データソース: ' + (meta?.source || 'API');
         
@@ -1308,6 +1327,9 @@ subsidyPages.get('/subsidies', (c) => {
           const safeOrg = escapeHtml(s.subsidy_executing_organization || '事務局情報なし');
           const safeWhyMatched = escapeHtml(whyMatched);
           
+          // 地雷2対策: screening_mode = 'fast' の場合は簡易判定バッジ
+          const isFastScreening = s.screening_mode === 'fast';
+          
           // ===== モバイル用コンパクトカード vs デスクトップ用フルカード =====
           const companyId = encodeURIComponent(document.getElementById('company-select').value);
           const subsidyId = encodeURIComponent(s.id);
@@ -1322,6 +1344,7 @@ subsidyPages.get('/subsidies', (c) => {
                     <i class="fas \${sc.icon}"></i> \${sc.label}
                   </span>
                   <span class="text-xs text-blue-600">\${e.score || 0}%</span>
+                  \${isFastScreening ? '<span class="text-xs text-blue-500" title="簡易判定"><i class="fas fa-bolt"></i></span>' : ''}
                   \${riskFlagsCount > 0 ? \`<span class="text-xs text-orange-600"><i class="fas fa-flag"></i>\${riskFlagsCount}</span>\` : ''}
                 </div>
                 <div class="font-medium text-sm text-gray-800 line-clamp-2 card-title">\${safeTitle}</div>
@@ -1352,6 +1375,11 @@ subsidyPages.get('/subsidies', (c) => {
                       <span class="px-2 py-1 bg-blue-100 text-blue-800 rounded text-xs">
                         スコア: \${e.score || 0}%
                       </span>
+                      \${isFastScreening ? \`
+                        <span class="px-2 py-1 bg-blue-50 text-blue-600 rounded text-xs" title="要件データなしの簡易判定です。詳細ページで精密な判定が可能です">
+                          <i class="fas fa-bolt mr-1"></i>簡易判定
+                        </span>
+                      \` : ''}
                       \${riskFlagsCount > 0 ? \`
                         <span class="px-2 py-1 bg-orange-100 text-orange-800 rounded text-xs">
                           <i class="fas fa-flag mr-1"></i>リスク: \${riskFlagsCount}件
@@ -1470,7 +1498,8 @@ subsidyPages.get('/subsidies', (c) => {
       // ===== ページ切替関数（クライアント側ページネーション用） =====
       window.goToPage = function(page) {
         displayPage = page;
-        renderResults(currentResults, { total: currentResults.length, source: 'cache' });
+        // 地雷3対策: meta情報を保持（currentMeta を使う）
+        renderResults(currentResults, currentMeta || { total: currentResults.length, source: 'cache' });
         // スクロールをトップに
         document.getElementById('subsidies-list').scrollIntoView({ behavior: 'smooth', block: 'start' });
       };
@@ -1575,7 +1604,8 @@ subsidyPages.get('/subsidies', (c) => {
       if (statusFilterEl) {
         statusFilterEl.addEventListener('change', () => {
           displayPage = 1; // ページをリセット
-          renderResults(currentResults, null);
+          // 地雷3対策: meta情報を保持
+          renderResults(currentResults, currentMeta || null);
         });
       }
       
