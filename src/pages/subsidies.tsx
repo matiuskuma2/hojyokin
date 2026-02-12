@@ -432,14 +432,12 @@ subsidyPages.get('/subsidies', (c) => {
                 </select>
               </div>
               <div>
-                <label class="block text-sm font-medium text-gray-700 mb-1">表示件数</label>
+                <label class="block text-sm font-medium text-gray-700 mb-1">取得件数</label>
                 <select id="limit" class="w-full px-3 py-2 border rounded-md text-sm">
-                  <option value="20">20件</option>
-                  <option value="50" selected>50件</option>
+                  <option value="50">50件</option>
                   <option value="100">100件</option>
                   <option value="200">200件</option>
-                  <option value="500">500件</option>
-                  <option value="all">全件（最大500件）</option>
+                  <option value="500" selected>500件</option>
                 </select>
               </div>
             </div>
@@ -561,7 +559,7 @@ subsidyPages.get('/subsidies', (c) => {
     <div id="result-summary" class="hidden mb-4">
       <div class="flex items-center justify-between">
         <div class="text-sm text-gray-600">
-          <span id="result-count">0</span>件の補助金が見つかりました
+          <span id="result-count-display"></span>
           <span id="data-source" class="ml-2 px-2 py-0.5 bg-gray-100 rounded text-xs"></span>
         </div>
         <div class="flex space-x-2">
@@ -1117,7 +1115,15 @@ subsidyPages.get('/subsidies', (c) => {
         
         // サマリー更新（キャッシュされたカウントを使用）
         document.getElementById('result-summary').classList.remove('hidden');
-        document.getElementById('result-count').textContent = filteredResults.length;
+        // 件数表示: 取得件数（スクリーニング後）/ API総件数
+        var displayedCount = filteredResults.length;
+        var apiTotal = meta?.total || filteredResults.length;
+        var countDisplay = document.getElementById('result-count-display');
+        if (apiTotal > displayedCount) {
+          countDisplay.innerHTML = '<strong>' + displayedCount + '</strong>件を表示中（該当 <strong>' + apiTotal.toLocaleString() + '</strong>件）';
+        } else {
+          countDisplay.innerHTML = '<strong>' + displayedCount + '</strong>件の補助金が見つかりました';
+        }
         document.getElementById('data-source').textContent = 'データソース: ' + (meta?.source || 'API');
         
         document.getElementById('count-proceed').textContent = statusCounts.PROCEED;
@@ -1297,7 +1303,7 @@ subsidyPages.get('/subsidies', (c) => {
           let pagHtml = \`<div class="flex items-center justify-center gap-2 flex-wrap pagination-mobile">\`;
           
           // ページ情報表示
-          pagHtml += \`<span class="text-sm text-gray-600 w-full text-center mb-2 sm:w-auto sm:mb-0">\${filteredResults.length}件中 \${startIdx + 1}-\${Math.min(startIdx + PAGE_SIZE, filteredResults.length)}件</span>\`;
+          pagHtml += \`<span class="text-sm text-gray-600 w-full text-center mb-2 sm:w-auto sm:mb-0">\${filteredResults.length}件中 \${startIdx + 1}-\${Math.min(startIdx + PAGE_SIZE, filteredResults.length)}件を表示</span>\`;
           
           // 前へボタン
           if (displayPage > 1) {
