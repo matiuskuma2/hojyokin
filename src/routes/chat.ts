@@ -1421,21 +1421,19 @@ chat.post('/sessions/:id/message', async (c) => {
           };
           promptForAI = `${retryHints[answerValidation.reason] || 'ユーザーの回答が質問の形式に合っていません。丁寧に聞き直してください。'}
 
-質問: 「${nextQuestion.label}」 (回答タイプ: ${nextQuestion.input_type})
-
-重要: ユーザーを責めない。「もう少し詳しく」「具体的に」と優しく促す。回答例を示すとよい。`;
+重要: ユーザーを責めない。「もう少し詳しく」「具体的に」と優しく促す。回答例を示すとよい。200文字以内で簡潔に。マークダウン記法は使わない。`;
         } else {
-          // 通常の次の質問への遷移
+          // 通常の次の質問への遷移（AIはリアクションのみ、質問はシステムが表示）
           promptForAI = `ユーザーの回答: 「${sanitizedContent}」
 
-この回答に対する短い反応（共感・補足）を入れてから、次の質問を自然に聴いてください。
-次の質問: 「${nextQuestion.label}」 (回答タイプ: ${nextQuestion.input_type})
+この回答に対して、共感・補足のリアクションを1〜2文で返してください。
 
 重要ルール:
-- 「ありがとうございます。次の質問です。」のような機械的な応答は禁止
-- ユーザーの回答内容に触れて、共感や補足情報を1-2文入れる
-- その上で自然な流れで次の質問に移る
-- 回答タイプに応じた回答例を添える（numberなら「例: 300万円」など）`;
+- 質問文は絶対に含めないこと（「〜ですか？」「〜でしょうか？」禁止）
+- 次の質問はシステムが自動表示するので、あなたは質問しない
+- ユーザーの回答内容に触れて、共感や補足情報を簡潔に述べるだけ
+- 200文字以内で簡潔に
+- マークダウン記法は使わない`;
         }
         
         try {
@@ -1510,6 +1508,13 @@ chat.post('/sessions/:id/message', async (c) => {
         // Phase 20: フロントエンドにバリデーション結果を通知
         answer_invalid: answerWasInvalid ? true : undefined,
         answer_invalid_reason: answerValidation.reason || undefined,
+        // 次の質問情報（フロントエンドがinput_type判定に使用）
+        next_question: (mode === 'structured' && !isConsultingMode) ? {
+          key: responseKey,
+          label: nextQuestion?.label || null,
+          input_type: nextQuestion?.input_type || null,
+          options: nextQuestion?.options || null,
+        } : undefined,
       }
     });
     
@@ -1956,25 +1961,25 @@ function buildFallbackStructuredResponse(
   isRetry: boolean,
   retryReason?: string,
 ): string {
-  // バリデーション失敗時: 丁寧に聞き直す
+  // バリデーション失敗時: 丁寧に聞き直す（質問文はフロントエンドUIが表示するため含めない）
   if (isRetry) {
     if (retryReason === 'number_got_boolean' || retryReason === 'number_no_digits') {
       const examples: Record<string, string> = {
-        'employee_count': '例えば「10名」「50」のように教えてください',
-        'annual_revenue': '例えば「5000万円」「3億」のように教えてください',
-        'investment_amount': '例えば「500万円」「1000」のように教えてください',
+        'employee_count': '例えば「10名」「50」のように',
+        'annual_revenue': '例えば「5000万円」「3億」のように',
+        'investment_amount': '例えば「500万円」「1000」のように',
       };
       const hint = Object.entries(examples).find(([k]) => nextQuestion.key.includes(k))?.[1] 
-        || '具体的な数字で教えていただけますか？';
-      return `すみません、この質問は数値でお答えいただけると助かります。${hint}\n\n${nextQuestion.label}`;
+        || '具体的な数字で';
+      return `すみません、この質問は数値でお答えいただけると助かります。${hint}教えてください。`;
     }
     if (retryReason === 'text_got_boolean' || retryReason === 'text_too_short') {
-      return `ありがとうございます。この質問はもう少し具体的に教えていただけると、より的確なアドバイスができます。\n\n${nextQuestion.label}`;
+      return 'ありがとうございます。もう少し具体的に教えていただけると、より的確なアドバイスができます。';
     }
-    return `すみません、もう少し具体的に教えていただけますか？\n\n${nextQuestion.label}`;
+    return 'すみません、もう少し具体的に教えていただけますか？';
   }
   
-  // 通常の応答: 回答に対する反応 + 次の質問
+  // 通常の応答: 回答に対する反応のみ（質問はフロントエンドUIが表示）
   const reactions = [
     'ご回答ありがとうございます。',
     '承知しました。',
@@ -1986,15 +1991,15 @@ function buildFallbackStructuredResponse(
   // 進捗に応じた追加コメント
   let progressComment = '';
   if (remainingCount <= 2) {
-    progressComment = '\nもうすぐ全ての確認が完了します！';
+    progressComment = 'もうすぐ全ての確認が完了します！';
   } else if (remainingCount <= 4) {
-    progressComment = '\n残りわずかです。もう少しお付き合いください。';
+    progressComment = '残りわずかです。もう少しお付き合いください。';
   } else if (answeredCount === 0) {
     progressComment = '';
   }
   
   const reaction = reactions[answeredCount % reactions.length];
-  return `${reaction}${progressComment}\n\n${formatQuestion(nextQuestion)}`;
+  return progressComment ? `${reaction} ${progressComment}` : reaction;
 }
 
 // =====================================================

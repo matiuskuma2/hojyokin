@@ -888,7 +888,14 @@ chatPages.get('/chat', (c) => {
         
         // アシスタントメッセージ表示
         addMessage('assistant', res.data.assistant_message.content);
-        lastQuestionText = res.data.assistant_message.content.split('\\n')[0]; // 最初の行を質問テキストとして保存
+        
+        // 次の質問ラベルを表示（構造化質問フェーズで次の質問がある場合）
+        if (res.data.next_question && res.data.next_question.label && !res.data.consulting_mode) {
+          lastQuestionText = res.data.next_question.label;
+          addMessage('system', res.data.next_question.label, true, '質問');
+        } else {
+          lastQuestionText = res.data.assistant_message.content.split('\\n')[0];
+        }
         
         // Phase 20: バリデーション失敗時は進捗を更新しない（同じ質問を再度聞いている）
         var remaining = res.data.remaining_questions;
@@ -910,16 +917,28 @@ chatPages.get('/chat', (c) => {
         document.getElementById('session-status').innerHTML = 
           '<i class="fas fa-comments mr-1"></i>確認中 (残' + (remaining + 1) + '問)';
         
-        // 次の質問のinput_typeを推測
-        var msgContent = res.data.assistant_message.content;
-        if (msgContent.includes('「はい」または「いいえ」')) {
-          setInputType('boolean');
-        } else if (msgContent.includes('数値でお答え')) {
-          setInputType('number');
-        } else if (msgContent.includes('以下から選択')) {
-          setInputType('boolean'); // select は boolean UIで代用
+        // 次の質問のinput_typeを構造化データから取得
+        if (res.data.next_question && res.data.next_question.input_type) {
+          var nqType = res.data.next_question.input_type;
+          if (nqType === 'boolean') {
+            setInputType('boolean');
+          } else if (nqType === 'number') {
+            setInputType('number');
+          } else if (nqType === 'select') {
+            setInputType('boolean'); // select は boolean UIで代用
+          } else {
+            setInputType('text');
+          }
         } else {
-          setInputType('text');
+          // フォールバック: レスポンステキストから推測
+          var msgContent = res.data.assistant_message.content;
+          if (msgContent.includes('\u300c\u306f\u3044\u300d\u307e\u305f\u306f\u300c\u3044\u3044\u3048\u300d')) {
+            setInputType('boolean');
+          } else if (msgContent.includes('\u6570\u5024\u3067\u304a\u7b54\u3048')) {
+            setInputType('number');
+          } else {
+            setInputType('text');
+          }
         }
         
         // セッション完了チェック
