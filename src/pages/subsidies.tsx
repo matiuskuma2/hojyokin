@@ -1117,7 +1117,7 @@ subsidyPages.get('/subsidies', (c) => {
         
         // サマリー更新（キャッシュされたカウントを使用）
         document.getElementById('result-summary').classList.remove('hidden');
-        document.getElementById('result-count').textContent = meta?.total || filteredResults.length;
+        document.getElementById('result-count').textContent = filteredResults.length;
         document.getElementById('data-source').textContent = 'データソース: ' + (meta?.source || 'API');
         
         document.getElementById('count-proceed').textContent = statusCounts.PROCEED;
