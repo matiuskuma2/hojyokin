@@ -523,6 +523,25 @@ subsidies.get('/search', requireCompanyAccess(), async (c) => {
       screeningVersion = preciseUpgraded.size > 0 ? 'v2-cache+precise' : 'v2-cache';
       preciseCount = preciseUpgraded.size;
       
+      // ============================================================
+      // STEP7: 精密判定結果を含めて再ソート
+      // fastスコアで並んだ順序を、precise昇格後のスコアで補正する
+      // → 精密で「実は高スコア」が上に、「実は低スコア」が下に移動
+      // ============================================================
+      if (preciseUpgraded.size > 0) {
+        console.log('[Search] STEP7 - re-sorting with precise scores');
+        const statusOrder: Record<string, number> = { 'PROCEED': 0, 'CAUTION': 1, 'DO_NOT_PROCEED': 2, 'NO': 2 };
+        
+        sortedResults.sort((a: any, b: any) => {
+          const aStatus = statusOrder[a.evaluation?.status] ?? 2;
+          const bStatus = statusOrder[b.evaluation?.status] ?? 2;
+          if (aStatus !== bStatus) return aStatus - bStatus;
+          return (b.evaluation?.score || 0) - (a.evaluation?.score || 0);
+        });
+        
+        console.log(`[Search] STEP7 complete - re-sorted ${sortedResults.length} items (${preciseUpgraded.size} precise)`);
+      }
+      
     } else {
       // ============================================================
       // SSOT Backend: 従来の正規化 → v2スクリーニング
