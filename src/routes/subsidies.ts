@@ -10,7 +10,7 @@ import { Hono } from 'hono';
 import { v4 as uuidv4 } from 'uuid';
 import type { Env, Variables, Company, Subsidy, ApiResponse, MatchResult, SubsidySearchParams } from '../types';
 import { requireAuth, requireCompanyAccess, getCurrentUser } from '../middleware/auth';
-import { createJGrantsAdapter, getJGrantsMode } from '../lib/jgrants-adapter';
+import { createJGrantsAdapter, getJGrantsMode, getSearchBackend } from '../lib/jgrants-adapter';
 import { JGrantsError } from '../lib/jgrants';
 // v1 screening は廃止。v2 のみ使用 (2026-02-07)
 import { performBatchScreeningV2, sortByStatusV2, sortByScoreV2, type ScreeningResultV2 } from '../lib/screening-v2';
@@ -245,56 +245,119 @@ subsidies.get('/search', requireCompanyAccess(), async (c) => {
       }, 500);
     }
     
-    // 2. P2-3: 検索結果を NormalizedSubsidyDetail に並列変換（Promise.allSettled）
-    console.log('[Search] STEP4 - normalizing subsidies (parallel)');
-    const nsdStartTime = Date.now();
-    const normalizedPromises = jgrantsResults.map(result =>
-      getNormalizedSubsidyDetail(db, result.id, { debug: false })
-        .then(r => ({ result: r, sourceId: result.id }))
-        .catch(err => {
-          console.warn(`[Search] Failed to normalize subsidy ${result.id}:`, err);
-          return { result: null, sourceId: result.id };
-        })
-    );
-    const normalizedResults = await Promise.all(normalizedPromises);
+    // ============================================================
+    // 検索バックエンドに応じた処理分岐
+    // - cache/ssot(fallback to cache): 正規化をスキップし、cache行から直接スクリーニング
+    //   → cache backend の subsidy_cache.id は subsidy_canonical と紐づかないケースが多く、
+    //     getNormalizedSubsidyDetail が全件失敗する問題を回避
+    // - ssot: 正規化 → v2スクリーニング（従来通り）
+    // ============================================================
+    const searchBackend = getSearchBackend(c.env);
+    const isCacheBackend = searchResponse.source === 'cache' || searchResponse.backend === 'cache';
     
-    const normalizedSubsidies: NormalizedSubsidyDetail[] = [];
-    const subsidyIdMapping = new Map<string, { source_id: string; cache_id: string | null; canonical_id: string }>();
+    let sortedResults: any[];
+    let screeningVersion: string;
+    let fetchedCount: number;
+    let normalizedCount: number;
+    let normalizationFailedCount: number;
+    let nsdTime: number = 0;
     
-    for (const { result: normalizedResult, sourceId } of normalizedResults) {
-      if (normalizedResult && normalizedResult.normalized) {
-        normalizedSubsidies.push(normalizedResult.normalized);
-        subsidyIdMapping.set(normalizedResult.normalized.ids.canonical_id, {
-          source_id: sourceId,
-          cache_id: normalizedResult.ref.cache_id,
-          canonical_id: normalizedResult.ref.canonical_id,
-        });
-      }
-    }
-    const nsdTime = Date.now() - nsdStartTime;
-    const fetchedCount = jgrantsResults.length;
-    const normalizedCount = normalizedSubsidies.length;
-    const normalizationFailedCount = fetchedCount - normalizedCount;
-    console.log(`[Search] STEP4 complete - normalized ${normalizedCount}/${fetchedCount} subsidies in ${nsdTime}ms (${normalizationFailedCount} failed)`);
-    
-    // 3. v2 スクリーニング実行（SSOT 入力のみ）
-    console.log('[Search] STEP5 - performing v2 screening');
-    const screeningResultsV2 = performBatchScreeningV2(companySSOT, normalizedSubsidies);
-    console.log(`[Search] STEP5 complete - screening returned ${screeningResultsV2.length} results`);
-    
-    // 4. ソート処理（sort パラメータに応じて切り替え）
-    // sort=score の場合はスコア順、それ以外はステータス順（推奨 > 注意 > 非推奨）
-    console.log(`[Search] STEP6 - sorting by: ${sort}`);
-    const sortedResultsV2 = sort === 'score' 
-      ? sortByScoreV2(screeningResultsV2, order)
-      : sortByStatusV2(screeningResultsV2);
-    console.log(`[Search] STEP6 complete - sorted ${sortedResultsV2.length} results`);
-    
-    // 5. 旧形式 MatchResult への変換（フロントエンド互換）
-    console.log('[Search] STEP7 - converting to frontend format');
-    const sortedResults = sortedResultsV2.map(v2Result => {
-      const mapping = subsidyIdMapping.get(v2Result.subsidy_canonical_id);
-      return {
+    if (isCacheBackend) {
+      // ============================================================
+      // Cache Backend 高速パス: 正規化をスキップ
+      // cache行から直接 NormalizedSubsidyDetail を構築してスクリーニング
+      // ============================================================
+      console.log('[Search] STEP4-FAST - cache backend: building NSD from search results directly');
+      const nsdStartTime = Date.now();
+      
+      fetchedCount = jgrantsResults.length;
+      
+      // cache行からminimal NormalizedSubsidyDetail を構築
+      const minimalNSDs: NormalizedSubsidyDetail[] = jgrantsResults.map(result => {
+        const r = result as any;
+        return {
+          schema_version: '1.0' as const,
+          ids: {
+            input_id: result.id,
+            canonical_id: r.canonical_id || result.id,
+            cache_id: result.id,
+            snapshot_id: null,
+          },
+          source: {
+            primary_source_type: r.source_type || 'jgrants' as any,
+            primary_source_id: result.id,
+            links: [],
+          },
+          acceptance: {
+            is_accepting: r.request_reception_display_flag === 1,
+            acceptance_start: r.acceptance_start_datetime || null,
+            acceptance_end: r.acceptance_end_datetime || null,
+            acceptance_end_reason: null,
+          },
+          display: {
+            title: result.title || '補助金名未設定',
+            issuer_name: r.subsidy_executing_organization || null,
+            target_area_text: r.target_area_search || null,
+            subsidy_max_limit: result.subsidy_max_limit || null,
+            subsidy_rate_text: result.subsidy_rate || null,
+          },
+          overview: {
+            summary: null,
+            purpose: null,
+            target_business: r.target_industry || null,
+          },
+          electronic_application: {
+            is_electronic_application: r.is_electronic_application || null,
+            portal_name: null,
+            portal_url: null,
+            notes: null,
+          },
+          wall_chat: {
+            mode: (r.wall_chat_ready ? 'enabled' : 'unknown') as any,
+            ready: r.wall_chat_ready === true || r.wall_chat_ready === 1,
+            missing: (() => {
+              try {
+                return typeof r.wall_chat_missing === 'string' ? JSON.parse(r.wall_chat_missing) : (r.wall_chat_missing || []);
+              } catch { return []; }
+            })(),
+            questions: [],
+          },
+          content: {
+            eligibility_rules: [],
+            eligible_expenses: { required: [], categories: [], excluded: [], notes: null },
+            required_documents: [],
+            bonus_points: [],
+            required_forms: [],
+            attachments: [],
+          },
+          provenance: {
+            koubo_source_urls: [],
+            pdf_urls: [],
+            pdf_hashes: [],
+            last_normalized_at: new Date().toISOString(),
+          },
+        };
+      });
+      
+      normalizedCount = minimalNSDs.length;
+      normalizationFailedCount = 0;
+      nsdTime = Date.now() - nsdStartTime;
+      console.log(`[Search] STEP4-FAST complete - built ${normalizedCount} NSD from cache in ${nsdTime}ms`);
+      
+      // v2 スクリーニング実行
+      console.log('[Search] STEP5 - performing v2 screening (cache path)');
+      const screeningResultsV2 = performBatchScreeningV2(companySSOT, minimalNSDs);
+      console.log(`[Search] STEP5 complete - screening returned ${screeningResultsV2.length} results`);
+      
+      // ソート処理
+      console.log(`[Search] STEP6 - sorting by: ${sort}`);
+      const sortedResultsV2 = sort === 'score' 
+        ? sortByScoreV2(screeningResultsV2, order)
+        : sortByStatusV2(screeningResultsV2);
+      console.log(`[Search] STEP6 complete - sorted ${sortedResultsV2.length} results`);
+      
+      // フロントエンド互換形式に変換
+      sortedResults = sortedResultsV2.map(v2Result => ({
         subsidy: {
           id: v2Result.subsidy_canonical_id,
           source: 'jgrants' as const,
@@ -304,18 +367,90 @@ subsidies.get('/search', requireCompanyAccess(), async (c) => {
           target_area_search: v2Result.subsidy_summary.target_area_text,
           acceptance_end_datetime: v2Result.subsidy_summary.acceptance_end,
           wall_chat_ready: v2Result.subsidy_summary.wall_chat_ready,
-          // v2 拡張フィールド
           canonical_id: v2Result.subsidy_canonical_id,
-          source_id: mapping?.source_id || v2Result.subsidy_canonical_id,
+          source_id: v2Result.subsidy_canonical_id,
         },
         evaluation: v2Result.evaluation,
-        // v2 拡張: missing_fields
         missing_fields: v2Result.missing_fields,
-      };
-    });
-    
-    // screening_version を記録（Gate-A: v2 使用証跡）
-    const screeningVersion = 'v2';
+      }));
+      
+      screeningVersion = 'v2-cache';
+      
+    } else {
+      // ============================================================
+      // SSOT Backend: 従来の正規化 → v2スクリーニング
+      // ============================================================
+      
+      // 2. P2-3: 検索結果を NormalizedSubsidyDetail に並列変換（Promise.allSettled）
+      console.log('[Search] STEP4 - normalizing subsidies (parallel)');
+      const nsdStartTime = Date.now();
+      const normalizedPromises = jgrantsResults.map(result =>
+        getNormalizedSubsidyDetail(db, result.id, { debug: false })
+          .then(r => ({ result: r, sourceId: result.id }))
+          .catch(err => {
+            console.warn(`[Search] Failed to normalize subsidy ${result.id}:`, err);
+            return { result: null, sourceId: result.id };
+          })
+      );
+      const normalizedResults = await Promise.all(normalizedPromises);
+      
+      const normalizedSubsidies: NormalizedSubsidyDetail[] = [];
+      const subsidyIdMapping = new Map<string, { source_id: string; cache_id: string | null; canonical_id: string }>();
+      
+      for (const { result: normalizedResult, sourceId } of normalizedResults) {
+        if (normalizedResult && normalizedResult.normalized) {
+          normalizedSubsidies.push(normalizedResult.normalized);
+          subsidyIdMapping.set(normalizedResult.normalized.ids.canonical_id, {
+            source_id: sourceId,
+            cache_id: normalizedResult.ref.cache_id,
+            canonical_id: normalizedResult.ref.canonical_id,
+          });
+        }
+      }
+      nsdTime = Date.now() - nsdStartTime;
+      fetchedCount = jgrantsResults.length;
+      normalizedCount = normalizedSubsidies.length;
+      normalizationFailedCount = fetchedCount - normalizedCount;
+      console.log(`[Search] STEP4 complete - normalized ${normalizedCount}/${fetchedCount} subsidies in ${nsdTime}ms (${normalizationFailedCount} failed)`);
+      
+      // 3. v2 スクリーニング実行（SSOT 入力のみ）
+      console.log('[Search] STEP5 - performing v2 screening');
+      const screeningResultsV2 = performBatchScreeningV2(companySSOT, normalizedSubsidies);
+      console.log(`[Search] STEP5 complete - screening returned ${screeningResultsV2.length} results`);
+      
+      // 4. ソート処理（sort パラメータに応じて切り替え）
+      console.log(`[Search] STEP6 - sorting by: ${sort}`);
+      const sortedResultsV2 = sort === 'score' 
+        ? sortByScoreV2(screeningResultsV2, order)
+        : sortByStatusV2(screeningResultsV2);
+      console.log(`[Search] STEP6 complete - sorted ${sortedResultsV2.length} results`);
+      
+      // 5. 旧形式 MatchResult への変換（フロントエンド互換）
+      console.log('[Search] STEP7 - converting to frontend format');
+      sortedResults = sortedResultsV2.map(v2Result => {
+        const mapping = subsidyIdMapping.get(v2Result.subsidy_canonical_id);
+        return {
+          subsidy: {
+            id: v2Result.subsidy_canonical_id,
+            source: 'jgrants' as const,
+            title: v2Result.subsidy_title,
+            subsidy_max_limit: v2Result.subsidy_summary.subsidy_max_limit,
+            subsidy_rate: v2Result.subsidy_summary.subsidy_rate_text,
+            target_area_search: v2Result.subsidy_summary.target_area_text,
+            acceptance_end_datetime: v2Result.subsidy_summary.acceptance_end,
+            wall_chat_ready: v2Result.subsidy_summary.wall_chat_ready,
+            // v2 拡張フィールド
+            canonical_id: v2Result.subsidy_canonical_id,
+            source_id: mapping?.source_id || v2Result.subsidy_canonical_id,
+          },
+          evaluation: v2Result.evaluation,
+          // v2 拡張: missing_fields
+          missing_fields: v2Result.missing_fields,
+        };
+      });
+      
+      screeningVersion = 'v2';
+    }
     
     // === usage_events に検索イベントを必ず記録 ===
     // user は上で既に取得済み（P0-2-1 debug用）
@@ -359,15 +494,13 @@ subsidies.get('/search', requireCompanyAccess(), async (c) => {
     // Gate-A: screening_version を保存
     // Gate-B: canonical_id + source_id + cache_id を分離保存
     // ============================================================
-    if (sortedResultsV2.length > 0) {
-      const evaluationStatements = sortedResultsV2.map(v2Result => {
+    if (sortedResults.length > 0) {
+      const evaluationStatements = sortedResults.map((result: any) => {
         const evalId = uuidv4();
-        const mapping = subsidyIdMapping.get(v2Result.subsidy_canonical_id);
         
-        // Gate-B: canonical_id は必須、source_id / cache_id は別カラム
-        const canonicalId = v2Result.subsidy_canonical_id;
-        const sourceId = mapping?.source_id || null;  // JGrants ID
-        const cacheId = mapping?.cache_id || null;    // subsidy_cache.id
+        const canonicalId = result.subsidy?.canonical_id || result.subsidy?.id;
+        const sourceId = result.subsidy?.source_id || null;
+        const cacheId = isCacheBackend ? result.subsidy?.id : null;
         
         return db.prepare(`
           INSERT OR REPLACE INTO evaluation_runs 
@@ -378,16 +511,16 @@ subsidies.get('/search', requireCompanyAccess(), async (c) => {
         `).bind(
           evalId,
           companyId,
-          canonicalId,           // Gate-B: canonical_id のみ（fallback 禁止）
-          sourceId,              // Gate-B: 元の JGrants ID
-          cacheId,               // Gate-B: subsidy_cache.id
-          v2Result.evaluation.status,
-          v2Result.evaluation.score,
-          JSON.stringify(v2Result.evaluation.match_reasons),
-          JSON.stringify(v2Result.evaluation.risk_flags),
-          v2Result.evaluation.explanation,
-          screeningVersion,      // Gate-A: 'v2' を保存
-          JSON.stringify(v2Result.missing_fields)  // Gate-D: missing_fields を保存
+          canonicalId,
+          sourceId,
+          cacheId,
+          result.evaluation.status,
+          result.evaluation.score,
+          JSON.stringify(result.evaluation.match_reasons),
+          JSON.stringify(result.evaluation.risk_flags),
+          result.evaluation.explanation,
+          screeningVersion,
+          JSON.stringify(result.missing_fields || [])
         );
       });
       
