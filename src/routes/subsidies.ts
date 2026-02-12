@@ -13,7 +13,7 @@ import { requireAuth, requireCompanyAccess, getCurrentUser } from '../middleware
 import { createJGrantsAdapter, getJGrantsMode, getSearchBackend } from '../lib/jgrants-adapter';
 import { JGrantsError } from '../lib/jgrants';
 // v1 screening は廃止。v2 のみ使用 (2026-02-07)
-import { performBatchScreeningV2, sortByStatusV2, sortByScoreV2, type ScreeningResultV2 } from '../lib/screening-v2';
+import { performBatchScreeningV2, performScreeningV2, sortByStatusV2, sortByScoreV2, type ScreeningResultV2 } from '../lib/screening-v2';
 import { getCompanySSOT, type CompanySSOT } from '../lib/ssot/getCompanySSOT';
 import { 
   resolveSubsidyRef, 
@@ -261,6 +261,9 @@ subsidies.get('/search', requireCompanyAccess(), async (c) => {
     let normalizedCount: number;
     let normalizationFailedCount: number;
     let nsdTime: number = 0;
+    let resolvedCount: number = 0;
+    let unresolvedCount: number = 0;
+    let preciseCount: number = 0;
     
     if (isCacheBackend) {
       // ============================================================
@@ -334,8 +337,8 @@ subsidies.get('/search', requireCompanyAccess(), async (c) => {
         }
       }
       
-      const resolvedCount = canonicalMap.size;
-      const unresolvedCount = cacheIds.length - resolvedCount;
+      resolvedCount = canonicalMap.size;
+      unresolvedCount = cacheIds.length - resolvedCount;
       console.log(`[Search] STEP4a canonical resolve: ${resolvedCount}/${cacheIds.length} resolved, ${unresolvedCount} unresolved`);
       
       // --------------------------------------------------
@@ -428,37 +431,97 @@ subsidies.get('/search', requireCompanyAccess(), async (c) => {
         : sortByStatusV2(screeningResultsV2);
       console.log(`[Search] STEP6 complete - sorted ${sortedResultsV2.length} results`);
       
+      // ============================================================
+      // STEP6b: 上位N件だけ精密判定（P0: 速度を壊さず信頼性向上）
+      // canonical_id 解決済みの上位30件に getNormalizedSubsidyDetail を実行
+      // eligibility_rules を含む完全NSDで再スクリーニングし screening_mode='precise' に昇格
+      // ============================================================
+      const PRECISE_TOP_N = 30;
+      const preciseStartTime = Date.now();
+      
+      // canonical_id 解決済みの上位N件を特定
+      const preciseTargets: { index: number; cacheId: string; canonicalId: string }[] = [];
+      for (let i = 0; i < sortedResultsV2.length && preciseTargets.length < PRECISE_TOP_N; i++) {
+        const v2r = sortedResultsV2[i];
+        const nsd = minimalNSDs.find(n => 
+          n.ids.canonical_id === v2r.subsidy_canonical_id || 
+          n.ids.cache_id === v2r.subsidy_canonical_id
+        );
+        const cId = nsd?.ids.cache_id || v2r.subsidy_canonical_id;
+        const resolved = canonicalMap.get(cId);
+        if (resolved) {
+          preciseTargets.push({ index: i, cacheId: cId, canonicalId: resolved.canonical_id });
+        }
+      }
+      
+      // 精密判定: getNormalizedSubsidyDetail → performScreeningV2 で再評価
+      const preciseUpgraded = new Map<number, { nsd: NormalizedSubsidyDetail; screening: ScreeningResultV2 }>();
+      if (preciseTargets.length > 0) {
+        console.log(`[Search] STEP6b - precise re-screening top ${preciseTargets.length} items`);
+        
+        const precisePromises = preciseTargets.map(async (target) => {
+          try {
+            const fullNsd = await getNormalizedSubsidyDetail(db, target.canonicalId, { debug: false });
+            if (fullNsd?.normalized) {
+              const reScreened = performScreeningV2(companySSOT, fullNsd.normalized);
+              return { index: target.index, nsd: fullNsd.normalized, screening: reScreened };
+            }
+          } catch (err) {
+            console.warn(`[Search] STEP6b precise failed for ${target.canonicalId}:`, err);
+          }
+          return null;
+        });
+        
+        const preciseResults = await Promise.all(precisePromises);
+        for (const pr of preciseResults) {
+          if (pr) {
+            preciseUpgraded.set(pr.index, { nsd: pr.nsd, screening: pr.screening });
+          }
+        }
+        
+        const preciseTime = Date.now() - preciseStartTime;
+        console.log(`[Search] STEP6b complete - ${preciseUpgraded.size}/${preciseTargets.length} upgraded to precise in ${preciseTime}ms`);
+      }
+      
       // フロントエンド互換形式に変換
       // 地雷1対策: canonical_id が解決できたものだけ正式ID、できないものは cache_id で表示（ただし評価保存対象外）
-      sortedResults = sortedResultsV2.map(v2Result => {
+      // P0: 精密判定にアップグレードされたものは screening_mode='precise'
+      sortedResults = sortedResultsV2.map((v2Result, idx) => {
         const cacheId = minimalNSDs.find(n => n.ids.canonical_id === v2Result.subsidy_canonical_id || n.ids.cache_id === v2Result.subsidy_canonical_id)?.ids.cache_id || v2Result.subsidy_canonical_id;
         const resolved = canonicalMap.get(cacheId);
         const hasCanonical = !!resolved;
+        
+        // P0: 精密判定にアップグレードされたか？
+        const upgraded = preciseUpgraded.get(idx);
+        const effectiveEval = upgraded ? upgraded.screening.evaluation : v2Result.evaluation;
+        const effectiveMissing = upgraded ? upgraded.screening.missing_fields : v2Result.missing_fields;
+        const effectiveMode = upgraded ? 'precise' as const : 'fast' as const;
         
         return {
           subsidy: {
             // 一覧表示用ID: canonical解決済みならcanonical_id、未解決ならcache_id
             id: resolved?.canonical_id || cacheId,
             source: 'jgrants' as const,
-            title: v2Result.subsidy_title,
-            subsidy_max_limit: v2Result.subsidy_summary.subsidy_max_limit,
-            subsidy_rate: v2Result.subsidy_summary.subsidy_rate_text,
-            target_area_search: v2Result.subsidy_summary.target_area_text,
-            acceptance_end_datetime: v2Result.subsidy_summary.acceptance_end,
-            wall_chat_ready: v2Result.subsidy_summary.wall_chat_ready,
+            title: upgraded ? upgraded.screening.subsidy_title : v2Result.subsidy_title,
+            subsidy_max_limit: upgraded ? upgraded.screening.subsidy_summary.subsidy_max_limit : v2Result.subsidy_summary.subsidy_max_limit,
+            subsidy_rate: upgraded ? upgraded.screening.subsidy_summary.subsidy_rate_text : v2Result.subsidy_summary.subsidy_rate_text,
+            target_area_search: upgraded ? upgraded.screening.subsidy_summary.target_area_text : v2Result.subsidy_summary.target_area_text,
+            acceptance_end_datetime: upgraded ? upgraded.screening.subsidy_summary.acceptance_end : v2Result.subsidy_summary.acceptance_end,
+            wall_chat_ready: upgraded ? upgraded.screening.subsidy_summary.wall_chat_ready : v2Result.subsidy_summary.wall_chat_ready,
             canonical_id: resolved?.canonical_id || null,
             source_id: cacheId,
-            // 地雷2対策: 簡易判定フラグ（eligibility_rulesなし）
-            screening_mode: 'fast' as const,
+            // P0: 精密判定アップグレード済みなら 'precise'、それ以外は 'fast'
+            screening_mode: effectiveMode,
           },
-          evaluation: v2Result.evaluation,
-          missing_fields: v2Result.missing_fields,
+          evaluation: effectiveEval,
+          missing_fields: effectiveMissing,
           // 内部フラグ: canonical解決済みか
           _has_canonical: hasCanonical,
         };
       });
       
-      screeningVersion = 'v2-cache';
+      screeningVersion = preciseUpgraded.size > 0 ? 'v2-cache+precise' : 'v2-cache';
+      preciseCount = preciseUpgraded.size;
       
     } else {
       // ============================================================
@@ -645,9 +708,17 @@ subsidies.get('/search', requireCompanyAccess(), async (c) => {
         normalization_failed: normalizationFailedCount, // 正規化失敗件数
         source, // データソース（live / mock / cache）
         gate: searchResponse.gate || 'searchable-only', // P0-2-1: 品質ゲート
-        // 地雷1/2対策: スクリーニングモード情報
-        screening_mode: isCacheBackend ? 'fast' : 'precise', // fast=簡易判定, precise=精密判定
+        // P0+地雷1/2対策: スクリーニングモード情報
+        // cache backend: 'fast+precise' (上位N件は精密判定済み) or 'fast' (全件簡易)
+        // ssot backend: 'precise' (全件精密)
+        screening_mode: isCacheBackend 
+          ? (preciseCount > 0 ? 'fast+precise' : 'fast') 
+          : 'precise',
         screening_version: screeningVersion,
+        // P1: canonical解決率メトリクス
+        canonical_resolved_count: isCacheBackend ? resolvedCount : normalizedCount,
+        canonical_unresolved_count: isCacheBackend ? unresolvedCount : normalizationFailedCount,
+        precise_count: isCacheBackend ? preciseCount : cleanedResults.length,
         // KPI計測用: 応答時間をフロントに返す（ユーザー体感把握用）
         perf_total_ms: totalSearchTime,
       },

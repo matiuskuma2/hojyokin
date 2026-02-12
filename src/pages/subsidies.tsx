@@ -1249,11 +1249,16 @@ subsidyPages.get('/subsidies', (c) => {
         var totalLoaded = allLoadedResults.length;
         var countDisplay = document.getElementById('result-count-display');
         
-        // 地雷2対策: 簡易判定モードの場合バッジを表示
+        // P0+地雷2対策: スクリーニングモードに応じたバッジ表示
         var screeningMode = meta?.screening_mode || 'precise';
-        var screeningBadge = screeningMode === 'fast' 
-          ? ' <span class="px-1.5 py-0.5 bg-blue-100 text-blue-700 rounded text-xs" title="要件データなしの簡易判定です。詳細ページで精密な判定が可能です"><i class="fas fa-bolt mr-0.5"></i>簡易判定</span>'
-          : '';
+        var preciseCount = meta?.precise_count || 0;
+        var screeningBadge = '';
+        if (screeningMode === 'fast') {
+          screeningBadge = ' <span class="px-1.5 py-0.5 bg-blue-100 text-blue-700 rounded text-xs" title="要件データなしの簡易判定です。詳細ページで精密な判定が可能です"><i class="fas fa-bolt mr-0.5"></i>簡易判定</span>';
+        } else if (screeningMode === 'fast+precise') {
+          screeningBadge = ' <span class="px-1.5 py-0.5 bg-emerald-100 text-emerald-700 rounded text-xs" title="上位' + preciseCount + '件は要件データに基づく精密判定済み。それ以外は簡易判定です"><i class="fas fa-check-double mr-0.5"></i>上位' + preciseCount + '件 精密判定</span>';
+        }
+        // screeningMode === 'precise' の場合はバッジなし（デフォルトで高精度）
         
         if (apiTotal > totalLoaded) {
           // まだ全件読み込んでいない
@@ -1327,8 +1332,9 @@ subsidyPages.get('/subsidies', (c) => {
           const safeOrg = escapeHtml(s.subsidy_executing_organization || '事務局情報なし');
           const safeWhyMatched = escapeHtml(whyMatched);
           
-          // 地雷2対策: screening_mode = 'fast' の場合は簡易判定バッジ
+          // P0+地雷2対策: screening_mode に応じた判定精度バッジ
           const isFastScreening = s.screening_mode === 'fast';
+          const isPreciseScreening = s.screening_mode === 'precise';
           
           // ===== モバイル用コンパクトカード vs デスクトップ用フルカード =====
           const companyId = encodeURIComponent(document.getElementById('company-select').value);
@@ -1344,6 +1350,7 @@ subsidyPages.get('/subsidies', (c) => {
                     <i class="fas \${sc.icon}"></i> \${sc.label}
                   </span>
                   <span class="text-xs text-blue-600">\${e.score || 0}%</span>
+                  \${isPreciseScreening ? '<span class="text-xs text-emerald-600" title="精密判定済み"><i class="fas fa-check-double"></i></span>' : ''}
                   \${isFastScreening ? '<span class="text-xs text-blue-500" title="簡易判定"><i class="fas fa-bolt"></i></span>' : ''}
                   \${riskFlagsCount > 0 ? \`<span class="text-xs text-orange-600"><i class="fas fa-flag"></i>\${riskFlagsCount}</span>\` : ''}
                 </div>
@@ -1375,6 +1382,11 @@ subsidyPages.get('/subsidies', (c) => {
                       <span class="px-2 py-1 bg-blue-100 text-blue-800 rounded text-xs">
                         スコア: \${e.score || 0}%
                       </span>
+                      \${isPreciseScreening ? \`
+                        <span class="px-2 py-1 bg-emerald-50 text-emerald-700 rounded text-xs" title="要件データに基づく精密判定済みです">
+                          <i class="fas fa-check-double mr-1"></i>精密判定
+                        </span>
+                      \` : ''}
                       \${isFastScreening ? \`
                         <span class="px-2 py-1 bg-blue-50 text-blue-600 rounded text-xs" title="要件データなしの簡易判定です。詳細ページで精密な判定が可能です">
                           <i class="fas fa-bolt mr-1"></i>簡易判定
