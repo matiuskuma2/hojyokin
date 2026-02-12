@@ -655,42 +655,73 @@ chat.post('/sessions', async (c) => {
         SELECT * FROM chat_messages WHERE session_id = ? ORDER BY created_at ASC
       `).bind(existSession.id).all();
       
-      // precheck情報を再構築（復元用）
-      let missingItems: MissingItem[] = [];
-      try {
-        missingItems = JSON.parse(existSession.missing_items || '[]');
-      } catch { }
-      
-      // 会社・補助金情報を取得（下部パネル表示用）
-      const existCompany = await c.env.DB.prepare(`
-        SELECT id, name, prefecture, employee_count FROM companies WHERE id = ?
-      `).bind(existSession.company_id).first() as any;
+      // 会社・補助金情報を取得（下部パネル表示用 + 質問再生成用）
+      const existCompanyFull = await c.env.DB.prepare(`
+        SELECT c.*, cp.* FROM companies c
+        LEFT JOIN company_profile cp ON c.id = cp.company_id
+        WHERE c.id = ?
+      `).bind(existSession.company_id).first() as Record<string, any> | null;
       
       const existSsot = await getNormalizedSubsidyDetail(c.env.DB, existSession.subsidy_id);
       const existNormalized = existSsot?.normalized || null;
+      
+      // missing_items を毎回再生成（会社情報の更新を反映するため）
+      const existFactsResult = await c.env.DB.prepare(`
+        SELECT fact_key, fact_value FROM chat_facts
+        WHERE company_id = ? AND (subsidy_id = ? OR subsidy_id IS NULL)
+      `).bind(existSession.company_id, existSession.subsidy_id).all();
+      const existFactsMap = new Map<string, string>();
+      for (const f of (existFactsResult.results || []) as any[]) {
+        existFactsMap.set(f.fact_key, f.fact_value);
+      }
+      // 回答済みメッセージのstructured_keyもfactsとして追加
+      const answeredKeys = await c.env.DB.prepare(`
+        SELECT DISTINCT structured_key FROM chat_messages
+        WHERE session_id = ? AND role = 'user' AND structured_key IS NOT NULL
+      `).bind(existSession.id).all();
+      for (const ak of (answeredKeys.results || []) as any[]) {
+        if (ak.structured_key) existFactsMap.set(ak.structured_key, 'answered');
+      }
+      
+      let existRules: any[] = [];
+      let existDocs: any[] = [];
+      try {
+        const rulesResult = await c.env.DB.prepare(`
+          SELECT * FROM eligibility_rules WHERE subsidy_id = ?
+        `).bind(existSession.subsidy_id).all();
+        existRules = (rulesResult.results || []) as any[];
+        
+        const docsResult = await c.env.DB.prepare(`
+          SELECT rbs.*, rdm.doc_name FROM required_documents_by_subsidy rbs
+          LEFT JOIN required_documents_master rdm ON rbs.doc_code = rdm.doc_code
+          WHERE rbs.subsidy_id = ?
+        `).bind(existSession.subsidy_id).all();
+        existDocs = (docsResult.results || []) as any[];
+      } catch { }
+      
+      const refreshedPrecheck = existCompanyFull && existNormalized
+        ? performPrecheck(existCompanyFull, existNormalized, existRules, existDocs, existFactsMap)
+        : null;
+      
+      // 再生成した missing_items をDBにも更新
+      if (refreshedPrecheck && existSession.status === 'collecting') {
+        try {
+          await c.env.DB.prepare(`
+            UPDATE chat_sessions SET missing_items = ?, updated_at = datetime('now') WHERE id = ?
+          `).bind(JSON.stringify(refreshedPrecheck.missing_items), existSession.id).run();
+        } catch { }
+      }
       
       return c.json<ApiResponse<any>>({
         success: true,
         data: {
           session: existingSession,
           messages: messages.results || [],
-          precheck: {
+          precheck: refreshedPrecheck || {
             status: 'OK_WITH_MISSING',
             eligible: true,
             blocked_reasons: [],
-            missing_items: missingItems,
-            company_info: existCompany ? {
-              id: existCompany.id,
-              name: existCompany.name,
-              prefecture: existCompany.prefecture,
-              employee_count: existCompany.employee_count,
-            } : undefined,
-            subsidy_info: existNormalized ? {
-              id: existNormalized.ids.canonical_id,
-              title: existNormalized.display.title,
-              acceptance_end: existNormalized.acceptance.acceptance_end || undefined,
-              max_amount: existNormalized.display.subsidy_max_limit || undefined,
-            } : undefined,
+            missing_items: [],
           },
           is_new: false
         }
