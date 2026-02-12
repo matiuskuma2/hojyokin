@@ -1226,6 +1226,7 @@ chat.post('/sessions/:id/message', async (c) => {
     let sessionCompleted = false;
     let mode: 'structured' | 'free' = 'structured';
     let suggestedQuestions: string[] | undefined;
+    let nextQuestionForResponse: MissingItem | undefined; // レスポンス用の次の質問情報
     
     // 補助金情報を取得（AI回答生成用）
     const ssotResult = await getNormalizedSubsidyDetail(c.env.DB, session.subsidy_id);
@@ -1377,6 +1378,7 @@ chat.post('/sessions/:id/message', async (c) => {
       }
       
       const nextQuestion = targetQuestion;
+      nextQuestionForResponse = nextQuestion; // レスポンス用に保存
       
       // Phase 24-fix: nextQuestion が undefined の場合の安全な処理
       if (!nextQuestion) {
@@ -1509,11 +1511,11 @@ chat.post('/sessions/:id/message', async (c) => {
         answer_invalid: answerWasInvalid ? true : undefined,
         answer_invalid_reason: answerValidation.reason || undefined,
         // 次の質問情報（フロントエンドがinput_type判定に使用）
-        next_question: (mode === 'structured' && !isConsultingMode) ? {
+        next_question: (mode === 'structured' && !isConsultingMode && nextQuestionForResponse) ? {
           key: responseKey,
-          label: nextQuestion?.label || null,
-          input_type: nextQuestion?.input_type || null,
-          options: nextQuestion?.options || null,
+          label: nextQuestionForResponse.label || null,
+          input_type: nextQuestionForResponse.input_type || null,
+          options: nextQuestionForResponse.options || null,
         } : undefined,
       }
     });
