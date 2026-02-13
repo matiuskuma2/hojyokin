@@ -3,7 +3,7 @@
 ## 📋 プロジェクト概要
 
 - **Name**: subsidy-matching (hojyokin)
-- **Version**: 7.2.0 (Phase 25 - 壁打ちチャット設計Freeze v3.0 + P0改善計画)
+- **Version**: 7.3.0 (Phase 26 - P0実装: Gate + テキスト解析エンジン + 質問生成)
 - **Goal**: 企業情報を登録するだけで、最適な補助金・助成金を自動でマッチング＆申請書ドラフト作成
 - **管理者**: モギモギ（関屋紘之）
 - **本番URL**: https://hojyokin.pages.dev
@@ -31,15 +31,18 @@
 
 ---
 
-## 📊 現在のデータ状況 (2026-02-11 Phase 23)
+## 📊 現在のデータ状況 (2026-02-13 Phase 26)
 
 | 指標 | 値 |
 |------|-----|
-| 補助金マスタ (subsidy_cache) | **22,274件** |
+| 補助金マスタ (subsidy_cache) | **22,275件** |
 | 正規化済み (subsidy_canonical) | 3,470件 |
 | 受付中補助金 (ssot_accepting) | **186件** |
-| cache_accepting | **203件** |
+| cache_accepting | **193件** |
 | searchable_count | **19,272件** |
+| chat_sessions | 38件 |
+| chat_facts | 84件 |
+| application_drafts | 10件 (8 draft, 2 final) |
 | // TODO: 要確認 | **25件**（受入基準・テストケース付） |
 
 ### バックアップ
@@ -56,7 +59,33 @@
 
 ---
 
-### 🎉 最新: Phase 25 - 壁打ちチャット設計Freeze v3.0 + P0改善計画 (v7.2.0)
+### 🎉 最新: Phase 26 - P0実装: Gate + テキスト解析 + 質問生成 (v7.3.0)
+
+**Phase 26 成果 (2026-02-13)**:
+- **P0-0a: DBマイグレーション**: chat_sessionsに6列追加（scheme_id, subsidy_title_at_start, acceptance_end_at_start, nsd_content_hash, draft_mode, nsd_source）→ 本番D1適用済み
+- **P0-0b: resolveOpeningId()**: Freeze v3.0 §17-18準拠の回次Gate関数を新規作成
+  - canonical_id → latest_cache_id 自動変換（RULE-GATE-2）
+  - 受付終了ブロック（RULE-GATE-3）: display_flag + deadline判定
+  - GateError クラスによる構造化エラー（NOT_FOUND, ROUND_CLOSED, SCHEME_NO_OPENING, EXCLUDED）
+- **P0-0c: Gate統合**: POST /api/chat/sessions と POST /api/chat/precheck にGateロジック追加
+  - 既存セッション検索はcanonical→cache変換後のIDでも検索
+  - セッション固定情報（scheme_id, title, deadline, hash, draft_mode, nsd_source）を保存
+- **P0-1: text-parser.ts**: ハイブリッドC方式（P0は正規表現のみ）
+  - parseEligibilityFromText: 要件テキスト分割→分類（eligibility/compliance/exclusion/size/plan）
+  - parseExpensesFromText: 経費カテゴリ分類（equipment/outsourcing/labor/travel/material/consulting）
+  - parseRequiredDocsFromText: 書類タイプ分類（financial/plan/certificate/application）
+  - 品質スコア0-100、自動フィールド検出（employee_count, capital, annual_revenue）
+- **P0-2/3: derived-questions.ts**: テキスト解析ベースの質問生成エンジン
+  - 固定キー質問マップ（Freeze v3.0 §19.2）: 14個のキー質問（トリガーキーワード付き）
+  - 動的質問生成: 解析されたeligibility_rules, required_documentsから質問を自動生成
+  - 優先度ソート: 経費→適格性→電子申請→ドラフト→書類→加点
+  - 最大10件/セッション
+- **draft_mode判定**: NSD情報量に基づく3段階（full_template / structured_outline / eligibility_only）
+- **NSDコンテンツハッシュ**: Web Crypto API (SHA-256) でセッション再開時の変更検知
+
+**新規ファイル**: src/lib/ssot/resolveOpeningId.ts, src/lib/text-parser.ts, src/lib/derived-questions.ts
+
+### Phase 25 - 壁打ちチャット設計Freeze v3.0 + P0改善計画 (v7.2.0)
 
 **Phase 25 成果 (2026-02-13)**:
 - **Freeze v1.0**: 状態機械・draft_mode・質問生成器・データモデルの全仕様を確定
