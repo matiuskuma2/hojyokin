@@ -527,4 +527,393 @@ src/pages/chat.tsx (1,404行)
 
 ---
 
+## 11. データ鮮度・バージョン・矛盾解決ポリシー (Freeze)
+
+### 11.1 データソース優先順位 (Conflict Policy)
+
+壁打ちの各判定・質問生成・ドラフト作成において、同一フィールドが複数ソースに存在する場合、以下の順序で「勝つ」ほうを採用する。
+
+```
+優先順位（高→低）:
+  1. 公式PDF抽出（pdf_hash一致 + 抽出日が最新）
+  2. 公式URL HTML抽出（content_hash一致 + last_crawled_at最新）
+  3. subsidy_snapshot（構造化済み + snapshot_id 特定可能）
+  4. subsidy_cache.detail_json（不完全な可能性あり）
+  5. derived_text（テキスト分割・LLM推定）
+  6. 汎用ルール（generic fallback）
+```
+
+### 11.2 鮮度管理フィールド (Freeze)
+
+| フィールド | 保持場所 | 用途 |
+|-----------|---------|------|
+| `provenance.last_normalized_at` | NSD | この NSD が生成された日時 |
+| `provenance.pdf_hashes[].last_seen_at` | NSD | 公式PDFの最終確認日 |
+| `subsidy_cache.updated_at` | DB | cache行の最終更新日 |
+| `subsidy_cache.content_hash` | DB | detail_json 全体のハッシュ（変更検知用） |
+| `koubo_monitors.last_crawled_at` | DB | 公募要領の最終クロール日 |
+
+### 11.3 鮮度判定ルール (Freeze)
+
+壁打ちセッション開始時に以下を評価する:
+
+| 条件 | 判定 | UI表示 |
+|------|------|--------|
+| `last_normalized_at` < 30日前 | stale | ⚠️「情報が古い可能性があります（最終更新: XX日前）」 |
+| `pdf_hashes` が空 | no_source | ⚠️「公募要領PDFが未取得のため、情報が不完全な可能性があります」 |
+| `content_hash` が前回セッション時と異なる | updated | ℹ️「前回の壁打ち以降、補助金情報が更新されています」 |
+| 上記いずれにも該当しない | fresh | （表示なし） |
+
+### 11.4 矛盾発生時の解決ルール (Freeze)
+
+1. **検索一覧（cache fast）と詳細画面（ssot precise）の乖離**:
+   - 一覧は cache の簡易データ → 「概算」表記
+   - 詳細は NSD の精査データ → 「確定値」表記
+   - 乖離がある場合、詳細画面に「検索一覧の表示と異なる場合があります」を表示
+
+2. **壁打ち中のデータ更新**:
+   - セッション開始時に NSD の `content_hash` をセッションに保存
+   - セッション中はそのスナップショットを使い続ける（途中で変わらない）
+   - セッション再開時に hash が変わっていたら、missing_items を再計算
+
+3. **facts の矛盾（ユーザー回答 vs 書類抽出）**:
+   - 書類抽出（confidence高）が ユーザー回答と矛盾する場合 → 確認質問を生成
+   - ユーザーが明示的に訂正した場合 → ユーザー回答が勝つ（source='user_override'）
+
+### 11.5 現状との差分
+
+| 項目 | 設計 | 現状 | 要対応 |
+|------|------|------|--------|
+| content_hash をセッションに保存 | する | **していない** | P0で追加 |
+| stale 警告 UI | 出す | **ない** | P1 |
+| 矛盾時の確認質問 | 生成する | **ない** | P1 |
+| セッション再開時の hash 比較 | する | **していない** | P0で追加 |
+
+---
+
+## 12. draft_mode 判定基準 (Freeze)
+
+### 12.1 判定フローチャート
+
+```
+START: NSD を取得
+  │
+  ├─ NSD.content.required_forms[] が存在し、
+  │  かつ各 form に fields[] が 3件以上
+  │  → draft_mode = "full_template"
+  │
+  ├─ NSD.content.required_forms[] が存在するが、
+  │  fields[] が曖昧（2件以下 or テキストのみ）
+  │  → draft_mode = "structured_outline"
+  │
+  ├─ detail_json に application_requirements が存在する
+  │  → draft_mode = "structured_outline"
+  │
+  ├─ electronic_application.is_electronic = true かつ
+  │  required_forms[] が空
+  │  → draft_mode = "eligibility_only"
+  │
+  └─ 上記いずれにも該当しない
+     → draft_mode = "structured_outline" (デフォルト)
+```
+
+### 12.2 判定関数の仕様 (Freeze)
+
+```typescript
+function determineDraftMode(
+  nsd: NormalizedSubsidyDetail,
+  detailRaw: Record<string, any>
+): 'full_template' | 'structured_outline' | 'eligibility_only' {
+  const forms = nsd.content.required_forms || [];
+  
+  // full_template: 構造化フォームが十分
+  const hasStructuredForms = forms.length >= 1 
+    && forms.some(f => (f.fields?.length || 0) >= 3);
+  if (hasStructuredForms) return 'full_template';
+  
+  // eligibility_only: 電子申請でフォーム情報なし
+  const isElectronic = nsd.electronic_application.is_electronic_application;
+  const noForms = forms.length === 0;
+  const noRequirements = !detailRaw.application_requirements;
+  if (isElectronic && noForms && noRequirements) return 'eligibility_only';
+  
+  // structured_outline: それ以外（デフォルト）
+  return 'structured_outline';
+}
+```
+
+### 12.3 UI への影響 (Freeze)
+
+セッション開始時（POST /api/chat/sessions レスポンス）に `draft_mode` を含め、フロントエンドで以下を表示:
+
+| draft_mode | ヘッダー表示 | 完了ボタンラベル |
+|-----------|-------------|----------------|
+| `full_template` | 「申請書の叩き台を作成できます」 | 「申請書を作成する」 |
+| `structured_outline` | 「申請準備のアウトラインを作成できます」 | 「アウトラインを作成する」 |
+| `eligibility_only` | 「申請要件の確認と準備リストを作成できます」 | 「チェックリストを作成する」 |
+
+### 12.4 データ保持
+
+- `chat_sessions.draft_mode` カラムを追加（TEXT, nullable）
+- セッション作成時に `determineDraftMode()` で判定し保存
+- ドラフト生成時にこの値を参照して出力テンプレートを決定
+
+### 12.5 現状との差分
+
+| 項目 | 設計 | 現状 | 要対応 |
+|------|------|------|--------|
+| draft_mode カラム | chat_sessions | **存在しない** | P0 migration |
+| determineDraftMode() | 関数 | **存在しない** | P0 実装 |
+| UI表示分岐 | 3パターン | **単一表示** | P0 フロント |
+| draft.ts での分岐 | mode別テンプレート | **単一テンプレート** | P1 |
+
+---
+
+## 13. facts provenance（根拠追跡）(Freeze)
+
+### 13.1 chat_facts テーブル拡張
+
+既存カラム: `confidence REAL`, `source TEXT`, `metadata`（JSON文字列）
+→ `source` と `metadata` を活用して provenance を保持する（新カラム追加不要）
+
+### 13.2 source の値域 (Freeze)
+
+| source 値 | 意味 | 信頼度デフォルト |
+|-----------|------|----------------|
+| `chat` | ユーザーがチャットで回答 | 0.9 |
+| `user_override` | ユーザーが明示的に訂正 | 1.0 |
+| `profile` | company_profile から自動取得 | 0.8 |
+| `document` | アップロード書類から OCR/AI 抽出 | confidence依存 |
+| `derived_text` | detail_json テキストから推定 | 0.5 |
+| `subsidy_rule` | eligibility_rules から自動生成 | 0.7 |
+| `system` | システムが自動生成（日時等） | 1.0 |
+
+### 13.3 metadata の構造 (Freeze)
+
+```json
+{
+  "input_type": "boolean",
+  "question_label": "GビズIDを取得済みですか？",
+  "raw_answer": "はい",
+  "parsed_answer": "true",
+  "source_ref": {
+    "type": "detail_json_field",
+    "field": "application_requirements",
+    "subsidy_id": "REAL-002",
+    "content_hash": "abc123..."
+  },
+  "as_of": "2026-02-13T10:00:00Z"
+}
+```
+
+### 13.4 ドラフトの根拠追跡 (Freeze)
+
+`application_drafts.trace_json` に以下を保持:
+
+```json
+{
+  "generated_at": "2026-02-13T12:00:00Z",
+  "nsd_version": {
+    "content_hash": "abc123...",
+    "last_normalized_at": "2026-02-10T12:32:59Z",
+    "source_type": "cache"
+  },
+  "facts_used": [
+    { "fact_key": "investment_amount", "fact_value": "500", "source": "chat", "confidence": 0.9 },
+    { "fact_key": "plans_wage_raise", "fact_value": "true", "source": "derived_text", "confidence": 0.5 }
+  ],
+  "sections": [
+    {
+      "name": "事業概要",
+      "fact_keys_used": ["project_summary", "business_purpose"],
+      "subsidy_fields_used": ["application_requirements", "overview"]
+    }
+  ]
+}
+```
+
+### 13.5 現状との差分
+
+| 項目 | 設計 | 現状 | 要対応 |
+|------|------|------|--------|
+| source の値域 | 7種類 | `chat` のみ | P0で拡張 |
+| metadata.source_ref | 根拠ドキュメント参照 | `question_label` のみ | P0で拡張 |
+| trace_json の活用 | ドラフト根拠追跡 | **カラム存在するが空** | P1 |
+| as_of 記録 | facts に日時根拠 | **なし** | P0で metadata に追加 |
+
+---
+
+## 14. canonical 未解決の扱い (Freeze)
+
+### 14.1 背景
+
+`subsidy_cache` に 22,000件あるが、`subsidy_canonical` は 3,470件のみ。
+canonical に紐付いていない補助金（主に izumi 系 18,000件超）で壁打ちを許可するかの判定が必要。
+
+### 14.2 Gate 判定 (Freeze)
+
+```
+壁打ち開始時の判定フロー:
+
+  1. resolveSubsidyRef(subsidy_id)
+     ├─ 成功: canonical_id 解決 → getNormalizedSubsidyDetail → NSD取得
+     │   → 通常フロー
+     │
+     └─ 失敗: canonical 未解決
+         ├─ buildNsdFromCache(subsidy_id) 
+         │   ├─ 成功: cache NSD 構築 → 壁打ち許可（制限付き）
+         │   │   └─ UIに「⚠ 簡易データに基づく壁打ちです」表示
+         │   │
+         │   └─ 失敗: cache にもない → 壁打ち不可
+         │       └─ エラー: 「この補助金の壁打ちはまだ準備中です」
+         │
+         └─ getMockSubsidyDetail(subsidy_id) → 最終フォールバック
+             └─ モック → テスト用のみ（本番では到達しないはず）
+```
+
+### 14.3 制限付き壁打ちの制約
+
+| 項目 | canonical 解決済み | cache フォールバック |
+|------|-------------------|---------------------|
+| Gate 判定精度 | 高（構造化ルール） | 低（テキスト派生のみ） |
+| 質問の補助金固有度 | 高 | 中（derived_text 依存） |
+| ドラフト生成 | full_template 可 | structured_outline まで |
+| 出典表示 | PDF URL あり | なし（⚠表示） |
+| セッション保存 | 通常 | `nsd_source = 'cache'` 記録 |
+
+### 14.4 検索→壁打ちの ID 連携 (Freeze)
+
+検索結果の `subsidy.id` は常に `subsidy_cache.id`（cache_id）。
+壁打ち開始時に `resolveSubsidyRef` が `cache_id → canonical_id` の変換を試みる。
+
+```
+検索結果クリック → /chat?subsidy_id=<cache_id>&company_id=<company_id>
+  → POST /api/chat/sessions { subsidy_id: cache_id }
+    → resolveSubsidyRef(cache_id)
+      → 成功: canonical_id で NSD 取得
+      → 失敗: buildNsdFromCache(cache_id) で cache NSD
+```
+
+### 14.5 現状との差分
+
+| 項目 | 設計 | 現状 | 要対応 |
+|------|------|------|--------|
+| 3層フォールバック | resolve → cache → mock | **実装済み** ✅ | - |
+| nsd_source 記録 | セッションに記録 | **していない** | P0で追加 |
+| UI警告表示 | cache時に⚠表示 | **していない** | P0で追加 |
+| draft_mode 制限 | cache時は outline まで | **制限なし** | P0で追加 |
+
+---
+
+## 15. derived_text の生成タイミングと保存先 (Freeze)
+
+### 15.1 生成タイミング
+
+derived_text（detail_json のフラットテキストから構造化データへの変換）は **リアルタイム生成** とする。
+
+```
+生成タイミング:
+  ❌ バッチ事前生成（Cronで全件変換して保存）
+     → 22,000件 × 変換 = 工数・保守コスト大、更新追随が必要
+  
+  ✅ リアルタイム生成（壁打ち開始時に on-the-fly で変換）
+     → buildNsdFromCache() の中でテキスト分割を実行
+     → 生成結果はセッション単位でキャッシュ（DB保存しない）
+```
+
+**理由**:
+1. テキスト分割はCPU軽量（正規表現ベース、LLM不使用）→ CF Workers の 10ms 制限内
+2. detail_json が更新されたら自動的に最新テキストが反映される（鮮度問題なし）
+3. 22,000件を事前変換する保守コストが不要
+
+### 15.2 保存先とキャッシュ戦略
+
+| データ | 保存先 | ライフサイクル |
+|--------|--------|--------------|
+| `detail_json` (元テキスト) | subsidy_cache.detail_json | 永続（Cronで更新） |
+| `parsed eligibility_rules[]` | NSD オブジェクト（メモリ） | セッション開始時に生成、リクエスト内で利用 |
+| `derived questions[]` | NSD オブジェクト（メモリ） | 同上 |
+| `missing_items[]` (質問リスト) | chat_sessions.missing_items | セッション作成時に永続化 |
+| `facts` (回答) | chat_facts | 永続 |
+
+### 15.3 再利用パターン
+
+```
+同一セッション内:
+  → missing_items は DB に保存済み → セッション再開時にそのまま使う
+  → NSD はリクエストごとに再生成（軽量なので問題なし）
+
+別セッション（同一補助金・同一企業）:
+  → chat_facts は company_id + subsidy_id で永続 → 既回答はスキップ
+  → missing_items は新セッション作成時に再計算（最新 detail_json を反映）
+```
+
+### 15.4 将来のバッチ移行条件
+
+リアルタイム生成でパフォーマンス問題が出た場合（例: テキスト分割に 50ms 以上かかる）:
+
+```
+移行先: subsidy_cache に derived_* カラムを追加
+  - derived_eligibility_rules_json TEXT
+  - derived_required_documents_json TEXT  
+  - derived_at DATETIME
+  - derived_version TEXT
+
+生成タイミング: Cron（daily-ready-boost の一部として）
+```
+
+ただし現時点では不要（正規表現ベースの分割は 1ms 以下）。
+
+### 15.5 現状との差分
+
+| 項目 | 設計 | 現状 | 要対応 |
+|------|------|------|--------|
+| テキスト分割関数 | parseEligibilityFromText() 等 | **存在しない** | P0で新規作成 |
+| 生成タイミング | buildNsdFromCache 内 | - | P0で統合 |
+| missing_items 再計算 | セッション再開時 | **一度だけ** | P0で改善 |
+| derived_* DB保存 | 不要（将来オプション） | - | - |
+
+---
+
+## 16. 既存実装の矛盾ポイント チェックリスト
+
+P0実装時に必ず確認し、矛盾がないことを検証すべき箇所。
+
+### 16.1 企業情報系
+
+| # | チェック項目 | ファイル | 確認内容 |
+|---|-------------|---------|---------|
+| C1 | company_profile と companies の分割 | profile.ts, companies.ts | 質問生成の `isAnsweredByCompany()` で両方を参照しているか |
+| C2 | profile 保存時のバリデーション | profile.ts | 数値フィールド（employee_count, capital）の型チェック |
+| C3 | facts→profile 同期 | chat.ts (syncFactsToProfile) | 同期対象フィールドと質問キーの一致 |
+
+### 16.2 補助金データ系
+
+| # | チェック項目 | ファイル | 確認内容 |
+|---|-------------|---------|---------|
+| C4 | 検索結果の id 型 | subsidies.ts | cache_id が壁打ちで resolve できるか |
+| C5 | NSD と cache の乖離 | normalizeSubsidyDetail.ts | 同一補助金で NSD と cache の表示値が異なる場合の優先ルール |
+| C6 | detail_json の型の揺れ | buildNsdFromCache | required_documents が string の場合と array の場合の両方に対応 |
+| C7 | eligibility_rules の二重ソース | chat.ts (performPrecheck) | DB (0件) と NSD (テキスト派生) が共存した場合のマージルール |
+
+### 16.3 壁打ちフロー系
+
+| # | チェック項目 | ファイル | 確認内容 |
+|---|-------------|---------|---------|
+| C8 | セッション再開時の missing_items | chat.ts (POST /sessions) | 既存セッション復元時に missing_items を再計算しているか |
+| C9 | consulting モードへの遷移条件 | chat.ts (POST /sessions/:id/message) | remaining === 0 の判定が derived 質問も含んでいるか |
+| C10 | fact の UPSERT 競合 | chat.ts (INSERT INTO chat_facts) | company_id + subsidy_id + fact_key の UNIQUE 制約 |
+| C11 | AI プロンプトの NSD 参照 | ai-concierge.ts | eligibility_rules が空の場合に detail_json フラットテキストがプロンプトに入るか |
+
+### 16.4 ドラフト系
+
+| # | チェック項目 | ファイル | 確認内容 |
+|---|-------------|---------|---------|
+| C12 | draft_mode によるセクション分岐 | draft.ts | 現在は単一テンプレート → P1 で分岐追加 |
+| C13 | trace_json の活用 | draft.ts | 現在は空 → P1 で根拠追跡 |
+| C14 | ドラフト再生成時の fact 最新反映 | draft.ts | セッション完了後に fact が更新された場合 |
+
+---
+
 *このドキュメントはFreeze（設計確定）版です。実装時に仕様変更が必要な場合は、このドキュメントを先に更新してからコードに反映してください。*
+*v2.0: 2026-02-13 - セクション11-16追加（鮮度/draft_mode/provenance/canonical/derived_text/チェックリスト）*

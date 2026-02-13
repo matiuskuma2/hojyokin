@@ -429,10 +429,141 @@ P0-4b (detail_jsonフォールバック) ┘                                    
 **推奨実装順序**:
 1. `P0-1a` → `P0-1b` → `P0-1c` → `P0-1d` （テキスト解析 → NSD統合）
 2. `P0-5` （detail_json伝搬）
-3. `P0-2a` → `P0-2b` （質問生成）
-4. `P0-3` （質問統合）
-5. `P0-4a` → `P0-4b` （AIプロンプト強化）
-6. ビルド → テスト → デプロイ
+3. `P0-6` （draft_mode 判定 + content_hash 記録）← Freeze追記から追加
+4. `P0-2a` → `P0-2b` （質問生成）
+5. `P0-3` （質問統合）
+6. `P0-4a` → `P0-4b` （AIプロンプト強化）
+7. `P0-7` （provenance 拡張 + facts source 多様化）← Freeze追記から追加
+8. ビルド → テスト → デプロイ
+
+---
+
+## Freeze追記 (v2.0) で追加されたP0タスク
+
+以下は WALLCHAT_ARCHITECTURE_FREEZE.md セクション 11-16 で定義された仕様のうち、
+P0 で必ず対応すべき項目。
+
+### P0-6: draft_mode 判定 + content_hash セッション保存
+
+**根拠**: Freeze セクション 12（draft_mode判定基準）、セクション 11.4（矛盾解決）
+
+#### P0-6a: `determineDraftMode()` 実装
+
+```typescript
+// src/lib/derived-questions.ts に追加
+function determineDraftMode(
+  nsd: NormalizedSubsidyDetail,
+  detailRaw: Record<string, any>
+): 'full_template' | 'structured_outline' | 'eligibility_only' {
+  const forms = nsd.content.required_forms || [];
+  const hasStructuredForms = forms.length >= 1 
+    && forms.some(f => (f.fields?.length || 0) >= 3);
+  if (hasStructuredForms) return 'full_template';
+  
+  const isElectronic = nsd.electronic_application.is_electronic_application;
+  const noForms = forms.length === 0;
+  const noRequirements = !detailRaw.application_requirements;
+  if (isElectronic && noForms && noRequirements) return 'eligibility_only';
+  
+  return 'structured_outline';
+}
+```
+
+#### P0-6b: DB マイグレーション
+
+```sql
+-- chat_sessions に draft_mode と nsd_content_hash を追加
+ALTER TABLE chat_sessions ADD COLUMN draft_mode TEXT;
+ALTER TABLE chat_sessions ADD COLUMN nsd_content_hash TEXT;
+ALTER TABLE chat_sessions ADD COLUMN nsd_source TEXT DEFAULT 'ssot';
+```
+
+#### P0-6c: セッション作成時に保存
+
+- `POST /api/chat/sessions` で `determineDraftMode()` を呼び出し、結果を `chat_sessions.draft_mode` に保存
+- `detail_json` のハッシュを `nsd_content_hash` に保存
+- NSD ソース種別（'ssot' / 'cache' / 'mock'）を `nsd_source` に保存
+
+#### P0-6d: セッション再開時の hash 比較
+
+- 既存セッション復元時に現在の `content_hash` と保存済み `nsd_content_hash` を比較
+- 異なる場合は `missing_items` を再計算し、UIに更新通知を含める
+
+**推定工数**: 3時間
+
+### P0-7: facts provenance 拡張
+
+**根拠**: Freeze セクション 13（facts provenance）
+
+#### P0-7a: source の値域拡張
+
+現状: `source = 'chat'` 固定 → Freeze定義の7種に拡張
+
+```typescript
+// chat.ts の INSERT INTO chat_facts で source を動的に設定
+// - 構造化質問への回答: 'chat'
+// - derived_text由来の質問への回答: 'chat' (質問のsourceはmetadataに記録)
+// - profile 自動取得: 'profile'
+// - 書類抽出: 'document' (P1)
+```
+
+#### P0-7b: metadata に source_ref と as_of を追加
+
+```typescript
+// 現状の factMetadata:
+{ input_type, question_label, raw_answer, parsed_answer }
+
+// P0追加:
+{
+  input_type, question_label, raw_answer, parsed_answer,
+  source_ref: {
+    type: 'derived_text' | 'eligibility_rule' | 'generic' | 'wall_chat_question',
+    field: 'application_requirements',  // テキスト派生の場合
+    subsidy_id: 'REAL-002',
+  },
+  as_of: '2026-02-13T10:00:00Z'
+}
+```
+
+**推定工数**: 2時間
+
+### P0-8: canonical未解決時のUI警告
+
+**根拠**: Freeze セクション 14（canonical未解決の扱い）
+
+- `nsd_source = 'cache'` の場合、フロントエンドに `⚠ 簡易データに基づく壁打ちです` を表示
+- `draft_mode` の制限: cache時は `full_template` を禁止 → `structured_outline` に降格
+
+**推定工数**: 1時間
+
+---
+
+## 更新後の実装順序と依存関係（全体）
+
+```
+Phase 1: テキスト解析基盤
+  P0-1a (parseEligibilityFromText)     ─┐
+  P0-1b (parseRequiredDocsFromText)      ├─ P0-1d (buildNsdFromCache統合)
+  P0-1c (parseEligibleExpensesFromText) ─┘
+
+Phase 2: データ伝搬 + 判定
+  P0-5  (detail_json伝搬) ─┐
+  P0-6a (determineDraftMode) ├─ P0-6c (セッション作成時保存)
+  P0-6b (DBマイグレーション) ┘  P0-6d (セッション再開hash比較)
+
+Phase 3: 質問生成
+  P0-2a (固定キー質問) ─┐
+  P0-7b (metadata拡張)  ├─ P0-2b (generateDerivedQuestions) ─ P0-3 (統合)
+                        ┘
+
+Phase 4: AI + UI
+  P0-4a (formatSubsidyInfo強化) ─┐
+  P0-4b (detail_jsonフォールバック) ├─ P0-8 (canonical未解決UI警告)
+  P0-7a (source値域拡張)          ┘
+
+Phase 5: テスト + デプロイ
+  [ビルド → 単体テスト → 統合テスト → デプロイ]
+```
 
 ---
 
@@ -447,6 +578,13 @@ P0-4b (detail_jsonフォールバック) ┘                                    
 | T3 | parseRequiredDocsFromText 分割 | "事業計画書、決算書（直近2期分）" | 2件のドキュメント |
 | T4 | generateDerivedQuestions trigger | 電子申請の NSD | has_gbiz_id 質問が含まれる |
 | T5 | generateDerivedQuestions 賃上げ | "賃上げ" を含む requirements | plans_wage_raise 質問が含まれる |
+| T6 | generateAdditionalQuestions 統合 | derived 5件以上 | フォールバック質問なし |
+| T7 | buildNsdFromCache 強化 | REAL-002 の detail_json | eligibility_rules ≥ 3件 |
+| T8 | determineDraftMode full_template | required_forms[].fields≥3 | 'full_template' |
+| T9 | determineDraftMode eligibility_only | 電子申請+フォームなし+要件なし | 'eligibility_only' |
+| T10 | determineDraftMode デフォルト | requirements文字列あり | 'structured_outline' |
+| T11 | facts metadata source_ref | derived_text質問回答 | metadata.source_ref.type = 'derived_text' |
+| T12 | content_hash 比較 | detail_json更新後セッション再開 | missing_items 再計算される |
 | T6 | generateAdditionalQuestions 統合 | derived 5件以上 | フォールバック質問なし |
 | T7 | buildNsdFromCache 強化 | REAL-002 の detail_json | eligibility_rules ≥ 3件 |
 
@@ -469,6 +607,10 @@ P0-4b (detail_jsonフォールバック) ┘                                    
 | consultingモードでの補助金言及率 | 低い | 高い（eligibility_rules がプロンプトに入る） |
 | detail_json テキスト活用率 | 0% | 100% (全テキストフィールドを何らかの形で利用) |
 | ユーザー体験: 「補助金の話につながる」 | ❌ | ✅ |
+| draft_mode 判定・表示 | 未実装 | 3パターン表示 |
+| facts に source_ref が記録される | 0% | 100% |
+| canonical未解決時の⚠表示 | なし | cache時に表示 |
+| セッション再開時の hash 比較 | なし | 実装済み |
 
 ---
 
@@ -485,13 +627,17 @@ P0-4b (detail_jsonフォールバック) ┘                                    
 
 ## P1以降の展望（本計画では対象外）
 
-| 優先度 | 項目 | 依存 |
-|--------|------|------|
-| P1 | session.state 5状態への移行 | P0完了後 |
-| P1 | 書類アップロード→fact反映パイプライン | P0完了後 |
-| P1 | draft_mode 分類と表示 | P0-1 完了後 |
-| P2 | レーンA/B UI分離 | P1完了後 |
-| P2 | 加点戦略ビュー | P0-4完了後 |
+| 優先度 | 項目 | 依存 | Freeze参照 |
+|--------|------|------|-----------|
+| P1 | session.state 5状態への移行 | P0完了後 | §2 |
+| P1 | 書類アップロード→fact反映パイプライン | P0完了後 | §4.3 |
+| P1 | draft.ts の draft_mode 別テンプレート分岐 | P0-6完了後 | §12 |
+| P1 | trace_json ドラフト根拠追跡 | P0-7完了後 | §13.4 |
+| P1 | stale 警告 UI（情報が古い場合の⚠） | P0-6d完了後 | §11.3 |
+| P1 | 矛盾時の確認質問生成 | P0-7完了後 | §11.4 |
+| P2 | レーンA/B UI分離 | P1完了後 | §1.1 |
+| P2 | 加点戦略ビュー | P0-4完了後 | §6 |
+| P2 | derived_* DB保存（バッチ移行） | パフォーマンス問題時のみ | §15.4 |
 
 ---
 
