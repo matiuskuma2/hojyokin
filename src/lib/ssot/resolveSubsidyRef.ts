@@ -153,7 +153,41 @@ export async function resolveSubsidyRef(
     }
 
     // ========================================
-    // Step 3: どちらもヒットしない → null
+    // Step 3: subsidy_cache で直接検索（canonical未登録の補助金向け）
+    // cache_idが存在するがcanonicalに紐付いていない場合のフォールバック
+    // 22,275件中 ~84% がこのパスを通る（canonical解決率 ~16%）
+    // ========================================
+    const directCacheRow = await db
+      .prepare(`
+        SELECT id, source, canonical_id
+        FROM subsidy_cache
+        WHERE id = ?
+        LIMIT 1
+      `)
+      .bind(inputId)
+      .first<{
+        id: string;
+        source: string | null;
+        canonical_id: string | null;
+      }>();
+
+    if (directCacheRow) {
+      // cache行は見つかったが canonical には紐付いていない
+      // 仮の canonical_id = null として返す（呼び出し元で cache データを直接使う）
+      console.log(`[resolveSubsidyRef] cache-only fallback: ${inputId} (no canonical link)`);
+      return {
+        input_id: inputId,
+        canonical_id: directCacheRow.canonical_id || inputId, // canonical_idカラムがある場合はそれを使用
+        cache_id: inputId,
+        snapshot_id: null,
+        primary_source_type: (directCacheRow.source as SourceType) || 'jgrants',
+        primary_source_id: inputId,
+        links: [],
+      };
+    }
+
+    // ========================================
+    // Step 4: どちらもヒットしない → null
     // ========================================
     console.warn(`[resolveSubsidyRef] Not found: ${inputId}`);
     return null;
