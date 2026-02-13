@@ -27,11 +27,117 @@ import {
   type CompanyContext,
 } from '../lib/ai-concierge';
 import { syncFactsToProfile } from '../lib/fact-sync';
+import { safeJsonParse } from '../lib/ssot';
 
 const chat = new Hono<{ Bindings: Env; Variables: Variables }>();
 
 // 認証必須
 chat.use('*', requireAuth);
+
+// =====================================================
+// subsidy_cache フォールバック: SSOT 解決失敗時に cache から NSD を構築
+// canonical / source_link に紐付いていない補助金（REAL-xxx 等）でも
+// detail_json があれば壁打ちチャットを利用可能にする
+// =====================================================
+async function buildNsdFromCache(
+  db: D1Database,
+  subsidyId: string
+): Promise<NormalizedSubsidyDetail | null> {
+  try {
+    const row = await db.prepare(`
+      SELECT id, title, detail_json, subsidy_max_limit, subsidy_rate,
+             target_area_search, acceptance_start_datetime, acceptance_end_datetime,
+             request_reception_display_flag, wall_chat_ready, wall_chat_missing
+      FROM subsidy_cache WHERE id = ?
+    `).bind(subsidyId).first<Record<string, any>>();
+    
+    if (!row) return null;
+    
+    const detail = row.detail_json ? safeJsonParse(row.detail_json) : {};
+    
+    console.log(`[Chat] buildNsdFromCache: building NSD from cache for ${subsidyId} (detail_json: ${row.detail_json ? 'yes' : 'no'})`);
+    
+    // detail_json から eligibility_rules / required_documents 等を抽出
+    const eligibilityRules = detail.eligibility_rules || detail.content?.eligibility_rules || [];
+    const eligibleExpenses = detail.eligible_expenses || detail.content?.eligible_expenses || { required: [], categories: [], excluded: [], notes: null };
+    const requiredDocuments = detail.required_documents || detail.content?.required_documents || [];
+    const bonusPoints = detail.bonus_points || detail.content?.bonus_points || [];
+    const requiredForms = detail.required_forms || detail.content?.required_forms || [];
+    
+    // wall_chat_missing をパース
+    let wallChatMissing: string[] = [];
+    try {
+      wallChatMissing = typeof row.wall_chat_missing === 'string' 
+        ? JSON.parse(row.wall_chat_missing) 
+        : (row.wall_chat_missing || []);
+    } catch { wallChatMissing = []; }
+    
+    const nsd: NormalizedSubsidyDetail = {
+      schema_version: '1.0',
+      ids: {
+        input_id: subsidyId,
+        canonical_id: subsidyId, // canonical未紐付きだが、chat内では自己参照
+        cache_id: subsidyId,
+        snapshot_id: null,
+      },
+      source: {
+        primary_source_type: 'cache' as any,
+        primary_source_id: subsidyId,
+        links: [],
+      },
+      acceptance: {
+        is_accepting: row.request_reception_display_flag === 1,
+        acceptance_start: row.acceptance_start_datetime || null,
+        acceptance_end: row.acceptance_end_datetime || null,
+        acceptance_end_reason: null,
+      },
+      display: {
+        title: row.title || '補助金名未設定',
+        issuer_name: detail.subsidy_executing_organization || detail.display?.issuer_name || null,
+        target_area_text: row.target_area_search || null,
+        subsidy_max_limit: row.subsidy_max_limit || null,
+        subsidy_rate_text: row.subsidy_rate || null,
+      },
+      overview: {
+        summary: detail.subsidy_summary || detail.overview?.summary || null,
+        purpose: detail.purpose || detail.overview?.purpose || null,
+        target_business: detail.target_industry || detail.overview?.target_business || null,
+      },
+      electronic_application: {
+        is_electronic_application: detail.is_electronic_application || null,
+        portal_name: null,
+        portal_url: null,
+        notes: null,
+      },
+      wall_chat: {
+        mode: (row.wall_chat_ready ? 'enabled' : 'unknown') as any,
+        ready: row.wall_chat_ready === 1,
+        missing: wallChatMissing,
+        questions: [],
+      },
+      content: {
+        eligibility_rules: eligibilityRules,
+        eligible_expenses: eligibleExpenses,
+        required_documents: requiredDocuments,
+        bonus_points: bonusPoints,
+        required_forms: requiredForms,
+        attachments: [],
+      },
+      provenance: {
+        koubo_source_urls: [],
+        pdf_urls: [],
+        pdf_hashes: [],
+        last_normalized_at: new Date().toISOString(),
+      },
+    };
+    
+    console.log(`[Chat] buildNsdFromCache: success - ${subsidyId}, eligibility_rules: ${eligibilityRules.length}, required_docs: ${requiredDocuments.length}`);
+    return nsd;
+  } catch (err) {
+    console.error(`[Chat] buildNsdFromCache failed for ${subsidyId}:`, err);
+    return null;
+  }
+}
 
 // =====================================================
 // 型定義
@@ -148,15 +254,22 @@ chat.post('/precheck', async (c) => {
     const ssotResult = await getNormalizedSubsidyDetail(c.env.DB, subsidy_id);
     let normalized: NormalizedSubsidyDetail | null = ssotResult?.normalized || null;
     
-    // SSOT で見つからない場合はモックデータからフォールバック
+    // SSOT で見つからない場合は subsidy_cache から直接構築（REAL-xxx 等の非canonical補助金対応）
+    if (!normalized) {
+      normalized = await buildNsdFromCache(c.env.DB, subsidy_id);
+      if (normalized) {
+        console.log(`[Chat Precheck] Cache fallback resolved: ${subsidy_id}`);
+      }
+    }
+    
+    // それでも見つからない場合はモックデータからフォールバック
     if (!normalized) {
       const mockDetail = getMockSubsidyDetail(subsidy_id);
       if (mockDetail) {
-        console.log(`[Chat] Using mock subsidy data for ${subsidy_id}`);
-        // モックデータの場合は normalized を null のまま（performPrecheck で処理）
+        console.log(`[Chat Precheck] Using mock subsidy data for ${subsidy_id}`);
       }
     } else {
-      console.log(`[Chat] SSOT resolved: ${subsidy_id} → canonical_id: ${normalized.ids.canonical_id}`);
+      console.log(`[Chat Precheck] Resolved: ${subsidy_id} → canonical_id: ${normalized.ids.canonical_id}`);
     }
     
     // eligibility_rules 取得（Fallback用）
@@ -663,7 +776,11 @@ chat.post('/sessions', async (c) => {
       `).bind(existSession.company_id).first() as Record<string, any> | null;
       
       const existSsot = await getNormalizedSubsidyDetail(c.env.DB, existSession.subsidy_id);
-      const existNormalized = existSsot?.normalized || null;
+      let existNormalized = existSsot?.normalized || null;
+      // Cache fallback for non-canonical subsidies
+      if (!existNormalized) {
+        existNormalized = await buildNsdFromCache(c.env.DB, existSession.subsidy_id as string);
+      }
       
       // missing_items を毎回再生成（会社情報の更新を反映するため）
       const existFactsResult = await c.env.DB.prepare(`
@@ -739,14 +856,22 @@ chat.post('/sessions', async (c) => {
     const ssotResult = await getNormalizedSubsidyDetail(c.env.DB, subsidy_id);
     let normalized: NormalizedSubsidyDetail | null = ssotResult?.normalized || null;
     
-    // SSOT で見つからない場合はモックデータからフォールバック
+    // SSOT で見つからない場合は subsidy_cache から直接構築
+    if (!normalized) {
+      normalized = await buildNsdFromCache(c.env.DB, subsidy_id);
+      if (normalized) {
+        console.log(`[Chat Session] Cache fallback resolved: ${subsidy_id}`);
+      }
+    }
+    
+    // それでも見つからない場合はモックデータからフォールバック
     if (!normalized) {
       const mockDetail = getMockSubsidyDetail(subsidy_id);
       if (mockDetail) {
         console.log(`[Chat Session] Using mock subsidy data for ${subsidy_id}`);
       }
     } else {
-      console.log(`[Chat Session] SSOT resolved: ${subsidy_id} → canonical_id: ${normalized.ids.canonical_id}`);
+      console.log(`[Chat Session] Resolved: ${subsidy_id} → canonical_id: ${normalized.ids.canonical_id}`);
     }
     
     const eligibilityRules = await c.env.DB.prepare(`
@@ -1018,7 +1143,11 @@ chat.get('/sessions/:id', async (c) => {
     `).bind(sess.company_id).first() as any;
     
     const detailSsot = await getNormalizedSubsidyDetail(c.env.DB, sess.subsidy_id);
-    const detailNormalized = detailSsot?.normalized || null;
+    let detailNormalized = detailSsot?.normalized || null;
+    // Cache fallback for non-canonical subsidies (REAL-xxx etc.)
+    if (!detailNormalized) {
+      detailNormalized = await buildNsdFromCache(c.env.DB, sess.subsidy_id as string);
+    }
     
     return c.json<ApiResponse<any>>({
       success: true,
@@ -1230,7 +1359,12 @@ chat.post('/sessions/:id/message', async (c) => {
     
     // 補助金情報を取得（AI回答生成用）
     const ssotResult = await getNormalizedSubsidyDetail(c.env.DB, session.subsidy_id);
-    const normalized = ssotResult?.normalized || null;
+    let normalized = ssotResult?.normalized || null;
+    // Cache fallback for non-canonical subsidies (REAL-xxx etc.)
+    if (!normalized) {
+      normalized = await buildNsdFromCache(c.env.DB, session.subsidy_id as string);
+      if (normalized) console.log(`[Chat Message] Cache fallback resolved: ${session.subsidy_id}`);
+    }
     
     // 企業情報を取得（Phase 19-QA: company_profile の全情報をAIに渡す）
     const companyInfo = await c.env.DB.prepare(`
@@ -1605,7 +1739,12 @@ chat.post('/sessions/:id/message/stream', async (c) => {
     
     // 企業・補助金情報取得
     const ssotResult = await getNormalizedSubsidyDetail(c.env.DB, session.subsidy_id);
-    const normalized = ssotResult?.normalized || null;
+    let normalized = ssotResult?.normalized || null;
+    // Cache fallback for non-canonical subsidies (REAL-xxx etc.)
+    if (!normalized) {
+      normalized = await buildNsdFromCache(c.env.DB, session.subsidy_id as string);
+      if (normalized) console.log(`[Chat Stream] Cache fallback resolved: ${session.subsidy_id}`);
+    }
     
     const companyInfo = await c.env.DB.prepare(`
       SELECT c.*, cp.corp_type, cp.founding_year, cp.business_summary,
