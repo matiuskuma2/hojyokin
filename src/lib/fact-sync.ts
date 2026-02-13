@@ -106,18 +106,12 @@ const FACT_TO_PROFILE_MAP: Record<string, {
     type: 'json',
     transform: (v) => JSON.stringify([{ category: 'general', description: v }]),
   },
-  'investment_amount': {
-    table: 'company_profile',
-    column: 'desired_investments_json',
-    type: 'json',
-    transform: (v) => JSON.stringify([{ category: 'general', description: '壁打ちチャットで回答', amount: parseFloat(v) || 0 }]),
-  },
-  'expected_effect': {
-    table: 'company_profile',
-    column: 'notes',
-    type: 'text',
-    transform: (v) => `期待効果: ${v}`,
-  },
+  // Freeze v3.1 案A確定: investment_amount は案件固有情報
+  // → company_profile には同期しない（chat_facts にのみ保持）
+  // 'investment_amount': REMOVED — 案件ごとに異なるため恒常情報ではない
+
+  // expected_effect も案件固有情報として同期対象外
+  // 'expected_effect': REMOVED — 補助金ごとに異なるため恒常情報ではない
   'has_gbiz_id': {
     table: 'company_profile',
     column: 'certifications_json',

@@ -18,6 +18,10 @@ import {
   getNormalizedSubsidyDetail,
   type NormalizedSubsidyDetail,
   type WallChatQuestion,
+  resolveOpeningId,
+  computeNsdContentHash,
+  GateError,
+  type OpeningIdResult,
 } from '../lib/ssot';
 import {
   generateAIResponse,
@@ -250,32 +254,53 @@ chat.post('/precheck', async (c) => {
       }, 404);
     }
     
+    // Freeze v3.0: Gate で回次IDを解決（precheck は受付終了でもブロックしない）
+    let resolvedId = subsidy_id;
+    let gateInfo: { input_id: string; resolved_id: string; is_converted: boolean; warning: string | null } | null = null;
+    try {
+      const gateResult = await resolveOpeningId(c.env.DB, subsidy_id, { allowClosed: true });
+      resolvedId = gateResult.openingId;
+      gateInfo = {
+        input_id: subsidy_id,
+        resolved_id: gateResult.openingId,
+        is_converted: gateResult.isConverted,
+        warning: gateResult.warning,
+      };
+    } catch (err) {
+      if (err instanceof GateError) {
+        console.warn(`[Chat Precheck Gate] ${err.code}: ${err.message}`);
+        // precheck では Gate エラーでもフォールバックを試みる
+      } else {
+        throw err;
+      }
+    }
+
     // A-3-5: SSOT（getNormalizedSubsidyDetail）から補助金情報取得
-    const ssotResult = await getNormalizedSubsidyDetail(c.env.DB, subsidy_id);
+    const ssotResult = await getNormalizedSubsidyDetail(c.env.DB, resolvedId);
     let normalized: NormalizedSubsidyDetail | null = ssotResult?.normalized || null;
     
     // SSOT で見つからない場合は subsidy_cache から直接構築（REAL-xxx 等の非canonical補助金対応）
     if (!normalized) {
-      normalized = await buildNsdFromCache(c.env.DB, subsidy_id);
+      normalized = await buildNsdFromCache(c.env.DB, resolvedId);
       if (normalized) {
-        console.log(`[Chat Precheck] Cache fallback resolved: ${subsidy_id}`);
+        console.log(`[Chat Precheck] Cache fallback resolved: ${resolvedId}`);
       }
     }
     
     // それでも見つからない場合はモックデータからフォールバック
     if (!normalized) {
-      const mockDetail = getMockSubsidyDetail(subsidy_id);
+      const mockDetail = getMockSubsidyDetail(resolvedId);
       if (mockDetail) {
-        console.log(`[Chat Precheck] Using mock subsidy data for ${subsidy_id}`);
+        console.log(`[Chat Precheck] Using mock subsidy data for ${resolvedId}`);
       }
     } else {
-      console.log(`[Chat Precheck] Resolved: ${subsidy_id} → canonical_id: ${normalized.ids.canonical_id}`);
+      console.log(`[Chat Precheck] Resolved: ${resolvedId} → canonical_id: ${normalized.ids.canonical_id}`);
     }
     
     // eligibility_rules 取得（Fallback用）
     const eligibilityRules = await c.env.DB.prepare(`
       SELECT * FROM eligibility_rules WHERE subsidy_id = ?
-    `).bind(subsidy_id).all();
+    `).bind(resolvedId).all();
     
     // required_documents 取得（Fallback用）
     const requiredDocs = await c.env.DB.prepare(`
@@ -283,13 +308,13 @@ chat.post('/precheck', async (c) => {
       FROM required_documents_by_subsidy rd
       LEFT JOIN required_documents_master rdm ON rd.doc_code = rdm.doc_code
       WHERE rd.subsidy_id = ?
-    `).bind(subsidy_id).all();
+    `).bind(resolvedId).all();
     
     // 既に回答済みのfacts取得
     const existingFacts = await c.env.DB.prepare(`
       SELECT fact_key, fact_value FROM chat_facts
       WHERE company_id = ? AND (subsidy_id = ? OR subsidy_id IS NULL)
-    `).bind(targetCompanyId, subsidy_id).all();
+    `).bind(targetCompanyId, resolvedId).all();
     
     const factsMap = new Map<string, string>();
     for (const fact of (existingFacts.results || [])) {
@@ -299,9 +324,12 @@ chat.post('/precheck', async (c) => {
     // A-3-5: 判定ロジック（normalized を使用）
     const result = performPrecheck(companyInfo, normalized, eligibilityRules.results || [], requiredDocs.results || [], factsMap);
     
-    return c.json<ApiResponse<PrecheckResult>>({
+    return c.json<ApiResponse<any>>({
       success: true,
-      data: result
+      data: {
+        ...result,
+        gate: gateInfo,  // Freeze v3.0: Gate 情報を含める
+      }
     });
     
   } catch (error) {
@@ -820,6 +848,23 @@ chat.post('/sessions', async (c) => {
         ? performPrecheck(existCompanyFull, existNormalized, existRules, existDocs, existFactsMap)
         : null;
       
+      // Freeze v3.0 §18.5: NSD コンテンツハッシュ比較（再開時の変更検知）
+      let nsdChanged = false;
+      if (existSession.nsd_content_hash) {
+        try {
+          const currentDetailJson = await c.env.DB.prepare(`
+            SELECT detail_json FROM subsidy_cache WHERE id = ? LIMIT 1
+          `).bind(existSession.subsidy_id).first<{ detail_json: string | null }>();
+          const currentHash = await computeNsdContentHash(currentDetailJson?.detail_json || null);
+          nsdChanged = currentHash !== existSession.nsd_content_hash;
+          if (nsdChanged) {
+            console.log(`[Chat Session Resume] NSD content changed for session ${existSession.id}: ${existSession.nsd_content_hash} → ${currentHash}`);
+          }
+        } catch (hashErr) {
+          console.warn(`[Chat Session Resume] Hash check failed:`, hashErr);
+        }
+      }
+
       // 再生成した missing_items をDBにも更新
       if (refreshedPrecheck && existSession.status === 'collecting') {
         try {
@@ -840,11 +885,44 @@ chat.post('/sessions', async (c) => {
             blocked_reasons: [],
             missing_items: [],
           },
-          is_new: false
+          is_new: false,
+          nsd_changed: nsdChanged,  // Freeze v3.0: NSD変更フラグ
         }
       });
     }
     
+    // =====================================================
+    // Freeze v3.0 Gate: 回次ID解決 + 受付終了チェック
+    // =====================================================
+    let gateResult: OpeningIdResult;
+    try {
+      gateResult = await resolveOpeningId(c.env.DB, subsidy_id);
+    } catch (err) {
+      if (err instanceof GateError) {
+        const errorMap: Record<string, { code: string; status: number }> = {
+          'NOT_FOUND': { code: 'SUBSIDY_NOT_FOUND', status: 404 },
+          'ROUND_CLOSED': { code: 'ROUND_CLOSED', status: 403 },
+          'SCHEME_NO_OPENING': { code: 'SCHEME_NO_OPENING', status: 400 },
+          'EXCLUDED': { code: 'WALL_CHAT_EXCLUDED', status: 403 },
+        };
+        const mapped = errorMap[err.code] || { code: 'GATE_ERROR', status: 400 };
+        console.warn(`[Chat Session Gate] ${err.code}: ${err.message}`, err.details);
+        return c.json<ApiResponse<null>>({
+          success: false,
+          error: { 
+            code: mapped.code, 
+            message: err.message,
+            details: err.details,
+          } as any
+        }, mapped.status as any);
+      }
+      throw err; // 予期しないエラーは上位に投げる
+    }
+
+    // Gate 通過: 実際に使用するIDは gateResult.openingId
+    const resolvedSubsidyId = gateResult.openingId;
+    console.log(`[Chat Session Gate] passed: input=${subsidy_id} → opening=${resolvedSubsidyId}, scheme=${gateResult.schemeId}, converted=${gateResult.isConverted}`);
+
     // 事前判定を実行
     const companyInfo = await c.env.DB.prepare(`
       SELECT c.*, cp.* FROM companies c
@@ -853,42 +931,42 @@ chat.post('/sessions', async (c) => {
     `).bind(targetCompanyId).first() as Record<string, any> | null;
     
     // A-3-5: SSOT（getNormalizedSubsidyDetail）から補助金情報取得
-    const ssotResult = await getNormalizedSubsidyDetail(c.env.DB, subsidy_id);
+    const ssotResult = await getNormalizedSubsidyDetail(c.env.DB, resolvedSubsidyId);
     let normalized: NormalizedSubsidyDetail | null = ssotResult?.normalized || null;
     
     // SSOT で見つからない場合は subsidy_cache から直接構築
     if (!normalized) {
-      normalized = await buildNsdFromCache(c.env.DB, subsidy_id);
+      normalized = await buildNsdFromCache(c.env.DB, resolvedSubsidyId);
       if (normalized) {
-        console.log(`[Chat Session] Cache fallback resolved: ${subsidy_id}`);
+        console.log(`[Chat Session] Cache fallback resolved: ${resolvedSubsidyId}`);
       }
     }
     
     // それでも見つからない場合はモックデータからフォールバック
     if (!normalized) {
-      const mockDetail = getMockSubsidyDetail(subsidy_id);
+      const mockDetail = getMockSubsidyDetail(resolvedSubsidyId);
       if (mockDetail) {
-        console.log(`[Chat Session] Using mock subsidy data for ${subsidy_id}`);
+        console.log(`[Chat Session] Using mock subsidy data for ${resolvedSubsidyId}`);
       }
     } else {
-      console.log(`[Chat Session] Resolved: ${subsidy_id} → canonical_id: ${normalized.ids.canonical_id}`);
+      console.log(`[Chat Session] Resolved: ${resolvedSubsidyId} → canonical_id: ${normalized.ids.canonical_id}`);
     }
     
     const eligibilityRules = await c.env.DB.prepare(`
       SELECT * FROM eligibility_rules WHERE subsidy_id = ?
-    `).bind(subsidy_id).all();
+    `).bind(resolvedSubsidyId).all();
     
     const requiredDocs = await c.env.DB.prepare(`
       SELECT rd.*, rdm.name as doc_name
       FROM required_documents_by_subsidy rd
       LEFT JOIN required_documents_master rdm ON rd.doc_code = rdm.doc_code
       WHERE rd.subsidy_id = ?
-    `).bind(subsidy_id).all();
+    `).bind(resolvedSubsidyId).all();
     
     const existingFacts = await c.env.DB.prepare(`
       SELECT fact_key, fact_value FROM chat_facts
       WHERE company_id = ? AND (subsidy_id = ? OR subsidy_id IS NULL)
-    `).bind(targetCompanyId, subsidy_id).all();
+    `).bind(targetCompanyId, resolvedSubsidyId).all();
     
     const factsMap = new Map<string, string>();
     for (const fact of (existingFacts.results || [])) {
@@ -903,23 +981,45 @@ chat.post('/sessions', async (c) => {
       requiredDocs.results || [],
       factsMap
     );
+
+    // =====================================================
+    // Freeze v3.0 §18.5: セッション固定情報の計算
+    // =====================================================
+    // NSD コンテンツハッシュ（再開時の変更検知用）
+    const detailJsonRow = await c.env.DB.prepare(`
+      SELECT detail_json FROM subsidy_cache WHERE id = ? LIMIT 1
+    `).bind(resolvedSubsidyId).first<{ detail_json: string | null }>();
+    const nsdContentHash = await computeNsdContentHash(detailJsonRow?.detail_json || null);
+
+    // draft_mode 判定（暫定: Freeze §12 に基づく簡易判定）
+    const draftMode = determineDraftMode(normalized);
     
-    // 新規セッション作成
+    // 新規セッション作成（Freeze v3.0: 6列追加）
     const sessionId = crypto.randomUUID();
     const now = new Date().toISOString();
     
     await c.env.DB.prepare(`
-      INSERT INTO chat_sessions (id, user_id, company_id, subsidy_id, status, precheck_result, missing_items, created_at, updated_at)
-      VALUES (?, ?, ?, ?, 'collecting', ?, ?, ?, ?)
+      INSERT INTO chat_sessions (
+        id, user_id, company_id, subsidy_id, status, 
+        precheck_result, missing_items, created_at, updated_at,
+        scheme_id, subsidy_title_at_start, acceptance_end_at_start,
+        nsd_content_hash, draft_mode, nsd_source
+      ) VALUES (?, ?, ?, ?, 'collecting', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).bind(
       sessionId,
       user.id,
       targetCompanyId,
-      subsidy_id,
+      resolvedSubsidyId,  // Gate で解決された回次ID
       JSON.stringify(precheckResult),
       JSON.stringify(precheckResult.missing_items),
       now,
-      now
+      now,
+      gateResult.schemeId,                        // scheme_id
+      gateResult.subsidyTitle,                     // subsidy_title_at_start
+      gateResult.acceptanceEnd,                    // acceptance_end_at_start
+      nsdContentHash,                              // nsd_content_hash
+      draftMode,                                   // draft_mode
+      gateResult.nsdSource,                        // nsd_source
     ).run();
     
     // A-3-5: 初期システムメッセージ作成（normalized から取得）
@@ -992,7 +1092,12 @@ chat.post('/sessions', async (c) => {
         targetCompanyId,
         JSON.stringify({
           session_id: sessionId,
-          subsidy_id,
+          subsidy_id: resolvedSubsidyId,
+          input_subsidy_id: subsidy_id,  // Gate前の元ID
+          scheme_id: gateResult.schemeId,
+          is_converted: gateResult.isConverted,
+          nsd_source: gateResult.nsdSource,
+          draft_mode: draftMode,
           precheck_status: precheckResult.status,
           missing_items_count: precheckResult.missing_items.length,
           blocked_reasons_count: precheckResult.blocked_reasons.length,
@@ -1009,15 +1114,25 @@ chat.post('/sessions', async (c) => {
           id: sessionId,
           user_id: user.id,
           company_id: targetCompanyId,
-          subsidy_id,
-          subsidy_title: normalized?.display.title || subsidyTitle,
+          subsidy_id: resolvedSubsidyId,  // Gate で解決された回次ID
+          subsidy_title: gateResult.subsidyTitle,
           status: 'collecting',
           precheck_result: precheckResult,
+          scheme_id: gateResult.schemeId,
+          draft_mode: draftMode,
+          nsd_source: gateResult.nsdSource,
           created_at: now
         },
         messages,
         precheck: precheckResult,
-        is_new: true
+        is_new: true,
+        // Freeze v3.0: Gate 情報
+        gate: {
+          input_id: subsidy_id,
+          resolved_id: resolvedSubsidyId,
+          is_converted: gateResult.isConverted,
+          warning: gateResult.warning,
+        }
       }
     });
     
@@ -1029,6 +1144,40 @@ chat.post('/sessions', async (c) => {
     }, 500);
   }
 });
+
+/**
+ * ドラフトモード判定
+ * 
+ * Freeze §12: NSD の情報量に基づきドラフト生成のモードを決定
+ * - full_template: required_forms にフィールド定義あり → 完全テンプレート
+ * - structured_outline: required_forms あるが曖昧 → アウトライン
+ * - eligibility_only: required_forms なし → 要件チェックのみ
+ */
+function determineDraftMode(
+  normalized: NormalizedSubsidyDetail | null
+): 'full_template' | 'structured_outline' | 'eligibility_only' {
+  if (!normalized) return 'eligibility_only';
+
+  const requiredForms = normalized.content?.required_forms || [];
+  
+  if (requiredForms.length > 0) {
+    // フィールド定義が具体的にあるか？
+    const hasConcreteFields = requiredForms.some(
+      (form: any) => form.fields && form.fields.length >= 3
+    );
+    return hasConcreteFields ? 'full_template' : 'structured_outline';
+  }
+
+  // required_forms がなくても、eligibility_rules や required_documents が豊富なら outline
+  const eligibilityRules = normalized.content?.eligibility_rules || [];
+  const requiredDocs = normalized.content?.required_documents || [];
+  
+  if (eligibilityRules.length >= 3 || requiredDocs.length >= 3) {
+    return 'structured_outline';
+  }
+
+  return 'eligibility_only';
+}
 
 /**
  * 質問のフォーマット

@@ -62,3 +62,11 @@ export {
   type ChatFact,
   type MissingField,
 } from './getCompanySSOT';
+
+// Freeze v3.0 §17-18: 回次Gate
+export {
+  resolveOpeningId,
+  computeNsdContentHash,
+  GateError,
+  type OpeningIdResult,
+} from './resolveOpeningId';
