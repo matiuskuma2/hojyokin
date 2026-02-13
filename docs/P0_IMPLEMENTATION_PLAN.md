@@ -3,8 +3,10 @@
 **文書ID**: WALLCHAT-P0-PLAN-001
 **ステータス**: 承認待ち
 **作成日**: 2026-02-13
-**前提ドキュメント**: [WALLCHAT_ARCHITECTURE_FREEZE.md](./WALLCHAT_ARCHITECTURE_FREEZE.md)
+**最終更新**: 2026-02-13 (Freeze v3.0 整合)
+**前提ドキュメント**: [WALLCHAT_ARCHITECTURE_FREEZE.md](./WALLCHAT_ARCHITECTURE_FREEZE.md) v3.0
 **目的**: 壁打ちチャットを「補助金の話につながらない」状態から「補助金固有の質問が出る」状態へ改善する
+**プロダクトオーナー方針**: 経費×根拠×高速（適合判定の高速化 → 根拠付き説明 → 提案素材 → 加点は後回し）
 
 ---
 
@@ -53,6 +55,29 @@
 ---
 
 ## 実装タスク一覧
+
+### P0-0: 回次ID Gate (Freeze v3.0 追加)
+
+**ファイル**: `src/routes/chat.ts` (POST /api/chat/sessions)
+**根拠**: Freeze §17.5, §19.2
+**優先度**: 最高（これがないと回次混在事故が起きる）
+**推定工数**: 2-3時間
+
+**概要**: 壁打ち開始時に入力IDの種別を判定し、制度IDなら最新回次へ変換、受付終了ならブロックする。
+
+```typescript
+// resolveOpeningId() の詳細は Freeze §21.2 参照
+// セッション作成フローの冒頭に挿入:
+//
+// 1. canonical テーブルにヒット → 制度ID → 最新回次を検索
+// 2. cache テーブルにヒット → 回次ID → 受付状態確認
+// 3. 受付終了 → ブロック（管理者例外あり）
+// 4. scheme_id, subsidy_title_at_start, acceptance_end_at_start をセッションに保存
+```
+
+**DBマイグレーション**: Freeze §18.5 の ALTER TABLE を実行（scheme_id, subsidy_title_at_start, acceptance_end_at_start, nsd_content_hash, draft_mode, nsd_source）
+
+---
 
 ### P0-1: `buildNsdFromCache()` テキスト解析強化
 
@@ -409,32 +434,42 @@ interface NsdWithDetail {
 
 ---
 
-## 実装順序と依存関係
+## 実装順序と依存関係（Freeze v3.0 改訂版）
+
+> ⚠ **Freeze v3.0 (§21) で並び替え済み。以下が最新の実装順序。**
 
 ```
-P0-1a (parseEligibilityFromText)     ─┐
-P0-1b (parseRequiredDocsFromText)      ├─ P0-1d (buildNsdFromCache統合) ─┐
-P0-1c (parseEligibleExpensesFromText) ─┘                                 │
-                                                                          │
-P0-2a (固定キー質問マッピング) ─┐                                         │
-                                ├─ P0-2b (generateDerivedQuestions) ─── P0-3 (generateAdditionalQuestions統合)
-P0-5  (detail_json伝搬)  ──────┘                                          │
-                                                                           │
-P0-4a (formatSubsidyInfo強化) ─┐                                          │
-P0-4b (detail_jsonフォールバック) ┘                                        │
-                                                                           │
-                                                                     [ビルド・テスト・デプロイ]
+Phase 0: Gate（回次ID厳格化）
+  P0-0 (resolveOpeningId) ─── §17, §19
+
+Phase 1: テキスト解析（経費最優先）
+  P0-1c (parseEligibleExpensesFromText)  ─┐
+  P0-1a (parseEligibilityFromText)         ├─ P0-1d (buildNsdFromCache統合)
+  P0-1b (parseRequiredDocsFromText)       ─┘
+
+Phase 2: 根拠リンク最低限
+  P0-7b (metadata source_ref + as_of)
+
+Phase 3: 質問生成（ドラフト欠損優先）
+  P0-2a (固定キー質問マッピング) ─┐
+  P0-2b (generateDerivedQuestions)  ├─ P0-3 (generateAdditionalQuestions統合)
+                                   ┘
+
+Phase 4: 周辺整備
+  P0-5  (detail_json伝搬)
+  P0-6  (draft_mode + content_hash + DB migration)
+  P0-4a (formatSubsidyInfo強化)
+  P0-4b (detail_jsonフォールバック)
+  P0-8  (canonical未解決UI警告)
+
+Phase 5: テスト + デプロイ
+  [ビルド → 単体テスト → 統合テスト → デプロイ]
 ```
 
-**推奨実装順序**:
-1. `P0-1a` → `P0-1b` → `P0-1c` → `P0-1d` （テキスト解析 → NSD統合）
-2. `P0-5` （detail_json伝搬）
-3. `P0-6` （draft_mode 判定 + content_hash 記録）← Freeze追記から追加
-4. `P0-2a` → `P0-2b` （質問生成）
-5. `P0-3` （質問統合）
-6. `P0-4a` → `P0-4b` （AIプロンプト強化）
-7. `P0-7` （provenance 拡張 + facts source 多様化）← Freeze追記から追加
-8. ビルド → テスト → デプロイ
+**プロダクトオーナー方針による並び替え理由**:
+- **経費（P0-1c）を先頭に**: 「使えるか」を最速判定 = 士業の価値
+- **Gate（P0-0）を最初に**: 回次混在を構造的に防止
+- **根拠（P0-7b）を質問生成の前に**: source_ref を質問と同時に記録するため
 
 ---
 
@@ -599,18 +634,21 @@ Phase 5: テスト + デプロイ
 
 ---
 
-## 成功基準
+## 成功基準（Freeze v3.0 改訂版）
 
 | 指標 | 現状 | P0完了後 |
 |------|------|---------|
+| **回次Gate**: 制度IDで壁打ち不可 | 制限なし | 制度ID→最新回次自動変換 or ブロック |
+| **回次Gate**: 受付終了で壁打ち不可 | 制限なし | 受付終了→ブロック（管理者例外） |
+| **経費質問**: 初期質問に経費関連が含まれる | 0% | ≥1問（投資額 or 経費内訳） |
 | REAL-002 初期質問の補助金関連性 | 0% (汎用質問のみ) | ≥60% (4/7問以上が補助金固有) |
 | consultingモードでの補助金言及率 | 低い | 高い（eligibility_rules がプロンプトに入る） |
 | detail_json テキスト活用率 | 0% | 100% (全テキストフィールドを何らかの形で利用) |
-| ユーザー体験: 「補助金の話につながる」 | ❌ | ✅ |
+| **質問優先度**: 経費→資格→ドラフト必須の順 | 汎用7問順 | §20.2 の優先度順 |
 | draft_mode 判定・表示 | 未実装 | 3パターン表示 |
 | facts に source_ref が記録される | 0% | 100% |
+| **セッション固定**: scheme_id + title + hash 保存 | なし | 全セッションで保存 |
 | canonical未解決時の⚠表示 | なし | cache時に表示 |
-| セッション再開時の hash 比較 | なし | 実装済み |
 
 ---
 
@@ -641,4 +679,20 @@ Phase 5: テスト + デプロイ
 
 ---
 
-*この計画書の承認後、P0-1a から実装を開始します。*
+---
+
+## Freeze v3.0 による変更サマリー
+
+| 変更点 | 旧 (v2.0) | 新 (v3.0) |
+|--------|-----------|-----------|
+| 実装開始タスク | P0-1a (parseEligibility) | **P0-0 (回次Gate)** |
+| 経費解析の順序 | P0-1c (3番目) | **P0-1c (テキスト解析の先頭)** |
+| 質問優先度 | 電子申請→資格→経費→加点→ドラフト | **経費→資格→電子→ドラフト→要件→書類→加点** |
+| セッション保存 | nsd_content_hash + draft_mode | + **scheme_id, title_at_start, end_at_start** |
+| 制度IDでの壁打ち | 制限なし | **ブロック（最新回次へ変換）** |
+| 受付終了での壁打ち | 制限なし | **ブロック（管理者例外）** |
+
+---
+
+*この計画書の承認後、P0-0（回次ID Gate）から実装を開始します。*
+*Freeze v3.0 (§17-22) との整合性を保証します。*

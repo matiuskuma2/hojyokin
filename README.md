@@ -3,7 +3,7 @@
 ## 📋 プロジェクト概要
 
 - **Name**: subsidy-matching (hojyokin)
-- **Version**: 7.1.0 (Phase 25 - 壁打ちチャット設計Freeze + P0改善計画)
+- **Version**: 7.2.0 (Phase 25 - 壁打ちチャット設計Freeze v3.0 + P0改善計画)
 - **Goal**: 企業情報を登録するだけで、最適な補助金・助成金を自動でマッチング＆申請書ドラフト作成
 - **管理者**: モギモギ（関屋紘之）
 - **本番URL**: https://hojyokin.pages.dev
@@ -56,23 +56,27 @@
 
 ---
 
-### 🎉 最新: Phase 25 - 壁打ちチャット設計Freeze + P0改善計画 (v7.1.0)
+### 🎉 最新: Phase 25 - 壁打ちチャット設計Freeze v3.0 + P0改善計画 (v7.2.0)
 
 **Phase 25 成果 (2026-02-13)**:
-- **壁打ちチャット設計仕様書（Freeze）**: 状態機械・draft_mode・質問生成器・データモデルの全仕様を確定
-- **P0実装計画書**: detail_json フラットテキスト→構造化質問変換の実装ロードマップ
-- **根本原因特定**: eligibility_rules(0件)、required_documents(0件)、wall_chat_questions(未生成)が壁打ちの品質低下の原因
-- **buildNsdFromCache改善**: 非canonical補助金(REAL-xxx)でもキャッシュから壁打ち可能に
-- **GitHub同期完了**: 未pushコミット3件を含む全コードがGitHubに反映
+- **Freeze v1.0**: 状態機械・draft_mode・質問生成器・データモデルの全仕様を確定
+- **Freeze v2.0**: データ鮮度/conflict_policy、draft_mode判定基準、facts provenance、canonical未解決、derived_text、矛盾チェックリスト(C1-C14)を追加
+- **Freeze v3.0**: 制度×回次2層モデル、最新回次自動遷移、壁打ちGate、質問優先度改訂（経費最優先）、P0計画並び替え、過去回次表示ポリシーを確定
+- **核心的設計決定**:
+  - Q1: SSOTの主キーは「回次（公募ID）」= 制度まとめは整理用ラベル
+  - Q2: 壁打ち = 「不足分を聞き取る」ことが目的（ドラフト欠損を最優先で質問）
+  - Q5: 士業向け価値 = 適合判定高速化 → 根拠付き説明 → 提案素材 → 加点（後回し）
+- **根本原因特定**: eligibility_rules(0件)、required_documents(0件)、wall_chat_questions(未生成)が壁打ち品質低下の原因
+- **本番DB実態確認**: chat_facts=84件、chat_sessions=38件、application_drafts=10件、canonical紐付き率3.7%（820/22,275件）
 
-**P0改善計画（次ステップ）**:
-| タスク | 内容 | 効果 |
-|--------|------|------|
-| P0-1 | detail_json テキスト→構造化ルール変換 | eligibility_rules が 0件→3-8件に |
-| P0-2 | derived_text 質問生成器 | 補助金固有質問が出る |
-| P0-3 | 質問優先度統合 | 構造化→テキスト派生→NSD→汎用の4層 |
-| P0-4 | AIプロンプト強化 | 「ものづくり補助金の要件」がAI回答に含まれる |
-| P0-5 | detail_json 生データ伝搬 | 全関数でフラットテキスト利用可能に |
+**P0改善計画（Freeze v3.0 改訂版）**:
+| Phase | タスク | 内容 | 効果 |
+|-------|--------|------|------|
+| 0 | **P0-0** | 回次ID Gate（制度ID→最新回次変換、受付終了ブロック） | 回次混在事故の構造的防止 |
+| 1 | P0-1 | detail_json テキスト→構造化（**経費を最優先**） | eligibility_rules 0件→3-8件 |
+| 2 | P0-7b | 根拠リンク最低限（metadata.source_ref） | 「どのフィールド由来か」記録 |
+| 3 | P0-2/3 | 不足入力の質問生成（**ドラフト欠損優先**） | 補助金固有質問が出る |
+| 4 | P0-5/6/4/8 | 周辺整備（draft_mode, hash, AI強化, UI警告） | セッション固定・品質表示 |
 
 ### 🎉 Phase 24 - 壁打ちチャット修正 + SME判定 + ドラフト強化 + テスト基盤 (v7.0.0)
 
