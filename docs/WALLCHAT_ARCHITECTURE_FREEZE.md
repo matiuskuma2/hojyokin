@@ -915,7 +915,16 @@ P0実装時に必ず確認し、矛盾がないことを検証すべき箇所。
 | C13 | trace_json の活用 | draft.ts | 現在は空 → P1 で根拠追跡 |
 | C14 | ドラフト再生成時の fact 最新反映 | draft.ts | セッション完了後に fact が更新された場合 |
 
----
+### 16.5 制度×回次 Gate 系 (Freeze v3.0 追加)
+
+| # | チェック項目 | ファイル | 確認内容 |
+|---|-------------|---------|---------|
+| C15 | 制度IDでの壁打ち開始防止 | chat.ts (POST /sessions) | canonical_id が来た場合に最新回次へ変換するか。変換失敗時にエラー返却するか |
+| C16 | 受付終了での壁打ちブロック | chat.ts (POST /sessions) | `acceptance_end_datetime < now()` の回次でセッション作成がブロックされるか |
+| C17 | 検索結果IDの一貫性 | subsidies.ts → chat.ts | 検索結果の `id` が `subsidy_cache.id`（回次ID）であること。canonical_id が混入していないか |
+| C18 | セッション回次スナップショット | chat.ts (POST /sessions) | `scheme_id`, `subsidy_title_at_start`, `acceptance_end_at_start`, `nsd_content_hash` が保存されるか |
+| C19 | REAL-* IDの扱い | chat.ts | REAL-002等の手動エンリッチIDが回次として正しく処理されるか（制度IDと誤判定されないか） |
+| C20 | 制度ページ→壁打ちのURL遷移 | (将来のフロント) | URLが回次IDに変わり、ブックマーク/共有で回次が特定できるか |
 
 ---
 
@@ -1406,9 +1415,277 @@ ALTER TABLE chat_sessions ADD COLUMN nsd_source TEXT DEFAULT 'ssot';
 
 ---
 
+## 23. 経費審査エンジン (Freeze v3.1)
+
+### 23.1 設計思想
+
+> **壁打ちの中核は「経費が使えるか」の即答である。**
+> 経費判定は単体経費の可否だけでなく、事業全体としての採択可能性まで含む。
+
+プロダクトの本質：「採択される可能性を上げるための事前設計ツール」
+
+### 23.2 2層判定モデル (Freeze)
+
+| レイヤー | 名称 | 目的 | 入力 | 出力 |
+|---------|------|------|------|------|
+| **Layer 1** | 経費適合判定（部分判定） | 「この経費、使える？」 | 個別経費×回次ルール | `expense_status` |
+| **Layer 2** | 事業全体適合判定（総合判定） | 「この事業計画で通る？」 | 全facts×全ルール | `project_status` |
+
+**重要**: 経費OK ≠ 採択可能。KPI未達・賃上げ不足でも不採択になる。
+
+### 23.3 経費適合判定（Layer 1）
+
+#### 入力ソース
+
+| # | ソース | 例 |
+|---|--------|-----|
+| 1 | ユーザーの自然言語 | 「500万円で工作機械を導入したい」 |
+| 2 | 見積書アップロード | PDF → OCR → 経費構造化 |
+| 3 | 壁打ちAIとの会話 | 対話の中で明らかになった経費情報 |
+
+#### 経費 fact 構造
+
+```typescript
+interface ExpenseFact {
+  expense_category: string;      // "機械装置費" | "システム構築費" | "広告費" 等
+  amount: number | null;         // 金額（円）
+  payment_timing: string | null; // "事業期間内" | "前払い" | "分割" | "リース"
+  is_capitalized: boolean | null; // 資産計上対象か
+  vendor_related: boolean | null; // 関連会社取引か
+  source: 'chat' | 'document';   // 入力ソース
+}
+```
+
+#### 4値判定モデル (Freeze)
+
+```typescript
+type ExpenseStatus = 'OK' | 'CONDITIONAL' | 'NG' | 'INSUFFICIENT';
+
+interface ExpenseJudgment {
+  status: ExpenseStatus;
+  reason: string;                  // 人間が読んで理解できる説明（必須）
+  required_actions: RequiredAction[]; // 次にやること
+  rule_reference: {
+    subsidy_id: string;            // 回次ID
+    source_field: string;          // "eligible_expenses" | "application_requirements" 等
+    content_hash: string;          // NSD のハッシュ
+  };
+}
+
+interface RequiredAction {
+  type: 'question' | 'document_upload' | 'confirmation';
+  description: string;
+  fact_key?: string;              // 質問の場合、対応する fact_key
+}
+```
+
+#### 判定ルール照合
+
+| 照合対象 | チェック内容 | 判定例 |
+|---------|------------|--------|
+| NSD.content.eligible_expenses.categories | 経費カテゴリが対象に含まれるか | OK / NG |
+| NSD.content.eligible_expenses.excluded | 除外リストに該当しないか | NG |
+| detail_json.payment_conditions | 支払条件（前払い/リース等） | CONDITIONAL |
+| detail_json.vendor_requirements | ベンダー要件（相見積/関係会社NG） | CONDITIONAL / NG |
+| 事業期間 | 支払いが事業期間内か | CONDITIONAL |
+| 中小企業要件 | 申請者がSMEか | NG（経費ではなく資格だが連動） |
+
+#### 判定例
+
+```
+入力: 「工作機械500万円」
+  → カテゴリ: 機械装置費 → eligible_expenses に含まれる → OK
+  → 見積書: 未提出 → required_actions: ["見積書アップロード"]
+
+入力: 「広告宣伝費200万円」
+  → カテゴリ: 広告宣伝費 → excluded に該当 → NG
+  → reason: "ものづくり補助金では広告宣伝費は対象外です"
+
+入力: 「リースで設備導入」
+  → カテゴリ: 機械装置費 → OK
+  → 支払条件: リース → CONDITIONAL
+  → reason: "リース契約の場合は補助事業期間内の支払い分のみが対象です"
+  → required_actions: ["リース契約書の確認"]
+```
+
+### 23.4 事業全体適合判定（Layer 2）
+
+#### 4値総合判定モデル (Freeze)
+
+```typescript
+type ProjectStatus = 'PASS_POSSIBLE' | 'RISK_HIGH' | 'BLOCKED' | 'INSUFFICIENT';
+
+interface ProjectJudgment {
+  status: ProjectStatus;
+  summary: string;                 // 総合評価の説明
+  breakdown: JudgmentItem[];       // 項目別判定
+  overall_risk_factors: string[];  // リスク要因一覧
+  required_actions: RequiredAction[];
+}
+
+interface JudgmentItem {
+  category: string;    // "経費" | "SME" | "賃上げ" | "KPI" | "GビズID" 等
+  status: 'OK' | 'WARNING' | 'NG' | 'UNKNOWN';
+  detail: string;
+}
+```
+
+#### 判定基準
+
+| status | 条件 | UI表示 |
+|--------|------|--------|
+| `PASS_POSSIBLE` | 全ブロック要件OK、経費OK、KPI根拠あり | ✅ 採択可能性あり |
+| `RISK_HIGH` | ブロック要件はOKだが、数値根拠不足 or 経費CONDITIONAL | ⚠ リスクあり（要改善） |
+| `BLOCKED` | SME不適合、地域外、業種外、税滞納 等 | ❌ 現時点で申請不可 |
+| `INSUFFICIENT` | 事業計画・投資額・KPI等の必須情報が不足 | ❓ 情報不足（質問継続） |
+
+#### 総合判定の出力例
+
+```
+総合判定: RISK_HIGH
+
+【項目別】
+  ✅ 経費（機械装置費500万円）: OK
+  ✅ SME判定: OK（従業員30名）
+  ⚠ 賃上げ要件: 未達の可能性（年率1.5%必要、計画未提示）
+  ⚠ 付加価値目標: 根拠不足（年率3%必要、KPI未設定）
+  ✅ GビズID: 取得済み
+
+【リスク要因】
+  - 賃上げ計画の具体的数値が未提示
+  - 付加価値額の増加根拠が不明確
+
+【次のアクション】
+  1. 賃上げ計画の数値を提示してください
+  2. 付加価値額の増加見込みを具体化してください
+```
+
+### 23.5 壁打ちフロー改訂 (Freeze v3.1)
+
+```
+旧フロー（v3.0）:
+  経費 → 資格 → 電子申請 → ドラフト必須 → 要件 → 書類 → 加点
+
+新フロー（v3.1）:
+  事業骨格確立（事業内容・投資額・KPI・賃上げ・付加価値）
+    ↓
+  適合ブロック判定（SME・地域・業種・税滞納 → BLOCKED なら即停止）
+    ↓
+  経費判定（カテゴリ照合 → OK/CONDITIONAL/NG/INSUFFICIENT）
+    ↓
+  総合評価（全facts×全ルール → PASS_POSSIBLE/RISK_HIGH/BLOCKED/INSUFFICIENT）
+    ↓
+  ドラフト生成（総合評価が PASS_POSSIBLE or RISK_HIGH の場合のみ）
+```
+
+### 23.6 質問優先順位 改訂 (Freeze v3.1, §20.2 を置換)
+
+| 優先度 | カテゴリ | 目的 | 具体例 |
+|-------|---------|------|-------|
+| **1** | **事業骨格（ドラフト必須）** | 通るかの基礎 + ドラフト材料 | 事業概要、投資額、経費内訳、目的・課題、スケジュール、KPI |
+| **2** | **適合ブロック要件** | NG即停止 | SME判定、地域、業種、税滞納、過去受給 |
+| **3** | **経費適合** | 使えるか判定 | 経費カテゴリ、支払条件、ベンダー要件 |
+| **4** | **補助金固有の数値要件** | 根拠付き判定 | 賃上げ率、付加価値額増加率、最低賃金 |
+| **5** | **電子申請の前提** | 形式要件 | GビズID取得状況 |
+| **6** | **必要書類の確認** | 準備状況把握 | 決算書、事業計画書、見積書 |
+| **7** | **加点要素** | 戦略提案（後回しOK） | 経営革新計画認定、事業継続力強化計画 |
+| **8** | **推奨（任意）** | 精度向上 | 強み、課題の詳細、競争優位性 |
+
+**v3.0 → v3.1 の変更点**:
+- **事業骨格（ドラフト必須）を最優先に引き上げ** ← 「通るかの基礎」が先
+- **経費は3番目** ← 事業骨格が先にないと経費判定の文脈が不明
+- **数値要件を独立カテゴリに** ← 賃上げ・付加価値は経費とは別の判定軸
+
+### 23.7 テキスト解析方式 (Freeze v3.1)
+
+```
+C（ハイブリッド方式）:
+  P0: regex のみ（コスト0、レイテンシ<1ms）
+    ├─ セパレータ分割（、。・\n ; ；）
+    ├─ カテゴリ分類（キーワードマッチ）
+    └─ 短フラグメント結合（5文字未満は前に結合）
+
+  P1: 品質不足時のみ LLM fallback
+    ├─ ルール数 < 2件 → 品質不足 → LLM
+    ├─ 平均文字数 < 8文字 → 分割しすぎ → LLM
+    └─ LLM結果は cache → 2回目以降は regex
+```
+
+### 23.8 P0-1c 拡張仕様 (Freeze v3.1)
+
+P0-1c は「経費カテゴリ抽出」だけでなく、最小の経費審査エンジンまで含む:
+
+```typescript
+// P0-1c の scope:
+// 1. parseEligibleExpensesFromText（カテゴリ抽出）
+// 2. 支払条件抽出（前払い/分割/リース/事業期間内）
+// 3. ベンダー条件抽出（相見積/関係会社）
+// 4. judgeExpense() → 4値判定
+// 5. judgeProject() → 4値総合判定（最小版）
+
+// P1 で拡張:
+// - LLM fallback
+// - 見積書OCR → 経費fact化
+// - 複数経費の組み合わせ判定
+```
+
+### 23.9 矛盾チェックリスト追加 (v3.1)
+
+| # | チェック項目 | ファイル | 確認内容 |
+|---|-------------|---------|---------|
+| C21 | 経費判定と総合判定の整合 | expense-engine.ts | 経費NGなのに総合PASS_POSSIBLEにならないか |
+| C22 | 経費factのUPSERT | chat.ts | 同一経費カテゴリの重複更新が正しいか |
+| C23 | 総合判定の再計算タイミング | chat.ts | fact更新ごとに再計算するか、明示的な再評価か |
+| C24 | BLOCKEDでのドラフト制御 | draft.ts | BLOCKED時にドラフト生成をブロックするか |
+
+---
+
+## 24. P0 実装タスク改訂 (Freeze v3.1 整合版)
+
+### 24.1 改訂版 実装フェーズ
+
+```
+Phase 0: Gate（回次ID厳格化 + セッション固定）
+  P0-0: resolveOpeningId + DB migration (scheme_id, title, hash, draft_mode, nsd_source)
+
+Phase 1: テキスト解析 + 経費審査エンジン
+  P0-1c: parseEligibleExpensesFromText + judgeExpense (4値) + 支払/ベンダー条件
+  P0-1a: parseEligibilityFromText（要件抽出）
+  P0-1b: parseRequiredDocsFromText（書類抽出）
+  P0-1d: buildNsdFromCache 統合
+  P0-1e (新): judgeProject (総合4値判定・最小版)
+
+Phase 2: 質問生成（ドラフト欠損 + 経費不足 優先）
+  P0-2a: 固定キー質問マッピング（§23.6 の優先順位反映）
+  P0-2b: generateDerivedQuestions（事業骨格 → ブロック → 経費 の順）
+  P0-3:  generateAdditionalQuestions 統合
+
+Phase 3: 周辺整備
+  P0-5:  detail_json伝搬
+  P0-6:  draft_mode + content_hash + DB migration
+  P0-4a: formatSubsidyInfo強化（経費判定結果を含める）
+  P0-4b: detail_jsonフォールバック
+  P0-7b: metadata source_ref + as_of
+  P0-8:  canonical未解決UI警告
+
+Phase 4: テスト + デプロイ
+```
+
+### 24.2 成功基準追加 (v3.1)
+
+| 指標 | 現状 | P0完了後 |
+|------|------|---------|
+| **経費判定**: REAL-002で経費可否が返る | 未実装 | 4値判定が動作 |
+| **総合判定**: REAL-002で事業全体評価が返る | 未実装 | 4値総合判定が動作 |
+| **質問優先**: 事業骨格→ブロック→経費の順 | 汎用7問 | §23.6 の順序 |
+| **BLOCKED制御**: 不適合時にドラフト不可 | 制限なし | BLOCKED→ドラフト不可 |
+
+---
+
 *このドキュメントはFreeze（設計確定）版です。実装時に仕様変更が必要な場合は、このドキュメントを先に更新してからコードに反映してください。*
 
 **変更履歴**:
 - v1.0: 2026-02-13 - 初版作成（§1-10）
 - v2.0: 2026-02-13 - セクション11-16追加（鮮度/draft_mode/provenance/canonical/derived_text/チェックリスト）
 - v3.0: 2026-02-13 - セクション17-22追加（制度×回次2層モデル/最新回次遷移/Gate/質問優先度改訂/P0改訂/過去回次表示）
+- v3.1: 2026-02-13 - セクション23-24追加（経費審査エンジン/2層判定モデル/総合4値判定/質問優先度再改訂/P0タスク改訂）

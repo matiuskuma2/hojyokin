@@ -504,12 +504,22 @@ function determineDraftMode(
 }
 ```
 
-#### P0-6b: DB マイグレーション
+#### P0-6b: DB マイグレーション (Freeze v3.0 §18.5 統合版)
 
 ```sql
--- chat_sessions に draft_mode と nsd_content_hash を追加
-ALTER TABLE chat_sessions ADD COLUMN draft_mode TEXT;
+-- Freeze v3.0: 制度×回次モデル + セッション固定仕様
+-- chat_sessions に回次スナップショット情報を追加
+
+-- 制度ID（整理用、NULLable）
+ALTER TABLE chat_sessions ADD COLUMN scheme_id TEXT;
+
+-- 開始時点のスナップショット（矛盾防止 §11.4）
+ALTER TABLE chat_sessions ADD COLUMN subsidy_title_at_start TEXT;
+ALTER TABLE chat_sessions ADD COLUMN acceptance_end_at_start TEXT;
+
+-- データ整合性（§12, §14）
 ALTER TABLE chat_sessions ADD COLUMN nsd_content_hash TEXT;
+ALTER TABLE chat_sessions ADD COLUMN draft_mode TEXT;
 ALTER TABLE chat_sessions ADD COLUMN nsd_source TEXT DEFAULT 'ssot';
 ```
 
@@ -575,34 +585,12 @@ ALTER TABLE chat_sessions ADD COLUMN nsd_source TEXT DEFAULT 'ssot';
 
 ## 更新後の実装順序と依存関係（全体）
 
-```
-Phase 1: テキスト解析基盤
-  P0-1a (parseEligibilityFromText)     ─┐
-  P0-1b (parseRequiredDocsFromText)      ├─ P0-1d (buildNsdFromCache統合)
-  P0-1c (parseEligibleExpensesFromText) ─┘
-
-Phase 2: データ伝搬 + 判定
-  P0-5  (detail_json伝搬) ─┐
-  P0-6a (determineDraftMode) ├─ P0-6c (セッション作成時保存)
-  P0-6b (DBマイグレーション) ┘  P0-6d (セッション再開hash比較)
-
-Phase 3: 質問生成
-  P0-2a (固定キー質問) ─┐
-  P0-7b (metadata拡張)  ├─ P0-2b (generateDerivedQuestions) ─ P0-3 (統合)
-                        ┘
-
-Phase 4: AI + UI
-  P0-4a (formatSubsidyInfo強化) ─┐
-  P0-4b (detail_jsonフォールバック) ├─ P0-8 (canonical未解決UI警告)
-  P0-7a (source値域拡張)          ┘
-
-Phase 5: テスト + デプロイ
-  [ビルド → 単体テスト → 統合テスト → デプロイ]
-```
+> ⚠ **この旧版は v2.0 時点のものです。最新は上の「Freeze v3.0 改訂版」を参照してください。**
+> **主な差分**: P0-0 (回次Gate) が追加、P0-1c (経費) が先頭へ移動、DB migration が §18.5 統合版に拡張。
 
 ---
 
-## テスト計画
+## テスト計画（Freeze v3.1 改訂版）
 
 ### 単体テスト
 
@@ -620,35 +608,54 @@ Phase 5: テスト + デプロイ
 | T10 | determineDraftMode デフォルト | requirements文字列あり | 'structured_outline' |
 | T11 | facts metadata source_ref | derived_text質問回答 | metadata.source_ref.type = 'derived_text' |
 | T12 | content_hash 比較 | detail_json更新後セッション再開 | missing_items 再計算される |
-| T6 | generateAdditionalQuestions 統合 | derived 5件以上 | フォールバック質問なし |
-| T7 | buildNsdFromCache 強化 | REAL-002 の detail_json | eligibility_rules ≥ 3件 |
+| T13 | resolveOpeningId: 制度→最新回次 | canonical_id | 受付中で締切最近の cache_id が返る |
+| T14 | resolveOpeningId: 受付終了ブロック | 過去締切の cache_id | エラー「受付終了」 |
+| T15 | resolveOpeningId: 受付中なし | 全回次終了の canonical_id | エラー「公募中の回次なし」 |
+| T16 | parseEligibleExpensesFromText | "機械装置費、システム構築費..." | categories ≥ 2件 |
+| T17 | judgeExpense: 対象経費 OK | 機械装置費 → ものづくり | status = 'OK' |
+| T18 | judgeExpense: 除外経費 NG | 広告宣伝費 → ものづくり | status = 'NG', reason含む |
+| T19 | judgeExpense: 条件付き | リース契約 → ものづくり | status = 'CONDITIONAL' |
+| T20 | judgeExpense: 情報不足 | カテゴリ不明 | status = 'INSUFFICIENT' |
+| T21 | judgeProject: PASS_POSSIBLE | 全要件OK | status = 'PASS_POSSIBLE' |
+| T22 | judgeProject: BLOCKED | SME不適合 | status = 'BLOCKED' |
+| T23 | judgeProject: RISK_HIGH | 賃上げ未確認 | status = 'RISK_HIGH' |
+| T24 | judgeProject: INSUFFICIENT | 事業概要未入力 | status = 'INSUFFICIENT' |
+| T25 | 質問優先順: 事業骨格→ブロック→経費 | REAL-002 | 最初の3問が事業骨格系 |
 
 ### 統合テスト（本番検証）
 
 | テストID | シナリオ | 確認ポイント |
 |---------|---------|-------------|
-| IT1 | REAL-002 で壁打ち開始 | 初期質問に「付加価値額」「賃上げ」関連が含まれる |
+| IT1 | REAL-002 で壁打ち開始 | 初期質問に「事業概要」「投資額」「経費内訳」が含まれる |
 | IT2 | 7問回答後のconsultingモード | AIが「ものづくり補助金」の具体的要件に言及する |
 | IT3 | 汎用補助金（izumi系）で壁打ち | フォールバック質問＋テキスト派生質問が混在 |
-| IT4 | detail_json が空の補助金 | 従来通りフォールバック7問が表示される |
+| IT4 | detail_json が空の補助金 | 従来通りフォールバック質問が表示される |
+| IT5 | 制度IDで壁打ち開始 | 最新回次に自動変換されセッション作成 |
+| IT6 | 受付終了回次で壁打ち開始 | エラー表示、壁打ち不可 |
+| IT7 | 経費「機械装置費」を回答 | judgeExpense = OK が壁打ち中に返る |
+| IT8 | 経費「広告費」を回答 | judgeExpense = NG + 理由が壁打ち中に返る |
+| IT9 | 全質問回答後の総合判定 | judgeProject が表示される |
+| IT10 | BLOCKED判定時のドラフト | ドラフト生成ボタンが非表示 or 警告 |
 
 ---
 
-## 成功基準（Freeze v3.0 改訂版）
+## 成功基準（Freeze v3.1 改訂版）
 
 | 指標 | 現状 | P0完了後 |
 |------|------|---------|
 | **回次Gate**: 制度IDで壁打ち不可 | 制限なし | 制度ID→最新回次自動変換 or ブロック |
 | **回次Gate**: 受付終了で壁打ち不可 | 制限なし | 受付終了→ブロック（管理者例外） |
-| **経費質問**: 初期質問に経費関連が含まれる | 0% | ≥1問（投資額 or 経費内訳） |
+| **経費判定**: 経費カテゴリの可否が返る | 未実装 | 4値判定 (OK/CONDITIONAL/NG/INSUFFICIENT) |
+| **総合判定**: 事業全体の採択可能性が返る | 未実装 | 4値判定 (PASS_POSSIBLE/RISK_HIGH/BLOCKED/INSUFFICIENT) |
+| **質問優先度**: 事業骨格→ブロック→経費 | 汎用7問 | §23.6 の優先度順 |
 | REAL-002 初期質問の補助金関連性 | 0% (汎用質問のみ) | ≥60% (4/7問以上が補助金固有) |
 | consultingモードでの補助金言及率 | 低い | 高い（eligibility_rules がプロンプトに入る） |
 | detail_json テキスト活用率 | 0% | 100% (全テキストフィールドを何らかの形で利用) |
-| **質問優先度**: 経費→資格→ドラフト必須の順 | 汎用7問順 | §20.2 の優先度順 |
 | draft_mode 判定・表示 | 未実装 | 3パターン表示 |
 | facts に source_ref が記録される | 0% | 100% |
 | **セッション固定**: scheme_id + title + hash 保存 | なし | 全セッションで保存 |
 | canonical未解決時の⚠表示 | なし | cache時に表示 |
+| **BLOCKED制御**: 不適合時にドラフト不可 | 制限なし | BLOCKED→ドラフト生成ブロック |
 
 ---
 
@@ -656,10 +663,13 @@ Phase 5: テスト + デプロイ
 
 | リスク | 影響度 | 軽減策 |
 |--------|-------|--------|
-| テキスト分割の精度が低い | 中 | セパレータを段階的に追加、短フラグメント結合 |
+| テキスト分割の精度が低い | 中 | セパレータを段階的に追加、短フラグメント結合。P1でLLM fallback |
 | 質問数が多すぎる | 中 | 最大10問に制限（既存仕様）、priority で自然に上位のみ表示 |
-| フラットテキストが存在しない補助金 | 低 | フォールバック7問が引き続き機能（現状と同等） |
+| フラットテキストが存在しない補助金 | 低 | フォールバック質問が引き続き機能（現状と同等） |
 | AIプロンプトが長すぎる | 低 | テキスト切り詰め（各セクション最大200文字） |
+| detail_json の品質ばらつき（jgrants/izumi/manual/HTML/PDF） | 高 | regex で壊れたテキストにも耐える設計。P1でLLM fallback |
+| 経費カテゴリの誤判定 | 中 | INSUFFICIENT を返す（誤判定よりは情報不足として安全側に倒す） |
+| 総合判定の過剰NG | 低 | BLOCKED は明確なブロック要件のみ。曖昧な場合は RISK_HIGH |
 
 ---
 
@@ -667,6 +677,9 @@ Phase 5: テスト + デプロイ
 
 | 優先度 | 項目 | 依存 | Freeze参照 |
 |--------|------|------|-----------|
+| P1 | LLM fallback（テキスト解析品質不足時） | P0-1完了後 | §23.7 |
+| P1 | 見積書OCR → 経費fact化 | P0-1c完了後 | §23.3 |
+| P1 | 複数経費の組み合わせ判定 | P0-1e完了後 | §23.4 |
 | P1 | session.state 5状態への移行 | P0完了後 | §2 |
 | P1 | 書類アップロード→fact反映パイプライン | P0完了後 | §4.3 |
 | P1 | draft.ts の draft_mode 別テンプレート分岐 | P0-6完了後 | §12 |
@@ -679,9 +692,19 @@ Phase 5: テスト + デプロイ
 
 ---
 
----
+## Freeze v3.1 による変更サマリー
 
-## Freeze v3.0 による変更サマリー
+| 変更点 | 旧 (v3.0) | 新 (v3.1) |
+|--------|-----------|-----------|
+| **中核エンジン** | テキスト解析のみ | **経費審査エンジン（4値判定）+ 総合判定** |
+| **P0-1c scope** | parseEligibleExpensesFromText | + **judgeExpense + 支払/ベンダー条件** |
+| **新規タスク P0-1e** | なし | **judgeProject（総合4値判定・最小版）** |
+| **質問優先度** | 経費→資格→電子→ドラフト | **事業骨格→ブロック→経費→数値要件→電子→書類→加点** |
+| **壁打ちフロー** | 経費→条件→相談 | **事業骨格→ブロック判定→経費判定→総合評価→ドラフト** |
+| **ドラフト制御** | 制限なし | **BLOCKED→ドラフト生成不可** |
+| **テスト追加** | T1-T16, IT1-IT6 | + **T17-T25, IT7-IT10** |
+
+### 旧 v3.0 変更サマリー
 
 | 変更点 | 旧 (v2.0) | 新 (v3.0) |
 |--------|-----------|-----------|
@@ -695,4 +718,4 @@ Phase 5: テスト + デプロイ
 ---
 
 *この計画書の承認後、P0-0（回次ID Gate）から実装を開始します。*
-*Freeze v3.0 (§17-22) との整合性を保証します。*
+*Freeze v3.1 (§23-24) との整合性を保証します。*
