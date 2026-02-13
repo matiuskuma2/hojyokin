@@ -1010,6 +1010,7 @@ chat.post('/sessions', async (c) => {
           user_id: user.id,
           company_id: targetCompanyId,
           subsidy_id,
+          subsidy_title: normalized?.display.title || subsidyTitle,
           status: 'collecting',
           precheck_result: precheckResult,
           created_at: now
