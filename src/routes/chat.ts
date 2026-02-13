@@ -32,6 +32,14 @@ import {
 } from '../lib/ai-concierge';
 import { syncFactsToProfile } from '../lib/fact-sync';
 import { safeJsonParse } from '../lib/ssot';
+import { 
+  parseDetailJson, 
+  type DetailJsonParseResult,
+} from '../lib/text-parser';
+import { 
+  generateDerivedQuestions as generateDerived,
+  type DerivedQuestion,
+} from '../lib/derived-questions';
 
 const chat = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -61,12 +69,59 @@ async function buildNsdFromCache(
     
     console.log(`[Chat] buildNsdFromCache: building NSD from cache for ${subsidyId} (detail_json: ${row.detail_json ? 'yes' : 'no'})`);
     
-    // detail_json から eligibility_rules / required_documents 等を抽出
-    const eligibilityRules = detail.eligibility_rules || detail.content?.eligibility_rules || [];
-    const eligibleExpenses = detail.eligible_expenses || detail.content?.eligible_expenses || { required: [], categories: [], excluded: [], notes: null };
-    const requiredDocuments = detail.required_documents || detail.content?.required_documents || [];
+    // =====================================================
+    // P0-1: テキスト解析エンジンで detail_json を構造化
+    // =====================================================
+    const parsed: DetailJsonParseResult = parseDetailJson(detail);
+    
+    // 既存の構造化データがあればそちらを優先、なければ解析結果を使用
+    const existingRules = detail.content?.eligibility_rules || [];
+    const existingDocs = detail.content?.required_documents || [];
+    const existingExpenses = detail.content?.eligible_expenses;
+    
+    // eligibility_rules: NSD EligibilityRule 型に変換
+    // { rule_text, category, check_type: 'AUTO'|'MANUAL', auto_field, auto_operator, auto_value }
+    const eligibilityRules = existingRules.length > 0 
+      ? existingRules 
+      : parsed.eligibility.rules.map(r => ({
+          rule_text: r.text,
+          category: r.category === 'compliance' ? 'must' : r.category === 'exclusion' ? 'must' : 'should',
+          check_type: (r.check_type === 'auto' ? 'AUTO' : 'MANUAL') as 'AUTO' | 'MANUAL',
+          auto_field: null,
+          auto_operator: null,
+          auto_value: null,
+        }));
+    
+    // eligible_expenses: NSD EligibleExpenses 型に変換
+    // { required: ExpenseRequired[], categories: ExpenseCategory[], excluded: string[], notes }
+    const eligibleExpenses = existingExpenses && typeof existingExpenses === 'object' && !Array.isArray(existingExpenses) && existingExpenses.categories
+      ? existingExpenses 
+      : {
+          required: [],
+          categories: parsed.expenses.categories.map(c => ({
+            name: c.text,
+            description: null,
+            items: [],
+          })),
+          excluded: parsed.expenses.excluded,
+          notes: null,
+        };
+    
+    // required_documents: NSD RequiredDocument 型に変換
+    // { name, required_level, phase, notes }
+    const requiredDocuments = existingDocs.length > 0 
+      ? existingDocs 
+      : parsed.documents.documents.map(d => ({
+          name: d.text,
+          required_level: d.is_required ? 'required' as const : 'optional' as const,
+          phase: null,
+          notes: null,
+        }));
+    
     const bonusPoints = detail.bonus_points || detail.content?.bonus_points || [];
     const requiredForms = detail.required_forms || detail.content?.required_forms || [];
+    
+    console.log(`[Chat] buildNsdFromCache: parsed quality=${parsed.overall_quality_score}, expenses=${parsed.expenses.categories.length}, rules=${parsed.eligibility.rules.length}, docs=${parsed.documents.documents.length}`);
     
     // wall_chat_missing をパース
     let wallChatMissing: string[] = [];
@@ -321,8 +376,21 @@ chat.post('/precheck', async (c) => {
       factsMap.set((fact as any).fact_key, (fact as any).fact_value);
     }
     
-    // A-3-5: 判定ロジック（normalized を使用）
-    const result = performPrecheck(companyInfo, normalized, eligibilityRules.results || [], requiredDocs.results || [], factsMap);
+    // P0-1: detail_json のテキスト解析
+    let precheckParsed: DetailJsonParseResult | null = null;
+    let precheckDetailJson: Record<string, any> | null = null;
+    try {
+      const djRow = await c.env.DB.prepare(`
+        SELECT detail_json FROM subsidy_cache WHERE id = ? LIMIT 1
+      `).bind(resolvedId).first<{ detail_json: string | null }>();
+      if (djRow?.detail_json) {
+        precheckDetailJson = safeJsonParse(djRow.detail_json);
+        precheckParsed = parseDetailJson(precheckDetailJson);
+      }
+    } catch { /* detail_json解析失敗は無視 */ }
+
+    // A-3-5 + P0-2: 判定ロジック（normalized + テキスト解析を使用）
+    const result = performPrecheck(companyInfo, normalized, eligibilityRules.results || [], requiredDocs.results || [], factsMap, precheckParsed, precheckDetailJson);
     
     return c.json<ApiResponse<any>>({
       success: true,
@@ -351,7 +419,11 @@ function performPrecheck(
   normalized: NormalizedSubsidyDetail | null,
   rules: any[],
   docs: any[],
-  existingFacts: Map<string, string>
+  existingFacts: Map<string, string>,
+  /** P0-2: テキスト解析結果 */
+  parsed?: DetailJsonParseResult | null,
+  /** P0-2: detail_json の生データ */
+  detailJson?: Record<string, any> | null,
 ): PrecheckResult {
   const blockedReasons: string[] = [];
   const missingItems: MissingItem[] = [];
@@ -430,8 +502,8 @@ function performPrecheck(
     }
   }
   
-  // A-3-5: 補助金固有の追加質問（normalized.wall_chat.questions から取得）
-  const additionalQuestions = generateAdditionalQuestions(company, normalized, existingFacts);
+  // A-3-5 + P0-2: 補助金固有の追加質問（テキスト解析ベース + NSD質問 + フォールバック）
+  const additionalQuestions = generateAdditionalQuestions(company, normalized, existingFacts, parsed, detailJson);
   missingItems.push(...additionalQuestions);
   
   // 優先度でソート
@@ -574,22 +646,22 @@ function determineInputType(category: string): 'boolean' | 'number' | 'text' | '
 function generateAdditionalQuestions(
   company: Record<string, any>,
   normalized: NormalizedSubsidyDetail | null,
-  existingFacts: Map<string, string>
+  existingFacts: Map<string, string>,
+  /** P0-2: テキスト解析結果（nullなら旧フォールバック） */
+  parsed?: DetailJsonParseResult | null,
+  /** P0-2: detail_json の生データ */
+  detailJson?: Record<string, any> | null,
 ): MissingItem[] {
-  const questions: MissingItem[] = [];
-  
   // ===== 1. normalized.wall_chat.questions からの質問を最優先 =====
   // Freeze-WALLCHAT-1: input_type は normalizeSubsidyDetail で質問文からパターンマッチ推測済み
   if (normalized?.wall_chat.questions && normalized.wall_chat.questions.length > 0) {
+    const questions: MissingItem[] = [];
     const wcQuestions = normalized.wall_chat.questions;
     
     wcQuestions.forEach((wq: WallChatQuestion) => {
       const factKey = `wc_${normalized.ids.canonical_id}_${wq.key}`;
       
-      // 既に回答済みならスキップ
-      if (existingFacts.has(factKey)) {
-        return;
-      }
+      if (existingFacts.has(factKey)) return;
       
       // DBに既に登録されている情報と重複する質問はスキップ
       const qLower = wq.question.toLowerCase();
@@ -610,142 +682,52 @@ function generateAdditionalQuestions(
       });
     });
     
-    // 質問が追加できた場合はフォールバックを抑制
-    if (questions.length > 0) {
-      return questions;
+    if (questions.length > 0) return questions;
+  }
+  
+  // ===== 2. P0-2/3: テキスト解析ベースの質問生成（Freeze v3.0 §19） =====
+  if (parsed) {
+    const derived = generateDerived(parsed, existingFacts, company, detailJson || null);
+    if (derived.length > 0) {
+      console.log(`[Chat] generateAdditionalQuestions: derived ${derived.length} questions from text parsing`);
+      return derived.map(dq => ({
+        key: dq.key,
+        label: dq.label,
+        input_type: dq.input_type,
+        options: dq.options,
+        source: dq.source as MissingItem['source'],
+        priority: dq.priority,
+      }));
     }
   }
   
-  // ===== 2. フォールバック質問（多様化: boolean/number/text） =====
-  // Phase 19-QA: 聞き取り不足を補完
-  // 補助金申請に必要な情報を網羅的に収集するための汎用質問
+  // ===== 3. 最終フォールバック（テキスト解析もNSD質問もない場合） =====
+  console.log(`[Chat] generateAdditionalQuestions: using generic fallback`);
+  const fallback: MissingItem[] = [];
   
-  // --- 事業内容（最重要: 申請書の核心） ---
-  if (!existingFacts.has('business_purpose')) {
-    questions.push({
-      key: 'business_purpose',
-      label: '今回の補助金で実施したい事業内容を簡単に教えてください。（例：新製品開発、設備導入、IT化推進など）',
-      input_type: 'text',
-      source: 'profile',
-      priority: 1
-    });
+  if (!existingFacts.has('project_summary') && !existingFacts.has('business_purpose')) {
+    fallback.push({ key: 'project_summary', label: '今回の補助金で実施したい事業内容を教えてください。', input_type: 'text', source: 'profile', priority: 1 });
   }
-
   if (!existingFacts.has('investment_amount')) {
-    questions.push({
-      key: 'investment_amount',
-      label: '予定している投資額（設備費・開発費など）はおおよそいくらですか？（万円単位でお答えください）',
-      input_type: 'number',
-      source: 'profile',
-      priority: 2
-    });
+    fallback.push({ key: 'investment_amount', label: '予定している総投資額はいくらですか？（万円単位）', input_type: 'number', source: 'profile', priority: 2 });
   }
-  
   if (!existingFacts.has('current_challenge')) {
-    questions.push({
-      key: 'current_challenge',
-      label: '現在の経営課題は何ですか？（例：人手不足、生産性低下、売上減少、後継者問題など）',
-      input_type: 'text',
-      source: 'profile',
-      priority: 3
-    });
+    fallback.push({ key: 'current_challenge', label: '現在の経営課題は何ですか？', input_type: 'text', source: 'profile', priority: 3 });
   }
-
-  // --- 基本確認（boolean） ---
   if (!existingFacts.has('tax_arrears') && company.tax_arrears === null) {
-    questions.push({
-      key: 'tax_arrears',
-      label: '税金の滞納はありませんか？（法人税、消費税、社会保険料など）',
-      input_type: 'boolean',
-      source: 'profile',
-      priority: 4
-    });
+    fallback.push({ key: 'tax_arrears', label: '税金の滞納はありませんか？', input_type: 'boolean', source: 'profile', priority: 4 });
   }
-  
   if (!existingFacts.has('past_subsidy_same_type') && !company.past_subsidies_json) {
-    questions.push({
-      key: 'past_subsidy_same_type',
-      label: '過去3年以内に同種の補助金を受給していますか？',
-      input_type: 'boolean',
-      source: 'profile',
-      priority: 5
-    });
+    fallback.push({ key: 'past_subsidy_same_type', label: '過去3年以内に同種の補助金を受給したことがありますか？', input_type: 'boolean', source: 'profile', priority: 5 });
   }
-
-  // --- 数値情報（number） ---
   if (!existingFacts.has('employee_count') && !company.employee_count) {
-    questions.push({
-      key: 'employee_count',
-      label: '現在の従業員数は何名ですか？（役員を除くパート・アルバイト含む）',
-      input_type: 'number',
-      source: 'profile',
-      priority: 6
-    });
+    fallback.push({ key: 'employee_count', label: '現在の従業員数は何名ですか？', input_type: 'number', source: 'profile', priority: 6 });
   }
-  
-  if (!existingFacts.has('annual_revenue') && !company.annual_revenue) {
-    questions.push({
-      key: 'annual_revenue',
-      label: '直近1年間の年商（売上高）はいくらですか？（万円単位でお答えください）',
-      input_type: 'number',
-      source: 'profile',
-      priority: 7
-    });
-  }
-
-  // --- 効果・期待（text: 申請書に直結） ---
   if (!existingFacts.has('expected_effect')) {
-    questions.push({
-      key: 'expected_effect',
-      label: '補助金を活用することで期待する効果を具体的に教えてください。（例：売上20%増加、作業時間50%削減など、数値目標があればより良い）',
-      input_type: 'text',
-      source: 'profile',
-      priority: 8
-    });
-  }
-
-  // --- 申請準備状況（boolean + text） ---
-  if (!existingFacts.has('has_gbiz_id')) {
-    questions.push({
-      key: 'has_gbiz_id',
-      label: 'GビズIDプライムアカウントを取得済みですか？（電子申請に必要です）',
-      input_type: 'boolean',
-      source: 'profile',
-      priority: 9
-    });
-  }
-
-  if (!existingFacts.has('has_business_plan')) {
-    questions.push({
-      key: 'has_business_plan',
-      label: '事業計画書を作成していますか？（または作成予定がありますか？）',
-      input_type: 'boolean',
-      source: 'profile',
-      priority: 10
-    });
-  }
-
-  if (!existingFacts.has('desired_timeline')) {
-    questions.push({
-      key: 'desired_timeline',
-      label: '事業の実施時期はいつ頃を予定していますか？（例：2026年4月〜9月）',
-      input_type: 'text',
-      source: 'profile',
-      priority: 11
-    });
-  }
-
-  if (!existingFacts.has('is_wage_raise_planned')) {
-    questions.push({
-      key: 'is_wage_raise_planned',
-      label: '今後1年以内に賃上げ（給与のベースアップ）を予定していますか？（加点項目になる可能性があります）',
-      input_type: 'boolean',
-      source: 'profile',
-      priority: 12
-    });
+    fallback.push({ key: 'expected_effect', label: '補助金活用で期待する効果を教えてください。', input_type: 'text', source: 'profile', priority: 7 });
   }
   
-  return questions;
+  return fallback;
 }
 
 /**
@@ -780,14 +762,37 @@ chat.post('/sessions', async (c) => {
       }, 400);
     }
     
-    // 既存のアクティブセッションをチェック（collecting または consulting）
-    const existingSession = await c.env.DB.prepare(`
+    // Freeze v3.0: 既存セッション検索は Gate 解決後の回次IDでも検索
+    // canonical_id が渡された場合、subsidy_id（元ID）と resolvedId（回次ID）の両方で検索
+    // 既存セッションの復帰には Gate チェック不要（既に開始済み）
+    let existingSession = await c.env.DB.prepare(`
       SELECT cs.*, sc.title as subsidy_title FROM chat_sessions cs
       LEFT JOIN subsidy_cache sc ON cs.subsidy_id = sc.id
       WHERE cs.company_id = ? AND cs.subsidy_id = ? AND cs.status IN ('collecting', 'consulting', 'completed')
       ORDER BY cs.updated_at DESC
       LIMIT 1
     `).bind(targetCompanyId, subsidy_id).first();
+    
+    // 元IDで見つからない場合、canonical → cache 変換を試みて回次IDでも検索
+    if (!existingSession) {
+      try {
+        const canonicalRow = await c.env.DB.prepare(`
+          SELECT latest_cache_id FROM subsidy_canonical WHERE id = ? LIMIT 1
+        `).bind(subsidy_id).first<{ latest_cache_id: string | null }>();
+        if (canonicalRow?.latest_cache_id && canonicalRow.latest_cache_id !== subsidy_id) {
+          existingSession = await c.env.DB.prepare(`
+            SELECT cs.*, sc.title as subsidy_title FROM chat_sessions cs
+            LEFT JOIN subsidy_cache sc ON cs.subsidy_id = sc.id
+            WHERE cs.company_id = ? AND cs.subsidy_id = ? AND cs.status IN ('collecting', 'consulting', 'completed')
+            ORDER BY cs.updated_at DESC
+            LIMIT 1
+          `).bind(targetCompanyId, canonicalRow.latest_cache_id).first();
+          if (existingSession) {
+            console.log(`[Chat Session] Found existing session via canonical → cache: ${subsidy_id} → ${canonicalRow.latest_cache_id}`);
+          }
+        }
+      } catch { /* canonical 検索失敗は無視 */ }
+    }
     
     if (existingSession) {
       // 既存セッションを返す（全メッセージ + precheck情報付き）
@@ -844,8 +849,21 @@ chat.post('/sessions', async (c) => {
         existDocs = (docsResult.results || []) as any[];
       } catch { }
       
+      // P0-1: 既存セッション復帰時もテキスト解析を適用
+      let existParsed: DetailJsonParseResult | null = null;
+      let existDetailJson: Record<string, any> | null = null;
+      try {
+        const djRow = await c.env.DB.prepare(`
+          SELECT detail_json FROM subsidy_cache WHERE id = ? LIMIT 1
+        `).bind(existSession.subsidy_id).first<{ detail_json: string | null }>();
+        if (djRow?.detail_json) {
+          existDetailJson = safeJsonParse(djRow.detail_json);
+          existParsed = parseDetailJson(existDetailJson);
+        }
+      } catch { }
+
       const refreshedPrecheck = existCompanyFull && existNormalized
-        ? performPrecheck(existCompanyFull, existNormalized, existRules, existDocs, existFactsMap)
+        ? performPrecheck(existCompanyFull, existNormalized, existRules, existDocs, existFactsMap, existParsed, existDetailJson)
         : null;
       
       // Freeze v3.0 §18.5: NSD コンテンツハッシュ比較（再開時の変更検知）
@@ -973,15 +991,6 @@ chat.post('/sessions', async (c) => {
       factsMap.set((fact as any).fact_key, (fact as any).fact_value);
     }
     
-    // A-3-5: 判定ロジック（normalized を使用）
-    const precheckResult = performPrecheck(
-      companyInfo || {},
-      normalized,
-      eligibilityRules.results || [],
-      requiredDocs.results || [],
-      factsMap
-    );
-
     // =====================================================
     // Freeze v3.0 §18.5: セッション固定情報の計算
     // =====================================================
@@ -990,6 +999,25 @@ chat.post('/sessions', async (c) => {
       SELECT detail_json FROM subsidy_cache WHERE id = ? LIMIT 1
     `).bind(resolvedSubsidyId).first<{ detail_json: string | null }>();
     const nsdContentHash = await computeNsdContentHash(detailJsonRow?.detail_json || null);
+
+    // P0-1: テキスト解析
+    let sessionDetailJson: Record<string, any> | null = null;
+    let sessionParsed: DetailJsonParseResult | null = null;
+    if (detailJsonRow?.detail_json) {
+      sessionDetailJson = safeJsonParse(detailJsonRow.detail_json);
+      sessionParsed = parseDetailJson(sessionDetailJson);
+    }
+
+    // A-3-5 + P0-2: 判定ロジック（normalized + テキスト解析を使用）
+    const precheckResult = performPrecheck(
+      companyInfo || {},
+      normalized,
+      eligibilityRules.results || [],
+      requiredDocs.results || [],
+      factsMap,
+      sessionParsed,
+      sessionDetailJson,
+    );
 
     // draft_mode 判定（暫定: Freeze §12 に基づく簡易判定）
     const draftMode = determineDraftMode(normalized);

@@ -190,7 +190,7 @@ ${factsInfo || 'まだ収集した情報はありません'}
 10. 申請書のストーリーライン（現状→課題→取組→効果）を意識した助言を行う`;
 }
 
-function formatSubsidyInfo(s: NormalizedSubsidyDetail): string {
+function formatSubsidyInfo(s: NormalizedSubsidyDetail, detailJsonFallback?: Record<string, any> | null): string {
   const parts: string[] = [];
   
   parts.push(`名称: ${s.display.title}`);
@@ -216,32 +216,48 @@ function formatSubsidyInfo(s: NormalizedSubsidyDetail): string {
     parts.push(`目的: ${s.overview.purpose}`);
   }
   
-  // 申請要件
+  // 申請要件 (P0-4: テキスト解析結果が注入されていれば表示)
   if (s.content.eligibility_rules.length > 0) {
     const rules = s.content.eligibility_rules
-      .slice(0, 5)
+      .slice(0, 8)
       .map(r => `- ${r.rule_text}`)
       .join('\n');
     parts.push(`主な申請要件:\n${rules}`);
+  } else if (detailJsonFallback?.application_requirements) {
+    // フォールバック: detail_json の生テキストを使用
+    const raw = Array.isArray(detailJsonFallback.application_requirements)
+      ? detailJsonFallback.application_requirements.slice(0, 5).join('\n- ')
+      : String(detailJsonFallback.application_requirements).substring(0, 300);
+    parts.push(`申請要件（概要）:\n- ${raw}`);
   }
   
-  // 対象経費
+  // 対象経費 (P0-4: テキスト解析結果が注入されていれば表示)
   if (s.content.eligible_expenses.categories.length > 0) {
     const cats = s.content.eligible_expenses.categories
-      .slice(0, 5)
+      .slice(0, 8)
       .map(c => `- ${c.name}${c.description ? ': ' + c.description : ''}`)
       .join('\n');
     parts.push(`対象経費:\n${cats}`);
+  } else if (detailJsonFallback?.eligible_expenses) {
+    const raw = Array.isArray(detailJsonFallback.eligible_expenses)
+      ? detailJsonFallback.eligible_expenses.slice(0, 5).join('\n- ')
+      : String(detailJsonFallback.eligible_expenses).substring(0, 300);
+    parts.push(`対象経費（概要）:\n- ${raw}`);
   }
   
-  // 必要書類
+  // 必要書類 (P0-4: テキスト解析結果が注入されていれば表示)
   if (s.content.required_documents.length > 0) {
     const docs = s.content.required_documents
       .filter(d => d.required_level === 'required')
-      .slice(0, 5)
+      .slice(0, 8)
       .map(d => `- ${d.name}`)
       .join('\n');
     if (docs) parts.push(`主な必要書類:\n${docs}`);
+  } else if (detailJsonFallback?.required_documents) {
+    const raw = Array.isArray(detailJsonFallback.required_documents)
+      ? detailJsonFallback.required_documents.slice(0, 5).join('\n- ')
+      : String(detailJsonFallback.required_documents).substring(0, 300);
+    parts.push(`必要書類（概要）:\n- ${raw}`);
   }
   
   // 電子申請

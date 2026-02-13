@@ -65,19 +65,17 @@ export async function resolveOpeningId(
   // ========================================
   // Step 1: canonical_id として検索
   // ========================================
-  const canonicalRow = await db.prepare(`
-    SELECT 
-      c.id AS canonical_id,
-      c.latest_cache_id,
-      c.name AS canonical_name
-    FROM subsidy_canonical c
-    WHERE c.id = ?
-    LIMIT 1
-  `).bind(inputId).first<{
-    canonical_id: string;
-    latest_cache_id: string | null;
-    canonical_name: string | null;
-  }>();
+  // subsidy_canonical の name カラムは環境により name or program_name
+  // SELECT * で取得し、コード側で判定する（スキーマ差異を吸収）
+  const canonicalRaw = await db.prepare(`
+    SELECT * FROM subsidy_canonical WHERE id = ? LIMIT 1
+  `).bind(inputId).first<Record<string, any>>();
+  
+  const canonicalRow = canonicalRaw ? {
+    canonical_id: canonicalRaw.id as string,
+    latest_cache_id: (canonicalRaw.latest_cache_id as string | null),
+    canonical_name: (canonicalRaw.name || canonicalRaw.program_name || null) as string | null,
+  } : null;
 
   if (canonicalRow) {
     // RULE-GATE-2: canonical → latest_cache_id に変換
@@ -91,13 +89,11 @@ export async function resolveOpeningId(
     }
 
     // latest_cache_id の詳細を取得
-    const cacheRow = await db.prepare(`
-      SELECT id, title, acceptance_end_datetime, request_reception_display_flag,
-             wall_chat_excluded, canonical_id
-      FROM subsidy_cache
-      WHERE id = ?
-      LIMIT 1
-    `).bind(canonicalRow.latest_cache_id).first<CacheRow>();
+    // SELECT * でスキーマ差異を吸収（wall_chat_excluded は本番のみ存在の可能性）
+    const cacheRaw1 = await db.prepare(`
+      SELECT * FROM subsidy_cache WHERE id = ? LIMIT 1
+    `).bind(canonicalRow.latest_cache_id).first<Record<string, any>>();
+    const cacheRow = cacheRaw1 ? toCacheRow(cacheRaw1) : null;
 
     if (!cacheRow) {
       throw new GateError(
@@ -135,13 +131,10 @@ export async function resolveOpeningId(
   // ========================================
   // Step 2: cache_id として直接検索（回次IDが直接渡された場合）
   // ========================================
-  const directCacheRow = await db.prepare(`
-    SELECT id, title, acceptance_end_datetime, request_reception_display_flag,
-           wall_chat_excluded, canonical_id, source
-    FROM subsidy_cache
-    WHERE id = ?
-    LIMIT 1
-  `).bind(inputId).first<CacheRow & { source: string | null }>();
+  const directCacheRaw = await db.prepare(`
+    SELECT * FROM subsidy_cache WHERE id = ? LIMIT 1
+  `).bind(inputId).first<Record<string, any>>();
+  const directCacheRow = directCacheRaw ? { ...toCacheRow(directCacheRaw), source: (directCacheRaw.source as string | null) } : null;
 
   if (directCacheRow) {
     // 受付終了チェック
@@ -206,6 +199,23 @@ interface CacheRow {
   request_reception_display_flag: number | null;
   wall_chat_excluded: number | null;
   canonical_id: string | null;
+}
+
+/**
+ * SELECT * の結果を CacheRow に安全に変換
+ * （スキーマ差異を吸収: wall_chat_excluded は本番のみ存在する可能性）
+ */
+function toCacheRow(raw: Record<string, any>): CacheRow {
+  return {
+    id: raw.id as string,
+    title: raw.title as string,
+    acceptance_end_datetime: (raw.acceptance_end_datetime as string | null) ?? null,
+    request_reception_display_flag: raw.request_reception_display_flag != null 
+      ? Number(raw.request_reception_display_flag) : null,
+    wall_chat_excluded: raw.wall_chat_excluded != null 
+      ? Number(raw.wall_chat_excluded) : null,
+    canonical_id: (raw.canonical_id as string | null) ?? null,
+  };
 }
 
 /**
