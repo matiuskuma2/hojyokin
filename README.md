@@ -3,7 +3,7 @@
 ## 📋 プロジェクト概要
 
 - **Name**: subsidy-matching (hojyokin)
-- **Version**: 7.0.0 (Phase 24 - 壁打ちチャット修正 + SME判定 + ドラフト強化 + テスト基盤)
+- **Version**: 7.1.0 (Phase 25 - 壁打ちチャット設計Freeze + P0改善計画)
 - **Goal**: 企業情報を登録するだけで、最適な補助金・助成金を自動でマッチング＆申請書ドラフト作成
 - **管理者**: モギモギ（関屋紘之）
 - **本番URL**: https://hojyokin.pages.dev
@@ -18,6 +18,8 @@
 |-------------|------|--------|
 | **[SANDBOX_RECOVERY.md](docs/SANDBOX_RECOVERY.md)** | サンドボックス完全復活手順 | 最重要 |
 | **[PROJECT_RULES.md](docs/PROJECT_RULES.md)** | 全体ルール・命名規則・記録方法 | 最重要 |
+| **[WALLCHAT_ARCHITECTURE_FREEZE.md](docs/WALLCHAT_ARCHITECTURE_FREEZE.md)** | 壁打ちチャット設計仕様書（Freeze確定版） | 最重要 |
+| **[P0_IMPLEMENTATION_PLAN.md](docs/P0_IMPLEMENTATION_PLAN.md)** | 壁打ちP0改善計画（テキスト→構造化質問） | 最重要 |
 | **[IMPROVEMENT_PLAN.md](docs/IMPROVEMENT_PLAN.md)** | TODO体系化・改善ロードマップ・KPI | 重要 |
 | **[PHASE_LOG.md](docs/PHASE_LOG.md)** | Phase別の計画・実施・成果・次アクション | 重要 |
 | **[CRAWL_RULES.md](docs/CRAWL_RULES.md)** | クロール運用ルール・壁打ち結果 | 重要 |
@@ -54,7 +56,25 @@
 
 ---
 
-### 🎉 最新: Phase 24 - 壁打ちチャット修正 + SME判定 + ドラフト強化 + テスト基盤 (v7.0.0)
+### 🎉 最新: Phase 25 - 壁打ちチャット設計Freeze + P0改善計画 (v7.1.0)
+
+**Phase 25 成果 (2026-02-13)**:
+- **壁打ちチャット設計仕様書（Freeze）**: 状態機械・draft_mode・質問生成器・データモデルの全仕様を確定
+- **P0実装計画書**: detail_json フラットテキスト→構造化質問変換の実装ロードマップ
+- **根本原因特定**: eligibility_rules(0件)、required_documents(0件)、wall_chat_questions(未生成)が壁打ちの品質低下の原因
+- **buildNsdFromCache改善**: 非canonical補助金(REAL-xxx)でもキャッシュから壁打ち可能に
+- **GitHub同期完了**: 未pushコミット3件を含む全コードがGitHubに反映
+
+**P0改善計画（次ステップ）**:
+| タスク | 内容 | 効果 |
+|--------|------|------|
+| P0-1 | detail_json テキスト→構造化ルール変換 | eligibility_rules が 0件→3-8件に |
+| P0-2 | derived_text 質問生成器 | 補助金固有質問が出る |
+| P0-3 | 質問優先度統合 | 構造化→テキスト派生→NSD→汎用の4層 |
+| P0-4 | AIプロンプト強化 | 「ものづくり補助金の要件」がAI回答に含まれる |
+| P0-5 | detail_json 生データ伝搬 | 全関数でフラットテキスト利用可能に |
+
+### 🎉 Phase 24 - 壁打ちチャット修正 + SME判定 + ドラフト強化 + テスト基盤 (v7.0.0)
 
 **Phase 24 成果 (2026-02-11)**:
 - **壁打ちチャット修正**: 無限スピナー問題解消（テンプレートリテラル内JS構文エラー + AbortController 15秒タイムアウト）
