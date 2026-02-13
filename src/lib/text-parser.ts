@@ -1,13 +1,12 @@
 /**
  * text-parser.ts
  * 
- * P0-1: detail_json のフラットテキストを構造化するテキスト解析エンジン
+ * P0-1: detail_json のフラットテキストを構造化データに変換
  * 
- * Freeze v3.1 §23 / P0計画 Phase 1 に準拠
- * 
- * 方式: ハイブリッドC方式
- * - Phase 1 (P0): 正規表現のみで高速分割・分類（コスト0、レイテンシ<1ms）
- * - Phase 2 (P1): 品質チェック後、不足時のみ LLM フォールバック（将来）
+ * Freeze v3.0/v3.1 準拠:
+ * - ハイブリッドC方式: P0 は正規表現のみ（LLM は P1 で導入）
+ * - detail_json の application_requirements, eligible_expenses, required_documents を解析
+ * - 分割 → 分類 → 構造化のパイプライン
  * 
  * @module
  */
@@ -16,457 +15,353 @@
 // 型定義
 // =====================================================
 
-/** 適格性ルールのカテゴリ */
-export type EligibilityCategory = 
-  | 'plan'          // 計画・目標系
-  | 'financial'     // 資本金・売上・賃金系
-  | 'employee'      // 従業員数・雇用系
-  | 'compliance'    // 法令遵守・税金滞納系
-  | 'exclusion'     // 除外条件
-  | 'application'   // 申請手続き系
-  | 'region'        // 地域系
-  | 'industry'      // 業種系
-  | 'other';        // その他
-
-/** 解析された適格性ルール */
+/** 申請要件のパース結果 */
 export interface ParsedEligibilityRule {
   text: string;
-  category: EligibilityCategory;
+  category: 'eligibility' | 'compliance' | 'exclusion' | 'size' | 'plan' | 'other';
   check_type: 'auto' | 'manual';
-  /** 自動チェック可能なフィールド名 */
+  /** auto の場合の判定フィールド（employee_count, capital, etc.） */
   auto_field?: string;
-  /** 信頼度 (0-1) */
-  confidence: number;
 }
 
-/** 解析された経費カテゴリ */
+/** 経費カテゴリのパース結果 */
 export interface ParsedExpenseCategory {
   text: string;
-  /** 経費の分類 */
-  expense_type?: string;
-  confidence: number;
+  category: 'equipment' | 'outsourcing' | 'labor' | 'travel' | 'material' | 'consulting' | 'other';
 }
 
-/** 解析された必要書類 */
+/** 必要書類のパース結果 */
 export interface ParsedDocument {
   text: string;
   is_required: boolean;
-  /** 書類カテゴリ */
-  doc_type?: string;
-  confidence: number;
+  doc_type: 'financial' | 'plan' | 'certificate' | 'application' | 'other';
 }
 
-/** テキスト解析結果（DetailJsonParseResult） */
+/** テキスト解析の全体結果 */
 export interface DetailJsonParseResult {
   eligibility: {
     rules: ParsedEligibilityRule[];
-    raw_text: string;
+    raw_text: string | null;
   };
   expenses: {
     categories: ParsedExpenseCategory[];
     excluded: string[];
-    raw_text: string;
+    raw_text: string | null;
   };
   documents: {
     documents: ParsedDocument[];
-    raw_text: string;
+    raw_text: string | null;
   };
-  /** 総合品質スコア (0-100) */
+  /** 解析品質スコア (0-100) */
   overall_quality_score: number;
-  /** 解析メタデータ */
+  /** 解析メタ情報 */
   meta: {
-    method: 'regex';  // P0 は regex のみ
-    parse_time_ms: number;
-    input_fields_found: string[];
+    method: 'regex';
+    parsed_at: string;
+    fields_found: number;
+    fields_total: number;
   };
 }
 
 // =====================================================
-// セパレータ定義（Freeze v3.1 §23.1）
-// =====================================================
-
-/** テキスト分割用の区切りパターン */
-const TEXT_SEPARATORS = /[、。・\n\r;；]+|(?:[\s]+(?:及び|又は|並びに|かつ|および|または)[\s]*)/;
-
-/** 番号付きリスト（①②③ 等 or 1. 2. 3. or (1)(2)(3)） */
-const NUMBERED_LIST = /(?:^|\n)\s*(?:[①②③④⑤⑥⑦⑧⑨⑩]|[（\(]\d+[）\)]|\d+[\.\)）])\s*/;
-
-// =====================================================
-// カテゴリ判定パターン
-// =====================================================
-
-const ELIGIBILITY_CATEGORY_PATTERNS: Array<{
-  pattern: RegExp;
-  category: EligibilityCategory;
-  auto_field?: string;
-}> = [
-  // 従業員系
-  { pattern: /従業員|常勤|正社員|パート|アルバイト|人以下|人未満|名以下/, category: 'employee', auto_field: 'employee_count' },
-  // 資本金・財務系
-  { pattern: /資本金|売上|年商|付加価値|利益|賃金|給与|ベースアップ|賃上げ/, category: 'financial', auto_field: 'capital' },
-  // 計画系
-  { pattern: /事業計画|計画を策定|年間の計画|経営革新|事業再構築|新事業/, category: 'plan' },
-  // 法令遵守系
-  { pattern: /滞納|反社|暴力団|法令|違反|処分|不正|税金/, category: 'compliance' },
-  // 除外系
-  { pattern: /対象外|除外|該当しない|受給できない|不可|できません/, category: 'exclusion' },
-  // 申請手続き
-  { pattern: /GビズID|電子申請|jGrants|認定支援機関/, category: 'application' },
-  // 地域系
-  { pattern: /都道府県|市区町村|地域|地方|所在地/, category: 'region', auto_field: 'prefecture' },
-  // 業種系
-  { pattern: /業種|中小企業|小規模事業者|個人事業|法人|製造業|サービス業/, category: 'industry', auto_field: 'industry_major' },
-];
-
-/** 経費除外キーワード */
-const EXPENSE_EXCLUSION_PATTERNS = /対象外|除外|含まない|認められない|不可/;
-
-/** 書類の必須/任意判定 */
-const REQUIRED_DOC_PATTERNS = /必須|必ず|要提出|提出必須|提出すること|義務/;
-const OPTIONAL_DOC_PATTERNS = /任意|該当する場合|必要に応じて|ある場合/;
-
-// =====================================================
-// メイン解析関数
+// メイン関数
 // =====================================================
 
 /**
- * detail_json のフラットテキストを構造化する
+ * detail_json を解析して構造化データを返す
  * 
- * @param detail - detail_json をパースしたオブジェクト
- * @returns DetailJsonParseResult 構造化データ
+ * @param detail - detail_json をパースした Record<string, any>
+ * @returns DetailJsonParseResult
  */
 export function parseDetailJson(detail: Record<string, any> | null): DetailJsonParseResult {
-  const start = Date.now();
-  const inputFieldsFound: string[] = [];
-  
   if (!detail) {
-    return emptyResult(Date.now() - start, inputFieldsFound);
+    return emptyResult();
   }
 
-  // ===== 1. 適格性ルール解析 =====
-  const eligibilityRawText = extractTextField(detail, [
-    'application_requirements',
-    'target_applicants', 
-    'target_businesses',
-  ]);
-  if (eligibilityRawText) inputFieldsFound.push('eligibility');
-  const eligibilityRules = parseEligibilityFromText(eligibilityRawText);
-
-  // ===== 2. 経費解析 =====
-  const expenseRawText = extractTextField(detail, [
-    'eligible_expenses',
-    'target_expenses',
-  ]);
-  if (expenseRawText) inputFieldsFound.push('expenses');
-  const expenseResult = parseExpensesFromText(expenseRawText);
-
-  // ===== 3. 書類解析 =====
-  const docsRawText = extractTextField(detail, [
-    'required_documents',
-    'submission_documents',
-  ]);
-  if (docsRawText) inputFieldsFound.push('documents');
-  const docsResult = parseRequiredDocsFromText(docsRawText);
-
-  // ===== 4. 品質スコア計算 =====
-  const qualityScore = computeQualityScore(
-    eligibilityRules, 
-    expenseResult.categories, 
-    docsResult.documents,
-    inputFieldsFound
+  const eligibilityResult = parseEligibilityFromText(
+    normalizeTextInput(detail.application_requirements)
+  );
+  
+  const expensesResult = parseExpensesFromText(
+    normalizeTextInput(detail.eligible_expenses)
+  );
+  
+  const documentsResult = parseRequiredDocsFromText(
+    normalizeTextInput(detail.required_documents)
   );
 
+  // 品質スコア計算
+  let fieldsFound = 0;
+  const fieldsTotal = 3;
+  if (eligibilityResult.rules.length > 0) fieldsFound++;
+  if (expensesResult.categories.length > 0) fieldsFound++;
+  if (documentsResult.documents.length > 0) fieldsFound++;
+
+  const qualityScore = Math.round((fieldsFound / fieldsTotal) * 100);
+
   return {
-    eligibility: {
-      rules: eligibilityRules,
-      raw_text: eligibilityRawText,
-    },
-    expenses: {
-      categories: expenseResult.categories,
-      excluded: expenseResult.excluded,
-      raw_text: expenseRawText,
-    },
-    documents: {
-      documents: docsResult.documents,
-      raw_text: docsRawText,
-    },
+    eligibility: eligibilityResult,
+    expenses: expensesResult,
+    documents: documentsResult,
     overall_quality_score: qualityScore,
     meta: {
       method: 'regex',
-      parse_time_ms: Date.now() - start,
-      input_fields_found: inputFieldsFound,
+      parsed_at: new Date().toISOString(),
+      fields_found: fieldsFound,
+      fields_total: fieldsTotal,
     },
   };
 }
 
 // =====================================================
-// 個別解析関数
+// 申請要件パーサ (P0-1a)
 // =====================================================
 
 /**
- * 適格性ルールの解析
+ * application_requirements テキストから申請要件を抽出
  * 
- * application_requirements 等のテキストを分割し、カテゴリ分類する
+ * 分割戦略:
+ * 1. 改行、句点、中黒、セミコロンで分割
+ * 2. 5文字未満のフラグメントは前のフラグメントにマージ
+ * 3. カテゴリキーワードで分類
  */
-export function parseEligibilityFromText(text: string): ParsedEligibilityRule[] {
-  if (!text || text.trim().length < 5) return [];
+export function parseEligibilityFromText(text: string | null): {
+  rules: ParsedEligibilityRule[];
+  raw_text: string | null;
+} {
+  if (!text || text.trim().length < 5) {
+    return { rules: [], raw_text: text || null };
+  }
 
   const fragments = splitText(text);
   const rules: ParsedEligibilityRule[] = [];
 
-  for (const fragment of fragments) {
-    const trimmed = fragment.trim();
+  for (const frag of fragments) {
+    const trimmed = frag.trim();
     if (trimmed.length < 5) continue; // 短すぎるフラグメントはスキップ
 
-    const categorization = categorizeEligibility(trimmed);
-    
+    const category = classifyEligibilityCategory(trimmed);
+    const autoField = detectAutoField(trimmed);
+
     rules.push({
       text: trimmed,
-      category: categorization.category,
-      check_type: categorization.auto_field ? 'auto' : 'manual',
-      auto_field: categorization.auto_field,
-      confidence: categorization.confidence,
+      category,
+      check_type: autoField ? 'auto' : 'manual',
+      auto_field: autoField || undefined,
     });
   }
 
-  return rules;
+  return { rules, raw_text: text };
 }
 
+// =====================================================
+// 対象経費パーサ (P0-1c)
+// =====================================================
+
 /**
- * 対象経費の解析
- * 
- * eligible_expenses テキストを分割し、除外経費も抽出する
+ * eligible_expenses テキストから対象経費カテゴリを抽出
  */
-export function parseExpensesFromText(text: string): {
+export function parseExpensesFromText(text: string | null): {
   categories: ParsedExpenseCategory[];
   excluded: string[];
+  raw_text: string | null;
 } {
   if (!text || text.trim().length < 5) {
-    return { categories: [], excluded: [] };
+    return { categories: [], excluded: [], raw_text: text || null };
   }
 
   const fragments = splitText(text);
   const categories: ParsedExpenseCategory[] = [];
   const excluded: string[] = [];
 
-  for (const fragment of fragments) {
-    const trimmed = fragment.trim();
+  for (const frag of fragments) {
+    const trimmed = frag.trim();
     if (trimmed.length < 3) continue;
 
-    // 除外経費かチェック
-    if (EXPENSE_EXCLUSION_PATTERNS.test(trimmed)) {
+    // 除外パターンの検出
+    if (isExcludedExpense(trimmed)) {
       excluded.push(trimmed);
       continue;
     }
 
-    categories.push({
-      text: trimmed,
-      expense_type: classifyExpenseType(trimmed),
-      confidence: 0.7,
-    });
+    const category = classifyExpenseCategory(trimmed);
+    categories.push({ text: trimmed, category });
   }
 
-  return { categories, excluded };
+  return { categories, excluded, raw_text: text };
 }
 
+// =====================================================
+// 必要書類パーサ (P0-1b)
+// =====================================================
+
 /**
- * 必要書類の解析
- * 
- * required_documents テキストを分割し、必須/任意を判定する
+ * required_documents テキストから必要書類を抽出
  */
-export function parseRequiredDocsFromText(text: string): {
+export function parseRequiredDocsFromText(text: string | null): {
   documents: ParsedDocument[];
+  raw_text: string | null;
 } {
   if (!text || text.trim().length < 5) {
-    return { documents: [] };
+    return { documents: [], raw_text: text || null };
   }
 
   const fragments = splitText(text);
   const documents: ParsedDocument[] = [];
 
-  for (const fragment of fragments) {
-    const trimmed = fragment.trim();
+  for (const frag of fragments) {
+    const trimmed = frag.trim();
     if (trimmed.length < 3) continue;
 
-    const isRequired = REQUIRED_DOC_PATTERNS.test(trimmed) || !OPTIONAL_DOC_PATTERNS.test(trimmed);
+    const docType = classifyDocType(trimmed);
+    const isRequired = !isOptionalDoc(trimmed);
 
-    documents.push({
-      text: trimmed,
-      is_required: isRequired,
-      doc_type: classifyDocType(trimmed),
-      confidence: 0.7,
-    });
+    documents.push({ text: trimmed, is_required: isRequired, doc_type: docType });
   }
 
-  return { documents };
+  return { documents, raw_text: text };
 }
 
 // =====================================================
-// ヘルパー関数
+// テキスト分割ユーティリティ
 // =====================================================
 
 /**
- * detail_json から複数キーでテキストを抽出・結合
- */
-function extractTextField(detail: Record<string, any>, keys: string[]): string {
-  const parts: string[] = [];
-  
-  for (const key of keys) {
-    const value = detail[key];
-    if (!value) continue;
-    
-    if (typeof value === 'string') {
-      parts.push(value);
-    } else if (Array.isArray(value)) {
-      parts.push(value.filter(v => typeof v === 'string').join('\n'));
-    }
-  }
-  
-  return parts.join('\n').trim();
-}
-
-/**
- * テキストを意味のあるフラグメントに分割
+ * テキストを分割する
  * 
- * 分割戦略:
- * 1. 番号付きリスト（①②③, 1.2.3.）で分割
- * 2. 改行で分割
- * 3. 句読点・区切り文字で分割
- * 4. 短いフラグメント（<5文字）は前のフラグメントに結合
+ * 分割基準: 改行、句点(。)、中黒(・)、セミコロン(；;)、番号リスト
+ * 短いフラグメント（5文字未満）は前のフラグメントにマージ
  */
 function splitText(text: string): string[] {
-  // まず番号付きリストで分割を試行
-  const numberedParts = text.split(NUMBERED_LIST).filter(p => p.trim().length > 0);
-  if (numberedParts.length >= 2) {
-    return mergeShortFragments(numberedParts);
-  }
-  
-  // 改行で分割
-  const lineParts = text.split(/\n+/).filter(p => p.trim().length > 0);
-  if (lineParts.length >= 2) {
-    return mergeShortFragments(lineParts);
-  }
-  
-  // セパレータで分割
-  const sepParts = text.split(TEXT_SEPARATORS).filter(p => p.trim().length > 0);
-  if (sepParts.length >= 2) {
-    return mergeShortFragments(sepParts);
-  }
-  
-  // 分割できない場合は全体を1つのフラグメントとして返す
-  return text.trim().length > 0 ? [text.trim()] : [];
-}
+  // まず改行で分割
+  let fragments = text.split(/\r?\n/).filter(s => s.trim());
 
-/**
- * 短いフラグメント（<5文字）を前のフラグメントに結合
- */
-function mergeShortFragments(fragments: string[], minLen = 5): string[] {
-  const result: string[] = [];
-  
+  // 改行分割で十分な粒度がなければ、追加セパレータで分割
+  if (fragments.length <= 1 && text.length > 50) {
+    // 番号リスト（①②③, (1)(2)(3), 1.2.3.）で分割
+    fragments = text.split(/(?=[①②③④⑤⑥⑦⑧⑨⑩])|(?=\([0-9]+\))|(?=(?:^|\s)[0-9]+[\.\)．）])/);
+    
+    if (fragments.length <= 1) {
+      // 句点・中黒・セミコロンで分割
+      fragments = text.split(/(?<=。)|(?<=；)|(?<=;)|(?<=\n)|・|●|■|▪|▸/);
+    }
+  }
+
+  // 短いフラグメントをマージ
+  const merged: string[] = [];
   for (const frag of fragments) {
     const trimmed = frag.trim();
     if (!trimmed) continue;
-    
-    if (trimmed.length < minLen && result.length > 0) {
-      result[result.length - 1] += '、' + trimmed;
+
+    if (trimmed.length < 5 && merged.length > 0) {
+      merged[merged.length - 1] += trimmed;
     } else {
-      result.push(trimmed);
+      merged.push(trimmed);
     }
+  }
+
+  return merged;
+}
+
+/**
+ * 入力を正規化（string | string[] | undefined → string | null）
+ */
+function normalizeTextInput(input: any): string | null {
+  if (!input) return null;
+  if (Array.isArray(input)) {
+    return input.map(s => String(s).trim()).filter(Boolean).join('\n');
+  }
+  if (typeof input === 'string') {
+    return input.trim() || null;
+  }
+  return null;
+}
+
+// =====================================================
+// 分類ロジック
+// =====================================================
+
+/** 申請要件のカテゴリ分類 */
+function classifyEligibilityCategory(text: string): ParsedEligibilityRule['category'] {
+  const lower = text.toLowerCase();
+  
+  // 従業員数・資本金・売上等の数値条件 → size
+  if (/従業員|常勤|資本金|出資|中小企業|小規模事業者|売上高|年商/.test(text)) {
+    return 'size';
+  }
+  // 事業計画・付加価値・生産性 → plan
+  if (/事業計画|計画書|付加価値|生産性|賃上げ|給与|最低賃金|経営革新/.test(text)) {
+    return 'plan';
+  }
+  // コンプライアンス・法令 → compliance
+  if (/法令|反社|暴力団|滞納|税金|不正|処分|破産|民事再生/.test(text)) {
+    return 'compliance';
+  }
+  // 除外条件 → exclusion
+  if (/対象外|除外|該当しない|受給できない|申請できない|不可/.test(text)) {
+    return 'exclusion';
+  }
+  // 申請資格 → eligibility
+  if (/申請|応募|対象|要件|資格|条件/.test(text)) {
+    return 'eligibility';
   }
   
-  return result;
-}
-
-/**
- * 適格性ルールをカテゴリ分類
- */
-function categorizeEligibility(text: string): {
-  category: EligibilityCategory;
-  auto_field?: string;
-  confidence: number;
-} {
-  for (const { pattern, category, auto_field } of ELIGIBILITY_CATEGORY_PATTERNS) {
-    if (pattern.test(text)) {
-      return { category, auto_field, confidence: 0.8 };
-    }
-  }
-  return { category: 'other', confidence: 0.5 };
-}
-
-/**
- * 経費タイプを分類
- */
-function classifyExpenseType(text: string): string {
-  if (/機械|設備|装置|工具/.test(text)) return 'equipment';
-  if (/外注|委託|専門家/.test(text)) return 'outsourcing';
-  if (/広告|販促|プロモーション/.test(text)) return 'advertising';
-  if (/旅費|交通費|出張/.test(text)) return 'travel';
-  if (/研修|人材|教育/.test(text)) return 'training';
-  if (/クラウド|IT|ソフト|システム/.test(text)) return 'it';
-  if (/原材料|材料費/.test(text)) return 'materials';
-  if (/知的財産|特許|商標/.test(text)) return 'ip';
-  if (/建物|内装|工事/.test(text)) return 'construction';
   return 'other';
 }
 
-/**
- * 書類タイプを分類
- */
-function classifyDocType(text: string): string {
-  if (/事業計画|計画書/.test(text)) return 'business_plan';
-  if (/決算|財務|貸借|損益/.test(text)) return 'financial';
-  if (/登記|履歴事項/.test(text)) return 'registration';
-  if (/確定申告|納税/.test(text)) return 'tax';
-  if (/見積|見積書/.test(text)) return 'estimate';
-  if (/賃金台帳|給与/.test(text)) return 'payroll';
-  if (/就業規則|雇用/.test(text)) return 'employment';
-  if (/認定|証明/.test(text)) return 'certification';
+/** 自動判定可能なフィールドを検出 */
+function detectAutoField(text: string): string | null {
+  if (/従業員.{0,10}(\d+).{0,5}(人|名)以[下上]/.test(text)) return 'employee_count';
+  if (/資本金.{0,10}(\d+).{0,5}(万|億|円)以[下上]/.test(text)) return 'capital';
+  if (/売上高|年商/.test(text) && /\d+/.test(text)) return 'annual_revenue';
+  return null;
+}
+
+/** 経費カテゴリ分類 */
+function classifyExpenseCategory(text: string): ParsedExpenseCategory['category'] {
+  if (/機械|装置|設備|工具|器具|什器|システム|ソフトウェア|ハードウェア|サーバ/.test(text)) return 'equipment';
+  if (/外注|委託|業務委託|製造委託|加工/.test(text)) return 'outsourcing';
+  if (/人件費|労務|給与|賃金|手当|雇用/.test(text)) return 'labor';
+  if (/旅費|交通費|出張|宿泊/.test(text)) return 'travel';
+  if (/原材料|資材|副資材|部品|消耗品/.test(text)) return 'material';
+  if (/専門家|コンサルタント|謝金|講師|研修|セミナー|広告|宣伝|販促|展示/.test(text)) return 'consulting';
   return 'other';
 }
 
-/**
- * 品質スコアの計算
- * 
- * 0-100:
- * - 各カテゴリに抽出結果があるか（各30点）
- * - 入力フィールドの数（10点）
- */
-function computeQualityScore(
-  rules: ParsedEligibilityRule[],
-  expenses: ParsedExpenseCategory[],
-  docs: ParsedDocument[],
-  inputFields: string[],
-): number {
-  let score = 0;
-  
-  // 適格性ルール（0-30）
-  score += Math.min(rules.length * 6, 30);
-  
-  // 経費カテゴリ（0-30）
-  score += Math.min(expenses.length * 6, 30);
-  
-  // 書類（0-30）
-  score += Math.min(docs.length * 6, 30);
-  
-  // 入力フィールド数（0-10）
-  score += Math.min(inputFields.length * 3, 10);
-  
-  return Math.min(score, 100);
+/** 除外経費の判定 */
+function isExcludedExpense(text: string): boolean {
+  return /対象外|補助対象外|認められない|含まない|除く|不可|汎用性|汎用的/.test(text);
 }
 
-/**
- * 空の解析結果を返す
- */
-function emptyResult(parseTimeMs: number, inputFieldsFound: string[]): DetailJsonParseResult {
+/** 書類タイプの分類 */
+function classifyDocType(text: string): ParsedDocument['doc_type'] {
+  if (/決算|財務|貸借対照表|損益計算|確定申告|納税|税務/.test(text)) return 'financial';
+  if (/事業計画|計画書|企画書|プロジェクト|ビジネスプラン/.test(text)) return 'plan';
+  if (/証明|登記|謄本|定款|履歴事項|印鑑|認定|許可|免許/.test(text)) return 'certificate';
+  if (/申請書|様式|フォーム|記入|提出/.test(text)) return 'application';
+  return 'other';
+}
+
+/** 任意書類の判定 */
+function isOptionalDoc(text: string): boolean {
+  return /任意|できれば|あれば|可能であれば|推奨|参考/.test(text);
+}
+
+// =====================================================
+// ユーティリティ
+// =====================================================
+
+function emptyResult(): DetailJsonParseResult {
   return {
-    eligibility: { rules: [], raw_text: '' },
-    expenses: { categories: [], excluded: [], raw_text: '' },
-    documents: { documents: [], raw_text: '' },
+    eligibility: { rules: [], raw_text: null },
+    expenses: { categories: [], excluded: [], raw_text: null },
+    documents: { documents: [], raw_text: null },
     overall_quality_score: 0,
     meta: {
       method: 'regex',
-      parse_time_ms: parseTimeMs,
-      input_fields_found: inputFieldsFound,
+      parsed_at: new Date().toISOString(),
+      fields_found: 0,
+      fields_total: 3,
     },
   };
 }
