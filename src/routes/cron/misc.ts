@@ -392,7 +392,7 @@ misc.post('/cleanup-stuck-runs', async (c) => {
           error_count = 1,
           errors_json = '["timeout: stuck in running state, auto-cleaned by maintenance"]'
       WHERE status = 'running' 
-        AND started_at < datetime('now', '-2 hours')
+        AND started_at < datetime('now', '-30 minutes')
     `).run();
     
     const cleaned = result.meta?.changes || 0;
