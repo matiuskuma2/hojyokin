@@ -908,10 +908,10 @@ draft.post('/generate', async (c) => {
       WHERE c.id = ?
     `).bind(session.company_id).first<any>();
 
-    // chat_facts取得
+    // chat_facts取得（補助金固有のfactsのみ - 他補助金の混入防止）
     const factsResult = await db.prepare(`
       SELECT fact_key, fact_value FROM chat_facts
-      WHERE company_id = ? AND (subsidy_id IS NULL OR subsidy_id = ?)
+      WHERE company_id = ? AND subsidy_id = ?
       AND fact_value IS NOT NULL AND fact_value != '' AND fact_value != 'unknown'
     `).bind(session.company_id, session.subsidy_id).all();
 

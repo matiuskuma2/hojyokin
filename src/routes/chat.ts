@@ -365,10 +365,10 @@ chat.post('/precheck', async (c) => {
       WHERE rd.subsidy_id = ?
     `).bind(resolvedId).all();
     
-    // 既に回答済みのfacts取得
+    // 既に回答済みのfacts取得（補助金固有のfactsのみ - 他補助金の混入防止）
     const existingFacts = await c.env.DB.prepare(`
       SELECT fact_key, fact_value FROM chat_facts
-      WHERE company_id = ? AND (subsidy_id = ? OR subsidy_id IS NULL)
+      WHERE company_id = ? AND subsidy_id = ?
     `).bind(targetCompanyId, resolvedId).all();
     
     const factsMap = new Map<string, string>();
@@ -816,9 +816,10 @@ chat.post('/sessions', async (c) => {
       }
       
       // missing_items を毎回再生成（会社情報の更新を反映するため）
+      // 補助金固有のfactsのみ取得（他補助金の回答混入防止）
       const existFactsResult = await c.env.DB.prepare(`
         SELECT fact_key, fact_value FROM chat_facts
-        WHERE company_id = ? AND (subsidy_id = ? OR subsidy_id IS NULL)
+        WHERE company_id = ? AND subsidy_id = ?
       `).bind(existSession.company_id, existSession.subsidy_id).all();
       const existFactsMap = new Map<string, string>();
       for (const f of (existFactsResult.results || []) as any[]) {
@@ -981,9 +982,10 @@ chat.post('/sessions', async (c) => {
       WHERE rd.subsidy_id = ?
     `).bind(resolvedSubsidyId).all();
     
+    // 補助金固有のfactsのみ取得（他補助金の回答混入防止）
     const existingFacts = await c.env.DB.prepare(`
       SELECT fact_key, fact_value FROM chat_facts
-      WHERE company_id = ? AND (subsidy_id = ? OR subsidy_id IS NULL)
+      WHERE company_id = ? AND subsidy_id = ?
     `).bind(targetCompanyId, resolvedSubsidyId).all();
     
     const factsMap = new Map<string, string>();
@@ -1510,10 +1512,10 @@ chat.post('/sessions/:id/message', async (c) => {
       console.warn('[Chat] Invalid missing_items format:', parseErr);
     }
     
-    // 回答済みの質問を除外
+    // 回答済みの質問を除外（補助金固有のfactsのみ - 他補助金の混入防止）
     const answeredFacts = await c.env.DB.prepare(`
       SELECT fact_key, fact_value FROM chat_facts
-      WHERE company_id = ? AND (subsidy_id = ? OR subsidy_id IS NULL)
+      WHERE company_id = ? AND subsidy_id = ?
     `).bind(session.company_id, session.subsidy_id).all();
     
     const answeredKeys = new Set((answeredFacts.results || []).map((f: any) => f.fact_key));
@@ -1969,10 +1971,10 @@ chat.post('/sessions/:id/message/stream', async (c) => {
       },
     };
     
-    // facts 取得
+    // facts 取得（補助金固有のfactsのみ - 他補助金の混入防止）
     const answeredFacts = await c.env.DB.prepare(`
       SELECT fact_key, fact_value FROM chat_facts
-      WHERE company_id = ? AND (subsidy_id = ? OR subsidy_id IS NULL)
+      WHERE company_id = ? AND subsidy_id = ?
     `).bind(session.company_id, session.subsidy_id).all();
     
     const factsMap: Record<string, string> = {};

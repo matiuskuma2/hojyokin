@@ -180,11 +180,11 @@ export async function syncFactsToProfile(
   const errors: string[] = [];
   let synced = 0;
   
-  // 対象の chat_facts を取得
+  // 対象の chat_facts を取得（補助金固有のfactsのみ - 他補助金の混入防止）
   const facts = await db.prepare(`
     SELECT fact_key, fact_value, fact_type, fact_category
     FROM chat_facts
-    WHERE company_id = ? AND (subsidy_id = ? OR subsidy_id IS NULL)
+    WHERE company_id = ? AND subsidy_id = ?
     AND fact_value IS NOT NULL AND fact_value != '' AND fact_value != 'unknown'
     ORDER BY updated_at DESC
   `).bind(companyId, subsidyId || null).all();
