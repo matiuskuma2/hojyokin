@@ -11,6 +11,9 @@ import { verifyCronSecret, startCronRun, finishCronRun } from './_helpers';
 import { shardKey16, currentShardByHour } from '../../lib/shard';
 import { checkWallChatReadyFromJson, selectBestPdfs, scorePdfUrl } from '../../lib/wall-chat-ready';
 import { logFirecrawlCost, logOpenAICost } from '../../lib/cost/cost-logger';
+import { extractAndUpdateSubsidy, type ExtractSource } from '../../lib/pdf/pdf-extract-router';
+import { checkCooldown, DEFAULT_COOLDOWN_POLICY } from '../../lib/pdf/extraction-cooldown';
+import { recordCostGuardFailure } from '../../lib/failures/feed-failure-writer';
 
 const extractionQueue = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -143,8 +146,10 @@ type ConsumeJob = {
   max_attempts: number;
 };
 
-// 1回の消化上限（止まらない設定）
-const CONSUME_BATCH = 3;          // D1 subrequest上限対策：3件に絞る
+// 1回の消化上限
+// ★ v5.0: extract_pdf のFirecrawl+OpenAI呼び出しが各10-20秒かかるため
+// Pages Functions 120秒制限内に収めるため1件に限定（毎時実行で24件/日）
+const CONSUME_BATCH = 1;
 const LEASE_MINUTES = 8;          // リース期限
 const LEASE_OWNER = 'pages-cron'; // ざっくり識別
 

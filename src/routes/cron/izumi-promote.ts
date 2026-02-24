@@ -16,6 +16,7 @@ import { generateUUID, startCronRun, finishCronRun, verifyCronSecret } from './_
 import { checkExclusion, checkWallChatReadyFromJson } from '../../lib/wall-chat-ready';
 import { simpleScrape } from '../../services/firecrawl';
 import { logSimpleScrapeCost } from '../../lib/cost/cost-logger';
+import { shardKey16 } from '../../lib/shard';
 
 const izumiPromote = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -307,9 +308,9 @@ izumiPromote.post('/crawl-izumi-details', async (c) => {
     const mode = url.searchParams.get('mode') || 'uncrawled'; // uncrawled | upgrade | pdf_mark
     
     // ★ v5.0: モードに応じたバッチサイズ
-    // pdf_mark: 外部API不要（DB更新のみ）→ 50件/回（D1 subrequest制限考慮）
+    // pdf_mark: 外部API不要（DB更新のみ）→ 20件/回（D1 json_extractクエリが重いため小さく）
     // uncrawled/upgrade: 外部HTMLフェッチ→ 30件/回で安全
-    const MAX_ITEMS = mode === 'pdf_mark' ? 50 : 30;
+    const MAX_ITEMS = mode === 'pdf_mark' ? 20 : 30;
     
     // ★ v4.0: mode=upgrade を改善 - PDF URLのみのアイテムも処理対象に含める
     // mode=uncrawled: 未クロールのHTML URLを優先
@@ -384,6 +385,43 @@ izumiPromote.post('/crawl-izumi-details', async (c) => {
       try {
         const detail = target.detail_json ? JSON.parse(target.detail_json) : {};
         
+        // ★ v5.1: pdf_mark モード専用の高速パス
+        // 外部APIを一切呼ばず、DB更新+キュー投入のみ
+        if (mode === 'pdf_mark') {
+          const pdfUrl = detail.official_url;
+          if (!pdfUrl) {
+            detail.crawled_at = new Date().toISOString();
+            detail.crawl_error = 'no_support_url';
+            await db.prepare(`UPDATE subsidy_cache SET detail_json = ? WHERE id = ?`)
+              .bind(JSON.stringify(detail), target.id).run();
+            crawlFailed++;
+            continue;
+          }
+          
+          detail.crawled_at = new Date().toISOString();
+          detail.crawl_error = 'pdf_url_only';
+          detail.crawl_source_url = pdfUrl;
+          if (!detail.pdf_urls) detail.pdf_urls = [];
+          if (!detail.pdf_urls.includes(pdfUrl)) detail.pdf_urls.push(pdfUrl);
+          await db.prepare(`UPDATE subsidy_cache SET detail_json = ? WHERE id = ?`)
+            .bind(JSON.stringify(detail), target.id).run();
+          
+          try {
+            const sk = shardKey16(target.id);
+            await db.prepare(`
+              INSERT OR IGNORE INTO extraction_queue (id, subsidy_id, shard_key, job_type, priority, status, created_at, updated_at)
+              VALUES (lower(hex(randomblob(16))), ?, ?, 'extract_pdf', 50, 'queued', datetime('now'), datetime('now'))
+            `).bind(target.id, sk).run();
+          } catch (eqErr) {
+            // 重複は無視
+          }
+          
+          pdfMarked++;
+          continue;
+        }
+        
+        // === 通常モード（uncrawled/upgrade）===
+        
         // support_urlを決定: HTML URLを優先
         let crawlUrl = detail.official_url || detail.related_url;
         if (!crawlUrl) {
@@ -403,7 +441,7 @@ izumiPromote.post('/crawl-izumi-details', async (c) => {
           if (altHtmlUrl) {
             crawlUrl = altHtmlUrl;
           } else {
-            // ★ v4.0: PDF URLのみの場合 → crawled_at をマーク + extraction_queue に投入
+            // PDF URLのみの場合 → crawled_at をマーク + extraction_queue に投入
             detail.crawled_at = new Date().toISOString();
             detail.crawl_error = 'pdf_url_only';
             detail.crawl_source_url = crawlUrl;
@@ -412,9 +450,7 @@ izumiPromote.post('/crawl-izumi-details', async (c) => {
             await db.prepare(`UPDATE subsidy_cache SET detail_json = ? WHERE id = ?`)
               .bind(JSON.stringify(detail), target.id).run();
             
-            // extraction_queue に extract_pdf ジョブとして投入（既存がなければ）
             try {
-              const { shardKey16 } = await import('../../lib/shard');
               const sk = shardKey16(target.id);
               await db.prepare(`
                 INSERT OR IGNORE INTO extraction_queue (id, subsidy_id, shard_key, job_type, priority, status, created_at, updated_at)

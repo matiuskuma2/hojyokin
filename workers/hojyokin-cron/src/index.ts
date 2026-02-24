@@ -26,22 +26,22 @@ interface CronJob {
 // ========================================
 
 const DAILY_SYNC_JOBS: CronJob[] = [
-  { name: 'sync-jgrants', endpoint: '/api/cron/sync-jgrants', method: 'POST', timeoutMs: 25000 },
-  { name: 'enrich-jgrants', endpoint: '/api/cron/enrich-jgrants', method: 'POST', timeoutMs: 25000 },
-  { name: 'daily-ready-boost', endpoint: '/api/cron/daily-ready-boost', method: 'POST', timeoutMs: 25000 },
+  { name: 'sync-jgrants', endpoint: '/api/cron/sync-jgrants', method: 'POST', timeoutMs: 55000 },
+  { name: 'enrich-jgrants', endpoint: '/api/cron/enrich-jgrants', method: 'POST', timeoutMs: 55000 },
+  { name: 'daily-ready-boost', endpoint: '/api/cron/daily-ready-boost', method: 'POST', timeoutMs: 55000 },
 ];
 
 // ★ v5.0: 毎時実行ジョブ（izumiクロール + enrich + extraction消化）
 const HOURLY_JOBS: CronJob[] = [
-  { name: 'crawl-izumi-details', endpoint: '/api/cron/crawl-izumi-details?mode=pdf_mark', method: 'POST', timeoutMs: 28000 },
-  { name: 'enrich-jgrants', endpoint: '/api/cron/enrich-jgrants', method: 'POST', timeoutMs: 25000 },
-  { name: 'consume-extractions', endpoint: '/api/cron/consume-extractions', method: 'POST', timeoutMs: 25000 },
+  { name: 'crawl-izumi-details', endpoint: '/api/cron/crawl-izumi-details?mode=pdf_mark', method: 'POST', timeoutMs: 55000 },
+  { name: 'enrich-jgrants', endpoint: '/api/cron/enrich-jgrants', method: 'POST', timeoutMs: 55000 },
+  { name: 'consume-extractions', endpoint: '/api/cron/consume-extractions', method: 'POST', timeoutMs: 55000 },
 ];
 
 const DAILY_MAINTENANCE_JOBS: CronJob[] = [
-  { name: 'recalc-wall-chat-ready', endpoint: '/api/cron/recalc-wall-chat-ready', method: 'POST', timeoutMs: 25000 },
-  { name: 'consume-extractions', endpoint: '/api/cron/consume-extractions', method: 'POST', timeoutMs: 25000 },
-  { name: 'cleanup-stuck-runs', endpoint: '/api/cron/cleanup-stuck-runs', method: 'POST', timeoutMs: 10000 },
+  { name: 'recalc-wall-chat-ready', endpoint: '/api/cron/recalc-wall-chat-ready', method: 'POST', timeoutMs: 55000 },
+  { name: 'consume-extractions', endpoint: '/api/cron/consume-extractions', method: 'POST', timeoutMs: 55000 },
+  { name: 'cleanup-stuck-runs', endpoint: '/api/cron/cleanup-stuck-runs', method: 'POST', timeoutMs: 15000 },
 ];
 
 // ========================================
@@ -101,13 +101,31 @@ export default {
     switch (cron) {
       // 毎日 06:00 JST (21:00 UTC): メイン同期 + メンテナンス
       case '0 21 * * *':
-        await executeJobSequence(env, DAILY_SYNC_JOBS, 'Daily Sync');
-        await executeJobSequence(env, DAILY_MAINTENANCE_JOBS, 'Daily Maintenance');
+        // waitUntil で Workers の30秒CPU制限を回避（I/O待ち時間を許容）
+        ctx.waitUntil((async () => {
+          await executeJobSequence(env, DAILY_SYNC_JOBS, 'Daily Sync');
+          await executeJobSequence(env, DAILY_MAINTENANCE_JOBS, 'Daily Maintenance');
+        })());
         break;
       
       // 毎時: izumiクロール + enrich-jgrants + consume-extractions
+      // 各ジョブを並列実行で独立させる（1ジョブの遅延が他に影響しない）
       case '0 */1 * * *':
-        await executeJobSequence(env, HOURLY_JOBS, 'Hourly Jobs');
+        ctx.waitUntil((async () => {
+          // 並列実行: 各ジョブが独立してPagesを呼び出す
+          const results = await Promise.allSettled(
+            HOURLY_JOBS.map(job => executeJob(env, job))
+          );
+          console.log(`=== Hourly Jobs (parallel) completed at ${new Date().toISOString()} ===`);
+          results.forEach((r, i) => {
+            const name = HOURLY_JOBS[i].name;
+            if (r.status === 'fulfilled') {
+              console.log(`[${name}] ${r.value.success ? 'OK' : 'FAIL'}: ${JSON.stringify(r.value.data || r.value.error).substring(0, 200)}`);
+            } else {
+              console.error(`[${name}] REJECTED: ${r.reason}`);
+            }
+          });
+        })());
         break;
       
       default:
@@ -159,10 +177,22 @@ export default {
           return new Response(JSON.stringify({ error: 'Unknown job. Use: sync, crawl-izumi, hourly, maintenance' }), { status: 400 });
       }
       
-      // waitUntil で非同期実行
-      const execCtx = {
-        waitUntil: (promise: Promise<any>) => promise,
-      };
+      // hourlyジョブは並列実行（各ジョブが独立してPages側を呼ぶ）
+      if (job === 'hourly' || job === 'crawl-izumi') {
+        const results = await Promise.allSettled(
+          jobs.map(j => executeJob(env, j))
+        );
+        const summary = results.map((r, i) => ({
+          name: jobs[i].name,
+          status: r.status,
+          success: r.status === 'fulfilled' ? r.value.success : false,
+        }));
+        return new Response(JSON.stringify({ success: true, job, label, parallel: true, results: summary }), {
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      
+      // sync/maintenanceは順次実行
       await executeJobSequence(env, jobs, label);
       
       return new Response(JSON.stringify({ success: true, job, label }), {
