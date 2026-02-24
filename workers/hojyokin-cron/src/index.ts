@@ -28,6 +28,7 @@ interface CronJob {
 const DAILY_SYNC_JOBS: CronJob[] = [
   { name: 'sync-jgrants', endpoint: '/api/cron/sync-jgrants', method: 'POST', timeoutMs: 55000 },
   { name: 'enrich-jgrants', endpoint: '/api/cron/enrich-jgrants', method: 'POST', timeoutMs: 55000 },
+  { name: 'enrich-tokyo-shigoto', endpoint: '/api/cron/enrich-tokyo-shigoto', method: 'POST', timeoutMs: 55000 },
   { name: 'daily-ready-boost', endpoint: '/api/cron/daily-ready-boost', method: 'POST', timeoutMs: 55000 },
 ];
 

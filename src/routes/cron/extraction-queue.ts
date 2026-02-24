@@ -826,6 +826,17 @@ extractionQueue.post('/consume-extractions', async (c) => {
             const html = await response.text();
             const detailJson: Record<string, any> = {};
 
+            // ページ全体のテキスト抽出
+            const bodyText = html
+              .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
+              .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+              .replace(/<[^>]+>/g, '\n')
+              .replace(/&nbsp;/g, ' ')
+              .replace(/&amp;/g, '&')
+              .replace(/\s+/g, ' ')
+              .trim()
+              .substring(0, 5000);
+
             // 表から概要抽出
             const tableMatch = html.match(/<table[^>]*>([\s\S]*?)<\/table>/i);
             if (tableMatch) {
@@ -838,15 +849,48 @@ extractionQueue.post('/consume-extractions', async (c) => {
                 detailJson.overview = tableText.substring(0, 1500);
               }
             }
+            if (!detailJson.overview && bodyText.length > 100) {
+              detailJson.overview = bodyText.substring(0, 1500);
+            }
+
+            // application_requirements 抽出
+            const reqPatterns = [
+              /(?:対象者|対象事業者|助成対象|申請資格|応募資格|交付対象)[：:\s]*([^\n]{20,500})/,
+              /(?:中小企業|都内).{5,200}(?:事業者|企業|団体|法人)/,
+            ];
+            for (const pat of reqPatterns) {
+              if (!detailJson.application_requirements) {
+                const m = bodyText.match(pat);
+                if (m) {
+                  detailJson.application_requirements = [(m[1] || m[0]).trim().substring(0, 500)];
+                }
+              }
+            }
+
+            // eligible_expenses 抽出
+            const expPatterns = [
+              /(?:対象経費|助成対象経費|補助対象|助成内容|支援内容|助成事業)[：:\s]*([^\n]{20,500})/,
+              /(?:助成金額|助成率|補助率|助成限度額)[：:\s]*([^\n]{10,300})/,
+            ];
+            for (const pat of expPatterns) {
+              if (!detailJson.eligible_expenses) {
+                const m = bodyText.match(pat);
+                if (m) {
+                  detailJson.eligible_expenses = [(m[1] || m[0]).trim().substring(0, 500)];
+                }
+              }
+            }
 
             // 年度末をデフォルト締切
             const now = new Date();
             const fiscalYear = now.getMonth() >= 3 ? now.getFullYear() : now.getFullYear() - 1;
             detailJson.acceptance_end_datetime = `${fiscalYear + 1}-03-31T23:59:59Z`;
-            detailJson.required_documents = ['募集要項', '申請書', '事業計画書'];
 
             // マージして保存
             const existing = subsidy.detail_json ? JSON.parse(subsidy.detail_json) : {};
+            if (!existing.required_documents || existing.required_documents.length === 0) {
+              detailJson.required_documents = ['募集要項', '申請書', '事業計画書'];
+            }
             const merged = { ...existing, ...detailJson, enriched_at: new Date().toISOString() };
 
             await db.prepare(`
@@ -854,7 +898,6 @@ extractionQueue.post('/consume-extractions', async (c) => {
             `).bind(JSON.stringify(merged), subsidy.id).run();
 
             // WALL_CHAT_READY 判定
-            const { checkWallChatReadyFromJson } = await import('../../lib/wall-chat-ready');
             const readyResult = checkWallChatReadyFromJson(JSON.stringify(merged));
             if (readyResult.ready) {
               await db.prepare(`UPDATE subsidy_cache SET wall_chat_ready = 1 WHERE id = ?`)

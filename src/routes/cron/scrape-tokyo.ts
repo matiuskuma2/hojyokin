@@ -1295,6 +1295,19 @@ scrapeTokyo.post('/enrich-tokyo-shigoto', async (c) => {
         // 簡易的な詳細抽出（admin-dashboard.tsの詳細版はそちらで実行）
         const detailJson: Record<string, any> = {};
         
+        // ページ全体のテキスト抽出
+        const bodyText = html
+          .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
+          .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+          .replace(/<[^>]+>/g, '\n')
+          .replace(/&nbsp;/g, ' ')
+          .replace(/&amp;/g, '&')
+          .replace(/&lt;/g, '<')
+          .replace(/&gt;/g, '>')
+          .replace(/\s+/g, ' ')
+          .trim()
+          .substring(0, 5000);
+
         // 概要を表から抽出
         const tableMatch = html.match(/<table[^>]*>([\s\S]*?)<\/table>/i);
         if (tableMatch) {
@@ -1307,14 +1320,48 @@ scrapeTokyo.post('/enrich-tokyo-shigoto', async (c) => {
             detailJson.overview = tableText.substring(0, 1500);
           }
         }
-        
+        // フォールバック: tableがない場合はbodyTextから概要取得
+        if (!detailJson.overview && bodyText.length > 100) {
+          detailJson.overview = bodyText.substring(0, 1500);
+        }
+
+        // application_requirements 抽出
+        const reqPatterns = [
+          /(?:対象者|対象事業者|助成対象|申請資格|応募資格|交付対象)[：:\s]*([^\n]{20,500})/,
+          /(?:中小企業|都内).{5,200}(?:事業者|企業|団体|法人)/,
+        ];
+        for (const pat of reqPatterns) {
+          if (!detailJson.application_requirements) {
+            const m = bodyText.match(pat);
+            if (m) {
+              detailJson.application_requirements = [(m[1] || m[0]).trim().substring(0, 500)];
+            }
+          }
+        }
+
+        // eligible_expenses 抽出
+        const expPatterns = [
+          /(?:対象経費|助成対象経費|補助対象|助成内容|支援内容|助成事業)[：:\s]*([^\n]{20,500})/,
+          /(?:助成金額|助成率|補助率|助成限度額)[：:\s]*([^\n]{10,300})/,
+        ];
+        for (const pat of expPatterns) {
+          if (!detailJson.eligible_expenses) {
+            const m = bodyText.match(pat);
+            if (m) {
+              detailJson.eligible_expenses = [(m[1] || m[0]).trim().substring(0, 500)];
+            }
+          }
+        }
+
         // 年度末をデフォルト締切として設定
         const now = new Date();
         const fiscalYear = now.getMonth() >= 3 ? now.getFullYear() : now.getFullYear() - 1;
         detailJson.acceptance_end_datetime = `${fiscalYear + 1}-03-31T23:59:59Z`;
         
         // デフォルトの必要書類
-        detailJson.required_documents = ['募集要項', '申請書', '事業計画書'];
+        if (!existing.required_documents || existing.required_documents.length === 0) {
+          detailJson.required_documents = ['募集要項', '申請書', '事業計画書'];
+        }
         
         // 既存とマージ
         const existing = target.detail_json ? JSON.parse(target.detail_json) : {};
