@@ -298,7 +298,6 @@ izumiPromote.post('/crawl-izumi-details', async (c) => {
     }, authResult.error!.status);
   }
   
-  const MAX_ITEMS = 30; // v3: バッチサイズ引上げ（15min間隔で120件/時目標）
   let runId: string | null = null;
   
   try {
@@ -306,6 +305,11 @@ izumiPromote.post('/crawl-izumi-details', async (c) => {
     
     const url = new URL(c.req.url);
     const mode = url.searchParams.get('mode') || 'uncrawled'; // uncrawled | upgrade | pdf_mark
+    
+    // ★ v5.0: モードに応じたバッチサイズ
+    // pdf_mark: 外部API不要（DB更新のみ）→ 200件/回で高速処理
+    // uncrawled/upgrade: 外部HTMLフェッチ→ 30件/回で安全
+    const MAX_ITEMS = mode === 'pdf_mark' ? 200 : 30;
     
     // ★ v4.0: mode=upgrade を改善 - PDF URLのみのアイテムも処理対象に含める
     // mode=uncrawled: 未クロールのHTML URLを優先

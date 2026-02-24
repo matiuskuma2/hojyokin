@@ -241,9 +241,9 @@ extractionQueue.post('/consume-extractions', async (c) => {
   }
 
   if (leasedIds.length === 0) {
-    return c.json<ApiResponse<{ shard: number; processed: number; message: string }>>({
+    return c.json<ApiResponse<{ shard: number | string; processed: number; message: string }>>({
       success: true,
-      data: { shard, processed: 0, message: 'lease race lost' },
+      data: { shard: specificShard ?? 'all', processed: 0, message: 'lease race lost' },
     });
   }
 

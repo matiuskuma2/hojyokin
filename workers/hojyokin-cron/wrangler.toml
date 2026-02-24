@@ -3,10 +3,12 @@ main = "src/index.ts"
 compatibility_date = "2026-01-21"
 compatibility_flags = ["nodejs_compat"]
 
+# ★ v5.0: account_id明示（デプロイ認証エラー対策）
+account_id = "dd957a4b35780cdb5d2c8d0b021684c2"
+
 # Cron Triggers
-# 毎日 06:00 JST (21:00 UTC): JGrants同期 + enrich
-# 毎時 15分: izumiクロール (10件/回)
-# 毎日 07:00 JST (22:00 UTC): daily-ready-boost + recalc
+# 毎日 06:00 JST (21:00 UTC): JGrants同期 + daily maintenance
+# 毎時: izumiクロール + enrich-jgrants + consume-extractions
 [triggers]
 crons = [
   "0 21 * * *",

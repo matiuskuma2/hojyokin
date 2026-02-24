@@ -1,13 +1,12 @@
 /**
- * hojyokin-cron Worker
+ * hojyokin-cron Worker (v5.0)
  * 
- * Cloudflare Workers Cron Triggers で定期実行するスケジューラー。
- * 本体の hojyokin Pages アプリのCronエンドポイントを呼び出す。
+ * Cloudflare Workers Cron Triggers scheduled runner.
+ * Calls hojyokin Pages app cron endpoints.
  * 
- * スケジュール:
- * - 0 21 * * *    (06:00 JST): JGrants同期 + enrich + daily-ready-boost
- * - every 15 min:  izumiクロール (10件/回)
- * - 0 22 * * *    (07:00 JST): recalc-wall-chat-ready + cleanup
+ * Schedule:
+ * - 0 21 * * *  (06:00 JST): JGrants sync + daily-ready-boost + maintenance
+ * - 0 * * * *   (hourly): izumi PDF mark + enrich-jgrants + consume-extractions
  */
 
 interface Env {
@@ -32,8 +31,11 @@ const DAILY_SYNC_JOBS: CronJob[] = [
   { name: 'daily-ready-boost', endpoint: '/api/cron/daily-ready-boost', method: 'POST', timeoutMs: 25000 },
 ];
 
-const IZUMI_CRAWL_JOBS: CronJob[] = [
-  { name: 'crawl-izumi-details', endpoint: '/api/cron/crawl-izumi-details?mode=upgrade', method: 'POST', timeoutMs: 28000 },
+// ★ v5.0: 毎時実行ジョブ（izumiクロール + enrich + extraction消化）
+const HOURLY_JOBS: CronJob[] = [
+  { name: 'crawl-izumi-details', endpoint: '/api/cron/crawl-izumi-details?mode=pdf_mark', method: 'POST', timeoutMs: 28000 },
+  { name: 'enrich-jgrants', endpoint: '/api/cron/enrich-jgrants', method: 'POST', timeoutMs: 25000 },
+  { name: 'consume-extractions', endpoint: '/api/cron/consume-extractions', method: 'POST', timeoutMs: 25000 },
 ];
 
 const DAILY_MAINTENANCE_JOBS: CronJob[] = [
@@ -103,9 +105,9 @@ export default {
         await executeJobSequence(env, DAILY_MAINTENANCE_JOBS, 'Daily Maintenance');
         break;
       
-      // 毎時: izumiクロール + extractions
+      // 毎時: izumiクロール + enrich-jgrants + consume-extractions
       case '0 */1 * * *':
-        await executeJobSequence(env, IZUMI_CRAWL_JOBS, 'Izumi Crawl');
+        await executeJobSequence(env, HOURLY_JOBS, 'Hourly Jobs');
         break;
       
       default:
@@ -124,8 +126,8 @@ export default {
         has_secret: !!env.CRON_SECRET,
         schedules: [
           '0 21 * * * (06:00 JST): Daily Sync',
-          '*/15 * * * * (every 15min): Izumi Crawl',
-          '0 22 * * * (07:00 JST): Daily Maintenance',
+          '0 */1 * * * (every hour): Izumi Crawl + Enrich JGrants + Consume Extractions',
+          '(maintenance runs with daily sync at 06:00 JST)',
         ],
       }), {
         headers: { 'Content-Type': 'application/json' },
@@ -145,15 +147,16 @@ export default {
           label = 'Manual Sync';
           break;
         case 'crawl-izumi':
-          jobs = IZUMI_CRAWL_JOBS;
-          label = 'Manual Izumi Crawl';
+        case 'hourly':
+          jobs = HOURLY_JOBS;
+          label = 'Manual Hourly Jobs';
           break;
         case 'maintenance':
           jobs = DAILY_MAINTENANCE_JOBS;
           label = 'Manual Maintenance';
           break;
         default:
-          return new Response(JSON.stringify({ error: 'Unknown job. Use: sync, crawl-izumi, maintenance' }), { status: 400 });
+          return new Response(JSON.stringify({ error: 'Unknown job. Use: sync, crawl-izumi, hourly, maintenance' }), { status: 400 });
       }
       
       // waitUntil で非同期実行

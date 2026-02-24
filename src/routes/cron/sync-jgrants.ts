@@ -118,6 +118,7 @@ syncJgrants.post('/sync-jgrants', async (c) => {
           if (uniqueSubsidies.length > 0) {
             const statements = uniqueSubsidies.map((s: any) => {
               // detail_json に元データを保存（Phase1-2でOCR/抽出時に使用）
+              // ★ v4.0: sync初期データにcrawled_atは付けない（enrichment前に判定されるのを防止）
               const detailJson = JSON.stringify({
                 subsidy_application_url: s.subsidy_application_url || null,
                 subsidy_application_address: s.subsidy_application_address || null,
@@ -127,16 +128,29 @@ syncJgrants.post('/sync-jgrants', async (c) => {
                 subsidy_max_limit_detail: s.subsidy_max_limit_detail || null,
                 acceptance_number_detail: s.acceptance_number_detail || null,
                 contact: s.contact || null,
-                crawled_at: new Date().toISOString(),
               });
               
+              // ★ v4.0: INSERT OR REPLACE → INSERT ... ON CONFLICT DO UPDATE
+              // enrich済みのdetail_json, wall_chat_ready, wall_chat_excluded を保護
               return db.prepare(`
-                INSERT OR REPLACE INTO subsidy_cache 
+                INSERT INTO subsidy_cache 
                 (id, source, title, subsidy_max_limit, subsidy_rate,
                  target_area_search, target_industry, target_number_of_employees,
                  acceptance_start_datetime, acceptance_end_datetime, request_reception_display_flag,
                  detail_json, cached_at, expires_at)
                 VALUES (?, 'jgrants', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?)
+                ON CONFLICT(id) DO UPDATE SET
+                  title = excluded.title,
+                  subsidy_max_limit = excluded.subsidy_max_limit,
+                  subsidy_rate = excluded.subsidy_rate,
+                  target_area_search = excluded.target_area_search,
+                  target_industry = excluded.target_industry,
+                  target_number_of_employees = excluded.target_number_of_employees,
+                  acceptance_start_datetime = excluded.acceptance_start_datetime,
+                  acceptance_end_datetime = excluded.acceptance_end_datetime,
+                  request_reception_display_flag = excluded.request_reception_display_flag,
+                  cached_at = datetime('now'),
+                  expires_at = excluded.expires_at
               `).bind(
                 s.id,
                 s.title || s.name || '',
@@ -276,8 +290,10 @@ syncJgrants.post('/enrich-jgrants', async (c) => {
   // include_expired: 期限切れも含めてエンリッチ対象にする
   const includeExpired = c.req.query('include_expired') === 'true';
   
-  // 設定 (Cloudflare Worker 30秒制限のため5件に制限)
-  const MAX_ITEMS_PER_RUN = 3; // CF Workers 30s制限対策: 通常3件/include_expired時も3件（SQL最適化済み）
+  // 設定 (Cloudflare Worker 30秒制限考慮 → Pages は30s制限なし)
+  // ★ v5.0: 3→10に増量。Pages functionは30s制限がないため。
+  // API呼び出し1件あたり ~2秒 + 300ms wait = ~2.3秒 × 10件 = ~23秒
+  const MAX_ITEMS_PER_RUN = 10;
   const JGRANTS_DETAIL_API_V2 = 'https://api.jgrants-portal.go.jp/exp/v2/public/subsidies/id';
   
   let itemsEnriched = 0;
