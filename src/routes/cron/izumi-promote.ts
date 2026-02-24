@@ -307,9 +307,9 @@ izumiPromote.post('/crawl-izumi-details', async (c) => {
     const mode = url.searchParams.get('mode') || 'uncrawled'; // uncrawled | upgrade | pdf_mark
     
     // ★ v5.0: モードに応じたバッチサイズ
-    // pdf_mark: 外部API不要（DB更新のみ）→ 200件/回で高速処理
+    // pdf_mark: 外部API不要（DB更新のみ）→ 50件/回（D1 subrequest制限考慮）
     // uncrawled/upgrade: 外部HTMLフェッチ→ 30件/回で安全
-    const MAX_ITEMS = mode === 'pdf_mark' ? 200 : 30;
+    const MAX_ITEMS = mode === 'pdf_mark' ? 50 : 30;
     
     // ★ v4.0: mode=upgrade を改善 - PDF URLのみのアイテムも処理対象に含める
     // mode=uncrawled: 未クロールのHTML URLを優先
