@@ -39,6 +39,7 @@ const IZUMI_CRAWL_JOBS: CronJob[] = [
 const DAILY_MAINTENANCE_JOBS: CronJob[] = [
   { name: 'recalc-wall-chat-ready', endpoint: '/api/cron/recalc-wall-chat-ready', method: 'POST', timeoutMs: 25000 },
   { name: 'consume-extractions', endpoint: '/api/cron/consume-extractions', method: 'POST', timeoutMs: 25000 },
+  { name: 'cleanup-stuck-runs', endpoint: '/api/cron/cleanup-stuck-runs', method: 'POST', timeoutMs: 10000 },
 ];
 
 // ========================================

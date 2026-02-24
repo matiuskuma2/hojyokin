@@ -7,7 +7,7 @@
 
 import { Hono } from 'hono';
 import type { Env, Variables, ApiResponse } from '../../types';
-import { verifyCronSecret } from './_helpers';
+import { verifyCronSecret, startCronRun, finishCronRun } from './_helpers';
 import { shardKey16, currentShardByHour } from '../../lib/shard';
 import { checkWallChatReadyFromJson, selectBestPdfs, scorePdfUrl } from '../../lib/wall-chat-ready';
 import { logFirecrawlCost, logOpenAICost } from '../../lib/cost/cost-logger';
@@ -166,12 +166,19 @@ extractionQueue.post('/consume-extractions', async (c) => {
     }, auth.error!.status);
   }
 
-  // shard指定がなければ自動決定
-  // ★ v3.5.2 fix: SHARD_COUNT=64 に合わせて範囲を 0-63 に修正
+  // ★ v4.0: cron_runs ログ記録
+  let runId: string | null = null;
+  try {
+    runId = await startCronRun(db, 'consume-extractions', 'cron');
+  } catch (logErr) {
+    console.warn('[consume-extractions] Failed to start cron_run log:', logErr);
+  }
+
+  // shard指定がなければ全shardから取得（★ v4.0: shard制限を撤廃）
   const q = c.req.query();
-  const shard = q.shard !== undefined 
+  const specificShard = q.shard !== undefined 
     ? Math.max(0, Math.min(63, parseInt(q.shard, 10) || 0))
-    : currentShardByHour();
+    : null; // null = 全shardから取得
 
   const now = new Date();
   const leaseUntil = new Date(now.getTime() + LEASE_MINUTES * 60 * 1000).toISOString();
@@ -184,21 +191,40 @@ extractionQueue.post('/consume-extractions', async (c) => {
     WHERE status='leased' AND lease_until IS NOT NULL AND lease_until < ?
   `).bind(nowIso).run();
 
-  // 1) queuedからshard分だけ取る（優先度順）
-  const queued = await db.prepare(`
-    SELECT id, subsidy_id, shard_key, job_type, attempts, max_attempts
-    FROM extraction_queue
-    WHERE shard_key = ?
-      AND status = 'queued'
-    ORDER BY priority ASC, updated_at ASC
-    LIMIT ?
-  `).bind(shard, CONSUME_BATCH).all<ConsumeJob>();
+  // 1) ★ v4.0: shard指定時はshard絞り、未指定時は全shardからqueuedを取得
+  let queued;
+  if (specificShard !== null) {
+    queued = await db.prepare(`
+      SELECT id, subsidy_id, shard_key, job_type, attempts, max_attempts
+      FROM extraction_queue
+      WHERE shard_key = ?
+        AND status = 'queued'
+      ORDER BY priority ASC, updated_at ASC
+      LIMIT ?
+    `).bind(specificShard, CONSUME_BATCH).all<ConsumeJob>();
+  } else {
+    queued = await db.prepare(`
+      SELECT id, subsidy_id, shard_key, job_type, attempts, max_attempts
+      FROM extraction_queue
+      WHERE status = 'queued'
+      ORDER BY priority ASC, updated_at ASC
+      LIMIT ?
+    `).bind(CONSUME_BATCH).all<ConsumeJob>();
+  }
 
   const jobs = queued.results || [];
   if (jobs.length === 0) {
-    return c.json<ApiResponse<{ shard: number; processed: number; message: string }>>({
+    if (runId) {
+      try {
+        await finishCronRun(db, runId, 'success', {
+          items_processed: 0,
+          metadata: { shard: specificShard ?? 'all', message: 'no jobs' },
+        });
+      } catch (e) { console.warn('[consume-extractions] finishCronRun error:', e); }
+    }
+    return c.json<ApiResponse<{ shard: number | string; processed: number; message: string }>>({
       success: true,
-      data: { shard, processed: 0, message: 'no jobs' },
+      data: { shard: specificShard ?? 'all', processed: 0, message: 'no jobs' },
     });
   }
 
@@ -855,15 +881,27 @@ extractionQueue.post('/consume-extractions', async (c) => {
     }
   }
 
+  // ★ v4.0: cron_runs ログ完了
+  if (runId) {
+    try {
+      await finishCronRun(db, runId, failed > 0 && done === 0 ? 'failed' : failed > 0 ? 'partial' : 'success', {
+        items_processed: leasedIds.length,
+        items_inserted: done,
+        error_count: failed,
+        metadata: { shard: specificShard ?? 'all', leased: leasedIds.length, done, failed },
+      });
+    } catch (e) { console.warn('[consume-extractions] finishCronRun error:', e); }
+  }
+
   return c.json<ApiResponse<{
-    shard: number;
+    shard: number | string;
     leased: number;
     done: number;
     failed: number;
   }>>({
     success: true,
     data: {
-      shard,
+      shard: specificShard ?? 'all',
       leased: leasedIds.length,
       done,
       failed,

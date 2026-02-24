@@ -366,4 +366,51 @@ misc.get('/data-freshness', async (c) => {
   }
 });
 
+// =====================================================
+// POST /api/cron/cleanup-stuck-runs
+// 
+// ★ v4.0: 24時間以上runningのcron_runsを自動クリーンアップ
+// Workers CPU制限超過等で finishCronRun が呼ばれずに残った
+// ゾンビレコードを定期的にfailedに更新
+// =====================================================
+misc.post('/cleanup-stuck-runs', async (c) => {
+  const db = c.env.DB;
+  
+  const authResult = verifyCronSecret(c);
+  if (!authResult.valid) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: authResult.error!.code, message: authResult.error!.message },
+    }, authResult.error!.status);
+  }
+  
+  try {
+    const result = await db.prepare(`
+      UPDATE cron_runs 
+      SET status = 'failed', 
+          finished_at = datetime('now'),
+          error_count = 1,
+          errors_json = '["timeout: stuck in running state, auto-cleaned by maintenance"]'
+      WHERE status = 'running' 
+        AND started_at < datetime('now', '-2 hours')
+    `).run();
+    
+    const cleaned = result.meta?.changes || 0;
+    console.log(`[cleanup-stuck-runs] Cleaned ${cleaned} stuck cron_runs`);
+    
+    return c.json<ApiResponse<{ cleaned: number; timestamp: string }>>({
+      success: true,
+      data: {
+        cleaned,
+        timestamp: new Date().toISOString(),
+      },
+    });
+  } catch (error) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'INTERNAL_ERROR', message: String(error) },
+    }, 500);
+  }
+});
+
 export default misc;

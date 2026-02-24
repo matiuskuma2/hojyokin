@@ -305,12 +305,15 @@ izumiPromote.post('/crawl-izumi-details', async (c) => {
     runId = await startCronRun(db, 'crawl-izumi-details', authResult.triggeredBy);
     
     const url = new URL(c.req.url);
-    const mode = url.searchParams.get('mode') || 'uncrawled'; // uncrawled | upgrade
+    const mode = url.searchParams.get('mode') || 'uncrawled'; // uncrawled | upgrade | pdf_mark
     
-    // mode=uncrawled: 未クロールを優先
-    // mode=upgrade: フォールバックのみのready済みをリアルデータに差し替え
+    // ★ v4.0: mode=upgrade を改善 - PDF URLのみのアイテムも処理対象に含める
+    // mode=uncrawled: 未クロールのHTML URLを優先
+    // mode=upgrade: フォールバックのみのready済みをリアルデータに差し替え（PDF含む）
+    // mode=pdf_mark: PDFのみのURLにcrawled_atをマーク + extraction_queueに投入
     let query: string;
     if (mode === 'upgrade') {
+      // ★ v4.0: PDF URL制限を撤廃 → PDF URLのみのアイテムも取得する
       query = `
         SELECT sc.id, sc.title, sc.detail_json
         FROM subsidy_cache sc
@@ -319,7 +322,19 @@ izumiPromote.post('/crawl-izumi-details', async (c) => {
           AND json_extract(sc.detail_json, '$.overview_source') = 'title_fallback_v1'
           AND json_extract(sc.detail_json, '$.crawled_at') IS NULL
           AND json_extract(sc.detail_json, '$.official_url') IS NOT NULL
-          AND json_extract(sc.detail_json, '$.official_url') NOT LIKE '%.pdf%'
+        ORDER BY RANDOM()
+        LIMIT ?
+      `;
+    } else if (mode === 'pdf_mark') {
+      // ★ v4.0 新モード: PDFのみのURLを一括マーク
+      query = `
+        SELECT sc.id, sc.title, sc.detail_json
+        FROM subsidy_cache sc
+        WHERE sc.source = 'izumi'
+          AND sc.wall_chat_excluded = 0
+          AND json_extract(sc.detail_json, '$.crawled_at') IS NULL
+          AND json_extract(sc.detail_json, '$.official_url') IS NOT NULL
+          AND json_extract(sc.detail_json, '$.official_url') LIKE '%.pdf%'
         ORDER BY RANDOM()
         LIMIT ?
       `;
@@ -347,7 +362,7 @@ izumiPromote.post('/crawl-izumi-details', async (c) => {
     }>();
     
     if (!targets.results || targets.results.length === 0) {
-      if (runId) await finishCronRun(db, runId, 'success', { items_processed: 0 });
+      if (runId) await finishCronRun(db, runId, 'success', { items_processed: 0, metadata: { mode } });
       return c.json<ApiResponse<{ message: string }>>({
         success: true,
         data: { message: `No izumi items to crawl (mode=${mode})` },
@@ -357,6 +372,7 @@ izumiPromote.post('/crawl-izumi-details', async (c) => {
     let crawled = 0;
     let readyAfter = 0;
     let upgraded = 0;
+    let pdfMarked = 0;
     let crawlFailed = 0;
     const errors: string[] = [];
     
@@ -383,6 +399,7 @@ izumiPromote.post('/crawl-izumi-details', async (c) => {
           if (altHtmlUrl) {
             crawlUrl = altHtmlUrl;
           } else {
+            // ★ v4.0: PDF URLのみの場合 → crawled_at をマーク + extraction_queue に投入
             detail.crawled_at = new Date().toISOString();
             detail.crawl_error = 'pdf_url_only';
             detail.crawl_source_url = crawlUrl;
@@ -390,7 +407,20 @@ izumiPromote.post('/crawl-izumi-details', async (c) => {
             if (!detail.pdf_urls.includes(crawlUrl)) detail.pdf_urls.push(crawlUrl);
             await db.prepare(`UPDATE subsidy_cache SET detail_json = ? WHERE id = ?`)
               .bind(JSON.stringify(detail), target.id).run();
-            crawlFailed++;
+            
+            // extraction_queue に extract_pdf ジョブとして投入（既存がなければ）
+            try {
+              const { shardKey16 } = await import('../../lib/shard');
+              const sk = shardKey16(target.id);
+              await db.prepare(`
+                INSERT OR IGNORE INTO extraction_queue (id, subsidy_id, shard_key, job_type, priority, status, created_at, updated_at)
+                VALUES (lower(hex(randomblob(16))), ?, ?, 'extract_pdf', 50, 'queued', datetime('now'), datetime('now'))
+              `).bind(target.id, sk).run();
+            } catch (eqErr) {
+              console.warn(`[crawl-izumi] Failed to enqueue PDF extraction for ${target.id}:`, eqErr);
+            }
+            
+            pdfMarked++;
             continue;
           }
         }
@@ -537,12 +567,11 @@ izumiPromote.post('/crawl-izumi-details', async (c) => {
       }
     }
     
-    // 残件確認（HTML URLのみ）
+    // 残件確認（全URL - crawled_at未設定のもの）
     const remaining = await db.prepare(`
       SELECT COUNT(*) as cnt FROM subsidy_cache
       WHERE source = 'izumi' AND wall_chat_excluded = 0
         AND (detail_json IS NULL OR json_extract(detail_json, '$.crawled_at') IS NULL)
-        AND json_extract(detail_json, '$.official_url') NOT LIKE '%.pdf%'
     `).first<{ cnt: number }>();
     
     const remainingFallback = await db.prepare(`
@@ -552,17 +581,17 @@ izumiPromote.post('/crawl-izumi-details', async (c) => {
         AND json_extract(detail_json, '$.crawled_at') IS NULL
     `).first<{ cnt: number }>();
     
-    console.log(`[Crawl-Izumi-v2] crawled=${crawled}, upgraded=${upgraded}, ready=${readyAfter}, failed=${crawlFailed}, remaining=${remaining?.cnt || 0}, remaining_fallback=${remainingFallback?.cnt || 0}`);
+    console.log(`[Crawl-Izumi-v2] crawled=${crawled}, upgraded=${upgraded}, pdfMarked=${pdfMarked}, ready=${readyAfter}, failed=${crawlFailed}, remaining=${remaining?.cnt || 0}, remaining_fallback=${remainingFallback?.cnt || 0}`);
     
     if (runId) {
       await finishCronRun(db, runId, errors.length > 0 ? 'partial' : 'success', {
         items_processed: targets.results.length,
         items_inserted: readyAfter,
-        items_updated: crawled,
+        items_updated: crawled + pdfMarked,
         items_skipped: crawlFailed,
         error_count: errors.length,
         errors: errors.slice(0, 50),
-        metadata: { crawled, upgraded, ready_after: readyAfter, crawl_failed: crawlFailed, remaining: remaining?.cnt || 0, remaining_fallback: remainingFallback?.cnt || 0, mode },
+        metadata: { crawled, upgraded, pdf_marked: pdfMarked, ready_after: readyAfter, crawl_failed: crawlFailed, remaining: remaining?.cnt || 0, remaining_fallback: remainingFallback?.cnt || 0, mode },
       });
     }
     
@@ -570,6 +599,7 @@ izumiPromote.post('/crawl-izumi-details', async (c) => {
       message: string;
       crawled: number;
       upgraded: number;
+      pdf_marked: number;
       ready_after: number;
       crawl_failed: number;
       remaining: number;
@@ -580,9 +610,10 @@ izumiPromote.post('/crawl-izumi-details', async (c) => {
     }>>({
       success: true,
       data: {
-        message: `Izumi crawl v2: ${crawled} crawled, ${upgraded} upgraded, ${readyAfter} ready`,
+        message: `Izumi crawl v2: ${crawled} crawled, ${upgraded} upgraded, ${pdfMarked} pdf_marked, ${readyAfter} ready`,
         crawled,
         upgraded,
+        pdf_marked: pdfMarked,
         ready_after: readyAfter,
         crawl_failed: crawlFailed,
         remaining: remaining?.cnt || 0,
