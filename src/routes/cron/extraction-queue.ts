@@ -497,10 +497,23 @@ extractionQueue.post('/consume-extractions', async (c) => {
                     body: JSON.stringify({ url: refUrl, formats: ['html'] }),
                   });
                   
-                  if (fcResponse.ok) {
+                  const fcSuccess = fcResponse.ok;
+                  if (fcSuccess) {
                     const fcData = await fcResponse.json() as any;
                     pageHtml = fcData.data?.html || '';
                   }
+                  
+                  // Freeze-COST-2: 参照URL scrape のコスト記録
+                  await logFirecrawlCost(db, {
+                    credits: 1,
+                    costUsd: 0.001,
+                    url: refUrl,
+                    success: fcSuccess,
+                    httpStatus: fcResponse.status,
+                    subsidyId: subsidy.id,
+                    billing: 'known',
+                    rawUsage: { action: 'extract_pdf_ref_url_discovery', htmlLength: pageHtml.length },
+                  }).catch((e: any) => console.warn('[extract_pdf] Cost log failed:', e.message));
                 } else {
                   // Firecrawlがない場合は直接fetch
                   const response = await fetch(refUrl, {

@@ -6,6 +6,7 @@
  */
 
 import type { Env } from '../types';
+import { logFirecrawlCost } from '../lib/cost/cost-logger';
 
 // =====================================================
 // Helper Functions
@@ -382,13 +383,26 @@ export async function executeConsumeExtractions(env: Env): Promise<void> {
             }),
           });
           
-          if (scrapeResponse.ok) {
+          const fcSuccess = scrapeResponse.ok;
+          if (fcSuccess) {
             const scrapeData = await scrapeResponse.json() as any;
             pdfText = scrapeData.data?.markdown || '';
             console.log(`[Consume-Extractions] PDF text length: ${pdfText.length}`);
           } else {
             errors.push(`Firecrawl error for ${subsidyId}: ${scrapeResponse.status}`);
           }
+          
+          // Freeze-COST-2: コスト記録
+          await logFirecrawlCost(db, {
+            credits: 1,
+            costUsd: 0.001,
+            url: pdfUrl,
+            success: fcSuccess,
+            httpStatus: scrapeResponse.status,
+            subsidyId,
+            billing: 'known',
+            rawUsage: { action: 'consume_extractions_pdf', markdownLength: pdfText.length },
+          }).catch((e: any) => console.warn('[Consume-Extractions] Cost log failed:', e.message));
         }
         
         // OpenAI で構造化データを抽出

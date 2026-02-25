@@ -9,6 +9,7 @@ import type { Env, Variables, ApiResponse } from '../../types';
 import { requireAuth } from '../../middleware/auth';
 import { sha256Short, saveStructuredToR2 } from './_helpers';
 import type { R2SaveResult, ExtractSchemaV1 } from './_helpers';
+import { logFirecrawlCost } from '../../lib/cost';
 
 const extract = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -67,7 +68,9 @@ extract.post('/extract/:url_id', requireAuth, async (c) => {
     const extractResult = await callFirecrawlExtract(
       sourceUrl.url,
       markdown,
-      FIRECRAWL_API_KEY
+      FIRECRAWL_API_KEY,
+      DB,
+      sourceUrl.subsidy_id
     );
 
     if (!extractResult.success) {
@@ -237,8 +240,11 @@ extract.post('/extract/:url_id', requireAuth, async (c) => {
 async function callFirecrawlExtract(
   url: string,
   markdown: string,
-  apiKey: string
+  apiKey: string,
+  db?: D1Database,
+  subsidyId?: string
 ): Promise<{ success: boolean; data?: ExtractSchemaV1; error?: string }> {
+  const extractStartTime = Date.now();
   try {
     // Firecrawl Extract API v2を呼び出し
     // v2では url → urls (配列) に変更、エンドポイントも /v2/extract
@@ -356,6 +362,21 @@ async function callFirecrawlExtract(
       const errorText = await response.text();
       console.error('Firecrawl Extract API v2 error:', response.status, errorText);
       
+      // Freeze-COST-2: 失敗時もコスト記録（Extract APIは5 credits消費）
+      if (db) {
+        await logFirecrawlCost(db, {
+          credits: 5,
+          costUsd: 0.005,
+          url,
+          success: false,
+          httpStatus: response.status,
+          errorCode: 'EXTRACT_V2_ERROR',
+          errorMessage: errorText.slice(0, 200),
+          subsidyId,
+          billing: 'unknown',
+        }).catch(() => {});
+      }
+      
       // Firecrawl Extractが失敗した場合、簡易パースにフォールバック
       return createFallbackExtract(url, markdown);
     }
@@ -373,6 +394,21 @@ async function callFirecrawlExtract(
     if (result.success && result.id) {
       // ポーリングで結果取得（最大60秒）
       const extractedData = await pollFirecrawlExtract(result.id, apiKey);
+      
+      // Freeze-COST-2: Extract API コスト記録（成功/失敗問わず）
+      if (db) {
+        await logFirecrawlCost(db, {
+          credits: 5,
+          costUsd: 0.005,
+          url,
+          success: !!extractedData,
+          httpStatus: response.status,
+          subsidyId,
+          billing: 'unknown',
+          rawUsage: { action: 'extract_v2', polled: true, elapsedMs: Date.now() - extractStartTime },
+        }).catch(() => {});
+      }
+      
       if (extractedData) {
         return normalizeExtractedData(url, extractedData);
       }
@@ -382,6 +418,19 @@ async function callFirecrawlExtract(
     
     // 直接データが返ってきた場合（同期レスポンス）
     if (result.success && result.data) {
+      // Freeze-COST-2: コスト記録
+      if (db) {
+        await logFirecrawlCost(db, {
+          credits: 5,
+          costUsd: 0.005,
+          url,
+          success: true,
+          httpStatus: response.status,
+          subsidyId,
+          billing: 'unknown',
+          rawUsage: { action: 'extract_v2', sync: true },
+        }).catch(() => {});
+      }
       return normalizeExtractedData(url, result.data);
     }
 
@@ -389,6 +438,19 @@ async function callFirecrawlExtract(
     return createFallbackExtract(url, markdown);
   } catch (error) {
     console.error('Firecrawl Extract v2 call error:', error);
+    // Freeze-COST-2: エラー時もコスト記録
+    if (db) {
+      await logFirecrawlCost(db, {
+        credits: 0,
+        costUsd: 0,
+        url,
+        success: false,
+        errorCode: 'EXTRACT_V2_EXCEPTION',
+        errorMessage: String(error).slice(0, 200),
+        subsidyId,
+        billing: 'unknown',
+      }).catch(() => {});
+    }
     return createFallbackExtract(url, markdown);
   }
 }

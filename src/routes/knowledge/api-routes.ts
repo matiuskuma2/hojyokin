@@ -13,6 +13,7 @@ import type { Env, Variables, ApiResponse } from '../../types';
 import { requireAuth } from '../../middleware/auth';
 import { sha256Hex, saveRawToR2, extractDomainKey } from './_helpers';
 import type { R2SaveResult } from './_helpers';
+import { firecrawlScrape, type FirecrawlContext } from '../../lib/cost';
 
 const apiRoutes = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -227,24 +228,16 @@ apiRoutes.post('/crawl/:url_id', requireAuth, async (c) => {
       VALUES (?, ?, ?, 'scrape', 'processing', datetime('now'), datetime('now'))
     `).bind(jobId, url_id, sourceUrl.subsidy_id).run();
 
-    // Firecrawl APIを呼び出し
-    const firecrawlResponse = await fetch('https://api.firecrawl.dev/v1/scrape', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${firecrawlApiKey}`
-      },
-      body: JSON.stringify({
-        url: sourceUrl.url,
-        formats: ['markdown', 'html'],
-        onlyMainContent: true,
-        waitFor: 2000
-      })
-    });
+    // Firecrawl APIを呼び出し（Freeze-COST-2: wrapper経由必須）
+    const fcCtx: FirecrawlContext = {
+      db: DB,
+      apiKey: firecrawlApiKey,
+      subsidyId: sourceUrl.subsidy_id || undefined,
+    };
+    const fcResult = await firecrawlScrape(sourceUrl.url, fcCtx);
 
-    if (!firecrawlResponse.ok) {
-      const errorText = await firecrawlResponse.text();
-      const errorCode = firecrawlResponse.status.toString();
+    if (!fcResult.success) {
+      const errorCode = (fcResult.httpStatus || 0).toString();
       
       // ドメインポリシーの失敗統計を更新（テーブルが存在する場合）
       try {
@@ -260,28 +253,12 @@ apiRoutes.post('/crawl/:url_id', requireAuth, async (c) => {
         // テーブルが無い場合は無視
       }
       
-      throw new Error(`Firecrawl API error: ${firecrawlResponse.status} - ${errorText}`);
+      throw new Error(fcResult.error || 'Firecrawl returned no data');
     }
 
-    const crawlResult = await firecrawlResponse.json() as {
-      success: boolean;
-      data?: {
-        markdown?: string;
-        html?: string;
-        metadata?: {
-          title?: string;
-          language?: string;
-        };
-      };
-    };
-
-    if (!crawlResult.success || !crawlResult.data) {
-      throw new Error('Firecrawl returned no data');
-    }
-
-    const markdown = crawlResult.data.markdown || '';
+    const markdown = fcResult.text || '';
     const wordCount = markdown.length;
-    const language = crawlResult.data.metadata?.language || 'ja';
+    const language = 'ja'; // wrapperはmarkdownのみ返却
     
     // SHA-256ハッシュを計算
     const contentHash = await sha256Hex(markdown);

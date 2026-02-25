@@ -13,6 +13,7 @@
 import { Hono } from 'hono';
 import { jwt } from 'hono/jwt';
 import type { Env, Variables } from '../types';
+import { firecrawlScrape, type FirecrawlContext } from '../lib/cost';
 
 type HonoEnv = { Bindings: Env; Variables: Variables };
 
@@ -162,42 +163,25 @@ app.post('/run', async (c) => {
           continue;
         }
 
-        // 2.4 Firecrawl スクレイプ
+        // 2.4 Firecrawl スクレイプ（Freeze-COST-2: wrapper経由必須）
         const firecrawlKey = env.FIRECRAWL_API_KEY;
         if (!firecrawlKey) {
           throw new Error('FIRECRAWL_API_KEY not configured');
         }
 
-        const scrapeResponse = await fetch('https://api.firecrawl.dev/v1/scrape', {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${firecrawlKey}`,
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            url: job.url,
-            formats: ['markdown'],
-            onlyMainContent: true,
-            timeout: 30000
-          })
-        });
-
-        if (!scrapeResponse.ok) {
-          const errorText = await scrapeResponse.text();
-          throw new Error(`Firecrawl error: ${scrapeResponse.status} - ${errorText.substring(0, 200)}`);
-        }
-
-        const scrapeResult = await scrapeResponse.json() as {
-          success: boolean;
-          data?: { markdown?: string; metadata?: { title?: string; statusCode?: number } };
-          error?: string;
+        const fcCtx: FirecrawlContext = {
+          db: env.DB,
+          apiKey: firecrawlKey,
+          subsidyId: job.subsidy_id || undefined,
+          sourceId: job.source_registry_id || undefined,
         };
+        const scrapeResult = await firecrawlScrape(job.url, fcCtx);
 
-        if (!scrapeResult.success || !scrapeResult.data?.markdown) {
+        if (!scrapeResult.success || !scrapeResult.text) {
           throw new Error(scrapeResult.error || 'No markdown returned');
         }
 
-        const markdown = scrapeResult.data.markdown;
+        const markdown = scrapeResult.text;
         const contentHash = await computeHash(markdown);
 
         // 2.5 R2 に raw 保存

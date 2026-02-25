@@ -509,56 +509,9 @@ export async function extractAndUpdateSubsidy(
 // ========================================
 // Firecrawl API（テキスト埋め込みPDF用）
 // ========================================
-type FirecrawlResult = {
-  text: string;
-  hash: string;
-};
-
-async function extractWithFirecrawl(pdfUrl: string, apiKey: string): Promise<FirecrawlResult> {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), FIRECRAWL_TIMEOUT_MS);
-  
-  try {
-    const response = await fetch('https://api.firecrawl.dev/v1/scrape', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        url: pdfUrl,
-        formats: ['markdown'],
-        onlyMainContent: true,
-        waitFor: 2000,
-      }),
-      signal: controller.signal,
-    });
-    
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`Firecrawl API error: ${response.status} - ${errorText.slice(0, 200)}`);
-    }
-    
-    const result = await response.json() as {
-      success: boolean;
-      data?: {
-        markdown?: string;
-        html?: string;
-      };
-    };
-    
-    if (!result.success || !result.data?.markdown) {
-      throw new Error('Firecrawl returned no data');
-    }
-    
-    const text = result.data.markdown;
-    const hash = simpleHash(text);
-    
-    return { text, hash };
-  } finally {
-    clearTimeout(timeoutId);
-  }
-}
+// NOTE: 以前の extractWithFirecrawl 関数は削除。
+// 全ての Firecrawl 呼び出しは firecrawlScrape wrapper 経由で行う (Freeze-COST-2)。
+// extractAndUpdateSubsidy() 内の Step 2 で firecrawlScrape() を使用。
 
 // ========================================
 // Google Vision API（画像PDF用OCR）

@@ -1178,7 +1178,7 @@ syncJgrants.post('/scrape-jgrants-detail', async (c) => {
           try {
             let html = '';
             
-            // Firecrawl APIで取得（SPAレンダリング対応）
+            // Firecrawl APIで取得（SPAレンダリング対応）（Freeze-COST-2: コスト記録付き）
             if (FIRECRAWL_API_KEY) {
               const fcResponse = await fetch('https://api.firecrawl.dev/v1/scrape', {
                 method: 'POST',
@@ -1194,10 +1194,23 @@ syncJgrants.post('/scrape-jgrants-detail', async (c) => {
                 }),
               });
               
-              if (fcResponse.ok) {
+              const fcSuccess = fcResponse.ok;
+              if (fcSuccess) {
                 const fcData = await fcResponse.json() as any;
                 html = fcData.data?.html || '';
               }
+              
+              // Freeze-COST-2: コスト記録（PDF URL発見用スクレイプ）
+              await logFirecrawlCost(db, {
+                credits: 1,
+                costUsd: 0.001,
+                url,
+                success: fcSuccess,
+                httpStatus: fcResponse.status,
+                subsidyId: target.id,
+                billing: 'known',
+                rawUsage: { action: 'enrich_jgrants_pdf_discovery', htmlLength: html.length },
+              }).catch((e: any) => console.warn('[Enrich-JGrants] Cost log failed:', e.message));
             }
             
             // Firecrawl失敗時は直接fetch

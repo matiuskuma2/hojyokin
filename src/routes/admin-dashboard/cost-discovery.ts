@@ -1264,6 +1264,265 @@ costDiscovery.get('/ssot-diagnosis', async (c) => {
 });
 
 // ============================================================
+// D. Firecrawl 実額取得API（Firecrawl Credit Usage + Historical）
+// GET /api/admin-ops/cost/firecrawl-actual
+// ============================================================
+
+/**
+ * Firecrawl API から実際のクレジット使用量と月別履歴を取得
+ * 
+ * 内部推定値（api_cost_logs）と実際の Firecrawl 課金額を比較表示
+ * 
+ * Returns:
+ *   - credit_usage: 現在のクレジット残高・プラン情報
+ *   - historical: 月別のトークン使用履歴
+ *   - internal_estimate: api_cost_logs からの推定値
+ *   - comparison: 実額 vs 推定の比較
+ */
+costDiscovery.get('/cost/firecrawl-actual', async (c) => {
+  const db = c.env.DB;
+  const user = getCurrentUser(c);
+  
+  if (user?.role !== 'super_admin') {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'FORBIDDEN', message: 'super_admin only' },
+    }, 403);
+  }
+  
+  const firecrawlKey = c.env.FIRECRAWL_API_KEY;
+  if (!firecrawlKey) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'CONFIG_ERROR', message: 'FIRECRAWL_API_KEY not configured' },
+    }, 500);
+  }
+  
+  try {
+    // 1. Firecrawl Credit Usage API（現在のクレジット残高）
+    let creditUsage: {
+      remainingCredits?: number;
+      planCredits?: number;
+      billingPeriodStart?: string;
+      billingPeriodEnd?: string;
+      plan?: string;
+    } | null = null;
+    let creditError: string | null = null;
+    
+    try {
+      const creditRes = await fetch('https://api.firecrawl.dev/v1/team/credit-usage', {
+        headers: { 'Authorization': `Bearer ${firecrawlKey}` },
+      });
+      if (creditRes.ok) {
+        const creditData = await creditRes.json() as {
+          success: boolean;
+          data?: {
+            remaining_credits?: number;
+            plan_credits?: number;
+            billing_period_start?: string;
+            billing_period_end?: string;
+            plan?: string;
+            overage_credits?: number;
+            // 旧API形式のフィールド
+            remainingCredits?: number;
+            planCredits?: number;
+            billingPeriodStart?: string;
+            billingPeriodEnd?: string;
+          };
+        };
+        if (creditData.success && creditData.data) {
+          const d = creditData.data;
+          creditUsage = {
+            remainingCredits: d.remaining_credits ?? d.remainingCredits,
+            planCredits: d.plan_credits ?? d.planCredits,
+            billingPeriodStart: d.billing_period_start ?? d.billingPeriodStart,
+            billingPeriodEnd: d.billing_period_end ?? d.billingPeriodEnd,
+            plan: d.plan,
+          };
+        }
+      } else {
+        creditError = `HTTP ${creditRes.status}`;
+      }
+    } catch (e: any) {
+      creditError = e.message;
+    }
+    
+    // 2. Firecrawl Historical Token Usage API（月別履歴）
+    let historical: Array<{
+      startDate: string;
+      endDate: string;
+      totalTokens: number;
+      apiKey?: string;
+    }> = [];
+    let historicalError: string | null = null;
+    
+    try {
+      const histRes = await fetch('https://api.firecrawl.dev/v2/team/token-usage/historical', {
+        headers: { 'Authorization': `Bearer ${firecrawlKey}` },
+      });
+      if (histRes.ok) {
+        const histData = await histRes.json() as {
+          success: boolean;
+          periods?: Array<{
+            startDate: string;
+            endDate: string;
+            totalTokens: number;
+            apiKey?: string;
+          }>;
+        };
+        if (histData.success && histData.periods) {
+          historical = histData.periods;
+        }
+      } else {
+        historicalError = `HTTP ${histRes.status}`;
+      }
+    } catch (e: any) {
+      historicalError = e.message;
+    }
+    
+    // 3. 内部推定値（api_cost_logs）
+    const internalEstimate = await db.prepare(`
+      SELECT 
+        COALESCE(SUM(cost_usd), 0) as total_cost_usd,
+        COALESCE(SUM(units), 0) as total_credits,
+        COUNT(*) as total_calls,
+        SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) as success_count,
+        SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) as failure_count,
+        SUM(CASE WHEN metadata_json IS NOT NULL AND json_valid(metadata_json) = 1 
+            AND json_extract(metadata_json, '$.billing') = 'unknown' THEN 1 ELSE 0 END) as unknown_billing_count,
+        MIN(created_at) as first_record,
+        MAX(created_at) as last_record
+      FROM api_cost_logs
+      WHERE service = 'firecrawl'
+    `).first<{
+      total_cost_usd: number;
+      total_credits: number;
+      total_calls: number;
+      success_count: number;
+      failure_count: number;
+      unknown_billing_count: number;
+      first_record: string | null;
+      last_record: string | null;
+    }>();
+    
+    // 4. 月別推定値（比較用）
+    const monthlyEstimate = await db.prepare(`
+      SELECT 
+        strftime('%Y-%m', created_at) as month,
+        COALESCE(SUM(cost_usd), 0) as cost_usd,
+        COALESCE(SUM(units), 0) as credits,
+        COUNT(*) as calls
+      FROM api_cost_logs
+      WHERE service = 'firecrawl'
+      GROUP BY strftime('%Y-%m', created_at)
+      ORDER BY month DESC
+      LIMIT 12
+    `).all<{
+      month: string;
+      cost_usd: number;
+      credits: number;
+      calls: number;
+    }>();
+    
+    // 5. 比較分析
+    // Firecrawl: 1 credit = 15 tokens, $0.001/credit
+    const tokenToCredits = (tokens: number) => Math.ceil(tokens / 15);
+    const creditsToCost = (credits: number) => credits * 0.001;
+    
+    const comparison = historical.map(period => {
+      const monthKey = period.startDate.substring(0, 7); // 'YYYY-MM'
+      const actualCredits = tokenToCredits(period.totalTokens);
+      const actualCost = creditsToCost(actualCredits);
+      const internalMonth = (monthlyEstimate.results || []).find(m => m.month === monthKey);
+      
+      return {
+        month: monthKey,
+        actual: {
+          tokens: period.totalTokens,
+          credits: actualCredits,
+          costUsd: parseFloat(actualCost.toFixed(4)),
+        },
+        internal: {
+          credits: internalMonth?.credits || 0,
+          costUsd: internalMonth?.cost_usd || 0,
+          calls: internalMonth?.calls || 0,
+        },
+        gap: {
+          creditsDiff: actualCredits - (internalMonth?.credits || 0),
+          costDiffUsd: parseFloat((actualCost - (internalMonth?.cost_usd || 0)).toFixed(4)),
+          coverageRate: internalMonth?.credits 
+            ? parseFloat(((internalMonth.credits / actualCredits) * 100).toFixed(1))
+            : 0,
+        },
+      };
+    });
+    
+    // 全体カバレッジ率
+    const totalActualCredits = comparison.reduce((sum, c) => sum + c.actual.credits, 0);
+    const totalInternalCredits = comparison.reduce((sum, c) => sum + c.internal.credits, 0);
+    const overallCoverage = totalActualCredits > 0 
+      ? parseFloat(((totalInternalCredits / totalActualCredits) * 100).toFixed(1))
+      : 100;
+    
+    return c.json<ApiResponse<any>>({
+      success: true,
+      data: {
+        // Firecrawl API からの実額データ
+        credit_usage: creditUsage || null,
+        credit_usage_error: creditError,
+        historical: historical.map(p => ({
+          ...p,
+          estimatedCredits: tokenToCredits(p.totalTokens),
+          estimatedCostUsd: parseFloat(creditsToCost(tokenToCredits(p.totalTokens)).toFixed(4)),
+        })),
+        historical_error: historicalError,
+        
+        // 内部推定値
+        internal_estimate: {
+          ...internalEstimate,
+          // unknown billing の影響度
+          unknown_billing_pct: internalEstimate?.total_calls 
+            ? parseFloat(((internalEstimate.unknown_billing_count / internalEstimate.total_calls) * 100).toFixed(1))
+            : 0,
+        },
+        monthly_estimate: monthlyEstimate.results || [],
+        
+        // 実額 vs 推定 比較
+        comparison,
+        overall: {
+          actual_total_credits: totalActualCredits,
+          internal_total_credits: totalInternalCredits,
+          coverage_rate: overallCoverage,
+          verdict: overallCoverage >= 90 
+            ? '✅ GOOD: 推定値が実額の90%以上をカバー'
+            : overallCoverage >= 70
+            ? '⚠️ WARN: 推定値が実額の70-90%のカバレッジ（一部漏れあり）'
+            : '🚨 CRITICAL: 推定値が実額の70%未満（大幅なコスト漏れ）',
+        },
+        
+        // メタ情報
+        rates: {
+          credits_per_scrape: 1,
+          usd_per_credit: 0.001,
+          tokens_per_credit: 15,
+        },
+        generated_at: new Date().toISOString(),
+      },
+    });
+    
+  } catch (error) {
+    console.error('Firecrawl actual cost error:', error);
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: 'INTERNAL_ERROR',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      },
+    }, 500);
+  }
+});
+
+// ============================================================
 // 泉(izumi)→canonical 紐付けAPI（super_admin限定）
 // ============================================================
 
