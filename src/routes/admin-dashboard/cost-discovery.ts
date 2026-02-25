@@ -1523,6 +1523,238 @@ costDiscovery.get('/cost/firecrawl-actual', async (c) => {
 });
 
 // ============================================================
+// コスト計測監査（super_admin限定）
+// ============================================================
+
+/**
+ * GET /cost/audit
+ * 全外部APIサービスのコスト計測状況を一覧表示。
+ * - 各サービスの呼び出し数・コスト・最終記録日時
+ * - usage_events と api_cost_logs の差分チェック（OpenAI）
+ * - 計測漏れの可能性がある箇所の警告
+ */
+costDiscovery.get('/cost/audit', async (c) => {
+  const db = c.env.DB;
+  const user = getCurrentUser(c);
+  
+  if (user?.role !== 'super_admin') {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'FORBIDDEN', message: 'super_admin only' },
+    }, 403);
+  }
+  
+  try {
+    // 1. api_cost_logs のサービス別サマリー（全期間）
+    const allTimeSummary = await db.prepare(`
+      SELECT 
+        service,
+        action,
+        COUNT(*) as calls,
+        SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) as success_count,
+        SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) as failure_count,
+        COALESCE(SUM(cost_usd), 0) as total_cost_usd,
+        COALESCE(SUM(units), 0) as total_units,
+        MIN(created_at) as first_recorded,
+        MAX(created_at) as last_recorded
+      FROM api_cost_logs
+      GROUP BY service, action
+      ORDER BY total_cost_usd DESC
+    `).all<{
+      service: string;
+      action: string;
+      calls: number;
+      success_count: number;
+      failure_count: number;
+      total_cost_usd: number;
+      total_units: number;
+      first_recorded: string;
+      last_recorded: string;
+    }>();
+
+    // 2. 過去7日のサービス別サマリー
+    const weekSummary = await db.prepare(`
+      SELECT 
+        service,
+        COUNT(*) as calls,
+        COALESCE(SUM(cost_usd), 0) as cost_usd,
+        SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) as failures
+      FROM api_cost_logs
+      WHERE created_at >= datetime('now', '-7 days')
+      GROUP BY service
+      ORDER BY cost_usd DESC
+    `).all<{ service: string; calls: number; cost_usd: number; failures: number }>();
+
+    // 3. OpenAI: usage_events vs api_cost_logs の差分チェック
+    // usage_events に記録されているが api_cost_logs に記録されていないイベント数
+    const usageEventsTotal = await db.prepare(`
+      SELECT 
+        COUNT(*) as total,
+        COALESCE(SUM(estimated_cost_usd), 0) as total_cost_usd,
+        COALESCE(SUM(tokens_in), 0) as total_tokens_in,
+        COALESCE(SUM(tokens_out), 0) as total_tokens_out,
+        MIN(created_at) as first_event,
+        MAX(created_at) as last_event
+      FROM usage_events
+      WHERE provider = 'openai'
+    `).first<{
+      total: number;
+      total_cost_usd: number;
+      total_tokens_in: number;
+      total_tokens_out: number;
+      first_event: string | null;
+      last_event: string | null;
+    }>();
+
+    const apiCostLogsOpenAI = await db.prepare(`
+      SELECT 
+        COUNT(*) as total,
+        COALESCE(SUM(cost_usd), 0) as total_cost_usd,
+        COALESCE(SUM(units), 0) as total_tokens
+      FROM api_cost_logs
+      WHERE service = 'openai'
+    `).first<{ total: number; total_cost_usd: number; total_tokens: number }>();
+
+    // 4. 外部API設定状況
+    const apiKeyStatus = {
+      firecrawl: !!c.env.FIRECRAWL_API_KEY,
+      openai: !!c.env.OPENAI_API_KEY,
+      google_vision: !!(c.env as any).GOOGLE_VISION_API_KEY,
+      sendgrid: !!c.env.SENDGRID_API_KEY,
+    };
+
+    // 5. 計測漏れ検知: 過去24時間のcron_runsで成功したジョブ vs コスト記録
+    const recentCronRuns = await db.prepare(`
+      SELECT 
+        job_type,
+        COUNT(*) as runs,
+        MAX(started_at) as last_run
+      FROM cron_runs
+      WHERE started_at >= datetime('now', '-24 hours') AND status = 'success'
+      GROUP BY job_type
+    `).all<{ job_type: string; runs: number; last_run: string }>();
+
+    const recentCostLogs = await db.prepare(`
+      SELECT 
+        service,
+        action,
+        COUNT(*) as calls,
+        MAX(created_at) as last_log
+      FROM api_cost_logs
+      WHERE created_at >= datetime('now', '-24 hours')
+      GROUP BY service, action
+    `).all<{ service: string; action: string; calls: number; last_log: string }>();
+
+    // 6. 警告生成
+    const warnings: string[] = [];
+    
+    // OpenAI 差分チェック
+    const usageTotal = usageEventsTotal?.total || 0;
+    const costLogTotal = apiCostLogsOpenAI?.total || 0;
+    if (usageTotal > 0 && costLogTotal === 0) {
+      warnings.push(`🚨 CRITICAL: usage_events に${usageTotal}件のOpenAI記録があるが api_cost_logs は0件。デプロイ前のコスト記録漏れの可能性。`);
+    } else if (usageTotal > costLogTotal * 1.5) {
+      warnings.push(`⚠️ usage_events(${usageTotal}件) > api_cost_logs(${costLogTotal}件): 一部のOpenAI呼び出しがapi_cost_logsに未記録の可能性。`);
+    }
+
+    // APIキー未設定チェック
+    if (!apiKeyStatus.firecrawl) warnings.push('⚠️ FIRECRAWL_API_KEY が未設定');
+    if (!apiKeyStatus.openai) warnings.push('⚠️ OPENAI_API_KEY が未設定');
+
+    // cronジョブが動いているがコスト記録がない場合
+    const cronToServiceMap: Record<string, string[]> = {
+      'sync-jgrants': ['firecrawl'],
+      'consume-extractions': ['firecrawl', 'openai'],
+      'scrape-tokyo': ['simple_scrape'],
+    };
+    for (const cron of (recentCronRuns.results || [])) {
+      const expectedServices = cronToServiceMap[cron.job_type];
+      if (expectedServices) {
+        for (const svc of expectedServices) {
+          const hasLogs = (recentCostLogs.results || []).some(l => l.service === svc);
+          if (!hasLogs && cron.runs > 0) {
+            warnings.push(`⚠️ cron "${cron.job_type}" が${cron.runs}回実行されたが "${svc}" のコスト記録が24時間以内にない`);
+          }
+        }
+      }
+    }
+
+    // 7. 全サービス一覧（登録済み + 未登録の期待サービス）
+    const knownServices = [
+      { service: 'firecrawl', description: 'Firecrawl スクレイピング', rate: '$0.001/credit (1 scrape = 1 credit)', costRisk: 'high' },
+      { service: 'openai', description: 'OpenAI Chat/Embedding', rate: 'gpt-4o-mini: $0.15/1M in, $0.60/1M out', costRisk: 'high' },
+      { service: 'vision_ocr', description: 'Google Vision OCR', rate: '$0.0015/page (tier 1)', costRisk: 'medium' },
+      { service: 'sendgrid', description: 'SendGrid メール送信', rate: '無料枠 100通/日', costRisk: 'low' },
+      { service: 'simple_scrape', description: '直接HTTP fetch', rate: '$0 (自前fetch)', costRisk: 'none' },
+    ];
+
+    const serviceStatusMap = new Map<string, { calls: number; cost_usd: number; last_recorded: string | null }>();
+    for (const row of (allTimeSummary.results || [])) {
+      const existing = serviceStatusMap.get(row.service) || { calls: 0, cost_usd: 0, last_recorded: null };
+      existing.calls += row.calls;
+      existing.cost_usd += row.total_cost_usd;
+      if (!existing.last_recorded || row.last_recorded > existing.last_recorded) {
+        existing.last_recorded = row.last_recorded;
+      }
+      serviceStatusMap.set(row.service, existing);
+    }
+
+    const serviceOverview = knownServices.map(s => ({
+      ...s,
+      recorded: serviceStatusMap.has(s.service),
+      totalCalls: serviceStatusMap.get(s.service)?.calls || 0,
+      totalCostUsd: serviceStatusMap.get(s.service)?.cost_usd || 0,
+      lastRecorded: serviceStatusMap.get(s.service)?.last_recorded || null,
+      apiKeyConfigured: (apiKeyStatus as any)[s.service === 'vision_ocr' ? 'google_vision' : s.service] ?? null,
+    }));
+
+    return c.json<ApiResponse<any>>({
+      success: true,
+      data: {
+        audit_timestamp: new Date().toISOString(),
+        warnings,
+        serviceOverview,
+        allTimeSummary: allTimeSummary.results || [],
+        weekSummary: weekSummary.results || [],
+        openaiCrossCheck: {
+          usage_events: {
+            total: usageTotal,
+            total_cost_usd: usageEventsTotal?.total_cost_usd || 0,
+            total_tokens_in: usageEventsTotal?.total_tokens_in || 0,
+            total_tokens_out: usageEventsTotal?.total_tokens_out || 0,
+            first_event: usageEventsTotal?.first_event,
+            last_event: usageEventsTotal?.last_event,
+          },
+          api_cost_logs: {
+            total: costLogTotal,
+            total_cost_usd: apiCostLogsOpenAI?.total_cost_usd || 0,
+            total_tokens: apiCostLogsOpenAI?.total_tokens || 0,
+          },
+          coverageRate: usageTotal > 0 ? Math.round((costLogTotal / usageTotal) * 100) : 100,
+          status: usageTotal === 0 ? '✅ No OpenAI usage yet' :
+                  costLogTotal >= usageTotal * 0.9 ? '✅ GOOD coverage' :
+                  costLogTotal >= usageTotal * 0.5 ? '⚠️ PARTIAL coverage - some calls not recorded in api_cost_logs' :
+                  '🚨 LOW coverage - significant recording gap',
+        },
+        recentCronRuns: recentCronRuns.results || [],
+        recentCostLogs: recentCostLogs.results || [],
+        apiKeyStatus,
+      },
+    });
+    
+  } catch (error) {
+    console.error('Cost audit error:', error);
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: {
+        code: 'INTERNAL_ERROR',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      },
+    }, 500);
+  }
+});
+
+// ============================================================
 // 泉(izumi)→canonical 紐付けAPI（super_admin限定）
 // ============================================================
 

@@ -13,6 +13,8 @@ export {
   logFirecrawlCost,
   logVisionCost,
   logOpenAICost,
+  logSimpleScrapeCost,
+  logSendGridCost,
   type CostLogInput,
   type CostLogResult,
   type CostService,

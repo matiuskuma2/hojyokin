@@ -6,7 +6,7 @@
  */
 
 import type { Env } from '../types';
-import { logFirecrawlCost } from '../lib/cost/cost-logger';
+import { logFirecrawlCost, logOpenAICost } from '../lib/cost/cost-logger';
 
 // =====================================================
 // Helper Functions
@@ -294,7 +294,7 @@ export async function executeEnrichJgrants(env: Env): Promise<void> {
 // extraction_queue から PDF を取得、Firecrawl でテキスト化、
 // OpenAI で構造化データに変換して wall_chat_ready を判定
 
-import { extractSubsidyDataFromPdf, mergeExtractedData } from './openai-extractor';
+import { extractSubsidyDataFromPdf, mergeExtractedData, type ExtractedResult } from './openai-extractor';
 import { checkWallChatReadyFromJson } from '../lib/wall-chat-ready';
 
 export async function executeConsumeExtractions(env: Env): Promise<void> {
@@ -409,13 +409,28 @@ export async function executeConsumeExtractions(env: Env): Promise<void> {
         if (pdfText.length > 200 && openaiKey) {
           console.log(`[Consume-Extractions] Extracting with OpenAI...`);
           
-          const extracted = await extractSubsidyDataFromPdf(pdfText, openaiKey);
+          const result = await extractSubsidyDataFromPdf(pdfText, openaiKey, 'gpt-4o-mini', true) as ExtractedResult;
           
-          if (extracted) {
+          if (result.data) {
             // 抽出結果をマージ
-            detailJson = mergeExtractedData(detailJson, extracted);
-            console.log(`[Consume-Extractions] Extracted: requirements=${extracted.application_requirements?.length || 0}, expenses=${extracted.eligible_expenses?.length || 0}, docs=${extracted.required_documents?.length || 0}`);
+            detailJson = mergeExtractedData(detailJson, result.data);
+            console.log(`[Consume-Extractions] Extracted: requirements=${result.data.application_requirements?.length || 0}, expenses=${result.data.eligible_expenses?.length || 0}, docs=${result.data.required_documents?.length || 0}`);
           }
+          
+          // Freeze-COST-2: OpenAI コスト記録
+          const inputTokens = result.usage?.prompt_tokens || 0;
+          const outputTokens = result.usage?.completion_tokens || 0;
+          const costUsd = (inputTokens * 0.00015 + outputTokens * 0.0006) / 1000;
+          await logOpenAICost(db, {
+            model: result.model || 'gpt-4o-mini',
+            inputTokens,
+            outputTokens,
+            costUsd,
+            action: 'consume_extractions_pdf',
+            success: result.success,
+            subsidyId,
+            rawUsage: { prompt_tokens: inputTokens, completion_tokens: outputTokens, total_tokens: inputTokens + outputTokens },
+          }).catch((e: any) => console.warn('[Consume-Extractions] OpenAI cost log failed:', e.message));
         } else if (pdfText.length > 100) {
           // OpenAI がない場合は生テキストを保存
           detailJson.extracted_pdf_text = pdfText.substring(0, 10000);

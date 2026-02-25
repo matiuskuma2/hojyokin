@@ -31,6 +31,7 @@ import {
   type CompanyContext,
 } from '../lib/ai-concierge';
 import { syncFactsToProfile } from '../lib/fact-sync';
+import { logOpenAICost } from '../lib/cost/cost-logger';
 import { safeJsonParse } from '../lib/ssot';
 import { 
   parseDetailJson, 
@@ -1649,6 +1650,7 @@ chat.post('/sessions/:id/message', async (c) => {
         // 使用トークン記録
         if (aiResponse.tokens_used) {
           const eventId = crypto.randomUUID();
+          const costUsd = (aiResponse.tokens_used.prompt * 0.00015 + aiResponse.tokens_used.completion * 0.0006) / 1000;
           try {
             await c.env.DB.prepare(`
               INSERT INTO usage_events (
@@ -1661,12 +1663,22 @@ chat.post('/sessions/:id/message', async (c) => {
               session.company_id,
               aiResponse.tokens_used.prompt,
               aiResponse.tokens_used.completion,
-              ((aiResponse.tokens_used.prompt * 0.00015 + aiResponse.tokens_used.completion * 0.0006) / 1000),
+              costUsd,
               JSON.stringify({ session_id: sessionId, mode: 'free' })
             ).run();
           } catch (e) {
             console.error('Failed to record AI usage:', e);
           }
+          // Freeze-COST-2: api_cost_logs にも記録（superadmin /cost/summary で可視化）
+          await logOpenAICost(c.env.DB, {
+            model: c.env.OPENAI_MODEL || 'gpt-4o-mini',
+            inputTokens: aiResponse.tokens_used.prompt,
+            outputTokens: aiResponse.tokens_used.completion,
+            costUsd,
+            action: 'chat_free',
+            success: true,
+            rawUsage: { session_id: sessionId, mode: 'free', user_id: user.id },
+          }).catch((e: any) => console.warn('[Chat] Cost log failed:', e.message));
         }
       } catch (aiError) {
         console.error('[Chat AI] Error:', aiError);
@@ -1758,6 +1770,7 @@ chat.post('/sessions/:id/message', async (c) => {
           
           if (aiResponse.tokens_used) {
             const eventId = crypto.randomUUID();
+            const costUsd = (aiResponse.tokens_used.prompt * 0.00015 + aiResponse.tokens_used.completion * 0.0006) / 1000;
             try {
               await c.env.DB.prepare(`
                 INSERT INTO usage_events (
@@ -1770,12 +1783,22 @@ chat.post('/sessions/:id/message', async (c) => {
                 session.company_id,
                 aiResponse.tokens_used.prompt,
                 aiResponse.tokens_used.completion,
-                ((aiResponse.tokens_used.prompt * 0.00015 + aiResponse.tokens_used.completion * 0.0006) / 1000),
+                costUsd,
                 JSON.stringify({ session_id: sessionId, mode: 'structured', is_retry: isRetry })
               ).run();
             } catch (e) {
               console.error('Failed to record AI usage:', e);
             }
+            // Freeze-COST-2: api_cost_logs にも記録
+            await logOpenAICost(c.env.DB, {
+              model: c.env.OPENAI_MODEL || 'gpt-4o-mini',
+              inputTokens: aiResponse.tokens_used.prompt,
+              outputTokens: aiResponse.tokens_used.completion,
+              costUsd,
+              action: 'chat_structured',
+              success: true,
+              rawUsage: { session_id: sessionId, mode: 'structured', is_retry: isRetry, user_id: user.id },
+            }).catch((e: any) => console.warn('[Chat] Cost log failed:', e.message));
           }
         } catch (aiError) {
           console.error('[Chat AI Structured] Error:', aiError);
@@ -2089,19 +2112,36 @@ chat.post('/sessions/:id/message/stream', async (c) => {
             VALUES (?, ?, 'assistant', ?, ?)
           `).bind(assistantMsgId, sessionId, fullContent, now).run();
           
-          // 使用トークンの概算記録
+          // 使用トークンの概算記録（ストリーム時はトークン数が取れないため概算）
           const eventId = crypto.randomUUID();
+          // ストリーム概算: 入力≒会話履歴+システムプロンプト、出力≒生成テキスト長/4
+          const estimatedOutputTokens = Math.ceil(fullContent.length / 4);
+          const estimatedInputTokens = 500; // 概算: システムプロンプト+履歴
+          const estimatedCostUsd = (estimatedInputTokens * 0.00015 + estimatedOutputTokens * 0.0006) / 1000;
           await c.env.DB.prepare(`
             INSERT INTO usage_events (
               id, user_id, company_id, event_type, provider,
               tokens_in, tokens_out, estimated_cost_usd, metadata, created_at
-            ) VALUES (?, ?, ?, 'CHAT_AI_RESPONSE', 'openai', 0, 0, 0, ?, datetime('now'))
+            ) VALUES (?, ?, ?, 'CHAT_AI_RESPONSE', 'openai', ?, ?, ?, ?, datetime('now'))
           `).bind(
             eventId,
             user.id,
             session.company_id,
-            JSON.stringify({ session_id: sessionId, mode: 'free', streamed: true, content_length: fullContent.length })
+            estimatedInputTokens,
+            estimatedOutputTokens,
+            estimatedCostUsd,
+            JSON.stringify({ session_id: sessionId, mode: 'free', streamed: true, content_length: fullContent.length, estimated: true })
           ).run();
+          // Freeze-COST-2: api_cost_logs にも記録（ストリーム概算）
+          await logOpenAICost(c.env.DB, {
+            model: c.env.OPENAI_MODEL || 'gpt-4o-mini',
+            inputTokens: estimatedInputTokens,
+            outputTokens: estimatedOutputTokens,
+            costUsd: estimatedCostUsd,
+            action: 'chat_stream',
+            success: true,
+            rawUsage: { session_id: sessionId, mode: 'free', streamed: true, content_length: fullContent.length, estimated: true, user_id: user.id },
+          }).catch((e: any) => console.warn('[Chat] Cost log failed:', e.message));
         } catch (saveError) {
           console.error('[Chat SSE] Save error:', saveError);
         }

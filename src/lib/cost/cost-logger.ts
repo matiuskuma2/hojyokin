@@ -13,8 +13,8 @@
 // 型定義
 // =====================================================
 
-export type CostService = 'firecrawl' | 'vision_ocr' | 'openai' | 'anthropic';
-export type CostUnitType = 'credit' | 'page' | 'input_token' | 'output_token' | 'total_token';
+export type CostService = 'firecrawl' | 'vision_ocr' | 'openai' | 'anthropic' | 'sendgrid' | 'simple_scrape';
+export type CostUnitType = 'credit' | 'page' | 'input_token' | 'output_token' | 'total_token' | 'request' | 'email';
 
 export interface CostLogInput {
   service: CostService;
@@ -277,5 +277,34 @@ export async function logSimpleScrapeCost(
     metadata: {
       response_size: params.responseSize || 0,
     },
+  });
+}
+
+/**
+ * SendGrid メール送信コストを記録
+ * 
+ * 無料枠（100通/日）のため基本$0だが、呼び出し数と成功率を把握するために記録。
+ * 有料プランに移行した場合はレート調整で対応。
+ */
+export async function logSendGridCost(
+  db: D1Database,
+  params: {
+    action: string; // 'staff_invite' | 'client_invite' | 'password_reset' | 'send'
+    success: boolean;
+    httpStatus?: number;
+    errorMessage?: string;
+    metadata?: Record<string, unknown>;
+  }
+): Promise<CostLogResult> {
+  return logApiCost(db, {
+    service: 'sendgrid',
+    action: params.action,
+    units: 1,
+    unitType: 'email',
+    costUsd: 0, // 無料枠前提。有料プラン時は要調整
+    success: params.success,
+    httpStatus: params.httpStatus,
+    errorMessage: params.errorMessage,
+    metadata: params.metadata,
   });
 }

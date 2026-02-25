@@ -8,6 +8,7 @@
  */
 
 import type { Env } from '../types';
+import { logSendGridCost } from '../lib/cost/cost-logger';
 
 /**
  * HTMLエスケープ（XSS対策）
@@ -81,10 +82,29 @@ export async function sendEmail(
     if (response.ok || response.status === 202) {
       const messageId = response.headers.get('X-Message-Id') || undefined;
       console.log('[Email] Successfully sent:', { to: params.to, messageId });
+      // Freeze-COST-2: メール送信をapi_cost_logsに記録
+      if (env.DB) {
+        await logSendGridCost(env.DB, {
+          action: 'send',
+          success: true,
+          httpStatus: response.status,
+          metadata: { to: params.to, subject: params.subject, messageId },
+        }).catch((e: any) => console.warn('[Email] Cost log failed:', e.message));
+      }
       return { success: true, messageId };
     } else {
       const errorText = await response.text();
       console.error('[Email] SendGrid error:', response.status, errorText);
+      // Freeze-COST-3: 失敗時も記録
+      if (env.DB) {
+        await logSendGridCost(env.DB, {
+          action: 'send',
+          success: false,
+          httpStatus: response.status,
+          errorMessage: errorText.substring(0, 500),
+          metadata: { to: params.to, subject: params.subject },
+        }).catch((e: any) => console.warn('[Email] Cost log failed:', e.message));
+      }
       return { success: false, error: `SendGrid error: ${response.status} - ${errorText}` };
     }
   } catch (error) {
