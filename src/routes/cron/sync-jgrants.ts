@@ -1203,7 +1203,7 @@ syncJgrants.post('/scrape-jgrants-detail', async (c) => {
               // Freeze-COST-2: コスト記録（PDF URL発見用スクレイプ）
               await logFirecrawlCost(db, {
                 credits: 1,
-                costUsd: 0.00383, // 実質単価: $138/年÷12÷3000
+                costUsd: 0.00528, // 実質単価: $190/年÷12÷3000
                 url,
                 success: fcSuccess,
                 httpStatus: fcResponse.status,

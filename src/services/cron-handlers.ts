@@ -395,7 +395,7 @@ export async function executeConsumeExtractions(env: Env): Promise<void> {
           // Freeze-COST-2: コスト記録
           await logFirecrawlCost(db, {
             credits: 1,
-            costUsd: 0.00383, // 実質単価: $138/年÷12÷3000
+            costUsd: 0.00528, // 実質単価: $190/年÷12÷3000
             url: pdfUrl,
             success: fcSuccess,
             httpStatus: scrapeResponse.status,

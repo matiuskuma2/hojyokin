@@ -152,7 +152,7 @@ export async function logFirecrawlCost(
     discoveryItemId: params.discoveryItemId,
     rawUsage: params.rawUsage,
     metadata: {
-      rate: 0.00383, // 実質単価: $138/年 ÷ 12ヶ月 ÷ 3000credits = $0.00383/credit
+      rate: 0.00528, // 実質単価: $190/年 ÷ 12ヶ月 ÷ 3000credits = $0.00528/credit
       billing: params.billing || 'known', // P0-2: デフォルトはknown
     },
   });
