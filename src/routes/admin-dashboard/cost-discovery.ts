@@ -179,6 +179,13 @@ costDiscovery.get('/cost/summary', async (c) => {
         byDate: byDateResult.results || [],
         topSubsidies: topSubsidiesResult.results || [],
         recentErrors: recentErrorsResult.results || [],
+        firecrawlNote: {
+          plan: 'Hobby ($138/year)',
+          monthlyFixed: '$11.50/月（サブスク固定費）',
+          creditLimit: '3,000 credits/月',
+          effectiveRate: '$0.00383/credit（実質単価）',
+          note: 'api_cost_logsのfirecrawl cost_usdは実質単価ベース。実際の請求は年額$138固定。',
+        },
       },
     });
     
@@ -1425,9 +1432,10 @@ costDiscovery.get('/cost/firecrawl-actual', async (c) => {
     }>();
     
     // 5. 比較分析
-    // Firecrawl: 1 credit = 15 tokens, $0.001/credit
+    // Firecrawl: 1 credit = 15 tokens
+    // 実質単価: Hobby $138/年 ÷ 12ヶ月 ÷ 3,000 = $0.00383/credit
     const tokenToCredits = (tokens: number) => Math.ceil(tokens / 15);
-    const creditsToCost = (credits: number) => credits * 0.001;
+    const creditsToCost = (credits: number) => credits * 0.00383;
     
     const comparison = historical.map(period => {
       const monthKey = period.startDate.substring(0, 7); // 'YYYY-MM'
@@ -1502,8 +1510,12 @@ costDiscovery.get('/cost/firecrawl-actual', async (c) => {
         
         // メタ情報
         rates: {
+          plan: 'Hobby ($138/year)',
           credits_per_scrape: 1,
-          usd_per_credit: 0.001,
+          monthly_credit_limit: 3000,
+          subscription_monthly_usd: 11.50,
+          effective_usd_per_credit: 0.00383,
+          payg_usd_per_credit_reference: 0.001,
           tokens_per_credit: 15,
         },
         generated_at: new Date().toISOString(),
@@ -1645,6 +1657,21 @@ costDiscovery.get('/cost/audit', async (c) => {
       GROUP BY service, action
     `).all<{ service: string; action: string; calls: number; last_log: string }>();
 
+    // 5.5 Firecrawl 月間クレジット消費状況（3,000 credits/月上限）
+    const firecrawlMonthlyUsage = await db.prepare(`
+      SELECT 
+        COALESCE(SUM(units), 0) as credits_used,
+        COUNT(*) as calls,
+        COALESCE(SUM(cost_usd), 0) as cost_usd
+      FROM api_cost_logs
+      WHERE service = 'firecrawl'
+        AND created_at >= datetime('now', 'start of month')
+    `).first<{ credits_used: number; calls: number; cost_usd: number }>();
+
+    const fcCreditsUsed = firecrawlMonthlyUsage?.credits_used || 0;
+    const fcMonthlyLimit = 3000;
+    const fcUsageRate = fcMonthlyLimit > 0 ? (fcCreditsUsed / fcMonthlyLimit) * 100 : 0;
+
     // 6. 警告生成
     const warnings: string[] = [];
     
@@ -1660,6 +1687,15 @@ costDiscovery.get('/cost/audit', async (c) => {
     // APIキー未設定チェック
     if (!apiKeyStatus.firecrawl) warnings.push('⚠️ FIRECRAWL_API_KEY が未設定');
     if (!apiKeyStatus.openai) warnings.push('⚠️ OPENAI_API_KEY が未設定');
+
+    // Firecrawl 月間クレジット上限チェック
+    if (fcUsageRate >= 100) {
+      warnings.push(`🚨 CRITICAL: Firecrawl月間上限到達! ${fcCreditsUsed}/${fcMonthlyLimit} credits (${fcUsageRate.toFixed(1)}%). 追加スクレイプは失敗する可能性あり。`);
+    } else if (fcUsageRate >= 80) {
+      warnings.push(`⚠️ Firecrawl月間上限に近づいています: ${fcCreditsUsed}/${fcMonthlyLimit} credits (${fcUsageRate.toFixed(1)}%). 残り${fcMonthlyLimit - fcCreditsUsed} credits。`);
+    } else if (fcUsageRate >= 50) {
+      warnings.push(`📊 Firecrawl月間消費: ${fcCreditsUsed}/${fcMonthlyLimit} credits (${fcUsageRate.toFixed(1)}%).`);
+    }
 
     // cronジョブが動いているがコスト記録がない場合
     const cronToServiceMap: Record<string, string[]> = {
@@ -1681,7 +1717,7 @@ costDiscovery.get('/cost/audit', async (c) => {
 
     // 7. 全サービス一覧（登録済み + 未登録の期待サービス）
     const knownServices = [
-      { service: 'firecrawl', description: 'Firecrawl スクレイピング', rate: '$0.001/credit (1 scrape = 1 credit)', costRisk: 'high' },
+      { service: 'firecrawl', description: 'Firecrawl スクレイピング', rate: 'Hobby $138/年 (3,000 credits/月, 実質$0.00383/credit)', costRisk: 'high' },
       { service: 'openai', description: 'OpenAI Chat/Embedding', rate: 'gpt-4o-mini: $0.15/1M in, $0.60/1M out', costRisk: 'high' },
       { service: 'vision_ocr', description: 'Google Vision OCR', rate: '$0.0015/page (tier 1)', costRisk: 'medium' },
       { service: 'sendgrid', description: 'SendGrid メール送信', rate: '無料枠 100通/日', costRisk: 'low' },
@@ -1738,6 +1774,19 @@ costDiscovery.get('/cost/audit', async (c) => {
         },
         recentCronRuns: recentCronRuns.results || [],
         recentCostLogs: recentCostLogs.results || [],
+        firecrawlBudget: {
+          plan: 'Hobby ($138/year)',
+          monthlyLimit: fcMonthlyLimit,
+          creditsUsedThisMonth: fcCreditsUsed,
+          usageRate: parseFloat(fcUsageRate.toFixed(1)),
+          remainingCredits: Math.max(0, fcMonthlyLimit - fcCreditsUsed),
+          subscriptionMonthlyCost: 11.50,
+          effectiveCostPerCredit: 0.00383,
+          status: fcUsageRate >= 100 ? '🚨 OVER LIMIT' :
+                  fcUsageRate >= 80 ? '⚠️ NEAR LIMIT' :
+                  fcUsageRate >= 50 ? '📊 MODERATE' : '✅ OK',
+          note: 'サブスク型: 月額$11.50固定。クレジット消費が多くても少なくても月額は変わらない。上限超過で追加スクレイプ不可。',
+        },
         apiKeyStatus,
       },
     });

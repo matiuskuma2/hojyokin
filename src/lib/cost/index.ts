@@ -28,6 +28,8 @@ export {
   OPENAI_RATES,
   ANTHROPIC_RATES,
   calculateFirecrawlCost,
+  getFirecrawlMonthlyCost,
+  calculateFirecrawlUsageRate,
   calculateVisionCost,
   calculateOpenAICost,
   calculateAnthropicCost,

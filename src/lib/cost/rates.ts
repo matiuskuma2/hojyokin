@@ -7,11 +7,36 @@
  */
 
 // =====================================================
-// Firecrawl 単価（2024-01月時点）
+// Firecrawl 単価
 // =====================================================
+
+/**
+ * Firecrawl プラン情報（2026-01 契約実態）
+ * 
+ * 契約: Hobby プラン $138/年（年額一括）
+ * 月額換算: $11.50/月
+ * 月間上限: 3,000 API credits
+ * 実質単価: $11.50 / 3,000 = $0.00383/credit
+ * 
+ * ※ 従量課金（pay-as-you-go）の $0.001/credit とは異なる
+ * ※ サブスク型なので実際のコストは「月額固定 $11.50」
+ * ※ credit消費が多くても少なくても月額は変わらない
+ */
 export const FIRECRAWL_RATES = {
-  /** 1 credit = $0.001 (Starter プラン) */
-  USD_PER_CREDIT: 0.001,
+  // --- サブスクリプション情報 ---
+  /** 年額サブスクリプション料金 */
+  SUBSCRIPTION_ANNUAL_USD: 138,
+  /** 月額換算 */
+  SUBSCRIPTION_MONTHLY_USD: 11.50,
+  /** 月間クレジット上限 */
+  MONTHLY_CREDIT_LIMIT: 3000,
+  
+  // --- 単価（2種類）---
+  /** 実質単価: 月額 ÷ 月間上限 = $0.00383/credit */
+  EFFECTIVE_USD_PER_CREDIT: 0.00383,
+  /** 従量課金単価（参考値、現在のプランでは使わない） */
+  PAYG_USD_PER_CREDIT: 0.001,
+  
   /** scrape 1回 = 1 credit */
   CREDITS_PER_SCRAPE: 1,
 } as const;
@@ -90,9 +115,28 @@ export type AnthropicModel = keyof typeof ANTHROPIC_RATES;
 
 /**
  * Firecrawl コスト計算
+ * 
+ * サブスク型プランなので2種類のコストを返す:
+ * - effectiveCost: 実質単価ベース（月額 ÷ 上限 × credit数）
+ * - subscriptionMonthlyCost: 月額固定費（$11.50）
  */
 export function calculateFirecrawlCost(credits: number): number {
-  return credits * FIRECRAWL_RATES.USD_PER_CREDIT;
+  return credits * FIRECRAWL_RATES.EFFECTIVE_USD_PER_CREDIT;
+}
+
+/**
+ * Firecrawl 月間固定コスト（サブスク月額）
+ */
+export function getFirecrawlMonthlyCost(): number {
+  return FIRECRAWL_RATES.SUBSCRIPTION_MONTHLY_USD;
+}
+
+/**
+ * Firecrawl 月間クレジット消費率を計算
+ * @returns 0-100+ のパーセンテージ（100超 = 上限オーバー）
+ */
+export function calculateFirecrawlUsageRate(creditsUsed: number): number {
+  return (creditsUsed / FIRECRAWL_RATES.MONTHLY_CREDIT_LIMIT) * 100;
 }
 
 /**

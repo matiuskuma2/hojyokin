@@ -506,7 +506,7 @@ extractionQueue.post('/consume-extractions', async (c) => {
                   // Freeze-COST-2: 参照URL scrape のコスト記録
                   await logFirecrawlCost(db, {
                     credits: 1,
-                    costUsd: 0.001,
+                    costUsd: 0.00383, // 実質単価: $138/年÷12÷3000
                     url: refUrl,
                     success: fcSuccess,
                     httpStatus: fcResponse.status,
@@ -659,7 +659,7 @@ extractionQueue.post('/consume-extractions', async (c) => {
                       // Firecrawl コスト記録 (1 credit per scrape)
                       await logFirecrawlCost(db, {
                         credits: 1,
-                        costUsd: 0.001,
+                        costUsd: 0.00383, // 実質単価: $138/年÷12÷3000
                         url: httpUrl,
                         success: fcSuccess,
                         httpStatus: fcResponse.status,
@@ -705,7 +705,7 @@ extractionQueue.post('/consume-extractions', async (c) => {
                   // Firecrawl コスト記録 (1 credit per scrape)
                   await logFirecrawlCost(db, {
                     credits: 1,
-                    costUsd: 0.001,
+                    costUsd: 0.00383, // 実質単価: $138/年÷12÷3000
                     url: pdfUrl,
                     success: fcSuccess,
                     httpStatus: fcResponse.status,
@@ -718,7 +718,7 @@ extractionQueue.post('/consume-extractions', async (c) => {
                   // 失敗時もコスト記録 (Freeze-COST-3)
                   await logFirecrawlCost(db, {
                     credits: 1,
-                    costUsd: 0.001,
+                    costUsd: 0.00383, // 実質単価: $138/年÷12÷3000
                     url: pdfUrl,
                     success: false,
                     subsidyId: subsidy.id,

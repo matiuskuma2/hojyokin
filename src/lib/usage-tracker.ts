@@ -17,8 +17,8 @@ const OPENAI_PRICING: Record<string, { input: number; output: number }> = {
   'text-embedding-3-large': { input: 0.00013, output: 0 },
 };
 
-// Firecrawl 価格（概算: $0.001 per page）
-const FIRECRAWL_PRICE_PER_PAGE = 0.001;
+// Firecrawl 価格（実質: Hobby $138/年÷12÷3000 = $0.00383/credit）
+const FIRECRAWL_PRICE_PER_PAGE = 0.00383;
 
 export type EventType =
   | 'REGISTER'
