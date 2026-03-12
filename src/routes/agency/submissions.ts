@@ -2,7 +2,7 @@
  * Agency: 入力受付（サブミッション）管理
  * 
  * GET  /submissions             - 入力受付一覧
- * POST /submissions/:id/approve - 入力承認
+ * POST /submissions/:id/approve - 入力承認（Phase 3a: マッピング駆動）
  * POST /submissions/:id/reject  - 入力却下
  */
 
@@ -11,6 +11,8 @@ import { Hono } from 'hono';
 import type { Env, Variables, ApiResponse } from '../../types';
 import { getCurrentUser } from '../../middleware/auth';
 import { getUserAgency, safeParseJsonBody, calculateEmployeeBand } from './_helpers';
+import { getIntakeFieldMappings, splitPayloadByTarget } from '../../lib/intake-field-mappings';
+import type { ApproveApplyResult } from '../../lib/intake-field-mappings';
 
 const submissions = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -185,94 +187,87 @@ submissions.post('/submissions/:id/approve', async (c) => {
     }, 400);
   }
   
-  // 会社情報を更新（companiesテーブル）
+  // ========================================
+  // Phase 3a: マッピング駆動の会社情報反映
+  // intake_field_mappings (DB) → フォールバック付きで payload を仕分け
+  // ========================================
+  const applyResult: ApproveApplyResult = {
+    companies_updated: [],
+    profile_updated: [],
+    skipped_unmapped: [],
+    skipped_invalid_target: [],
+    mapping_source: 'fallback',
+  };
+
   if (Object.keys(payload).length > 0) {
-    const updateFields: string[] = [];
-    const updateValues: any[] = [];
-    
-    // companiesテーブルの許可フィールド（カラム名マッピング）
-    const fieldMapping: Record<string, string> = {
-      'name': 'name',
-      'companyName': 'name',
-      'prefecture': 'prefecture',
-      'city': 'city',
-      'industry': 'industry_major',
-      'industry_major': 'industry_major',
-      'industry_minor': 'industry_minor',
-      'employee_count': 'employee_count',
-      'employeeCount': 'employee_count',
-      'capital': 'capital',
-      'founded_date': 'established_date',
-      'establishedDate': 'established_date',
-      'annual_revenue': 'annual_revenue',
-      'annualRevenue': 'annual_revenue',
-    };
-    
-    const processedFields = new Set<string>();
-    for (const [payloadKey, dbField] of Object.entries(fieldMapping)) {
-      if (payload[payloadKey] !== undefined && !processedFields.has(dbField)) {
-        updateFields.push(`${dbField} = ?`);
-        updateValues.push(payload[payloadKey]);
-        processedFields.add(dbField);
+    // Step 1: マッピング定義を取得（DB優先、失敗時ハードコードフォールバック）
+    const { mappings, source } = await getIntakeFieldMappings(db);
+    applyResult.mapping_source = source;
+
+    // Step 2: payload を companies / company_profile に仕分け
+    const split = splitPayloadByTarget(payload, mappings);
+    applyResult.skipped_unmapped = split.skipped_unmapped;
+    applyResult.skipped_invalid_target = split.skipped_invalid_target;
+
+    // Step 2.5: マッピング外キーのログ（Phase 3a 安全策 C）
+    if (split.skipped_unmapped.length > 0) {
+      console.warn(
+        `[approve] Unmapped payload keys (submission=${submissionId}):`,
+        split.skipped_unmapped.join(', ')
+      );
+    }
+    if (split.skipped_invalid_target.length > 0) {
+      console.warn(
+        `[approve] Invalid target keys (submission=${submissionId}):`,
+        split.skipped_invalid_target.join(', ')
+      );
+    }
+
+    // Step 3: companies テーブル更新
+    const companyEntries = Object.entries(split.companies);
+    if (companyEntries.length > 0) {
+      const updateFields: string[] = [];
+      const updateValues: any[] = [];
+
+      for (const [col, val] of companyEntries) {
+        updateFields.push(`${col} = ?`);
+        updateValues.push(val);
+        applyResult.companies_updated.push(col);
       }
-    }
-    
-    // P1-2: employee_count が更新される場合は employee_band も自動計算
-    if (processedFields.has('employee_count')) {
-      const empCount = payload.employee_count || payload.employeeCount || 0;
-      updateFields.push('employee_band = ?');
-      updateValues.push(calculateEmployeeBand(empCount));
-    }
-    
-    if (updateFields.length > 0) {
+
+      // P1-2: employee_count が含まれる場合は employee_band も自動計算
+      if (split.companies.employee_count !== undefined) {
+        const empCount = Number(split.companies.employee_count) || 0;
+        updateFields.push('employee_band = ?');
+        updateValues.push(calculateEmployeeBand(empCount));
+        applyResult.companies_updated.push('employee_band');
+      }
+
       updateFields.push('updated_at = ?');
       updateValues.push(now);
       updateValues.push(submission.company_id);
-      
+
       await db.prepare(`
         UPDATE companies SET ${updateFields.join(', ')} WHERE id = ?
       `).bind(...updateValues).run();
     }
-    
-    // company_profileテーブルも更新（存在する場合）
-    const profileFieldMapping: Record<string, string> = {
-      'representative_name': 'representative_name',
-      'representativeName': 'representative_name',
-      'representative_title': 'representative_title',
-      'representativeTitle': 'representative_title',
-      'website_url': 'website_url',
-      'websiteUrl': 'website_url',
-      'contact_email': 'contact_email',
-      'contactEmail': 'contact_email',
-      'contact_phone': 'contact_phone',
-      'contactPhone': 'contact_phone',
-      'business_summary': 'business_summary',
-      'businessSummary': 'business_summary',
-      'main_products': 'main_products',
-      'mainProducts': 'main_products',
-      'main_customers': 'main_customers',
-      'mainCustomers': 'main_customers',
-      'competitive_advantage': 'competitive_advantage',
-      'competitiveAdvantage': 'competitive_advantage',
-    };
-    
-    const profileUpdateFields: string[] = [];
-    const profileUpdateValues: any[] = [];
-    const processedProfileFields = new Set<string>();
-    
-    for (const [payloadKey, dbField] of Object.entries(profileFieldMapping)) {
-      if (payload[payloadKey] !== undefined && !processedProfileFields.has(dbField)) {
-        profileUpdateFields.push(`${dbField} = ?`);
-        profileUpdateValues.push(payload[payloadKey]);
-        processedProfileFields.add(dbField);
+
+    // Step 4: company_profile テーブル更新
+    const profileEntries = Object.entries(split.company_profile);
+    if (profileEntries.length > 0) {
+      const profileUpdateFields: string[] = [];
+      const profileUpdateValues: any[] = [];
+
+      for (const [col, val] of profileEntries) {
+        profileUpdateFields.push(`${col} = ?`);
+        profileUpdateValues.push(val);
+        applyResult.profile_updated.push(col);
       }
-    }
-    
-    if (profileUpdateFields.length > 0) {
+
       profileUpdateFields.push('updated_at = ?');
       profileUpdateValues.push(now);
       profileUpdateValues.push(submission.company_id);
-      
+
       await db.prepare(`
         UPDATE company_profile SET ${profileUpdateFields.join(', ')} WHERE company_id = ?
       `).bind(...profileUpdateValues).run();
@@ -287,7 +282,11 @@ submissions.post('/submissions/:id/approve', async (c) => {
   
   return c.json<ApiResponse<any>>({
     success: true,
-    data: { message: 'Approved and merged' },
+    data: {
+      message: 'Approved and merged',
+      // Phase 3a: 適用結果サマリー（運用確認用）
+      apply_result: applyResult,
+    },
   });
 });
 
