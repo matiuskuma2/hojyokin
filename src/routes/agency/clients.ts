@@ -19,6 +19,7 @@ import { getCurrentUser } from '../../middleware/auth';
 import { getUserAgency, generateId, parseIntWithLimits, safeParseJsonBody, calculateEmployeeBand, LIMITS } from './_helpers';
 import { sendClientInviteEmail } from '../../services/email';
 import { CANONICAL_FACT_KEYS, FACT_KEY_LABELS_JA, normalizeBooleanFactValue, isCanonicalFactKey } from '../../lib/canonical-facts';
+import { calculateCompleteness, calculateSimpleCompleteness } from '../../lib/completeness';
 
 const clients = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -83,35 +84,19 @@ clients.get('/clients', async (c) => {
   // 凍結仕様: id を必ず返す + agency_client_id エイリアス追加（互換用）
   // + completeness_status を計算して返す（検索画面用）
   // id 欠損があればログ出力（データ健全性監視）
+  // Phase 2a: calculateSimpleCompleteness を共通関数から使用
   const safeClients = (clients?.results || []).map((client: Record<string, unknown>) => {
     if (!client.id) {
       console.warn('[Agency API] client.id is missing:', JSON.stringify(client));
     }
     
-    // completeness_status を計算
-    // 必須4項目: company_name, prefecture, industry, employee_count
-    const hasName = !!(client.company_name && String(client.company_name).trim());
-    const hasPrefecture = !!(client.prefecture && String(client.prefecture).trim());
-    const hasIndustry = !!(client.industry && String(client.industry).trim());
-    // employee_count は文字列（'1-5'等）または数値に対応
-    const empVal = client.employee_count;
-    const hasEmployeeCount = (() => {
-      if (!empVal) return false;
-      if (typeof empVal === 'string') {
-        const trimmed = empVal.trim();
-        return trimmed !== '' && trimmed !== '0';
-      }
-      return (empVal as number) > 0;
-    })();
-    
-    const isComplete = hasName && hasPrefecture && hasIndustry && hasEmployeeCount;
-    
-    // 不足フィールドのリスト
-    const missingFields: string[] = [];
-    if (!hasName) missingFields.push('会社名');
-    if (!hasPrefecture) missingFields.push('都道府県');
-    if (!hasIndustry) missingFields.push('業種');
-    if (!hasEmployeeCount) missingFields.push('従業員数');
+    // Phase 2a: 共通 completeness 関数を使用
+    const completeness = calculateSimpleCompleteness({
+      company_name: client.company_name,
+      prefecture: client.prefecture,
+      industry: client.industry,
+      employee_count: client.employee_count,
+    });
     
     return {
       ...client,
@@ -119,8 +104,8 @@ clients.get('/clients', async (c) => {
       agency_client_id: client.id,
       client_id: client.id,
       // completeness情報（検索画面用）
-      completeness_status: isComplete ? 'OK' : 'BLOCKED',
-      missing_fields: missingFields,
+      completeness_status: completeness.status,
+      missing_fields: completeness.missing_fields,
     };
   });
   
@@ -564,6 +549,17 @@ clients.get('/clients/import-template', async (c) => {
 
 /**
  * GET /api/agency/clients/:id - 顧客詳細
+ * 
+ * Phase 2a: 構造化レスポンス
+ * - client:       agency_clients のレコード
+ * - company:      companies のレコード
+ * - profile:      company_profile のレコード（なければ空オブジェクト）
+ * - facts:        chat_facts (subsidy_id=NULL) のオブジェクト
+ * - completeness: 共通 completeness 計算結果
+ * - links:        access_links（最新10件）
+ * - submissions:  intake_submissions（最新10件）
+ * - drafts:       application_drafts（最新10件）
+ * - sessions:     chat_sessions（最新10件）
  */
 clients.get('/clients/:id', async (c) => {
   const db = c.env.DB;
@@ -578,40 +574,119 @@ clients.get('/clients/:id', async (c) => {
     }, 403);
   }
   
-  const client = await db.prepare(`
-    SELECT 
-      ac.*,
-      c.*,
-      cp.*
-    FROM agency_clients ac
-    JOIN companies c ON ac.company_id = c.id
-    LEFT JOIN company_profile cp ON c.id = cp.company_id
-    WHERE ac.id = ? AND ac.agency_id = ?
+  // Step 1: agency_clients レコードを取得（所有確認含む）
+  const clientRecord = await db.prepare(`
+    SELECT id, agency_id, company_id, client_name, client_email, client_phone,
+           status, notes, tags_json, created_at, updated_at
+    FROM agency_clients
+    WHERE id = ? AND agency_id = ?
   `).bind(clientId, agencyInfo.agency.id).first();
   
-  if (!client) {
+  if (!clientRecord) {
     return c.json<ApiResponse<null>>({
       success: false,
       error: { code: 'NOT_FOUND', message: 'Client not found' },
     }, 404);
   }
   
-  // 関連データ取得
-  const [links, submissions, drafts, sessions] = await Promise.all([
+  const companyId = clientRecord.company_id as string;
+  
+  // Step 2: 3テーブル + 関連データを並列取得（パフォーマンス改善）
+  const [companyResult, profileResult, factsResult, links, submissions, drafts, sessions] = await Promise.all([
+    // companies テーブル
+    db.prepare(`
+      SELECT id, name, postal_code, prefecture, city,
+             industry_major, industry_minor, employee_count, employee_band,
+             capital, established_date, annual_revenue,
+             created_at, updated_at
+      FROM companies WHERE id = ?
+    `).bind(companyId).first(),
+    
+    // company_profile テーブル
+    db.prepare(`
+      SELECT *
+      FROM company_profile WHERE company_id = ?
+    `).bind(companyId).first(),
+    
+    // chat_facts テーブル（会社レベル、subsidy_id=NULL のみ）
+    db.prepare(`
+      SELECT fact_key, fact_value, source, confidence, updated_at, created_at
+      FROM chat_facts
+      WHERE company_id = ? AND subsidy_id IS NULL
+      ORDER BY fact_key ASC
+    `).bind(companyId).all<{
+      fact_key: string;
+      fact_value: string | null;
+      source: string | null;
+      confidence: number | null;
+      updated_at: string | null;
+      created_at: string | null;
+    }>(),
+    
+    // 関連データ
     db.prepare('SELECT * FROM access_links WHERE company_id = ? ORDER BY created_at DESC LIMIT 10')
-      .bind(client.company_id).all(),
+      .bind(companyId).all(),
     db.prepare('SELECT * FROM intake_submissions WHERE company_id = ? ORDER BY created_at DESC LIMIT 10')
-      .bind(client.company_id).all(),
+      .bind(companyId).all(),
     db.prepare('SELECT * FROM application_drafts WHERE company_id = ? ORDER BY created_at DESC LIMIT 10')
-      .bind(client.company_id).all(),
+      .bind(companyId).all(),
     db.prepare('SELECT * FROM chat_sessions WHERE company_id = ? ORDER BY created_at DESC LIMIT 10')
-      .bind(client.company_id).all(),
+      .bind(companyId).all(),
   ]);
   
+  // Step 3: facts をオブジェクト形式に変換
+  const factsObject: Record<string, string | boolean | null> = {};
+  const factsDetailed: Array<{
+    fact_key: string;
+    fact_value: string | null;
+    label_ja: string;
+    is_canonical: boolean;
+    source: string | null;
+    confidence: number | null;
+    updated_at: string | null;
+  }> = [];
+  
+  for (const row of (factsResult.results || [])) {
+    // オブジェクト形式（getCompanySSOT 互換）
+    if (row.fact_value === 'true') {
+      factsObject[row.fact_key] = true;
+    } else if (row.fact_value === 'false') {
+      factsObject[row.fact_key] = false;
+    } else {
+      factsObject[row.fact_key] = row.fact_value;
+    }
+    
+    // 詳細形式（UI表示用）
+    factsDetailed.push({
+      fact_key: row.fact_key,
+      fact_value: row.fact_value,
+      label_ja: FACT_KEY_LABELS_JA[row.fact_key as keyof typeof FACT_KEY_LABELS_JA] || row.fact_key,
+      is_canonical: isCanonicalFactKey(row.fact_key),
+      source: row.source,
+      confidence: row.confidence,
+      updated_at: row.updated_at,
+    });
+  }
+  
+  // Step 4: completeness 計算（共通関数使用）
+  const completeness = calculateCompleteness(
+    companyResult as Record<string, unknown> | null,
+    profileResult as Record<string, unknown> | null,
+  );
+  
+  // Step 5: 構造化レスポンスを返す
   return c.json<ApiResponse<any>>({
     success: true,
     data: {
-      client,
+      client: clientRecord,
+      company: companyResult || {},
+      profile: profileResult || {},
+      facts: {
+        values: factsObject,
+        details: factsDetailed,
+        canonical_keys: CANONICAL_FACT_KEYS,
+      },
+      completeness,
       links: links?.results || [],
       submissions: submissions?.results || [],
       drafts: drafts?.results || [],

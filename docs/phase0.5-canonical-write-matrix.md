@@ -527,5 +527,117 @@ Phase 1a の目標「士業が corporate と同等にフィールドを保存で
 
 ### 残課題
 
-- GET /clients/:id のカラム名衝突（Phase 1a からの継続、構造化レスポンスは別フェーズ）
-- completeness チェックに 0020 追加カラムを含めるか（Phase 2a で判断）
+- ~~GET /clients/:id のカラム名衝突~~ → **Phase 2a で解決**: 構造化レスポンスにより `client`, `company`, `profile` を分離
+- ~~completeness チェックに 0020 追加カラムを含めるか~~ → Phase 2a で共通関数 `completeness.ts` を導入。0020 カラムは現時点で含めない（必須/推奨/任意の3層で十分）
+
+---
+
+## 8. Phase 2a 実装完了記録
+
+> 実装日: 2026-03-12
+
+### 目的
+
+1. `GET /clients/:id` のカラム名衝突（Phase 1a の既知制約）を解消
+2. completeness 計算ロジックの共通関数化
+3. `GET /clients/:id` に facts と completeness を含む構造化レスポンスを返す
+
+### 変更ファイル
+
+- `src/lib/completeness.ts` — **新規**: completeness 計算の共通関数
+- `src/routes/agency/clients.ts` — `GET /clients/:id` の構造化、`GET /clients` の共通関数移行
+
+### 新規モジュール: `src/lib/completeness.ts`
+
+**エクスポート:**
+- `calculateCompleteness(company, profile)`: 完全な completeness 計算（必須4 + 推奨8 + 任意6 = 18項目）
+- `calculateSimpleCompleteness(company)`: 簡易 completeness（必須4項目のみ、OK/BLOCKED）
+- `REQUIRED_FIELDS`, `RECOMMENDED_FIELDS`, `OPTIONAL_FIELDS`: フィールド定義
+- `FIELD_WEIGHTS`: 重みマップ（profile.ts との後方互換）
+- 型: `CompletenessResult`, `SimpleCompletenessResult`
+
+### GET /clients/:id 構造化レスポンス
+
+**旧（Phase 1a）:**
+```json
+{
+  "client": { /* SELECT ac.*, c.*, cp.* の結合結果（カラム名衝突あり） */ },
+  "links": [...], "submissions": [...], "drafts": [...], "sessions": [...]
+}
+```
+
+**新（Phase 2a）:**
+```json
+{
+  "client":       { "id": "client-xxx", "company_id": "comp-xxx", ... },
+  "company":      { "id": "comp-xxx", "postal_code": "100-0001", ... },
+  "profile":      { "company_id": "comp-xxx", "postal_code": null, ... },
+  "facts": {
+    "values":        { "has_gbiz_id": true, "plans_wage_raise": true, ... },
+    "details":       [ { "fact_key": "...", "label_ja": "...", "is_canonical": true, ... } ],
+    "canonical_keys": ["has_gbiz_id", "is_invoice_registered", ...]
+  },
+  "completeness": {
+    "status": "OK",
+    "percentage": 84,
+    "ready_for_search": true,
+    "required":  { "total": 4, "filled": 4, "fields": { ... } },
+    "recommended": { "total": 8, "filled": 5, "fields": { ... } },
+    "optional":  { "total": 6, "filled": 0 },
+    "missing_required": [],
+    "missing_recommended": [ ... ],
+    "next_actions": [ ... ]
+  },
+  "links": [...], "submissions": [...], "drafts": [...], "sessions": [...]
+}
+```
+
+### カラム名衝突の解消
+
+| 衝突カラム | 旧（JOIN結果） | 新（構造化） |
+|-----------|--------------|------------|
+| `id` | company_profile.company_id が勝つ | `client.id`, `company.id` で分離 |
+| `postal_code` | company_profile(null) が companies を上書き | `company.postal_code`, `profile.postal_code` で分離 |
+| `created_at` | 最後のテーブルが勝つ | 各オブジェクトに独立して含む |
+| `updated_at` | 最後のテーブルが勝つ | 各オブジェクトに独立して含む |
+
+### GET /clients 一覧の変更
+
+- completeness 計算を `calculateSimpleCompleteness()` 共通関数に移行
+- レスポンス形式に変更なし（後方互換維持）
+
+### テスト結果
+
+| テスト | 結果 |
+|--------|------|
+| ビルド (TypeScript, 257 modules) | ✅ |
+| GET /clients/:id 構造化レスポンス（9キー: client/company/profile/facts/completeness/links/submissions/drafts/sessions） | ✅ |
+| client.id ≠ company.id（衝突解消） | ✅ |
+| company.postal_code ≠ profile.postal_code（衝突解消） | ✅ |
+| facts.values（3件: has_gbiz_id=true, plans_wage_raise=true, tax_arrears=false） | ✅ |
+| completeness OK（必須4項目充足、percentage=84） | ✅ |
+| completeness BLOCKED（必須項目欠落、ready_for_search=false、next_actions 正常） | ✅ |
+| GET /clients 一覧（共通関数経由、OK/BLOCKED 正常） | ✅ |
+
+### 設計判断
+
+| 判断 | 内容 | 理由 |
+|------|------|------|
+| 並列クエリ | 7つの DB クエリを Promise.all で実行 | パフォーマンス改善 |
+| SELECT 明示 | companies は列名を明示、profile は `SELECT *` | companies の列名衝突回避 + profile は全カラム返却が必要 |
+| facts 二重形式 | `values`（オブジェクト）と `details`（配列）を両方返す | values は SSOT 互換、details は UI 表示用 |
+| completeness 共通化 | `calculateCompleteness` + `calculateSimpleCompleteness` | 3箇所分散を解消。ただし既存 route（profile.ts, companies.ts）は未移行（後方互換） |
+
+### 既存 route への影響
+
+| route | 影響 |
+|-------|------|
+| profile.ts GET /completeness | 変更なし（独自の COMPLETENESS_FIELDS + 書類加点を維持） |
+| companies.ts GET /:id/completeness | 変更なし（独自の CompletenessResult 型を維持） |
+| suggestions.ts | 変更なし（SQL WHERE で必須4項目チェック） |
+
+### 残課題
+
+- `profile.ts` と `companies.ts` の completeness 計算を共通関数に移行（任意、後方互換維持のため低優先度）
+- 0020 追加カラムを completeness の recommended に追加するか（後日判断）
+- `GET /clients` 一覧にも facts/profile を含めるか（パフォーマンスとのトレードオフ、現時点では不要）
