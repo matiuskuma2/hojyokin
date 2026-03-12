@@ -64,9 +64,10 @@
 **Agency Phase 3a 成果 (2026-03-12)**:
 - **`src/lib/intake-field-mappings.ts` 新規作成**: intake_field_mappings テーブルをランタイム SSOT として読み取る共通モジュール
   - `getIntakeFieldMappings(db)`: DB 読み取り → フォールバック（warn/error ログ付き）→ DB+フォールバックマージ
+  - **設計方針**: DB が正本（最小マッピング 14 行）、fallback は互換拡張と不足補完（38 行、camelCase エイリアス含む）。DB と fallback は同一内容ではなく、DB 未登録の互換キーを fallback が補う
   - `splitPayloadByTarget(payload, mappings)`: payload を companies / company_profile に安全に仕分け
   - 安全装置: target_table allowlist (`companies`, `company_profile` のみ)、target_column allowlist、重複書き込み防止
-  - フォールバック定数: 38 マッピング（snake_case + camelCase エイリアス対応）
+  - フォールバック定数: 38 マッピング（snake_case + camelCase エイリアス対応）— DB 未登録の互換キーを補完する役割
 - **`submissions.ts` approve 経路をマッピング駆動に置き換え**: ハードコード fieldMapping / profileFieldMapping を完全撤去
   - DB 読み取り → フォールバック → 仕分け → UPDATE/INSERT の一貫パイプライン
   - approve レスポンスに `apply_result` サマリー追加（companies_updated, profile_updated, skipped_unmapped, skipped_invalid_target, mapping_source）

@@ -98,8 +98,15 @@ const ALLOWED_COLUMNS: Readonly<Record<string, ReadonlySet<string>>> = {
 // ============================================================
 // ハードコードフォールバック
 // 
-// submissions.ts L194-257 + 0020_agency_intake_extension.sql の INSERT 文と完全一致。
-// 0128_fix_intake_field_mapping_bug.sql の修正（annual_revenue → companies）も反映済み。
+// 設計方針:
+// - DB (intake_field_mappings) が正本（最小マッピング: 14行）
+// - このフォールバックは「互換拡張 + 不足補完」（38行）
+// - DB と fallback は同一内容ではない
+//   DB 未登録の camelCase エイリアスや profile extras を fallback が補う
+// 
+// ソース:
+// - submissions.ts 旧 L194-257 + 0020_agency_intake_extension.sql INSERT
+// - 0128_fix_intake_field_mapping_bug.sql の修正（annual_revenue → companies）反映済み
 // 
 // field_key は portal.ts のフォーム name 属性と一致する。
 // 加えて、camelCase バリアント（companyName, employeeCount 等）も
