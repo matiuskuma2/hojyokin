@@ -1438,21 +1438,25 @@ agencyPages.get('/agency/clients', (c) => {
 });
 
 /**
- * GET /agency/clients/:id - 顧客詳細
+ * GET /agency/clients/:id - 顧客詳細（5タブ版）
+ * タブ: 基本情報, 詳細プロフィール, 書類, ファクト, アクティビティ
  */
 agencyPages.get('/agency/clients/:id', (c) => {
   const clientId = c.req.param('id');
   
   const content = `
     <div class="space-y-6">
-      <!-- Header -->
+      <!-- Header with completeness badge -->
       <div class="flex items-center justify-between">
         <div class="flex items-center gap-4">
           <a href="/agency/clients" class="text-gray-500 hover:text-gray-700">
             <i class="fas fa-arrow-left text-xl"></i>
           </a>
           <div>
-            <h1 id="client-name" class="text-2xl font-bold text-gray-900 loading">読み込み中...</h1>
+            <div class="flex items-center gap-3">
+              <h1 id="client-name" class="text-2xl font-bold text-gray-900 loading">読み込み中...</h1>
+              <span id="completeness-badge" class="hidden px-2 py-1 text-xs rounded-full font-medium"></span>
+            </div>
             <p id="company-name" class="text-gray-600"></p>
           </div>
         </div>
@@ -1466,113 +1470,167 @@ agencyPages.get('/agency/clients/:id', (c) => {
         </div>
       </div>
       
-      <!-- Status Badge and Info -->
-      <div class="bg-white rounded-lg shadow p-6">
-        <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
-          <div>
-            <h3 class="text-sm font-medium text-gray-500 mb-2">ステータス</h3>
-            <span id="client-status" class="px-3 py-1 rounded-full text-sm font-medium bg-gray-100 text-gray-700">-</span>
-          </div>
-          <div>
-            <h3 class="text-sm font-medium text-gray-500 mb-2">担当者</h3>
-            <p id="contact-info" class="text-gray-900">-</p>
-          </div>
-          <div>
-            <h3 class="text-sm font-medium text-gray-500 mb-2">登録日</h3>
-            <p id="created-at" class="text-gray-900">-</p>
-          </div>
+      <!-- Completeness Progress Bar -->
+      <div id="completeness-section" class="hidden bg-white rounded-lg shadow p-4">
+        <div class="flex items-center justify-between mb-2">
+          <span class="text-sm font-medium text-gray-700">データ完備度</span>
+          <span id="completeness-pct" class="text-sm font-bold text-gray-900">0%</span>
         </div>
-        <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mt-6">
-          <div>
-            <h3 class="text-sm font-medium text-gray-500 mb-2">メールアドレス</h3>
-            <p id="client-email" class="text-gray-900">-</p>
-          </div>
-          <div>
-            <h3 class="text-sm font-medium text-gray-500 mb-2">電話番号</h3>
-            <p id="client-phone" class="text-gray-900">-</p>
-          </div>
-          <div>
-            <h3 class="text-sm font-medium text-gray-500 mb-2">地域・業種</h3>
-            <p id="area-industry" class="text-gray-900">-</p>
-          </div>
+        <div class="w-full bg-gray-200 rounded-full h-2.5">
+          <div id="completeness-bar" class="h-2.5 rounded-full transition-all duration-500" style="width: 0%"></div>
         </div>
+        <div id="completeness-actions" class="mt-2 text-sm text-gray-600"></div>
       </div>
       
-      <!-- Tabs -->
+      <!-- 5 Tabs -->
       <div class="border-b">
-        <nav class="flex gap-4">
-          <button onclick="showTab('profile')" class="tab-btn px-4 py-2 border-b-2 border-emerald-500 text-emerald-600 font-medium" data-tab="profile">
-            <i class="fas fa-user mr-2"></i>企業情報
+        <nav class="flex gap-1 overflow-x-auto">
+          <button onclick="showTab('basic')" class="tab-btn px-4 py-2 border-b-2 border-emerald-500 text-emerald-600 font-medium whitespace-nowrap" data-tab="basic">
+            <i class="fas fa-building mr-1"></i>基本情報
           </button>
-          <button onclick="showTab('submissions')" class="tab-btn px-4 py-2 border-b-2 border-transparent text-gray-500 hover:text-gray-700" data-tab="submissions">
-            <i class="fas fa-inbox mr-2"></i>入力履歴
+          <button onclick="showTab('profile')" class="tab-btn px-4 py-2 border-b-2 border-transparent text-gray-500 hover:text-gray-700 whitespace-nowrap" data-tab="profile">
+            <i class="fas fa-id-card mr-1"></i>詳細プロフィール
           </button>
-          <button onclick="showTab('drafts')" class="tab-btn px-4 py-2 border-b-2 border-transparent text-gray-500 hover:text-gray-700" data-tab="drafts">
-            <i class="fas fa-file-alt mr-2"></i>申請書ドラフト
+          <button onclick="showTab('documents')" class="tab-btn px-4 py-2 border-b-2 border-transparent text-gray-500 hover:text-gray-700 whitespace-nowrap" data-tab="documents">
+            <i class="fas fa-folder-open mr-1"></i>書類
+            <span id="doc-count-badge" class="hidden ml-1 bg-gray-200 text-gray-700 text-xs px-1.5 py-0.5 rounded-full"></span>
           </button>
-          <button onclick="showTab('links')" class="tab-btn px-4 py-2 border-b-2 border-transparent text-gray-500 hover:text-gray-700" data-tab="links">
-            <i class="fas fa-link mr-2"></i>発行リンク
+          <button onclick="showTab('facts')" class="tab-btn px-4 py-2 border-b-2 border-transparent text-gray-500 hover:text-gray-700 whitespace-nowrap" data-tab="facts">
+            <i class="fas fa-clipboard-check mr-1"></i>ファクト
+          </button>
+          <button onclick="showTab('activity')" class="tab-btn px-4 py-2 border-b-2 border-transparent text-gray-500 hover:text-gray-700 whitespace-nowrap" data-tab="activity">
+            <i class="fas fa-history mr-1"></i>アクティビティ
           </button>
         </nav>
       </div>
       
-      <!-- Tab Contents -->
-      <div id="tab-profile" class="tab-content">
+      <!-- ========== Tab 1: 基本情報 ========== -->
+      <div id="tab-basic" class="tab-content">
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          <div class="lg:col-span-2 space-y-6">
+            <div class="bg-white rounded-lg shadow p-6">
+              <div class="flex justify-between items-center mb-4">
+                <h3 class="text-lg font-semibold"><i class="fas fa-asterisk mr-1 text-red-500 text-xs"></i>必須企業情報</h3>
+                <button onclick="showCompanyEditModal()" class="text-sm bg-emerald-600 text-white px-3 py-1.5 rounded hover:bg-emerald-700">
+                  <i class="fas fa-edit mr-1"></i>編集
+                </button>
+              </div>
+              <div id="required-fields-content" class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <p class="text-gray-400 col-span-2">読み込み中...</p>
+              </div>
+            </div>
+            <div class="bg-white rounded-lg shadow p-6">
+              <h3 class="text-lg font-semibold mb-3"><i class="fas fa-sticky-note mr-2 text-yellow-500"></i>メモ</h3>
+              <textarea id="notes-input" rows="3" class="w-full border rounded-lg px-3 py-2" placeholder="顧客に関するメモを入力..."></textarea>
+              <div class="mt-2 flex justify-end">
+                <button onclick="saveNotes()" class="bg-emerald-600 text-white px-4 py-2 rounded-lg hover:bg-emerald-700 text-sm">
+                  <i class="fas fa-save mr-1"></i>保存
+                </button>
+              </div>
+            </div>
+          </div>
+          <div class="space-y-6">
+            <div class="bg-white rounded-lg shadow p-6">
+              <h3 class="text-sm font-semibold text-gray-600 mb-3">担当者</h3>
+              <div class="space-y-3">
+                <div><span class="text-xs text-gray-400">担当者名</span><p id="contact-name" class="text-gray-900 font-medium">-</p></div>
+                <div><span class="text-xs text-gray-400">メールアドレス</span><p id="client-email" class="text-gray-900">-</p></div>
+                <div><span class="text-xs text-gray-400">電話番号</span><p id="client-phone" class="text-gray-900">-</p></div>
+              </div>
+            </div>
+            <div class="bg-white rounded-lg shadow p-6">
+              <h3 class="text-sm font-semibold text-gray-600 mb-3">ステータス</h3>
+              <span id="client-status" class="px-3 py-1 rounded-full text-sm font-medium bg-gray-100 text-gray-700">-</span>
+              <div class="mt-3"><span class="text-xs text-gray-400">登録日</span><p id="created-at" class="text-gray-900 text-sm">-</p></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      
+      <!-- ========== Tab 2: 詳細プロフィール ========== -->
+      <div id="tab-profile" class="tab-content hidden">
         <div class="bg-white rounded-lg shadow p-6">
           <div class="flex justify-between items-center mb-4">
-            <h3 class="text-lg font-semibold">企業プロフィール</h3>
-            <button onclick="showCompanyEditModal()" class="text-sm bg-emerald-600 text-white px-3 py-1 rounded hover:bg-emerald-700">
-              <i class="fas fa-edit mr-1"></i>企業情報を編集
+            <h3 class="text-lg font-semibold"><i class="fas fa-id-card mr-2 text-blue-500"></i>詳細プロフィール</h3>
+            <button onclick="showCompanyEditModal()" class="text-sm bg-emerald-600 text-white px-3 py-1.5 rounded hover:bg-emerald-700">
+              <i class="fas fa-edit mr-1"></i>編集
             </button>
+          </div>
+          <div id="profile-completeness" class="mb-4 p-3 rounded-lg bg-gray-50 border hidden">
+            <div class="flex items-center gap-2 text-sm">
+              <i id="profile-completeness-icon" class="fas fa-info-circle text-blue-500"></i>
+              <span id="profile-completeness-text" class="text-gray-700"></span>
+            </div>
           </div>
           <div id="profile-content" class="text-gray-500">読み込み中...</div>
         </div>
       </div>
       
-      <div id="tab-submissions" class="tab-content hidden">
-        <div class="bg-white rounded-lg shadow">
-          <div class="p-4 border-b">
-            <h3 class="text-lg font-semibold">入力履歴</h3>
-          </div>
-          <div id="submissions-list" class="divide-y">
-            <p class="p-4 text-gray-500">読み込み中...</p>
-          </div>
-        </div>
-      </div>
-      
-      <div id="tab-drafts" class="tab-content hidden">
-        <div class="bg-white rounded-lg shadow">
-          <div class="p-4 border-b">
-            <h3 class="text-lg font-semibold">申請書ドラフト</h3>
-          </div>
-          <div id="drafts-list" class="divide-y">
-            <p class="p-4 text-gray-500">読み込み中...</p>
-          </div>
-        </div>
-      </div>
-      
-      <div id="tab-links" class="tab-content hidden">
+      <!-- ========== Tab 3: 書類 ========== -->
+      <div id="tab-documents" class="tab-content hidden">
         <div class="bg-white rounded-lg shadow">
           <div class="p-4 border-b flex justify-between items-center">
-            <h3 class="text-lg font-semibold">発行リンク</h3>
-            <button onclick="issueIntakeLink()" class="text-sm bg-emerald-600 text-white px-3 py-1 rounded hover:bg-emerald-700">
-              <i class="fas fa-plus mr-1"></i>新規発行
+            <h3 class="text-lg font-semibold"><i class="fas fa-folder-open mr-2 text-amber-500"></i>書類管理</h3>
+            <button onclick="showUploadModal()" class="text-sm bg-emerald-600 text-white px-3 py-1.5 rounded hover:bg-emerald-700">
+              <i class="fas fa-upload mr-1"></i>書類アップロード
             </button>
           </div>
-          <div id="links-list" class="divide-y">
-            <p class="p-4 text-gray-500">読み込み中...</p>
+          <div id="documents-list" class="divide-y">
+            <p class="p-6 text-gray-500 text-center">読み込み中...</p>
           </div>
         </div>
       </div>
       
-      <!-- Notes Section -->
-      <div class="bg-white rounded-lg shadow p-6">
-        <h3 class="text-lg font-semibold mb-4">メモ</h3>
-        <textarea id="notes-input" rows="3" class="w-full border rounded-lg px-3 py-2" placeholder="顧客に関するメモを入力..."></textarea>
-        <div class="mt-2 flex justify-end">
-          <button onclick="saveNotes()" class="bg-emerald-600 text-white px-4 py-2 rounded-lg hover:bg-emerald-700">
-            <i class="fas fa-save mr-2"></i>保存
-          </button>
+      <!-- ========== Tab 4: ファクト ========== -->
+      <div id="tab-facts" class="tab-content hidden">
+        <div class="bg-white rounded-lg shadow p-6">
+          <div class="flex justify-between items-center mb-4">
+            <div>
+              <h3 class="text-lg font-semibold"><i class="fas fa-clipboard-check mr-2 text-purple-500"></i>ファクト情報</h3>
+              <p class="text-sm text-gray-500 mt-1">補助金適格性に関する企業情報</p>
+            </div>
+            <button onclick="toggleFactEditMode()" id="fact-edit-btn" class="text-sm bg-white border border-gray-300 text-gray-700 px-3 py-1.5 rounded hover:bg-gray-50">
+              <i class="fas fa-edit mr-1"></i>編集
+            </button>
+          </div>
+          <div id="facts-content" class="text-gray-500">読み込み中...</div>
+          <div id="facts-save-bar" class="hidden mt-4 flex justify-end gap-2 pt-4 border-t">
+            <button onclick="cancelFactEdit()" class="border border-gray-300 text-gray-700 px-4 py-2 rounded-lg hover:bg-gray-50 text-sm">キャンセル</button>
+            <button onclick="saveFactEdits()" id="facts-save-btn" class="bg-emerald-600 text-white px-4 py-2 rounded-lg hover:bg-emerald-700 text-sm"><i class="fas fa-save mr-1"></i>保存</button>
+          </div>
+        </div>
+      </div>
+      
+      <!-- ========== Tab 5: アクティビティ ========== -->
+      <div id="tab-activity" class="tab-content hidden">
+        <div class="space-y-6">
+          <div class="flex gap-2 flex-wrap">
+            <button onclick="showActivitySub('submissions')" class="activity-sub-btn px-3 py-1.5 text-sm rounded-full bg-emerald-100 text-emerald-700 font-medium" data-sub="submissions"><i class="fas fa-inbox mr-1"></i>入力履歴</button>
+            <button onclick="showActivitySub('drafts')" class="activity-sub-btn px-3 py-1.5 text-sm rounded-full bg-gray-100 text-gray-600" data-sub="drafts"><i class="fas fa-file-alt mr-1"></i>申請書ドラフト</button>
+            <button onclick="showActivitySub('links')" class="activity-sub-btn px-3 py-1.5 text-sm rounded-full bg-gray-100 text-gray-600" data-sub="links"><i class="fas fa-link mr-1"></i>発行リンク</button>
+            <button onclick="showActivitySub('sessions')" class="activity-sub-btn px-3 py-1.5 text-sm rounded-full bg-gray-100 text-gray-600" data-sub="sessions"><i class="fas fa-comments mr-1"></i>チャット</button>
+          </div>
+          <div class="bg-white rounded-lg shadow">
+            <div id="activity-submissions" class="activity-sub-content">
+              <div class="p-4 border-b"><h3 class="text-lg font-semibold">入力履歴</h3></div>
+              <div id="submissions-list" class="divide-y"><p class="p-4 text-gray-500">読み込み中...</p></div>
+            </div>
+            <div id="activity-drafts" class="activity-sub-content hidden">
+              <div class="p-4 border-b"><h3 class="text-lg font-semibold">申請書ドラフト</h3></div>
+              <div id="drafts-list" class="divide-y"><p class="p-4 text-gray-500">読み込み中...</p></div>
+            </div>
+            <div id="activity-links" class="activity-sub-content hidden">
+              <div class="p-4 border-b flex justify-between items-center">
+                <h3 class="text-lg font-semibold">発行リンク</h3>
+                <button onclick="issueIntakeLink()" class="text-sm bg-emerald-600 text-white px-3 py-1 rounded hover:bg-emerald-700"><i class="fas fa-plus mr-1"></i>新規発行</button>
+              </div>
+              <div id="links-list" class="divide-y"><p class="p-4 text-gray-500">読み込み中...</p></div>
+            </div>
+            <div id="activity-sessions" class="activity-sub-content hidden">
+              <div class="p-4 border-b"><h3 class="text-lg font-semibold">チャットセッション</h3></div>
+              <div id="sessions-list" class="divide-y"><p class="p-4 text-gray-500">読み込み中...</p></div>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -1606,12 +1664,8 @@ agencyPages.get('/agency/clients/:id', (c) => {
               </select>
             </div>
             <div class="flex gap-2 pt-4">
-              <button type="button" onclick="hideEditModal()" class="flex-1 border border-gray-300 text-gray-700 px-4 py-2 rounded-lg hover:bg-gray-50">
-                キャンセル
-              </button>
-              <button type="submit" class="flex-1 bg-emerald-600 text-white px-4 py-2 rounded-lg hover:bg-emerald-700">
-                保存
-              </button>
+              <button type="button" onclick="hideEditModal()" class="flex-1 border border-gray-300 text-gray-700 px-4 py-2 rounded-lg hover:bg-gray-50">キャンセル</button>
+              <button type="submit" class="flex-1 bg-emerald-600 text-white px-4 py-2 rounded-lg hover:bg-emerald-700">保存</button>
             </div>
           </form>
         </div>
@@ -1624,7 +1678,6 @@ agencyPages.get('/agency/clients/:id', (c) => {
         <div class="p-6">
           <h2 class="text-xl font-bold mb-4"><i class="fas fa-building mr-2"></i>企業情報を編集</h2>
           <form id="company-edit-form" class="space-y-6">
-            <!-- 基本情報 -->
             <div class="border-b pb-4">
               <h3 class="text-sm font-semibold text-gray-600 mb-3"><i class="fas fa-info-circle mr-1"></i>基本情報（必須）</h3>
               <div class="grid grid-cols-2 gap-4">
@@ -1634,9 +1687,7 @@ agencyPages.get('/agency/clients/:id', (c) => {
                 </div>
                 <div>
                   <label class="block text-sm font-medium text-gray-700 mb-1">都道府県 <span class="text-red-500">*</span></label>
-                  <select name="prefecture" id="edit-company-prefecture" required class="w-full border rounded-lg px-3 py-2">
-                    <option value="">選択してください</option>
-                  </select>
+                  <select name="prefecture" id="edit-company-prefecture" required class="w-full border rounded-lg px-3 py-2"><option value="">選択してください</option></select>
                 </div>
                 <div>
                   <label class="block text-sm font-medium text-gray-700 mb-1">市区町村</label>
@@ -1644,9 +1695,7 @@ agencyPages.get('/agency/clients/:id', (c) => {
                 </div>
                 <div>
                   <label class="block text-sm font-medium text-gray-700 mb-1">業種 <span class="text-red-500">*</span></label>
-                  <select name="industry_major" id="edit-company-industry" required class="w-full border rounded-lg px-3 py-2">
-                    <option value="">選択してください</option>
-                  </select>
+                  <select name="industry_major" id="edit-company-industry" required class="w-full border rounded-lg px-3 py-2"><option value="">選択してください</option></select>
                 </div>
                 <div>
                   <label class="block text-sm font-medium text-gray-700 mb-1">従業員数 <span class="text-red-500">*</span></label>
@@ -1654,8 +1703,6 @@ agencyPages.get('/agency/clients/:id', (c) => {
                 </div>
               </div>
             </div>
-            
-            <!-- 追加情報 -->
             <div class="border-b pb-4">
               <h3 class="text-sm font-semibold text-gray-600 mb-3"><i class="fas fa-chart-line mr-1"></i>追加情報（推奨）</h3>
               <div class="grid grid-cols-2 gap-4">
@@ -1672,8 +1719,30 @@ agencyPages.get('/agency/clients/:id', (c) => {
                   <input type="number" name="annual_revenue" id="edit-company-revenue" class="w-full border rounded-lg px-3 py-2" placeholder="例: 50000">
                 </div>
                 <div>
+                  <label class="block text-sm font-medium text-gray-700 mb-1">法人形態</label>
+                  <select name="corp_type" id="edit-company-corptype" class="w-full border rounded-lg px-3 py-2">
+                    <option value="">選択してください</option>
+                    <option value="株式会社">株式会社</option>
+                    <option value="合同会社">合同会社</option>
+                    <option value="合名会社">合名会社</option>
+                    <option value="合資会社">合資会社</option>
+                    <option value="個人事業主">個人事業主</option>
+                    <option value="NPO法人">NPO法人</option>
+                    <option value="社団法人">社団法人</option>
+                    <option value="その他">その他</option>
+                  </select>
+                </div>
+                <div>
                   <label class="block text-sm font-medium text-gray-700 mb-1">代表者名</label>
                   <input type="text" name="representative_name" id="edit-company-rep" class="w-full border rounded-lg px-3 py-2">
+                </div>
+                <div>
+                  <label class="block text-sm font-medium text-gray-700 mb-1">直近期の利益</label>
+                  <select name="is_profitable" id="edit-company-profitable" class="w-full border rounded-lg px-3 py-2">
+                    <option value="">選択してください</option>
+                    <option value="1">黒字</option>
+                    <option value="0">赤字</option>
+                  </select>
                 </div>
                 <div class="col-span-2">
                   <label class="block text-sm font-medium text-gray-700 mb-1">Webサイト</label>
@@ -1685,16 +1754,61 @@ agencyPages.get('/agency/clients/:id', (c) => {
                 </div>
               </div>
             </div>
-            
             <div class="flex gap-2 pt-2">
-              <button type="button" onclick="hideCompanyEditModal()" class="flex-1 border border-gray-300 text-gray-700 px-4 py-2 rounded-lg hover:bg-gray-50">
-                キャンセル
-              </button>
-              <button type="submit" class="flex-1 bg-emerald-600 text-white px-4 py-2 rounded-lg hover:bg-emerald-700">
-                <i class="fas fa-save mr-1"></i>保存
-              </button>
+              <button type="button" onclick="hideCompanyEditModal()" class="flex-1 border border-gray-300 text-gray-700 px-4 py-2 rounded-lg hover:bg-gray-50">キャンセル</button>
+              <button type="submit" class="flex-1 bg-emerald-600 text-white px-4 py-2 rounded-lg hover:bg-emerald-700"><i class="fas fa-save mr-1"></i>保存</button>
             </div>
           </form>
+        </div>
+      </div>
+    </div>
+    
+    <!-- Document Upload Modal -->
+    <div id="upload-modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center hidden z-50">
+      <div class="bg-white rounded-lg shadow-xl w-full max-w-lg mx-4">
+        <div class="p-6">
+          <h2 class="text-xl font-bold mb-4"><i class="fas fa-upload mr-2"></i>書類アップロード</h2>
+          <form id="upload-form" class="space-y-4">
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">書類タイプ <span class="text-red-500">*</span></label>
+              <select name="doc_type" id="upload-doc-type" required class="w-full border rounded-lg px-3 py-2">
+                <option value="">選択してください</option>
+                <option value="corp_registry">登記簿謄本</option>
+                <option value="financials">決算書</option>
+                <option value="tax_return">確定申告書</option>
+                <option value="business_plan">事業計画書</option>
+                <option value="other">その他</option>
+              </select>
+            </div>
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">ファイル <span class="text-red-500">*</span></label>
+              <input type="file" name="file" id="upload-file" required accept=".pdf,.jpg,.jpeg,.png,.xlsx,.xls,.csv,.doc,.docx" class="w-full border rounded-lg px-3 py-2">
+              <p class="text-xs text-gray-500 mt-1">PDF, 画像, Excel, Word (最大10MB)</p>
+            </div>
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">メモ</label>
+              <input type="text" name="notes" id="upload-notes" class="w-full border rounded-lg px-3 py-2" placeholder="書類に関するメモ">
+            </div>
+            <div class="flex gap-2 pt-4">
+              <button type="button" onclick="hideUploadModal()" class="flex-1 border border-gray-300 text-gray-700 px-4 py-2 rounded-lg hover:bg-gray-50">キャンセル</button>
+              <button type="submit" id="upload-submit-btn" class="flex-1 bg-emerald-600 text-white px-4 py-2 rounded-lg hover:bg-emerald-700"><i class="fas fa-upload mr-1"></i>アップロード</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+    
+    <!-- Extraction Result Modal -->
+    <div id="extraction-modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center hidden z-50">
+      <div class="bg-white rounded-lg shadow-xl w-full max-w-3xl mx-4 max-h-[90vh] overflow-y-auto">
+        <div class="p-6">
+          <h2 class="text-xl font-bold mb-4"><i class="fas fa-magic mr-2"></i>抽出結果</h2>
+          <div id="extraction-content">読み込み中...</div>
+          <div class="flex gap-2 pt-4 border-t mt-4">
+            <button type="button" onclick="hideExtractionModal()" class="flex-1 border border-gray-300 text-gray-700 px-4 py-2 rounded-lg hover:bg-gray-50">閉じる</button>
+            <button type="button" onclick="applyExtraction('fill_empty')" id="apply-fill-btn" class="flex-1 bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700"><i class="fas fa-plus-circle mr-1"></i>空欄のみ反映</button>
+            <button type="button" onclick="applyExtraction('overwrite')" id="apply-overwrite-btn" class="flex-1 bg-amber-600 text-white px-4 py-2 rounded-lg hover:bg-amber-700"><i class="fas fa-sync mr-1"></i>全て上書き</button>
+          </div>
         </div>
       </div>
     </div>
@@ -1702,355 +1816,22 @@ agencyPages.get('/agency/clients/:id', (c) => {
     <script>
       const clientId = '${clientId}';
       let clientData = null;
+      let factsEditMode = false;
+      let currentExtractionDocId = null;
       
-      async function loadClientDetail() {
-        const data = await apiCall('/api/agency/clients/' + clientId);
-        
-        if (!data.success) {
-          alert('顧客情報の取得に失敗しました: ' + (data.error?.message || '不明なエラー'));
-          window.location.href = '/agency/clients';
-          return;
-        }
-        
-        clientData = data.data;
-        renderClientDetail();
-      }
-      
-      function renderClientDetail() {
-        const client = clientData.client;
-        
-        // Header
-        document.getElementById('client-name').textContent = client.client_name || client.name || '名前未設定';
-        document.getElementById('client-name').classList.remove('loading');
-        document.getElementById('company-name').textContent = client.name || '';
-        
-        // Status
-        const statusEl = document.getElementById('client-status');
-        const statusMap = { active: ['アクティブ', 'bg-emerald-100 text-emerald-700'], paused: ['一時停止', 'bg-yellow-100 text-yellow-700'], archived: ['アーカイブ', 'bg-gray-100 text-gray-700'] };
-        const [statusText, statusClass] = statusMap[client.status] || ['不明', 'bg-gray-100 text-gray-700'];
-        statusEl.textContent = statusText;
-        statusEl.className = 'px-3 py-1 rounded-full text-sm font-medium ' + statusClass;
-        
-        // Info
-        document.getElementById('contact-info').textContent = client.client_name || '-';
-        document.getElementById('created-at').textContent = client.created_at ? new Date(client.created_at).toLocaleDateString('ja-JP') : '-';
-        document.getElementById('client-email').textContent = client.client_email || '-';
-        document.getElementById('client-phone').textContent = client.client_phone || '-';
-        document.getElementById('area-industry').textContent = [client.prefecture, client.industry_major || client.industry].filter(Boolean).join(' / ') || '-';
-        
-        // Notes
-        document.getElementById('notes-input').value = client.notes || '';
-        
-        // Profile tab
-        renderProfile();
-        
-        // Submissions tab
-        renderSubmissions();
-        
-        // Drafts tab
-        renderDrafts();
-        
-        // Links tab
-        renderLinks();
-      }
-      
-      function renderProfile() {
-        const client = clientData.client;
-        
-        // 都道府県コードを名前に変換
-        const prefMap = {
-          '01': '北海道', '02': '青森県', '03': '岩手県', '04': '宮城県', '05': '秋田県',
-          '06': '山形県', '07': '福島県', '08': '茨城県', '09': '栃木県', '10': '群馬県',
-          '11': '埼玉県', '12': '千葉県', '13': '東京都', '14': '神奈川県', '15': '新潟県',
-          '16': '富山県', '17': '石川県', '18': '福井県', '19': '山梨県', '20': '長野県',
-          '21': '岐阜県', '22': '静岡県', '23': '愛知県', '24': '三重県', '25': '滋賀県',
-          '26': '京都府', '27': '大阪府', '28': '兵庫県', '29': '奈良県', '30': '和歌山県',
-          '31': '鳥取県', '32': '島根県', '33': '岡山県', '34': '広島県', '35': '山口県',
-          '36': '徳島県', '37': '香川県', '38': '愛媛県', '39': '高知県', '40': '福岡県',
-          '41': '佐賀県', '42': '長崎県', '43': '熊本県', '44': '大分県', '45': '宮崎県',
-          '46': '鹿児島県', '47': '沖縄県'
-        };
-        const prefName = prefMap[client.prefecture] || client.prefecture;
-        
-        // 金額フォーマット
-        const formatMoney = (val) => {
-          if (!val) return null;
-          return Number(val).toLocaleString() + '万円';
-        };
-        
-        // 必須情報（companies テーブルから）
-        const requiredFields = [
-          { label: '会社名', value: client.name, required: true },
-          { label: '所在地', value: [prefName, client.city].filter(Boolean).join(' '), required: true },
-          { label: '業種', value: client.industry_major || client.industry, required: true },
-          { label: '従業員数', value: client.employee_count ? client.employee_count + '名' : null, required: true },
-        ];
-        
-        // 追加情報
-        const additionalFields = [
-          { label: '資本金', value: formatMoney(client.capital) },
-          { label: '設立年月', value: client.established_date },
-          { label: '直近売上高', value: formatMoney(client.annual_revenue) },
-          { label: '代表者名', value: client.representative_name },
-          { label: 'Webサイト', value: client.website_url, isLink: true },
-          { label: '事業概要', value: client.business_summary, fullWidth: true },
-        ];
-        
-        // 詳細情報（company_profile から）
-        const detailFields = [
-          { label: '法人番号', value: client.corp_number },
-          { label: '法人形態', value: client.corp_type },
-          { label: '代表者肩書', value: client.representative_title },
-          { label: '連絡先メール', value: client.contact_email },
-          { label: '連絡先電話', value: client.contact_phone },
-          { label: '主要製品/サービス', value: client.main_products },
-          { label: '主要顧客', value: client.main_customers },
-          { label: '競合優位性', value: client.competitive_advantage },
-        ];
-        
-        // 必須情報の充足チェック
-        const missingRequired = requiredFields.filter(f => !f.value);
-        
-        let html = '';
-        
-        // 必須情報不足の警告
-        if (missingRequired.length > 0) {
-          html += '<div class="bg-yellow-50 border border-yellow-300 rounded-lg p-4 mb-6">' +
-            '<p class="text-yellow-800 font-semibold mb-2"><i class="fas fa-exclamation-triangle mr-2"></i>必須情報が不足しています</p>' +
-            '<p class="text-yellow-700 text-sm">補助金検索の精度向上のため、以下の情報を入力してください:</p>' +
-            '<ul class="list-disc list-inside text-yellow-700 text-sm mt-2">' +
-            missingRequired.map(f => '<li>' + f.label + '</li>').join('') +
-            '</ul></div>';
-        }
-        
-        // 必須情報セクション
-        html += '<div class="mb-6"><h4 class="text-sm font-semibold text-gray-600 mb-3 border-b pb-2"><i class="fas fa-asterisk mr-1 text-red-500"></i>基本情報</h4>' +
-          '<div class="grid grid-cols-1 md:grid-cols-2 gap-4">' +
-          requiredFields.map(f => 
-            '<div><span class="text-sm text-gray-500">' + f.label + (f.required ? ' <span class="text-red-500">*</span>' : '') + '</span>' +
-            '<p class="text-gray-900">' + (f.value || '<span class="text-red-400">未入力</span>') + '</p></div>'
-          ).join('') + '</div></div>';
-        
-        // 追加情報セクション
-        const filledAdditional = additionalFields.filter(f => f.value);
-        if (filledAdditional.length > 0) {
-          html += '<div class="mb-6"><h4 class="text-sm font-semibold text-gray-600 mb-3 border-b pb-2"><i class="fas fa-chart-line mr-1"></i>追加情報</h4>' +
-            '<div class="grid grid-cols-1 md:grid-cols-2 gap-4">' +
-            filledAdditional.map(f => {
-              let val = f.value;
-              if (f.isLink && val) {
-                val = '<a href="' + val + '" target="_blank" class="text-blue-600 hover:underline">' + val + '</a>';
-              }
-              return '<div class="' + (f.fullWidth ? 'col-span-2' : '') + '"><span class="text-sm text-gray-500">' + f.label + '</span>' +
-                '<p class="text-gray-900">' + val + '</p></div>';
-            }).join('') + '</div></div>';
-        }
-        
-        // 詳細情報セクション
-        const filledDetail = detailFields.filter(f => f.value);
-        if (filledDetail.length > 0) {
-          html += '<div><h4 class="text-sm font-semibold text-gray-600 mb-3 border-b pb-2"><i class="fas fa-info-circle mr-1"></i>詳細情報</h4>' +
-            '<div class="grid grid-cols-1 md:grid-cols-2 gap-4">' +
-            filledDetail.map(f => 
-              '<div><span class="text-sm text-gray-500">' + f.label + '</span><p class="text-gray-900">' + f.value + '</p></div>'
-            ).join('') + '</div></div>';
-        }
-        
-        document.getElementById('profile-content').innerHTML = html || '<p class="text-gray-500">企業情報を入力してください。</p>';
-      }
-      
-      function renderSubmissions() {
-        const submissions = clientData.submissions || [];
-        const container = document.getElementById('submissions-list');
-        
-        if (submissions.length === 0) {
-          container.innerHTML = '<p class="p-4 text-gray-500">入力履歴がありません</p>';
-          return;
-        }
-        
-        container.innerHTML = submissions.map(s => \`
-          <div class="p-4 hover:bg-gray-50">
-            <div class="flex justify-between items-start">
-              <div>
-                <p class="font-medium">\${s.form_type || '一般入力'}</p>
-                <p class="text-sm text-gray-500">\${new Date(s.created_at).toLocaleString('ja-JP')}</p>
-              </div>
-              <span class="px-2 py-1 text-xs rounded-full \${
-                s.status === 'approved' ? 'bg-emerald-100 text-emerald-700' :
-                s.status === 'pending' ? 'bg-yellow-100 text-yellow-700' :
-                'bg-gray-100 text-gray-700'
-              }">\${s.status === 'approved' ? '承認済' : s.status === 'pending' ? '確認待ち' : s.status}</span>
-            </div>
-          </div>
-        \`).join('');
-      }
-      
-      function renderDrafts() {
-        const drafts = clientData.drafts || [];
-        const container = document.getElementById('drafts-list');
-        
-        if (drafts.length === 0) {
-          container.innerHTML = '<p class="p-4 text-gray-500">申請書ドラフトがありません</p>';
-          return;
-        }
-        
-        container.innerHTML = drafts.map(d => \`
-          <div class="p-4 hover:bg-gray-50 cursor-pointer">
-            <div class="flex justify-between items-start">
-              <div>
-                <p class="font-medium">\${d.title || '無題のドラフト'}</p>
-                <p class="text-sm text-gray-500">更新: \${new Date(d.updated_at).toLocaleString('ja-JP')}</p>
-              </div>
-              <span class="px-2 py-1 text-xs rounded-full bg-blue-100 text-blue-700">\${d.status || '作成中'}</span>
-            </div>
-          </div>
-        \`).join('');
-      }
-      
-      function renderLinks() {
-        const links = clientData.links || [];
-        const container = document.getElementById('links-list');
-        
-        if (links.length === 0) {
-          container.innerHTML = '<p class="p-4 text-gray-500">発行リンクがありません</p>';
-          return;
-        }
-        
-        const now = new Date();
-        container.innerHTML = links.map(l => {
-          const expiresAt = new Date(l.expires_at);
-          const isExpired = expiresAt < now;
-          const isRevoked = l.revoked_at;
-          const status = isRevoked ? '無効化済' : isExpired ? '期限切れ' : '有効';
-          const statusClass = isRevoked || isExpired ? 'bg-gray-100 text-gray-700' : 'bg-emerald-100 text-emerald-700';
-          
-          return \`
-            <div class="p-4 hover:bg-gray-50">
-              <div class="flex justify-between items-start">
-                <div>
-                  <p class="font-medium">\${l.type === 'intake' ? '入力リンク' : l.type}</p>
-                  <p class="text-sm text-gray-500">発行: \${new Date(l.created_at).toLocaleString('ja-JP')}</p>
-                  <p class="text-sm text-gray-500">期限: \${expiresAt.toLocaleString('ja-JP')}</p>
-                  <p class="text-sm text-gray-400">使用回数: \${l.used_count || 0} / \${l.max_uses || '無制限'}</p>
-                </div>
-                <span class="px-2 py-1 text-xs rounded-full \${statusClass}">\${status}</span>
-              </div>
-            </div>
-          \`;
-        }).join('');
-      }
-      
-      function showTab(tabName) {
-        // Hide all tabs
-        document.querySelectorAll('.tab-content').forEach(el => el.classList.add('hidden'));
-        document.querySelectorAll('.tab-btn').forEach(el => {
-          el.classList.remove('border-emerald-500', 'text-emerald-600');
-          el.classList.add('border-transparent', 'text-gray-500');
-        });
-        
-        // Show selected tab
-        document.getElementById('tab-' + tabName).classList.remove('hidden');
-        document.querySelector('[data-tab="' + tabName + '"]').classList.add('border-emerald-500', 'text-emerald-600');
-        document.querySelector('[data-tab="' + tabName + '"]').classList.remove('border-transparent', 'text-gray-500');
-      }
-      
-      async function issueIntakeLink() {
-        if (!clientData) return;
-        
-        const companyId = clientData.client.company_id;
-        const data = await apiCall('/api/agency/links', {
-          method: 'POST',
-          body: JSON.stringify({ companyId, type: 'intake', expiresInDays: 7 }),
-        });
-        
-        if (data.success) {
-          const url = data.data.url;
-          await navigator.clipboard.writeText(url);
-          alert('入力リンクをクリップボードにコピーしました:\\n' + url);
-          loadClientDetail(); // Reload to show new link
-        } else {
-          alert('エラー: ' + (data.error?.message || '不明なエラー'));
-        }
-      }
-      
-      async function saveNotes() {
-        const notes = document.getElementById('notes-input').value;
-        
-        const data = await apiCall('/api/agency/clients/' + clientId, {
-          method: 'PUT',
-          body: JSON.stringify({ notes }),
-        });
-        
-        if (data.success) {
-          alert('メモを保存しました');
-        } else {
-          alert('エラー: ' + (data.error?.message || '保存に失敗しました'));
-        }
-      }
-      
-      function showEditModal() {
-        if (!clientData) return;
-        const client = clientData.client;
-        
-        document.getElementById('edit-client-name').value = client.client_name || '';
-        document.getElementById('edit-client-email').value = client.client_email || '';
-        document.getElementById('edit-client-phone').value = client.client_phone || '';
-        document.getElementById('edit-status').value = client.status || 'active';
-        
-        document.getElementById('edit-modal').classList.remove('hidden');
-      }
-      
-      function hideEditModal() {
-        document.getElementById('edit-modal').classList.add('hidden');
-      }
-      
-      document.getElementById('edit-form').addEventListener('submit', async (e) => {
-        e.preventDefault();
-        const form = e.target;
-        
-        const data = await apiCall('/api/agency/clients/' + clientId, {
-          method: 'PUT',
-          body: JSON.stringify({
-            clientName: form.clientName.value,
-            clientEmail: form.clientEmail.value,
-            clientPhone: form.clientPhone.value,
-            status: form.status.value,
-          }),
-        });
-        
-        if (data.success) {
-          hideEditModal();
-          loadClientDetail();
-        } else {
-          alert('エラー: ' + (data.error?.message || '更新に失敗しました'));
-        }
-      });
-      
-      // ========================================
-      // 企業情報編集機能
-      // ========================================
-      
-      // 都道府県リスト
-      const prefectures = [
-        {code: '01', name: '北海道'}, {code: '02', name: '青森県'}, {code: '03', name: '岩手県'},
-        {code: '04', name: '宮城県'}, {code: '05', name: '秋田県'}, {code: '06', name: '山形県'},
-        {code: '07', name: '福島県'}, {code: '08', name: '茨城県'}, {code: '09', name: '栃木県'},
-        {code: '10', name: '群馬県'}, {code: '11', name: '埼玉県'}, {code: '12', name: '千葉県'},
-        {code: '13', name: '東京都'}, {code: '14', name: '神奈川県'}, {code: '15', name: '新潟県'},
-        {code: '16', name: '富山県'}, {code: '17', name: '石川県'}, {code: '18', name: '福井県'},
-        {code: '19', name: '山梨県'}, {code: '20', name: '長野県'}, {code: '21', name: '岐阜県'},
-        {code: '22', name: '静岡県'}, {code: '23', name: '愛知県'}, {code: '24', name: '三重県'},
-        {code: '25', name: '滋賀県'}, {code: '26', name: '京都府'}, {code: '27', name: '大阪府'},
-        {code: '28', name: '兵庫県'}, {code: '29', name: '奈良県'}, {code: '30', name: '和歌山県'},
-        {code: '31', name: '鳥取県'}, {code: '32', name: '島根県'}, {code: '33', name: '岡山県'},
-        {code: '34', name: '広島県'}, {code: '35', name: '山口県'}, {code: '36', name: '徳島県'},
-        {code: '37', name: '香川県'}, {code: '38', name: '愛媛県'}, {code: '39', name: '高知県'},
-        {code: '40', name: '福岡県'}, {code: '41', name: '佐賀県'}, {code: '42', name: '長崎県'},
-        {code: '43', name: '熊本県'}, {code: '44', name: '大分県'}, {code: '45', name: '宮崎県'},
-        {code: '46', name: '鹿児島県'}, {code: '47', name: '沖縄県'}
-      ];
-      
-      // 業種リスト
+      const prefMap = {
+        '01': '北海道', '02': '青森県', '03': '岩手県', '04': '宮城県', '05': '秋田県',
+        '06': '山形県', '07': '福島県', '08': '茨城県', '09': '栃木県', '10': '群馬県',
+        '11': '埼玉県', '12': '千葉県', '13': '東京都', '14': '神奈川県', '15': '新潟県',
+        '16': '富山県', '17': '石川県', '18': '福井県', '19': '山梨県', '20': '長野県',
+        '21': '岐阜県', '22': '静岡県', '23': '愛知県', '24': '三重県', '25': '滋賀県',
+        '26': '京都府', '27': '大阪府', '28': '兵庫県', '29': '奈良県', '30': '和歌山県',
+        '31': '鳥取県', '32': '島根県', '33': '岡山県', '34': '広島県', '35': '山口県',
+        '36': '徳島県', '37': '香川県', '38': '愛媛県', '39': '高知県', '40': '福岡県',
+        '41': '佐賀県', '42': '長崎県', '43': '熊本県', '44': '大分県', '45': '宮崎県',
+        '46': '鹿児島県', '47': '沖縄県'
+      };
+      const prefectures = Object.entries(prefMap).map(([code, name]) => ({ code, name }));
       const industries = [
         '農業、林業', '漁業', '鉱業、採石業、砂利採取業', '建設業', '製造業',
         '電気・ガス・熱供給・水道業', '情報通信業', '運輸業、郵便業', '卸売業、小売業',
@@ -2058,117 +1839,532 @@ agencyPages.get('/agency/clients/:id', (c) => {
         '宿泊業、飲食サービス業', '生活関連サービス業、娯楽業', '教育、学習支援業',
         '医療、福祉', '複合サービス事業', 'サービス業（他に分類されないもの）', 'その他'
       ];
+      const docTypeLabels = { corp_registry: '登記簿謄本', financials: '決算書', tax_return: '確定申告書', business_plan: '事業計画書', other: 'その他' };
+      const formatMoney = (val) => { if (val == null || val === '') return null; return Number(val).toLocaleString() + '万円'; };
       
-      // 都道府県・業種セレクトを初期化
+      // ===== Data Loading =====
+      async function loadClientDetail() {
+        const data = await apiCall('/api/agency/clients/' + clientId);
+        if (!data.success) {
+          alert('顧客情報の取得に失敗しました: ' + (data.error?.message || '不明なエラー'));
+          window.location.href = '/agency/clients';
+          return;
+        }
+        clientData = data.data;
+        renderAll();
+      }
+      
+      function renderAll() {
+        renderHeader();
+        renderCompleteness();
+        renderBasicTab();
+        renderProfileTab();
+        renderFactsTab();
+        renderActivityTab();
+        loadDocuments();
+      }
+      
+      // ===== Header =====
+      function renderHeader() {
+        const client = clientData.client;
+        const company = clientData.company || {};
+        document.getElementById('client-name').textContent = company.name || client.client_name || '名前未設定';
+        document.getElementById('client-name').classList.remove('loading');
+        document.getElementById('company-name').textContent = company.name ? (client.client_name || '') : '';
+        const statusEl = document.getElementById('client-status');
+        const statusMap = { active: ['アクティブ', 'bg-emerald-100 text-emerald-700'], paused: ['一時停止', 'bg-yellow-100 text-yellow-700'], archived: ['アーカイブ', 'bg-gray-100 text-gray-700'] };
+        const [statusText, statusClass] = statusMap[client.status] || ['不明', 'bg-gray-100 text-gray-700'];
+        statusEl.textContent = statusText;
+        statusEl.className = 'px-3 py-1 rounded-full text-sm font-medium ' + statusClass;
+        document.getElementById('contact-name').textContent = client.client_name || '-';
+        document.getElementById('client-email').textContent = client.client_email || '-';
+        document.getElementById('client-phone').textContent = client.client_phone || '-';
+        document.getElementById('created-at').textContent = client.created_at ? new Date(client.created_at).toLocaleDateString('ja-JP') : '-';
+        document.getElementById('notes-input').value = client.notes || '';
+      }
+      
+      // ===== Completeness =====
+      function renderCompleteness() {
+        const comp = clientData.completeness;
+        if (!comp) return;
+        const section = document.getElementById('completeness-section');
+        section.classList.remove('hidden');
+        const pct = comp.weighted_percentage || 0;
+        document.getElementById('completeness-pct').textContent = Math.round(pct) + '%';
+        const bar = document.getElementById('completeness-bar');
+        bar.style.width = pct + '%';
+        bar.className = 'h-2.5 rounded-full transition-all duration-500 ' + (comp.status === 'OK' ? 'bg-emerald-500' : comp.status === 'NEEDS_RECOMMENDED' ? 'bg-yellow-500' : 'bg-red-500');
+        const badge = document.getElementById('completeness-badge');
+        badge.classList.remove('hidden');
+        if (comp.status === 'OK') { badge.textContent = '検索可能'; badge.className = 'px-2 py-1 text-xs rounded-full font-medium bg-emerald-100 text-emerald-700'; }
+        else if (comp.status === 'NEEDS_RECOMMENDED') { badge.textContent = '推奨項目不足'; badge.className = 'px-2 py-1 text-xs rounded-full font-medium bg-yellow-100 text-yellow-700'; }
+        else { badge.textContent = '必須項目不足'; badge.className = 'px-2 py-1 text-xs rounded-full font-medium bg-red-100 text-red-700'; }
+        const actions = comp.next_actions || [];
+        if (actions.length > 0) {
+          document.getElementById('completeness-actions').innerHTML = '<p class="text-xs text-gray-500 mt-1"><i class="fas fa-lightbulb mr-1 text-yellow-500"></i>' + actions[0] + '</p>';
+        }
+        // Profile tab completeness
+        const profComp = document.getElementById('profile-completeness');
+        const profText = document.getElementById('profile-completeness-text');
+        const profIcon = document.getElementById('profile-completeness-icon');
+        profComp.classList.remove('hidden');
+        if (comp.status === 'OK') {
+          profComp.className = 'mb-4 p-3 rounded-lg bg-emerald-50 border border-emerald-200';
+          profIcon.className = 'fas fa-check-circle text-emerald-500';
+          profText.textContent = '全ての推奨項目が入力済みです (' + Math.round(pct) + '%)';
+        } else if (comp.status === 'NEEDS_RECOMMENDED') {
+          profComp.className = 'mb-4 p-3 rounded-lg bg-yellow-50 border border-yellow-200';
+          profIcon.className = 'fas fa-exclamation-circle text-yellow-500';
+          profText.textContent = '推奨項目に未入力があります (' + Math.round(pct) + '%) — 入力すると検索精度が向上します';
+        } else {
+          profComp.className = 'mb-4 p-3 rounded-lg bg-red-50 border border-red-200';
+          profIcon.className = 'fas fa-times-circle text-red-500';
+          profText.textContent = '必須項目が不足しています — 基本情報タブで入力してください';
+        }
+      }
+      
+      // ===== Tab 1: 基本情報 =====
+      function renderBasicTab() {
+        const company = clientData.company || {};
+        const client = clientData.client;
+        const prefName = prefMap[company.prefecture || client.prefecture] || company.prefecture || client.prefecture;
+        const fields = [
+          { label: '会社名', value: company.name || client.name, required: true },
+          { label: '所在地', value: [prefName, company.city || client.city].filter(Boolean).join(' '), required: true },
+          { label: '業種', value: company.industry_major || client.industry_major || client.industry, required: true },
+          { label: '従業員数', value: (company.employee_count || client.employee_count) ? (company.employee_count || client.employee_count) + '名' : null, required: true },
+        ];
+        const container = document.getElementById('required-fields-content');
+        const missing = fields.filter(f => !f.value);
+        let html = '';
+        if (missing.length > 0) {
+          html += '<div class="col-span-2 bg-red-50 border border-red-200 rounded-lg p-3 mb-2"><p class="text-red-700 text-sm font-medium"><i class="fas fa-exclamation-triangle mr-1"></i>必須情報が不足しています</p><p class="text-red-600 text-xs mt-1">不足: ' + missing.map(f => f.label).join(', ') + '</p></div>';
+        }
+        html += fields.map(f => '<div class="p-3 bg-gray-50 rounded-lg"><span class="text-xs text-gray-500">' + f.label + ' <span class="text-red-500">*</span></span><p class="text-gray-900 font-medium mt-0.5">' + (f.value || '<span class="text-red-400 text-sm">未入力</span>') + '</p></div>').join('');
+        container.innerHTML = html;
+      }
+      
+      // ===== Tab 2: 詳細プロフィール =====
+      function renderProfileTab() {
+        const company = clientData.company || {};
+        const profile = clientData.profile || {};
+        const data = { ...company, ...profile };
+        const recommendedFields = [
+          { label: '資本金', value: formatMoney(data.capital) },
+          { label: '設立年月', value: data.established_date },
+          { label: '直近売上高', value: formatMoney(data.annual_revenue) },
+          { label: '法人形態', value: data.corp_type },
+          { label: '代表者名', value: data.representative_name },
+          { label: '直近期の利益', value: data.is_profitable != null ? (Number(data.is_profitable) ? '黒字' : '赤字') : null },
+          { label: 'Webサイト', value: data.website_url, isLink: true },
+          { label: '事業概要', value: data.business_summary, fullWidth: true },
+        ];
+        const detailFields = [
+          { label: '法人番号', value: data.corp_number },
+          { label: '代表者肩書', value: data.representative_title },
+          { label: '連絡先メール', value: data.contact_email },
+          { label: '連絡先電話', value: data.contact_phone },
+          { label: '主要製品/サービス', value: data.main_products, fullWidth: true },
+          { label: '主要顧客', value: data.main_customers, fullWidth: true },
+          { label: '競合優位性', value: data.competitive_advantage, fullWidth: true },
+          { label: '対象顧客', value: data.target_customers, fullWidth: true },
+        ];
+        const optionalFields = [
+          { label: '過去の補助金', value: data.past_subsidies_json ? '入力済み' : null },
+          { label: '認証・資格', value: data.certifications_json ? '入力済み' : null },
+          { label: '若年従業員', value: data.has_young_employees != null ? (Number(data.has_young_employees) ? 'あり' : 'なし') : null },
+          { label: '女性役員', value: data.has_female_executives != null ? (Number(data.has_female_executives) ? 'あり' : 'なし') : null },
+          { label: 'シニア従業員', value: data.has_senior_employees != null ? (Number(data.has_senior_employees) ? 'あり' : 'なし') : null },
+          { label: '採用予定', value: data.plans_to_hire != null ? (Number(data.plans_to_hire) ? 'あり' : 'なし') : null },
+        ];
+        let html = '';
+        // Recommended
+        html += '<div class="mb-6"><h4 class="text-sm font-semibold text-gray-600 mb-3 border-b pb-2"><i class="fas fa-chart-line mr-1 text-yellow-500"></i>推奨情報</h4>';
+        html += '<div class="grid grid-cols-1 md:grid-cols-2 gap-4">';
+        html += recommendedFields.map(f => {
+          let val = f.value;
+          if (f.isLink && val) val = '<a href="' + val + '" target="_blank" class="text-blue-600 hover:underline text-sm break-all">' + val + '</a>';
+          return '<div class="' + (f.fullWidth ? 'col-span-2' : '') + ' p-2"><span class="text-xs text-gray-500">' + f.label + '</span><p class="text-gray-900 mt-0.5">' + (val || '<span class="text-gray-400 text-sm">未入力</span>') + '</p></div>';
+        }).join('');
+        html += '</div></div>';
+        // Detail
+        const filledDetail = detailFields.filter(f => f.value);
+        if (filledDetail.length > 0) {
+          html += '<div class="mb-6"><h4 class="text-sm font-semibold text-gray-600 mb-3 border-b pb-2"><i class="fas fa-info-circle mr-1 text-blue-500"></i>詳細情報</h4>';
+          html += '<div class="grid grid-cols-1 md:grid-cols-2 gap-4">';
+          html += filledDetail.map(f => '<div class="' + (f.fullWidth ? 'col-span-2' : '') + ' p-2"><span class="text-xs text-gray-500">' + f.label + '</span><p class="text-gray-900 mt-0.5">' + f.value + '</p></div>').join('');
+          html += '</div></div>';
+        }
+        // Optional
+        const filledOptional = optionalFields.filter(f => f.value);
+        if (filledOptional.length > 0) {
+          html += '<div><h4 class="text-sm font-semibold text-gray-600 mb-3 border-b pb-2"><i class="fas fa-puzzle-piece mr-1 text-green-500"></i>任意情報</h4>';
+          html += '<div class="grid grid-cols-1 md:grid-cols-3 gap-4">';
+          html += filledOptional.map(f => '<div class="p-2"><span class="text-xs text-gray-500">' + f.label + '</span><p class="text-gray-900 mt-0.5">' + f.value + '</p></div>').join('');
+          html += '</div></div>';
+        }
+        document.getElementById('profile-content').innerHTML = html || '<p class="text-gray-500">詳細プロフィール情報はまだ入力されていません。</p>';
+      }
+      
+      // ===== Tab 3: 書類 =====
+      async function loadDocuments() {
+        const data = await apiCall('/api/agency/clients/' + clientId + '/documents');
+        if (!data.success) {
+          document.getElementById('documents-list').innerHTML = '<p class="p-6 text-red-500 text-center">書類の取得に失敗しました</p>';
+          return;
+        }
+        const docs = data.data?.documents || [];
+        const badge = document.getElementById('doc-count-badge');
+        if (docs.length > 0) { badge.textContent = docs.length; badge.classList.remove('hidden'); }
+        if (docs.length === 0) {
+          document.getElementById('documents-list').innerHTML = '<div class="p-8 text-center"><i class="fas fa-folder-open text-4xl text-gray-300 mb-3"></i><p class="text-gray-500">書類がまだアップロードされていません</p><button onclick="showUploadModal()" class="mt-3 text-sm text-emerald-600 hover:text-emerald-700 font-medium"><i class="fas fa-upload mr-1"></i>最初の書類をアップロード</button></div>';
+          return;
+        }
+        document.getElementById('documents-list').innerHTML = docs.map(d => {
+          const typeLabel = docTypeLabels[d.doc_type] || d.doc_type;
+          const hasExtraction = d.extraction_status === 'done';
+          const extractionPending = d.extraction_status === 'pending' || d.extraction_status === 'processing';
+          return '<div class="p-4 hover:bg-gray-50"><div class="flex justify-between items-start"><div class="flex items-start gap-3"><i class="fas fa-file-pdf text-red-400 text-xl mt-1"></i><div><p class="font-medium">' + (d.original_filename || '書類') + '</p><div class="flex gap-2 mt-1"><span class="px-2 py-0.5 text-xs rounded bg-blue-50 text-blue-700">' + typeLabel + '</span>' + (hasExtraction ? '<span class="px-2 py-0.5 text-xs rounded bg-emerald-50 text-emerald-700"><i class="fas fa-check mr-1"></i>抽出済み</span>' : '') + (extractionPending ? '<span class="px-2 py-0.5 text-xs rounded bg-yellow-50 text-yellow-700"><i class="fas fa-spinner fa-spin mr-1"></i>処理中</span>' : '') + '</div><p class="text-xs text-gray-500 mt-1">' + new Date(d.created_at).toLocaleString('ja-JP') + '</p>' + (d.notes ? '<p class="text-xs text-gray-400 mt-0.5">' + d.notes + '</p>' : '') + '</div></div><div class="flex gap-1">' + (hasExtraction ? "<button onclick=\"viewExtraction('" + d.id + "')\" class=\"text-xs bg-blue-50 text-blue-600 px-2 py-1 rounded hover:bg-blue-100\"><i class=\"fas fa-magic mr-1\"></i>抽出結果</button>" : '') + "<button onclick=\"deleteDocument('" + d.id + "')\" class=\"text-xs bg-red-50 text-red-600 px-2 py-1 rounded hover:bg-red-100\"><i class=\"fas fa-trash\"></i></button></div></div></div>";
+        }).join('');
+      }
+      
+      // ===== Tab 4: ファクト =====
+      function renderFactsTab() {
+        const facts = clientData.facts || {};
+        const details = facts.details || [];
+        const canonicalKeys = facts.canonical_keys || [];
+        if (details.length === 0 && canonicalKeys.length === 0) {
+          document.getElementById('facts-content').innerHTML = '<div class="text-center py-6"><i class="fas fa-clipboard-check text-4xl text-gray-300 mb-3"></i><p class="text-gray-500">ファクト情報がまだ登録されていません</p><p class="text-sm text-gray-400 mt-1">編集ボタンから情報を追加できます</p></div>';
+          return;
+        }
+        const factLabels = { has_gbiz_id: 'GビズIDプライム取得済み', is_invoice_registered: 'インボイス登録済み', plans_wage_raise: '賃上げ予定', tax_arrears: '税金滞納', past_subsidy_same_type: '同種補助金受給歴', has_business_plan: '事業計画書あり', has_keiei_kakushin: '経営革新計画承認', has_jigyou_keizoku: '事業継続力強化計画認定' };
+        const factValues = facts.values || {};
+        let html = '<div class="grid grid-cols-1 md:grid-cols-2 gap-3">';
+        for (const key of canonicalKeys) {
+          const label = factLabels[key] || key;
+          const val = factValues[key];
+          const detail = details.find(d => d.fact_key === key);
+          let valDisplay, valClass;
+          if (val === true || val === 'true') { valDisplay = 'はい'; valClass = key === 'tax_arrears' ? 'text-red-600 bg-red-50' : 'text-emerald-600 bg-emerald-50'; }
+          else if (val === false || val === 'false') { valDisplay = 'いいえ'; valClass = key === 'tax_arrears' ? 'text-emerald-600 bg-emerald-50' : 'text-gray-600 bg-gray-50'; }
+          else if (val != null) { valDisplay = String(val); valClass = 'text-blue-600 bg-blue-50'; }
+          else { valDisplay = '未設定'; valClass = 'text-gray-400 bg-gray-50'; }
+          html += '<div class="flex items-center justify-between p-3 rounded-lg border ' + (val != null ? 'border-gray-200' : 'border-dashed border-gray-300') + '"><div><span class="text-sm font-medium text-gray-700">' + label + '</span>' + (detail?.source ? '<span class="text-xs text-gray-400 ml-2">(' + detail.source + ')</span>' : '') + '</div><span class="px-2 py-1 text-xs rounded font-medium ' + valClass + '">' + valDisplay + '</span></div>';
+        }
+        html += '</div>';
+        const nonCanonical = details.filter(d => !canonicalKeys.includes(d.fact_key));
+        if (nonCanonical.length > 0) {
+          html += '<div class="mt-4 pt-4 border-t"><h4 class="text-sm font-semibold text-gray-500 mb-3">その他のファクト</h4><div class="grid grid-cols-1 md:grid-cols-2 gap-2">';
+          for (const d of nonCanonical) { html += '<div class="flex items-center justify-between p-2 text-sm"><span class="text-gray-600">' + (d.label_ja || d.fact_key) + '</span><span class="text-gray-800">' + (d.fact_value || '-') + '</span></div>'; }
+          html += '</div></div>';
+        }
+        document.getElementById('facts-content').innerHTML = html;
+      }
+      
+      function toggleFactEditMode() {
+        factsEditMode = !factsEditMode;
+        const btn = document.getElementById('fact-edit-btn');
+        const saveBar = document.getElementById('facts-save-bar');
+        if (factsEditMode) {
+          btn.innerHTML = '<i class="fas fa-times mr-1"></i>キャンセル';
+          btn.className = 'text-sm bg-gray-100 border border-gray-300 text-gray-700 px-3 py-1.5 rounded hover:bg-gray-200';
+          saveBar.classList.remove('hidden');
+          renderFactsEditForm();
+        } else {
+          btn.innerHTML = '<i class="fas fa-edit mr-1"></i>編集';
+          btn.className = 'text-sm bg-white border border-gray-300 text-gray-700 px-3 py-1.5 rounded hover:bg-gray-50';
+          saveBar.classList.add('hidden');
+          renderFactsTab();
+        }
+      }
+      
+      function cancelFactEdit() {
+        factsEditMode = false;
+        document.getElementById('fact-edit-btn').innerHTML = '<i class="fas fa-edit mr-1"></i>編集';
+        document.getElementById('fact-edit-btn').className = 'text-sm bg-white border border-gray-300 text-gray-700 px-3 py-1.5 rounded hover:bg-gray-50';
+        document.getElementById('facts-save-bar').classList.add('hidden');
+        renderFactsTab();
+      }
+      
+      function renderFactsEditForm() {
+        const facts = clientData.facts || {};
+        const factValues = facts.values || {};
+        const canonicalKeys = facts.canonical_keys || [];
+        const factLabels = { has_gbiz_id: 'GビズIDプライム取得済み', is_invoice_registered: 'インボイス登録済み', plans_wage_raise: '賃上げ予定', tax_arrears: '税金滞納', past_subsidy_same_type: '同種補助金受給歴', has_business_plan: '事業計画書あり', has_keiei_kakushin: '経営革新計画承認', has_jigyou_keizoku: '事業継続力強化計画認定' };
+        let html = '<div class="grid grid-cols-1 md:grid-cols-2 gap-3">';
+        for (const key of canonicalKeys) {
+          const label = factLabels[key] || key;
+          const val = factValues[key];
+          html += '<div class="flex items-center justify-between p-3 rounded-lg border border-gray-200 bg-white"><span class="text-sm font-medium text-gray-700">' + label + '</span><select data-fact-key="' + key + '" class="border rounded px-2 py-1 text-sm"><option value="" ' + (val == null ? 'selected' : '') + '>未設定</option><option value="true" ' + (val === true || val === 'true' ? 'selected' : '') + '>はい</option><option value="false" ' + (val === false || val === 'false' ? 'selected' : '') + '>いいえ</option></select></div>';
+        }
+        html += '</div>';
+        document.getElementById('facts-content').innerHTML = html;
+      }
+      
+      async function saveFactEdits() {
+        const selects = document.querySelectorAll('[data-fact-key]');
+        const facts = {};
+        selects.forEach(sel => { const key = sel.dataset.factKey; const val = sel.value; if (val === '') facts[key] = null; else if (val === 'true') facts[key] = true; else if (val === 'false') facts[key] = false; else facts[key] = val; });
+        const btn = document.getElementById('facts-save-btn');
+        btn.disabled = true;
+        btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>保存中...';
+        const data = await apiCall('/api/agency/clients/' + clientId + '/facts', { method: 'PUT', body: JSON.stringify({ facts }) });
+        btn.disabled = false;
+        btn.innerHTML = '<i class="fas fa-save mr-1"></i>保存';
+        if (data.success) {
+          factsEditMode = false;
+          document.getElementById('fact-edit-btn').innerHTML = '<i class="fas fa-edit mr-1"></i>編集';
+          document.getElementById('fact-edit-btn').className = 'text-sm bg-white border border-gray-300 text-gray-700 px-3 py-1.5 rounded hover:bg-gray-50';
+          document.getElementById('facts-save-bar').classList.add('hidden');
+          loadClientDetail();
+          alert('ファクト情報を保存しました');
+        } else { alert('エラー: ' + (data.error?.message || '保存に失敗しました')); }
+      }
+      
+      // ===== Tab 5: アクティビティ =====
+      function renderActivityTab() { renderSubmissions(); renderDrafts(); renderLinks(); renderSessions(); }
+      
+      function renderSubmissions() {
+        const submissions = clientData.submissions || [];
+        const container = document.getElementById('submissions-list');
+        if (submissions.length === 0) { container.innerHTML = '<p class="p-4 text-gray-500 text-center">入力履歴がありません</p>'; return; }
+        container.innerHTML = submissions.map(s => '<div class="p-4 hover:bg-gray-50"><div class="flex justify-between items-start"><div><p class="font-medium">' + (s.form_type || '一般入力') + '</p><p class="text-sm text-gray-500">' + new Date(s.created_at).toLocaleString('ja-JP') + '</p></div><span class="px-2 py-1 text-xs rounded-full ' + (s.status === 'approved' ? 'bg-emerald-100 text-emerald-700' : s.status === 'pending' ? 'bg-yellow-100 text-yellow-700' : 'bg-gray-100 text-gray-700') + '">' + (s.status === 'approved' ? '承認済' : s.status === 'pending' ? '確認待ち' : (s.status || '-')) + '</span></div></div>').join('');
+      }
+      
+      function renderDrafts() {
+        const drafts = clientData.drafts || [];
+        const container = document.getElementById('drafts-list');
+        if (drafts.length === 0) { container.innerHTML = '<p class="p-4 text-gray-500 text-center">申請書ドラフトがありません</p>'; return; }
+        container.innerHTML = drafts.map(d => '<div class="p-4 hover:bg-gray-50"><div class="flex justify-between items-start"><div><p class="font-medium">' + (d.title || '無題のドラフト') + '</p><p class="text-sm text-gray-500">更新: ' + new Date(d.updated_at).toLocaleString('ja-JP') + '</p></div><span class="px-2 py-1 text-xs rounded-full bg-blue-100 text-blue-700">' + (d.status || '作成中') + '</span></div></div>').join('');
+      }
+      
+      function renderLinks() {
+        const links = clientData.links || [];
+        const container = document.getElementById('links-list');
+        if (links.length === 0) { container.innerHTML = '<p class="p-4 text-gray-500 text-center">発行リンクがありません</p>'; return; }
+        const now = new Date();
+        container.innerHTML = links.map(l => {
+          const expiresAt = new Date(l.expires_at);
+          const isExpired = expiresAt < now;
+          const isRevoked = l.revoked_at;
+          const status = isRevoked ? '無効化済' : isExpired ? '期限切れ' : '有効';
+          const statusClass = isRevoked || isExpired ? 'bg-gray-100 text-gray-700' : 'bg-emerald-100 text-emerald-700';
+          return '<div class="p-4 hover:bg-gray-50"><div class="flex justify-between items-start"><div><p class="font-medium">' + (l.type === 'intake' ? '入力リンク' : l.type) + '</p><p class="text-sm text-gray-500">発行: ' + new Date(l.created_at).toLocaleString('ja-JP') + '</p><p class="text-sm text-gray-500">期限: ' + expiresAt.toLocaleString('ja-JP') + '</p><p class="text-sm text-gray-400">使用回数: ' + (l.used_count || 0) + ' / ' + (l.max_uses || '無制限') + '</p></div><span class="px-2 py-1 text-xs rounded-full ' + statusClass + '">' + status + '</span></div></div>';
+        }).join('');
+      }
+      
+      function renderSessions() {
+        const sessions = clientData.sessions || [];
+        const container = document.getElementById('sessions-list');
+        if (sessions.length === 0) { container.innerHTML = '<p class="p-4 text-gray-500 text-center">チャットセッションがありません</p>'; return; }
+        container.innerHTML = sessions.map(s => '<div class="p-4 hover:bg-gray-50"><div class="flex justify-between items-start"><div><p class="font-medium">セッション #' + (s.id || '').substring(0, 8) + '</p><p class="text-sm text-gray-500">' + new Date(s.created_at).toLocaleString('ja-JP') + '</p></div><span class="px-2 py-1 text-xs rounded-full bg-purple-100 text-purple-700">' + (s.status || 'active') + '</span></div></div>').join('');
+      }
+      
+      // ===== Tab Navigation =====
+      function showTab(tabName) {
+        document.querySelectorAll('.tab-content').forEach(el => el.classList.add('hidden'));
+        document.querySelectorAll('.tab-btn').forEach(el => { el.classList.remove('border-emerald-500', 'text-emerald-600'); el.classList.add('border-transparent', 'text-gray-500'); });
+        document.getElementById('tab-' + tabName).classList.remove('hidden');
+        const btn = document.querySelector('[data-tab="' + tabName + '"]');
+        if (btn) { btn.classList.add('border-emerald-500', 'text-emerald-600'); btn.classList.remove('border-transparent', 'text-gray-500'); }
+      }
+      
+      function showActivitySub(subName) {
+        document.querySelectorAll('.activity-sub-content').forEach(el => el.classList.add('hidden'));
+        document.querySelectorAll('.activity-sub-btn').forEach(el => { el.className = 'activity-sub-btn px-3 py-1.5 text-sm rounded-full bg-gray-100 text-gray-600'; });
+        document.getElementById('activity-' + subName).classList.remove('hidden');
+        const btn = document.querySelector('[data-sub="' + subName + '"]');
+        if (btn) btn.className = 'activity-sub-btn px-3 py-1.5 text-sm rounded-full bg-emerald-100 text-emerald-700 font-medium';
+      }
+      
+      // ===== Actions =====
+      async function issueIntakeLink() {
+        if (!clientData) return;
+        const companyId = clientData.client.company_id;
+        const data = await apiCall('/api/agency/links', { method: 'POST', body: JSON.stringify({ companyId, type: 'intake', expiresInDays: 7 }) });
+        if (data.success) {
+          const url = data.data.url;
+          await navigator.clipboard.writeText(url);
+          alert('入力リンクをクリップボードにコピーしました:\\n' + url);
+          loadClientDetail();
+        } else { alert('エラー: ' + (data.error?.message || '不明なエラー')); }
+      }
+      
+      async function saveNotes() {
+        const notes = document.getElementById('notes-input').value;
+        const data = await apiCall('/api/agency/clients/' + clientId, { method: 'PUT', body: JSON.stringify({ notes }) });
+        if (data.success) { alert('メモを保存しました'); } else { alert('エラー: ' + (data.error?.message || '保存に失敗しました')); }
+      }
+      
+      // ===== Edit Modal =====
+      function showEditModal() {
+        if (!clientData) return;
+        const client = clientData.client;
+        document.getElementById('edit-client-name').value = client.client_name || '';
+        document.getElementById('edit-client-email').value = client.client_email || '';
+        document.getElementById('edit-client-phone').value = client.client_phone || '';
+        document.getElementById('edit-status').value = client.status || 'active';
+        document.getElementById('edit-modal').classList.remove('hidden');
+      }
+      function hideEditModal() { document.getElementById('edit-modal').classList.add('hidden'); }
+      
+      document.getElementById('edit-form').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const form = e.target;
+        const data = await apiCall('/api/agency/clients/' + clientId, { method: 'PUT', body: JSON.stringify({ clientName: form.clientName.value, clientEmail: form.clientEmail.value, clientPhone: form.clientPhone.value, status: form.status.value }) });
+        if (data.success) { hideEditModal(); loadClientDetail(); } else { alert('エラー: ' + (data.error?.message || '更新に失敗しました')); }
+      });
+      
+      // ===== Company Edit Modal =====
       function initCompanyEditSelects() {
         const prefSelect = document.getElementById('edit-company-prefecture');
         const indSelect = document.getElementById('edit-company-industry');
-        
-        // 既存のオプションをクリア（最初の「選択してください」以外）
         while (prefSelect.options.length > 1) prefSelect.remove(1);
         while (indSelect.options.length > 1) indSelect.remove(1);
-        
-        prefectures.forEach(p => {
-          const opt = document.createElement('option');
-          opt.value = p.code;
-          opt.textContent = p.name;
-          prefSelect.appendChild(opt);
-        });
-        
-        industries.forEach(ind => {
-          const opt = document.createElement('option');
-          opt.value = ind;
-          opt.textContent = ind;
-          indSelect.appendChild(opt);
-        });
+        prefectures.forEach(p => { const opt = document.createElement('option'); opt.value = p.code; opt.textContent = p.name; prefSelect.appendChild(opt); });
+        industries.forEach(ind => { const opt = document.createElement('option'); opt.value = ind; opt.textContent = ind; indSelect.appendChild(opt); });
       }
       
       function showCompanyEditModal() {
         if (!clientData) return;
+        const company = clientData.company || {};
+        const profile = clientData.profile || {};
         const client = clientData.client;
-        
-        // セレクト初期化
+        const d = { ...company, ...profile };
         initCompanyEditSelects();
-        
-        // 値をセット
-        document.getElementById('edit-company-name').value = client.name || '';
-        document.getElementById('edit-company-prefecture').value = client.prefecture || '';
-        document.getElementById('edit-company-city').value = client.city || '';
-        document.getElementById('edit-company-industry').value = client.industry_major || client.industry || '';
-        document.getElementById('edit-company-employees').value = client.employee_count || '';
-        document.getElementById('edit-company-capital').value = client.capital || '';
-        document.getElementById('edit-company-established').value = client.established_date || '';
-        document.getElementById('edit-company-revenue').value = client.annual_revenue || '';
-        document.getElementById('edit-company-rep').value = client.representative_name || '';
-        document.getElementById('edit-company-website').value = client.website_url || '';
-        document.getElementById('edit-company-summary').value = client.business_summary || '';
-        
+        document.getElementById('edit-company-name').value = d.name || client.name || '';
+        document.getElementById('edit-company-prefecture').value = d.prefecture || client.prefecture || '';
+        document.getElementById('edit-company-city').value = d.city || client.city || '';
+        document.getElementById('edit-company-industry').value = d.industry_major || client.industry_major || client.industry || '';
+        document.getElementById('edit-company-employees').value = d.employee_count || client.employee_count || '';
+        document.getElementById('edit-company-capital').value = d.capital || '';
+        document.getElementById('edit-company-established').value = d.established_date || '';
+        document.getElementById('edit-company-revenue').value = d.annual_revenue || '';
+        document.getElementById('edit-company-corptype').value = d.corp_type || '';
+        document.getElementById('edit-company-rep').value = d.representative_name || '';
+        document.getElementById('edit-company-profitable').value = d.is_profitable != null ? String(Number(d.is_profitable)) : '';
+        document.getElementById('edit-company-website').value = d.website_url || '';
+        document.getElementById('edit-company-summary').value = d.business_summary || '';
         document.getElementById('company-edit-modal').classList.remove('hidden');
       }
-      
-      function hideCompanyEditModal() {
-        document.getElementById('company-edit-modal').classList.add('hidden');
-      }
+      function hideCompanyEditModal() { document.getElementById('company-edit-modal').classList.add('hidden'); }
       
       document.getElementById('company-edit-form').addEventListener('submit', async (e) => {
         e.preventDefault();
         const form = e.target;
-        
-        // 必須チェック
         const employeeCount = parseInt(form.employee_count.value);
-        if (!employeeCount || employeeCount < 1) {
-          alert('従業員数は1以上の数値を入力してください');
-          return;
-        }
-        
+        if (!employeeCount || employeeCount < 1) { alert('従業員数は1以上の数値を入力してください'); return; }
         const submitBtn = form.querySelector('button[type="submit"]');
         submitBtn.disabled = true;
         submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>保存中...';
-        
         const data = await apiCall('/api/agency/clients/' + clientId + '/company', {
           method: 'PUT',
           body: JSON.stringify({
-            companyName: form.companyName.value,
-            prefecture: form.prefecture.value,
-            city: form.city.value,
-            industry_major: form.industry_major.value,
-            employee_count: employeeCount,
+            companyName: form.companyName.value, prefecture: form.prefecture.value, city: form.city.value,
+            industry_major: form.industry_major.value, employee_count: employeeCount,
             capital: form.capital.value ? parseInt(form.capital.value) : null,
             established_date: form.established_date.value || null,
             annual_revenue: form.annual_revenue.value ? parseInt(form.annual_revenue.value) : null,
+            corp_type: form.corp_type.value || null,
             representative_name: form.representative_name.value || null,
+            is_profitable: form.is_profitable.value !== '' ? parseInt(form.is_profitable.value) : null,
             website_url: form.website_url.value || null,
             business_summary: form.business_summary.value || null,
           }),
         });
-        
         submitBtn.disabled = false;
         submitBtn.innerHTML = '<i class="fas fa-save mr-1"></i>保存';
-        
-        if (data.success) {
-          hideCompanyEditModal();
-          loadClientDetail();
-          alert('企業情報を更新しました');
-        } else {
-          alert('エラー: ' + (data.error?.message || '更新に失敗しました'));
+        if (data.success) { hideCompanyEditModal(); loadClientDetail(); alert('企業情報を更新しました'); }
+        else { alert('エラー: ' + (data.error?.message || '更新に失敗しました')); }
+      });
+      
+      // ===== Document Upload =====
+      function showUploadModal() { document.getElementById('upload-form').reset(); document.getElementById('upload-modal').classList.remove('hidden'); }
+      function hideUploadModal() { document.getElementById('upload-modal').classList.add('hidden'); }
+      
+      document.getElementById('upload-form').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const form = e.target;
+        const file = document.getElementById('upload-file').files[0];
+        if (!file) return;
+        const submitBtn = document.getElementById('upload-submit-btn');
+        submitBtn.disabled = true;
+        submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>アップロード中...';
+        const formData = new FormData();
+        formData.append('file', file);
+        formData.append('doc_type', form.doc_type.value);
+        formData.append('notes', form.notes.value || '');
+        const token = localStorage.getItem('token') || sessionStorage.getItem('token');
+        try {
+          const resp = await fetch('/api/agency/clients/' + clientId + '/documents', { method: 'POST', headers: token ? { 'Authorization': 'Bearer ' + token } : {}, body: formData });
+          const data = await resp.json();
+          submitBtn.disabled = false;
+          submitBtn.innerHTML = '<i class="fas fa-upload mr-1"></i>アップロード';
+          if (data.success) { hideUploadModal(); loadDocuments(); alert('書類をアップロードしました'); }
+          else { alert('エラー: ' + (data.error?.message || 'アップロードに失敗しました')); }
+        } catch (err) {
+          submitBtn.disabled = false;
+          submitBtn.innerHTML = '<i class="fas fa-upload mr-1"></i>アップロード';
+          alert('アップロードに失敗しました: ' + err.message);
         }
       });
       
-      // Initialize
+      async function deleteDocument(docId) {
+        if (!confirm('この書類を削除しますか？')) return;
+        const data = await apiCall('/api/agency/clients/' + clientId + '/documents/' + docId, { method: 'DELETE' });
+        if (data.success) { loadDocuments(); } else { alert('エラー: ' + (data.error?.message || '削除に失敗しました')); }
+      }
+      
+      // ===== Extraction =====
+      async function viewExtraction(docId) {
+        currentExtractionDocId = docId;
+        document.getElementById('extraction-content').innerHTML = '<p class="text-center text-gray-500"><i class="fas fa-spinner fa-spin mr-2"></i>読み込み中...</p>';
+        document.getElementById('extraction-modal').classList.remove('hidden');
+        const data = await apiCall('/api/agency/clients/' + clientId + '/documents/' + docId + '/extracted');
+        if (!data.success) { document.getElementById('extraction-content').innerHTML = '<p class="text-red-500">抽出結果の取得に失敗しました: ' + (data.error?.message || '') + '</p>'; return; }
+        const extracted = data.data?.extracted_data || {};
+        const mapping = data.data?.field_mapping || {};
+        let html = '<div class="space-y-3">';
+        const entries = Object.entries(extracted);
+        if (entries.length === 0) { html += '<p class="text-gray-500 text-center">抽出されたデータがありません</p>'; }
+        else { for (const [key, value] of entries) { const fieldInfo = mapping[key] || {}; html += '<div class="flex items-center justify-between p-3 bg-gray-50 rounded-lg"><div><span class="text-sm font-medium text-gray-700">' + (fieldInfo.label_ja || key) + '</span><span class="text-xs text-gray-400 ml-2">(' + key + ')</span></div><span class="text-sm text-gray-900 font-medium">' + (value != null ? String(value) : '-') + '</span></div>'; } }
+        html += '</div>';
+        document.getElementById('extraction-content').innerHTML = html;
+      }
+      
+      function hideExtractionModal() { document.getElementById('extraction-modal').classList.add('hidden'); currentExtractionDocId = null; }
+      
+      async function applyExtraction(mode) {
+        if (!currentExtractionDocId) return;
+        const btnId = mode === 'fill_empty' ? 'apply-fill-btn' : 'apply-overwrite-btn';
+        const btn = document.getElementById(btnId);
+        btn.disabled = true;
+        btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>反映中...';
+        const data = await apiCall('/api/agency/clients/' + clientId + '/documents/' + currentExtractionDocId + '/apply', { method: 'POST', body: JSON.stringify({ mode }) });
+        btn.disabled = false;
+        if (mode === 'fill_empty') btn.innerHTML = '<i class="fas fa-plus-circle mr-1"></i>空欄のみ反映';
+        else btn.innerHTML = '<i class="fas fa-sync mr-1"></i>全て上書き';
+        if (data.success) {
+          const result = data.data || {};
+          alert('反映完了: ' + (result.applied_count || 0) + '件のフィールドを更新しました');
+          hideExtractionModal();
+          loadClientDetail();
+        } else { alert('エラー: ' + (data.error?.message || '反映に失敗しました')); }
+      }
+      
+      // ===== Initialize =====
       if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', loadClientDetail);
       } else {
-        if (typeof window.apiCall === 'function') {
-          loadClientDetail();
-        } else {
-          setTimeout(loadClientDetail, 100);
-        }
+        if (typeof window.apiCall === 'function') { loadClientDetail(); }
+        else { setTimeout(loadClientDetail, 100); }
       }
     </script>
   `;
   
   return c.html(agencyLayout('顧客詳細', content, 'clients'));
 });
+
 
 /**
  * GET /agency/links - リンク管理
