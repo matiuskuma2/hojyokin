@@ -136,7 +136,9 @@ const FIXED_KEY_QUESTIONS: FixedKeyDef[] = [
   },
   // === Priority 7: 加点（任意） ===
   {
-    key: 'is_wage_raise_planned',
+    // BUG-2 完全修正: 正準キーを plans_wage_raise に統一
+    // 旧: is_wage_raise_planned → getCompanySSOT が読めずスクリーニング加点が機能しなかった
+    key: 'plans_wage_raise',
     label: '今後1年以内に賃上げ（給与のベースアップ）を予定していますか？（加点項目になる可能性があります）',
     input_type: 'boolean',
     source: 'eligibility',

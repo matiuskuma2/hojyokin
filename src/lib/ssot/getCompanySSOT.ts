@@ -251,7 +251,9 @@ export async function getCompanySSOT(
   const facts: CompanySSOT['facts'] = {
     has_gbiz_id: parseBooleanFact(factsMap.get('has_gbiz_id')),
     is_invoice_registered: parseBooleanFact(factsMap.get('is_invoice_registered')),
-    plans_wage_raise: parseBooleanFact(factsMap.get('plans_wage_raise')),
+    // BUG-2 完全修正: plans_wage_raise を正準キーとし、
+    // レガシーの is_wage_raise_planned をフォールバック読み取り
+    plans_wage_raise: parseBooleanFact(factsMap.get('plans_wage_raise') ?? factsMap.get('is_wage_raise_planned')),
     tax_arrears: parseBooleanFact(factsMap.get('tax_arrears')),
     past_subsidy_same_type: parseBooleanFact(factsMap.get('past_subsidy_same_type')),
     has_business_plan: parseBooleanFact(factsMap.get('has_business_plan')),

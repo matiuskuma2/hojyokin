@@ -594,7 +594,8 @@ ${parts.join('\n')}
     const parts: string[] = [];
     
     // facts から加点関連情報を取得
-    const wageRaise = f['is_wage_raise_planned'];
+    // BUG-2 完全修正: 正準キー plans_wage_raise を優先、レガシー is_wage_raise_planned をフォールバック
+    const wageRaise = f['plans_wage_raise'] ?? f['is_wage_raise_planned'];
     const keieikakushin = f['has_keiei_kakushin'];
     const jigyoukeizoku = f['has_jigyou_keizoku'];
     
@@ -764,7 +765,8 @@ ${timeline ? `\n■ 事業実施予定\n${timeline}` : ''}
       'has_gbiz_id': 'GビズIDプライム',
       'has_business_plan': '事業計画書',
       'desired_timeline': '実施スケジュール',
-      'is_wage_raise_planned': '賃上げ予定',
+      'plans_wage_raise': '賃上げ予定',
+      'is_wage_raise_planned': '賃上げ予定',  // レガシーキーフォールバック
       'past_subsidy_same_type': '同種補助金受給歴',
       'employee_count': '従業員数',
       'annual_revenue': '年商',

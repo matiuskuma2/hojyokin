@@ -336,7 +336,8 @@ const FACT_KEY_LABELS: Record<string, string> = {
   'expected_effect': '期待する効果',
   'has_business_plan': '事業計画書の有無',
   'has_gbiz_id': 'GビズIDプライムの取得状況',
-  'is_wage_raise_planned': '賃上げ予定',
+  'plans_wage_raise': '賃上げ予定',
+  'is_wage_raise_planned': '賃上げ予定',  // レガシーキー（フォールバック用）
   'is_invoice_registered': 'インボイス登録状況',
   'capital': '資本金',
   'founding_year': '創業年',
