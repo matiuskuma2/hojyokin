@@ -18,6 +18,7 @@ import type { Env, Variables, ApiResponse } from '../../types';
 import { getCurrentUser } from '../../middleware/auth';
 import { getUserAgency, generateId, parseIntWithLimits, safeParseJsonBody, calculateEmployeeBand, LIMITS } from './_helpers';
 import { sendClientInviteEmail } from '../../services/email';
+import { CANONICAL_FACT_KEYS, FACT_KEY_LABELS_JA, normalizeBooleanFactValue, isCanonicalFactKey } from '../../lib/canonical-facts';
 
 const clients = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -755,6 +756,12 @@ clients.put('/clients/:id/company', async (c) => {
     certifications_json?: string;
     constraints_json?: string;
     notes?: string;
+    // Phase 1c-A: 0020 追加カラム
+    postal_code?: string;     // company_profile.postal_code（companies.postal_code とは別）
+    address?: string;
+    contact_name?: string;
+    products_services?: string;
+    target_customers?: string;
   }>(c);
   
   if (!parseResult.ok) {
@@ -861,7 +868,7 @@ clients.put('/clients/:id/company', async (c) => {
   }
   
   // ============================================================
-  // company_profile テーブル更新（Phase 1a: profile.ts L248-255 と同じフィールドリスト）
+  // company_profile テーブル更新（Phase 1a/1c: profile.ts と同じフィールドリスト）
   // ============================================================
   const profileFieldList = [
     'corp_number', 'corp_type', 'representative_name', 'representative_title',
@@ -871,6 +878,8 @@ clients.put('/clients/:id/company', async (c) => {
     'past_subsidies_json', 'desired_investments_json', 'current_challenges_json',
     'has_young_employees', 'has_female_executives', 'has_senior_employees', 'plans_to_hire',
     'certifications_json', 'constraints_json', 'notes',
+    // Phase 1c-A: 0020 追加カラム
+    'postal_code', 'address', 'contact_name', 'products_services', 'target_customers',
   ];
 
   const profileUpdateFields: string[] = [];
@@ -926,50 +935,8 @@ clients.put('/clients/:id/company', async (c) => {
 // Phase 1b: chat_facts CRUD（会社レベル fact のみ）
 // ============================================================
 
-/**
- * 正準 fact キー一覧
- * Phase 0.5 の 5-A で定義されたもののみ受け付ける。
- * ここに含まれないキーは拒否する（任意キーの混入防止）。
- */
-const CANONICAL_FACT_KEYS = [
-  'has_gbiz_id',
-  'is_invoice_registered',
-  'plans_wage_raise',
-  'tax_arrears',
-  'past_subsidy_same_type',
-  'has_business_plan',
-  'has_keiei_kakushin',
-  'has_jigyou_keizoku',
-] as const;
-
-/** fact キーの日本語ラベル */
-const FACT_KEY_LABELS_JA: Record<string, string> = {
-  has_gbiz_id: 'GビズIDプライム取得済み',
-  is_invoice_registered: 'インボイス登録済み',
-  plans_wage_raise: '賃上げ予定',
-  tax_arrears: '税金滞納',
-  past_subsidy_same_type: '同種補助金受給歴',
-  has_business_plan: '事業計画書あり',
-  has_keiei_kakushin: '経営革新計画承認',
-  has_jigyou_keizoku: '事業継続力強化計画認定',
-};
-
-/**
- * boolean 値を正規化
- * Phase 0.5 の 5-B ルール: true/1/yes/はい → "true"、false/0/no/いいえ → "false"
- * null は「未確認に戻す」
- */
-function normalizeBooleanFactValue(value: unknown): string | null {
-  if (value === null) return null; // 明示的に「未確認に戻す」
-  if (value === undefined) return undefined as any; // スキップ用（呼び出し元で処理）
-  
-  const strVal = String(value).toLowerCase().trim();
-  if (['true', '1', 'yes', 'はい'].includes(strVal)) return 'true';
-  if (['false', '0', 'no', 'いいえ'].includes(strVal)) return 'false';
-  
-  // パースできない場合はそのまま文字列として保存
-  return String(value);
-}
+// Phase 1c-B: CANONICAL_FACT_KEYS, FACT_KEY_LABELS_JA, normalizeBooleanFactValue は
+// src/lib/canonical-facts.ts からインポート済み
 
 /**
  * GET /api/agency/clients/:id/facts - 顧客のfacts取得
@@ -1021,7 +988,7 @@ clients.get('/clients/:id/facts', async (c) => {
     fact_key: f.fact_key,
     fact_value: f.fact_value,
     label_ja: FACT_KEY_LABELS_JA[f.fact_key] || f.fact_key,
-    is_canonical: (CANONICAL_FACT_KEYS as readonly string[]).includes(f.fact_key),
+    is_canonical: isCanonicalFactKey(f.fact_key),
     source: f.source,
     confidence: f.confidence,
     updated_at: f.updated_at,
@@ -1096,7 +1063,7 @@ clients.put('/clients/:id/facts', async (c) => {
   // バリデーション: canonical キーのみ受け付け
   // ============================================================
   const unknownKeys = Object.keys(facts).filter(
-    k => !(CANONICAL_FACT_KEYS as readonly string[]).includes(k)
+    k => !isCanonicalFactKey(k)
   );
   if (unknownKeys.length > 0) {
     return c.json<ApiResponse<any>>({

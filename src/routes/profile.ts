@@ -14,6 +14,7 @@
 import { Hono } from 'hono';
 import type { Env, Variables, ApiResponse } from '../types';
 import { requireAuth } from '../middleware/auth';
+import { CANONICAL_FACT_KEYS } from '../lib/canonical-facts';
 
 const profile = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -245,6 +246,7 @@ profile.put('/', async (c) => {
     }
     
     // company_profile テーブルの更新項目
+    // Phase 1c-A: 0020 追加カラム（postal_code, address, contact_name, products_services, target_customers）を含む
     const profileFields = [
       'corp_number', 'corp_type', 'representative_name', 'representative_title',
       'founding_year', 'founding_month', 'website_url', 'contact_email', 'contact_phone',
@@ -252,7 +254,9 @@ profile.put('/', async (c) => {
       'fiscal_year_end', 'is_profitable', 'has_debt',
       'past_subsidies_json', 'desired_investments_json', 'current_challenges_json',
       'has_young_employees', 'has_female_executives', 'has_senior_employees', 'plans_to_hire',
-      'certifications_json', 'constraints_json', 'notes'
+      'certifications_json', 'constraints_json', 'notes',
+      // 0020 追加カラム
+      'postal_code', 'address', 'contact_name', 'products_services', 'target_customers'
     ];
     
     const profileUpdates: string[] = [];
@@ -293,7 +297,8 @@ profile.put('/', async (c) => {
     }
     
     // chat_facts テーブルへの保存（会社レベルのfacts）
-    const factKeys = ['has_gbiz_id', 'is_invoice_registered', 'plans_wage_raise', 'tax_arrears', 'has_business_plan', 'has_keiei_kakushin', 'has_jigyou_keizoku'];
+    // Phase 1c-B: canonical fact keys を共通モジュールから取得
+    const factKeys = CANONICAL_FACT_KEYS;
     
     for (const key of factKeys) {
       if (factsData[key] !== undefined && factsData[key] !== null) {
