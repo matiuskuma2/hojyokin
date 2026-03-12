@@ -10,6 +10,9 @@
  * PUT    /clients/:id/company    - 顧客の会社情報更新
  * GET    /clients/:id/facts      - 顧客のfacts取得（Phase 1b）
  * PUT    /clients/:id/facts      - 顧客のfacts更新（Phase 1b）
+ * GET    /clients/:id/documents  - 顧客の書類一覧（Phase 2b）
+ * POST   /clients/:id/documents  - 顧客の書類アップロード（Phase 2b）
+ * DELETE /clients/:id/documents/:docId - 顧客の書類削除（Phase 2b）
  */
 
 
@@ -1216,6 +1219,280 @@ clients.put('/clients/:id/facts', async (c) => {
       ...(errors.length > 0 ? { errors } : {}),
     },
   });
+});
+
+// ============================================================
+// Phase 2b: company_documents CRUD（士業 → 顧客企業の書類管理）
+// ============================================================
+
+/**
+ * 正準 doc_type 値
+ * - corp_registry : 登記簿（履歴事項全部証明書）
+ * - financials    : 決算書
+ * - tax_return    : 確定申告書
+ * - business_plan : 事業計画書
+ * - other         : その他
+ */
+const VALID_DOC_TYPES = ['corp_registry', 'financials', 'tax_return', 'business_plan', 'other'] as const;
+
+/**
+ * ドキュメント関連の共通: 顧客の所有確認 + company_id 取得
+ * agency → client → company_id の権限パスを一箇所に集約
+ */
+async function resolveClientCompanyId(
+  db: D1Database,
+  clientId: string,
+  agencyId: string,
+): Promise<{ ok: true; companyId: string } | { ok: false; code: string; message: string; status: number }> {
+  const client = await db.prepare(`
+    SELECT company_id FROM agency_clients WHERE id = ? AND agency_id = ?
+  `).bind(clientId, agencyId).first<{ company_id: string }>();
+
+  if (!client) {
+    return { ok: false, code: 'NOT_FOUND', message: 'Client not found', status: 404 };
+  }
+  return { ok: true, companyId: client.company_id };
+}
+
+/**
+ * GET /api/agency/clients/:id/documents - 顧客の書類一覧
+ * 
+ * extract 関連フィールド（extracted_json, confidence, status）も返す。
+ * raw_text は巨大になりうるため除外。
+ */
+clients.get('/clients/:id/documents', async (c) => {
+  const db = c.env.DB;
+  const user = getCurrentUser(c);
+  const clientId = c.req.param('id');
+
+  const agencyInfo = await getUserAgency(db, user.id);
+  if (!agencyInfo) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'NOT_AGENCY', message: 'Agency account required' },
+    }, 403);
+  }
+
+  const resolved = await resolveClientCompanyId(db, clientId, agencyInfo.agency.id as string);
+  if (!resolved.ok) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: resolved.code, message: resolved.message },
+    }, resolved.status as any);
+  }
+
+  try {
+    const documents = await db.prepare(`
+      SELECT id, company_id, doc_type, original_filename, content_type,
+             size_bytes, status, confidence, uploaded_at, updated_at
+      FROM company_documents
+      WHERE company_id = ?
+      ORDER BY uploaded_at DESC
+    `).bind(resolved.companyId).all();
+
+    return c.json<ApiResponse<any>>({
+      success: true,
+      data: {
+        company_id: resolved.companyId,
+        documents: documents.results || [],
+        total: documents.results?.length || 0,
+      },
+    });
+  } catch (error) {
+    console.error('[Agency Documents] GET list error:', error);
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'INTERNAL_ERROR', message: 'Failed to get documents' },
+    }, 500);
+  }
+});
+
+/**
+ * POST /api/agency/clients/:id/documents - 顧客の書類アップロード
+ * 
+ * multipart/form-data で file + doc_type を受け取る。
+ * - file: PDF/JPEG/PNG/WebP, 10MB 上限
+ * - doc_type: corp_registry | financials | tax_return | business_plan | other (デフォルト: other)
+ * 
+ * R2 key 命名規則: company-documents/{companyId}/{docId}/{filename}
+ * （profile.ts L508 と統一）
+ */
+clients.post('/clients/:id/documents', async (c) => {
+  const db = c.env.DB;
+  const user = getCurrentUser(c);
+  const clientId = c.req.param('id');
+
+  const agencyInfo = await getUserAgency(db, user.id);
+  if (!agencyInfo) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'NOT_AGENCY', message: 'Agency account required' },
+    }, 403);
+  }
+
+  const resolved = await resolveClientCompanyId(db, clientId, agencyInfo.agency.id as string);
+  if (!resolved.ok) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: resolved.code, message: resolved.message },
+    }, resolved.status as any);
+  }
+
+  try {
+    const formData = await c.req.formData();
+    const file = formData.get('file') as File | null;
+    const docTypeInput = (formData.get('doc_type') as string)?.trim() || 'other';
+
+    // === バリデーション ===
+
+    if (!file) {
+      return c.json<ApiResponse<null>>({
+        success: false,
+        error: { code: 'VALIDATION_ERROR', message: 'file is required' },
+      }, 400);
+    }
+
+    // ファイルサイズ (10MB)
+    if (file.size > 10 * 1024 * 1024) {
+      return c.json<ApiResponse<null>>({
+        success: false,
+        error: { code: 'VALIDATION_ERROR', message: 'File size must be less than 10MB' },
+      }, 400);
+    }
+
+    // Content-Type
+    const allowedTypes = ['application/pdf', 'image/jpeg', 'image/png', 'image/webp'];
+    if (!allowedTypes.includes(file.type)) {
+      return c.json<ApiResponse<null>>({
+        success: false,
+        error: { code: 'VALIDATION_ERROR', message: 'Only PDF and images (JPEG, PNG, WebP) are allowed' },
+      }, 400);
+    }
+
+    // doc_type 正準値チェック
+    const docType = (VALID_DOC_TYPES as readonly string[]).includes(docTypeInput)
+      ? docTypeInput
+      : 'other';
+
+    // === R2 アップロード ===
+    const documentId = generateId();
+    const r2Key = `company-documents/${resolved.companyId}/${documentId}/${file.name}`;
+
+    // R2 が利用可能な場合のみアップロード（ローカル開発時は R2 なし）
+    if ((c.env as any).R2) {
+      const arrayBuffer = await file.arrayBuffer();
+      await (c.env as any).R2.put(r2Key, arrayBuffer, {
+        httpMetadata: { contentType: file.type },
+      });
+    }
+
+    // === DB 記録 ===
+    const now = new Date().toISOString();
+    await db.prepare(`
+      INSERT INTO company_documents
+        (id, company_id, doc_type, original_filename, content_type, size_bytes, r2_key, status, uploaded_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'uploaded', ?, ?)
+    `).bind(
+      documentId,
+      resolved.companyId,
+      docType,
+      file.name,
+      file.type,
+      file.size,
+      r2Key,
+      now,
+      now,
+    ).run();
+
+    return c.json<ApiResponse<any>>({
+      success: true,
+      data: {
+        id: documentId,
+        company_id: resolved.companyId,
+        doc_type: docType,
+        original_filename: file.name,
+        content_type: file.type,
+        size_bytes: file.size,
+        status: 'uploaded',
+        uploaded_at: now,
+      },
+    }, 201);
+  } catch (error) {
+    console.error('[Agency Documents] POST upload error:', error);
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'INTERNAL_ERROR', message: 'Failed to upload document' },
+    }, 500);
+  }
+});
+
+/**
+ * DELETE /api/agency/clients/:id/documents/:docId - 顧客の書類削除
+ * 
+ * - DB レコード + R2 オブジェクト の両方を削除（profile.ts L585-630 と統一）
+ * - 所有権確認: agency → client → company_id → document.company_id
+ */
+clients.delete('/clients/:id/documents/:docId', async (c) => {
+  const db = c.env.DB;
+  const user = getCurrentUser(c);
+  const clientId = c.req.param('id');
+  const docId = c.req.param('docId');
+
+  const agencyInfo = await getUserAgency(db, user.id);
+  if (!agencyInfo) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'NOT_AGENCY', message: 'Agency account required' },
+    }, 403);
+  }
+
+  const resolved = await resolveClientCompanyId(db, clientId, agencyInfo.agency.id as string);
+  if (!resolved.ok) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: resolved.code, message: resolved.message },
+    }, resolved.status as any);
+  }
+
+  try {
+    // 書類の存在確認 + 所有権確認（company_id 一致）
+    const doc = await db.prepare(`
+      SELECT id, r2_key FROM company_documents WHERE id = ? AND company_id = ?
+    `).bind(docId, resolved.companyId).first<{ id: string; r2_key: string | null }>();
+
+    if (!doc) {
+      return c.json<ApiResponse<null>>({
+        success: false,
+        error: { code: 'NOT_FOUND', message: 'Document not found' },
+      }, 404);
+    }
+
+    // R2 から削除
+    if ((c.env as any).R2 && doc.r2_key) {
+      try {
+        await (c.env as any).R2.delete(doc.r2_key);
+      } catch (r2Error) {
+        // R2 削除失敗はログのみ（DB レコードは削除を続行）
+        console.error('[Agency Documents] R2 delete failed:', r2Error);
+      }
+    }
+
+    // DB から削除
+    await db.prepare(`
+      DELETE FROM company_documents WHERE id = ? AND company_id = ?
+    `).bind(docId, resolved.companyId).run();
+
+    return c.json<ApiResponse<{ deleted: boolean }>>({
+      success: true,
+      data: { deleted: true },
+    });
+  } catch (error) {
+    console.error('[Agency Documents] DELETE error:', error);
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'INTERNAL_ERROR', message: 'Failed to delete document' },
+    }, 500);
+  }
 });
 
 /**
