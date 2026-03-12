@@ -8,6 +8,8 @@
  * GET    /clients/:id            - 顧客詳細
  * PUT    /clients/:id            - 顧客更新
  * PUT    /clients/:id/company    - 顧客の会社情報更新
+ * GET    /clients/:id/facts      - 顧客のfacts取得（Phase 1b）
+ * PUT    /clients/:id/facts      - 顧客のfacts更新（Phase 1b）
  */
 
 
@@ -917,6 +919,260 @@ clients.put('/clients/:id/company', async (c) => {
   return c.json<ApiResponse<any>>({
     success: true,
     data: { message: 'Company information updated' },
+  });
+});
+
+// ============================================================
+// Phase 1b: chat_facts CRUD（会社レベル fact のみ）
+// ============================================================
+
+/**
+ * 正準 fact キー一覧
+ * Phase 0.5 の 5-A で定義されたもののみ受け付ける。
+ * ここに含まれないキーは拒否する（任意キーの混入防止）。
+ */
+const CANONICAL_FACT_KEYS = [
+  'has_gbiz_id',
+  'is_invoice_registered',
+  'plans_wage_raise',
+  'tax_arrears',
+  'past_subsidy_same_type',
+  'has_business_plan',
+  'has_keiei_kakushin',
+  'has_jigyou_keizoku',
+] as const;
+
+/** fact キーの日本語ラベル */
+const FACT_KEY_LABELS_JA: Record<string, string> = {
+  has_gbiz_id: 'GビズIDプライム取得済み',
+  is_invoice_registered: 'インボイス登録済み',
+  plans_wage_raise: '賃上げ予定',
+  tax_arrears: '税金滞納',
+  past_subsidy_same_type: '同種補助金受給歴',
+  has_business_plan: '事業計画書あり',
+  has_keiei_kakushin: '経営革新計画承認',
+  has_jigyou_keizoku: '事業継続力強化計画認定',
+};
+
+/**
+ * boolean 値を正規化
+ * Phase 0.5 の 5-B ルール: true/1/yes/はい → "true"、false/0/no/いいえ → "false"
+ * null は「未確認に戻す」
+ */
+function normalizeBooleanFactValue(value: unknown): string | null {
+  if (value === null) return null; // 明示的に「未確認に戻す」
+  if (value === undefined) return undefined as any; // スキップ用（呼び出し元で処理）
+  
+  const strVal = String(value).toLowerCase().trim();
+  if (['true', '1', 'yes', 'はい'].includes(strVal)) return 'true';
+  if (['false', '0', 'no', 'いいえ'].includes(strVal)) return 'false';
+  
+  // パースできない場合はそのまま文字列として保存
+  return String(value);
+}
+
+/**
+ * GET /api/agency/clients/:id/facts - 顧客のfacts取得
+ * 
+ * 会社レベル fact (subsidy_id = NULL) をすべて返す。
+ * canonical キー以外の追加 fact も含む（チャット由来のものなど）。
+ */
+clients.get('/clients/:id/facts', async (c) => {
+  const db = c.env.DB;
+  const user = getCurrentUser(c);
+  const clientId = c.req.param('id');
+
+  const agencyInfo = await getUserAgency(db, user.id);
+  if (!agencyInfo) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'NOT_AGENCY', message: 'Agency account required' },
+    }, 403);
+  }
+
+  // 顧客の所有確認と company_id 取得
+  const client = await db.prepare(`
+    SELECT company_id FROM agency_clients WHERE id = ? AND agency_id = ?
+  `).bind(clientId, agencyInfo.agency.id).first<{ company_id: string }>();
+
+  if (!client) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'NOT_FOUND', message: 'Client not found' },
+    }, 404);
+  }
+
+  // 会社レベル fact (subsidy_id IS NULL) をすべて取得
+  const factsResult = await db.prepare(`
+    SELECT fact_key, fact_value, source, confidence, updated_at, created_at
+    FROM chat_facts
+    WHERE company_id = ? AND subsidy_id IS NULL
+    ORDER BY fact_key ASC
+  `).bind(client.company_id).all<{
+    fact_key: string;
+    fact_value: string | null;
+    source: string | null;
+    confidence: number | null;
+    updated_at: string | null;
+    created_at: string | null;
+  }>();
+
+  const facts = (factsResult.results || []).map(f => ({
+    fact_key: f.fact_key,
+    fact_value: f.fact_value,
+    label_ja: FACT_KEY_LABELS_JA[f.fact_key] || f.fact_key,
+    is_canonical: (CANONICAL_FACT_KEYS as readonly string[]).includes(f.fact_key),
+    source: f.source,
+    confidence: f.confidence,
+    updated_at: f.updated_at,
+  }));
+
+  return c.json<ApiResponse<any>>({
+    success: true,
+    data: {
+      company_id: client.company_id,
+      facts,
+      canonical_keys: CANONICAL_FACT_KEYS,
+    },
+  });
+});
+
+/**
+ * PUT /api/agency/clients/:id/facts - 顧客のfacts更新（upsert）
+ * 
+ * Phase 1b: 士業が代理で会社レベル fact を設定する。
+ * - canonical キーのみ受け付け（任意キーの書き込みは拒否）
+ * - boolean 値は自動正規化（true/1/yes/はい → "true"）
+ * - null 送信 → fact_value = null（「未確認に戻す」）
+ * - undefined（キー未送信）→ スキップ（既存値を変更しない）
+ * - source は 'agency_input' で固定
+ */
+clients.put('/clients/:id/facts', async (c) => {
+  const db = c.env.DB;
+  const user = getCurrentUser(c);
+  const clientId = c.req.param('id');
+
+  const agencyInfo = await getUserAgency(db, user.id);
+  if (!agencyInfo) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'NOT_AGENCY', message: 'Agency account required' },
+    }, 403);
+  }
+
+  // 顧客の所有確認と company_id 取得
+  const client = await db.prepare(`
+    SELECT company_id FROM agency_clients WHERE id = ? AND agency_id = ?
+  `).bind(clientId, agencyInfo.agency.id).first<{ company_id: string }>();
+
+  if (!client) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'NOT_FOUND', message: 'Client not found' },
+    }, 404);
+  }
+
+  // JSON パース
+  const parseResult = await safeParseJsonBody<{
+    facts: Record<string, boolean | string | null | undefined>;
+  }>(c);
+
+  if (!parseResult.ok) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'INVALID_JSON', message: parseResult.error },
+    }, 400);
+  }
+
+  const { facts } = parseResult.data;
+  if (!facts || typeof facts !== 'object') {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'VALIDATION_ERROR', message: 'facts object is required' },
+    }, 400);
+  }
+
+  // ============================================================
+  // バリデーション: canonical キーのみ受け付け
+  // ============================================================
+  const unknownKeys = Object.keys(facts).filter(
+    k => !(CANONICAL_FACT_KEYS as readonly string[]).includes(k)
+  );
+  if (unknownKeys.length > 0) {
+    return c.json<ApiResponse<any>>({
+      success: false,
+      error: {
+        code: 'VALIDATION_ERROR',
+        message: `Unknown fact keys: ${unknownKeys.join(', ')}. Allowed: ${CANONICAL_FACT_KEYS.join(', ')}`,
+      },
+    }, 400);
+  }
+
+  // ============================================================
+  // upsert: profile.ts L298-320 と同じパターン（SELECT → UPDATE / INSERT）
+  // source は 'agency_input' で固定
+  // ============================================================
+  const now = new Date().toISOString();
+  let updatedCount = 0;
+  let insertedCount = 0;
+  let clearedCount = 0; // null に戻した数
+  const errors: string[] = [];
+
+  for (const key of CANONICAL_FACT_KEYS) {
+    const rawValue = facts[key];
+    
+    // undefined（キー未送信）→ スキップ
+    if (rawValue === undefined) continue;
+    
+    // boolean 値を正規化
+    const normalizedValue = normalizeBooleanFactValue(rawValue);
+    if (normalizedValue === undefined) continue; // safety
+
+    try {
+      // 既存の fact を確認
+      const existingFact = await db.prepare(`
+        SELECT id FROM chat_facts WHERE company_id = ? AND fact_key = ? AND subsidy_id IS NULL
+      `).bind(client.company_id, key).first<{ id: string }>();
+
+      if (existingFact) {
+        // UPDATE（null の場合も UPDATE: 「未確認に戻す」）
+        await db.prepare(`
+          UPDATE chat_facts SET fact_value = ?, source = 'agency_input', confidence = 100, updated_at = ? WHERE id = ?
+        `).bind(normalizedValue, now, existingFact.id).run();
+        
+        if (normalizedValue === null) {
+          clearedCount++;
+        } else {
+          updatedCount++;
+        }
+      } else {
+        // INSERT（新規 fact の作成）
+        const factId = generateId();
+        await db.prepare(`
+          INSERT INTO chat_facts (id, user_id, company_id, subsidy_id, fact_key, fact_value, confidence, source, created_at, updated_at)
+          VALUES (?, ?, ?, NULL, ?, ?, 100, 'agency_input', ?, ?)
+        `).bind(factId, user.id, client.company_id, key, normalizedValue, now, now).run();
+        insertedCount++;
+      }
+    } catch (err) {
+      const errMsg = `Failed to upsert fact '${key}': ${err instanceof Error ? err.message : String(err)}`;
+      console.error(errMsg);
+      errors.push(errMsg);
+    }
+  }
+
+  return c.json<ApiResponse<any>>({
+    success: true,
+    data: {
+      message: 'Facts updated',
+      summary: {
+        updated: updatedCount,
+        inserted: insertedCount,
+        cleared: clearedCount,
+        errors: errors.length,
+      },
+      ...(errors.length > 0 ? { errors } : {}),
+    },
   });
 });
 
