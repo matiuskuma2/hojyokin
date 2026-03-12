@@ -3,7 +3,7 @@
 ## 📋 プロジェクト概要
 
 - **Name**: subsidy-matching (hojyokin)
-- **Version**: 7.3.0 (Phase 26 - P0実装: Gate + テキスト解析エンジン + 質問生成)
+- **Version**: 7.4.0 (Agency Phase 3a - approve マッピング駆動 SSOT)
 - **Goal**: 企業情報を登録するだけで、最適な補助金・助成金を自動でマッチング＆申請書ドラフト作成
 - **管理者**: モギモギ（関屋紘之）
 - **本番URL**: https://hojyokin.pages.dev
@@ -59,7 +59,37 @@
 
 ---
 
-### 🎉 最新: Phase 26 - P0実装: Gate + テキスト解析 + 質問生成 (v7.3.0)
+### 🎉 最新: Agency Phase 3a - approve マッピング駆動 SSOT (v7.4.0)
+
+**Agency Phase 3a 成果 (2026-03-12)**:
+- **`src/lib/intake-field-mappings.ts` 新規作成**: intake_field_mappings テーブルをランタイム SSOT として読み取る共通モジュール
+  - `getIntakeFieldMappings(db)`: DB 読み取り → フォールバック（warn/error ログ付き）→ DB+フォールバックマージ
+  - `splitPayloadByTarget(payload, mappings)`: payload を companies / company_profile に安全に仕分け
+  - 安全装置: target_table allowlist (`companies`, `company_profile` のみ)、target_column allowlist、重複書き込み防止
+  - フォールバック定数: 38 マッピング（snake_case + camelCase エイリアス対応）
+- **`submissions.ts` approve 経路をマッピング駆動に置き換え**: ハードコード fieldMapping / profileFieldMapping を完全撤去
+  - DB 読み取り → フォールバック → 仕分け → UPDATE/INSERT の一貫パイプライン
+  - approve レスポンスに `apply_result` サマリー追加（companies_updated, profile_updated, skipped_unmapped, skipped_invalid_target, mapping_source）
+  - employee_count → employee_band 自動計算は維持
+- **テスト 43 件全通過**: T1(snake_case) / T2(camelCase) / T3(mixed) / T4(validation) / T5(reject) / T6(empty) / T7(0020カラム) / T8(重複防止)
+- **影響範囲限定**: profile.ts, clients.ts, portal.ts, chat_facts, documents は一切変更なし
+
+**Agency 全フェーズ進捗 (Phase 0 〜 3a)**:
+| Phase | 内容 | 状態 | コミット |
+|-------|------|------|---------|
+| 0/0.5 | BUG-1/BUG-2 修正 + canonical write matrix | ✅ | 4233cb6 |
+| 1a | agency PUT /company を companies + company_profile 全フィールド対応 | ✅ | 44c170c |
+| 1b | GET/PUT /clients/:id/facts (agency chat_facts CRUD) | ✅ | fece8a1 |
+| 1c | 0020 カラム対応 + canonical fact keys 統一 | ✅ | d66b867 |
+| 2a | GET /clients/:id 構造化レスポンス + 共通 completeness 関数 | ✅ | c888b93 |
+| 2b | agency documents CRUD (GET/POST/DELETE /clients/:id/documents) | ✅ | 648b89c |
+| **3a** | **approve をマッピング駆動に置き換え (intake_field_mappings SSOT)** | **✅** | **6117e55** |
+| 3b | agency 側 extract/apply（SSOT ベース）| 未着手 | - |
+
+**新規ファイル**: `src/lib/intake-field-mappings.ts`
+**変更ファイル**: `src/routes/agency/submissions.ts`
+
+### 🎉 Phase 26 - P0実装: Gate + テキスト解析 + 質問生成 (v7.3.0)
 
 **Phase 26 成果 (2026-02-13)**:
 - **P0-0a: DBマイグレーション**: chat_sessionsに6列追加（scheme_id, subsidy_title_at_start, acceptance_end_at_start, nsd_content_hash, draft_mode, nsd_source）→ 本番D1適用済み
@@ -1267,6 +1297,10 @@ npx wrangler deploy
 | `user_companies` | ユーザー・会社関連付け |
 | `company_profile` | 会社詳細プロフィール |
 | `company_documents` | アップロード書類 |
+| `intake_field_mappings` | インテーク項目→DB列マッピング（SSOT） |
+| `intake_submissions` | ポータル提出データ |
+| `intake_link_templates` | インテークリンクテンプレート |
+| `agency_client_history` | 顧客変更監査ログ |
 | `subsidy_cache` | 補助金キャッシュ |
 | `eligibility_rules` | 適格性判定ルール |
 | `chat_sessions` | 壁打ちセッション |
@@ -1532,6 +1566,7 @@ webapp/
 - [x] S3: 壁打ちチャット（事前判定 + 不足情報収集）
 - [x] S4: 申請書ドラフト生成（テンプレート + NGチェック）
 - [x] Agency機能（士業向け顧客管理）
+- [x] Agency intake: マッピング駆動 approve（intake_field_mappings SSOT）
 - [x] 運用監視ダッシュボード（/admin/ops）
 - [x] PWA対応（Service Worker + Manifest）
 - [x] 書類アップロード（PDF.js抽出）
@@ -1595,6 +1630,7 @@ Private
 
 ## 🔄 更新履歴
 
+- **2026-03-12 (v7.4.0)**: Agency Phase 3a - approve マッピング駆動 SSOT: intake-field-mappings.ts 新規作成、submissions.ts approve をDB駆動に置換、テスト43件全通過、target_table/column allowlist による安全装置
 - **2026-02-08 (v4.8.1)**: 管理画面ダッシュボード強化 - subsidy-overview APIバグ修正(overview_source→crawled_at判定)、/dashboard APIに補助金サマリー追加、Izumiクロール進捗にlast_run/daily_stats追加、フロントエンド: ミニサマリーカード4枚+クロール進捗5カラム+日別統計テーブル
 - **2026-02-08 (v4.8.0)**: SEARCH_BACKEND=cache切替 - 検索178件→18,809件（100倍改善）、searchFromCacheのSQL直接ページネーション修正、acceptance_end_datetimeカラム同期、simpleScrapeコスト記録、tokyo系expires_at修正、DATA-PIPELINE.md作成
 - **2026-02-07 (v4.6.0)**: Phase 2 izumi大量投入 - 18,651件をsubsidy_cacheに投入、ready-boost-izumiで18,618件をready化、全体ready率93.0%達成（1,563→20,181件）
