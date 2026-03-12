@@ -713,8 +713,11 @@ clients.put('/clients/:id/company', async (c) => {
   }
   
   // P1-9: JSON parse例外ハンドリング
+  // Phase 1a: corporate (profile.ts) と同等のフィールドを受け付ける
   const parseResult = await safeParseJsonBody<{
+    // === companies テーブル ===
     companyName?: string;
+    postal_code?: string;
     prefecture?: string;
     city?: string;
     industry_major?: string;
@@ -723,11 +726,33 @@ clients.put('/clients/:id/company', async (c) => {
     capital?: number;
     established_date?: string;
     annual_revenue?: number;
+    // === company_profile テーブル ===
     representative_name?: string;
+    representative_title?: string;
+    corp_number?: string;
+    corp_type?: string;
+    founding_year?: number;
+    founding_month?: number;
     website_url?: string;
     contact_email?: string;
     contact_phone?: string;
     business_summary?: string;
+    main_products?: string;
+    main_customers?: string;
+    competitive_advantage?: string;
+    fiscal_year_end?: number;
+    is_profitable?: number | boolean;
+    has_debt?: number | boolean;
+    past_subsidies_json?: string;
+    desired_investments_json?: string;
+    current_challenges_json?: string;
+    has_young_employees?: number | boolean;
+    has_female_executives?: number | boolean;
+    has_senior_employees?: number | boolean;
+    plans_to_hire?: number | boolean;
+    certifications_json?: string;
+    constraints_json?: string;
+    notes?: string;
   }>(c);
   
   if (!parseResult.ok) {
@@ -737,57 +762,90 @@ clients.put('/clients/:id/company', async (c) => {
     }, 400);
   }
   
-  const { 
-    companyName, prefecture, city, industry_major, industry_minor,
-    employee_count, capital, established_date, annual_revenue,
-    representative_name, website_url, contact_email, contact_phone,
-    business_summary
-  } = parseResult.data;
-  
+  const body = parseResult.data;
   const now = new Date().toISOString();
   
-  // companiesテーブルを更新
+  // ============================================================
+  // Phase 1a: バリデーション（profile.ts と意味的に統一）
+  // ============================================================
+  const fieldErrors: Record<string, string> = {};
+
+  // 数値バリデーション
+  if (body.employee_count !== undefined && body.employee_count !== null) {
+    const ec = Number(body.employee_count);
+    if (isNaN(ec) || ec < 0 || !Number.isInteger(ec)) {
+      fieldErrors.employee_count = '従業員数は0以上の整数で入力してください';
+    }
+  }
+  if (body.capital !== undefined && body.capital !== null) {
+    const cap = Number(body.capital);
+    if (isNaN(cap) || cap < 0) {
+      fieldErrors.capital = '資本金は0以上の数値で入力してください';
+    }
+  }
+  if (body.annual_revenue !== undefined && body.annual_revenue !== null) {
+    const rev = Number(body.annual_revenue);
+    if (isNaN(rev) || rev < 0) {
+      fieldErrors.annual_revenue = '年商は0以上の数値で入力してください';
+    }
+  }
+  if (body.founding_year !== undefined && body.founding_year !== null) {
+    const fy = Number(body.founding_year);
+    if (isNaN(fy) || fy < 1800 || fy > new Date().getFullYear()) {
+      fieldErrors.founding_year = '創業年は1800〜現在年の範囲で入力してください';
+    }
+  }
+  if (body.founding_month !== undefined && body.founding_month !== null) {
+    const fm = Number(body.founding_month);
+    if (isNaN(fm) || fm < 1 || fm > 12) {
+      fieldErrors.founding_month = '創業月は1〜12の範囲で入力してください';
+    }
+  }
+  if (body.fiscal_year_end !== undefined && body.fiscal_year_end !== null) {
+    const fye = Number(body.fiscal_year_end);
+    if (isNaN(fye) || fye < 1 || fye > 12) {
+      fieldErrors.fiscal_year_end = '決算期は1〜12の範囲で入力してください';
+    }
+  }
+
+  if (Object.keys(fieldErrors).length > 0) {
+    return c.json<ApiResponse<any>>({
+      success: false,
+      error: { code: 'VALIDATION_ERROR', message: 'Validation failed', details: fieldErrors },
+    }, 400);
+  }
+
+  // ============================================================
+  // companies テーブル更新（データドリブン: profile.ts L227 と同じフィールドリスト）
+  // ============================================================
+  const companyFieldDefs: Array<{ key: string; dbColumn: string }> = [
+    { key: 'companyName', dbColumn: 'name' },
+    { key: 'postal_code', dbColumn: 'postal_code' },
+    { key: 'prefecture', dbColumn: 'prefecture' },
+    { key: 'city', dbColumn: 'city' },
+    { key: 'industry_major', dbColumn: 'industry_major' },
+    { key: 'industry_minor', dbColumn: 'industry_minor' },
+    { key: 'employee_count', dbColumn: 'employee_count' },
+    { key: 'capital', dbColumn: 'capital' },
+    { key: 'established_date', dbColumn: 'established_date' },
+    { key: 'annual_revenue', dbColumn: 'annual_revenue' },
+  ];
+
   const companyUpdateFields: string[] = [];
   const companyUpdateValues: (string | number | null)[] = [];
-  
-  if (companyName !== undefined) {
-    companyUpdateFields.push('name = ?');
-    companyUpdateValues.push(companyName);
+
+  for (const { key, dbColumn } of companyFieldDefs) {
+    const val = (body as any)[key];
+    if (val !== undefined) {
+      companyUpdateFields.push(`${dbColumn} = ?`);
+      companyUpdateValues.push(val);
+    }
   }
-  if (prefecture !== undefined) {
-    companyUpdateFields.push('prefecture = ?');
-    companyUpdateValues.push(prefecture);
-  }
-  if (city !== undefined) {
-    companyUpdateFields.push('city = ?');
-    companyUpdateValues.push(city);
-  }
-  if (industry_major !== undefined) {
-    companyUpdateFields.push('industry_major = ?');
-    companyUpdateValues.push(industry_major);
-  }
-  if (industry_minor !== undefined) {
-    companyUpdateFields.push('industry_minor = ?');
-    companyUpdateValues.push(industry_minor);
-  }
-  if (employee_count !== undefined) {
-    companyUpdateFields.push('employee_count = ?');
-    companyUpdateValues.push(employee_count);
-    // P0-4: calculateEmployeeBand使用
+
+  // employee_band 自動計算（employee_count が更新された場合）
+  if (body.employee_count !== undefined) {
     companyUpdateFields.push('employee_band = ?');
-    companyUpdateValues.push(calculateEmployeeBand(employee_count));
-  }
-  if (capital !== undefined) {
-    companyUpdateFields.push('capital = ?');
-    companyUpdateValues.push(capital);
-  }
-  if (established_date !== undefined) {
-    companyUpdateFields.push('established_date = ?');
-    companyUpdateValues.push(established_date);
-  }
-  if (annual_revenue !== undefined) {
-    companyUpdateFields.push('annual_revenue = ?');
-    companyUpdateValues.push(annual_revenue);
+    companyUpdateValues.push(calculateEmployeeBand(body.employee_count));
   }
   
   if (companyUpdateFields.length > 0) {
@@ -800,39 +858,60 @@ clients.put('/clients/:id/company', async (c) => {
     `).bind(...companyUpdateValues).run();
   }
   
-  // company_profileテーブルを更新
+  // ============================================================
+  // company_profile テーブル更新（Phase 1a: profile.ts L248-255 と同じフィールドリスト）
+  // ============================================================
+  const profileFieldList = [
+    'corp_number', 'corp_type', 'representative_name', 'representative_title',
+    'founding_year', 'founding_month', 'website_url', 'contact_email', 'contact_phone',
+    'business_summary', 'main_products', 'main_customers', 'competitive_advantage',
+    'fiscal_year_end', 'is_profitable', 'has_debt',
+    'past_subsidies_json', 'desired_investments_json', 'current_challenges_json',
+    'has_young_employees', 'has_female_executives', 'has_senior_employees', 'plans_to_hire',
+    'certifications_json', 'constraints_json', 'notes',
+  ];
+
   const profileUpdateFields: string[] = [];
   const profileUpdateValues: (string | number | null)[] = [];
-  
-  if (representative_name !== undefined) {
-    profileUpdateFields.push('representative_name = ?');
-    profileUpdateValues.push(representative_name);
-  }
-  if (website_url !== undefined) {
-    profileUpdateFields.push('website_url = ?');
-    profileUpdateValues.push(website_url);
-  }
-  if (contact_email !== undefined) {
-    profileUpdateFields.push('contact_email = ?');
-    profileUpdateValues.push(contact_email);
-  }
-  if (contact_phone !== undefined) {
-    profileUpdateFields.push('contact_phone = ?');
-    profileUpdateValues.push(contact_phone);
-  }
-  if (business_summary !== undefined) {
-    profileUpdateFields.push('business_summary = ?');
-    profileUpdateValues.push(business_summary);
+
+  for (const field of profileFieldList) {
+    const val = (body as any)[field];
+    if (val !== undefined) {
+      profileUpdateFields.push(`${field} = ?`);
+      profileUpdateValues.push(val);
+    }
   }
   
   if (profileUpdateFields.length > 0) {
-    profileUpdateFields.push('updated_at = ?');
-    profileUpdateValues.push(now);
-    profileUpdateValues.push(client.company_id);
-    
-    await db.prepare(`
-      UPDATE company_profile SET ${profileUpdateFields.join(', ')} WHERE company_id = ?
-    `).bind(...profileUpdateValues).run();
+    // upsert: company_profile が存在するか確認
+    const existingProfile = await db.prepare(
+      'SELECT company_id FROM company_profile WHERE company_id = ?'
+    ).bind(client.company_id).first();
+
+    if (existingProfile) {
+      // UPDATE
+      profileUpdateFields.push('updated_at = ?');
+      profileUpdateValues.push(now);
+      profileUpdateValues.push(client.company_id);
+      
+      await db.prepare(`
+        UPDATE company_profile SET ${profileUpdateFields.join(', ')} WHERE company_id = ?
+      `).bind(...profileUpdateValues).run();
+    } else {
+      // INSERT（profile.ts L285-291 と同じパターン）
+      const insertFieldNames = ['company_id', ...profileFieldList.filter(f => (body as any)[f] !== undefined), 'updated_at', 'created_at'];
+      const insertPlaceholders = insertFieldNames.map(() => '?').join(', ');
+      const insertValues = [
+        client.company_id,
+        ...profileFieldList.filter(f => (body as any)[f] !== undefined).map(f => (body as any)[f]),
+        now,
+        now,
+      ];
+      
+      await db.prepare(`
+        INSERT INTO company_profile (${insertFieldNames.join(', ')}) VALUES (${insertPlaceholders})
+      `).bind(...insertValues).run();
+    }
   }
   
   return c.json<ApiResponse<any>>({
