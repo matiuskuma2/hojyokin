@@ -1889,7 +1889,7 @@ agencyPages.get('/agency/clients/:id', (c) => {
         if (!comp) return;
         const section = document.getElementById('completeness-section');
         section.classList.remove('hidden');
-        const pct = comp.weighted_percentage || 0;
+        const pct = comp.percentage ?? comp.weighted_percentage ?? comp.overall_percent ?? 0;
         document.getElementById('completeness-pct').textContent = Math.round(pct) + '%';
         const bar = document.getElementById('completeness-bar');
         bar.style.width = pct + '%';
@@ -1929,7 +1929,7 @@ agencyPages.get('/agency/clients/:id', (c) => {
         const client = clientData.client;
         const prefName = prefMap[company.prefecture || client.prefecture] || company.prefecture || client.prefecture;
         const fields = [
-          { label: '会社名', value: company.name || client.name, required: true },
+          { label: '会社名', value: company.name || client.client_name, required: true },
           { label: '所在地', value: [prefName, company.city || client.city].filter(Boolean).join(' '), required: true },
           { label: '業種', value: company.industry_major || client.industry_major || client.industry, required: true },
           { label: '従業員数', value: (company.employee_count || client.employee_count) ? (company.employee_count || client.employee_count) + '名' : null, required: true },
@@ -2024,8 +2024,19 @@ agencyPages.get('/agency/clients/:id', (c) => {
           const typeLabel = docTypeLabels[d.doc_type] || d.doc_type;
           const hasExtraction = d.extraction_status === 'done';
           const extractionPending = d.extraction_status === 'pending' || d.extraction_status === 'processing';
-          return '<div class="p-4 hover:bg-gray-50"><div class="flex justify-between items-start"><div class="flex items-start gap-3"><i class="fas fa-file-pdf text-red-400 text-xl mt-1"></i><div><p class="font-medium">' + (d.original_filename || '書類') + '</p><div class="flex gap-2 mt-1"><span class="px-2 py-0.5 text-xs rounded bg-blue-50 text-blue-700">' + typeLabel + '</span>' + (hasExtraction ? '<span class="px-2 py-0.5 text-xs rounded bg-emerald-50 text-emerald-700"><i class="fas fa-check mr-1"></i>抽出済み</span>' : '') + (extractionPending ? '<span class="px-2 py-0.5 text-xs rounded bg-yellow-50 text-yellow-700"><i class="fas fa-spinner fa-spin mr-1"></i>処理中</span>' : '') + '</div><p class="text-xs text-gray-500 mt-1">' + new Date(d.created_at).toLocaleString('ja-JP') + '</p>' + (d.notes ? '<p class="text-xs text-gray-400 mt-0.5">' + d.notes + '</p>' : '') + '</div></div><div class="flex gap-1">' + (hasExtraction ? "<button onclick=\"viewExtraction('" + d.id + "')\" class=\"text-xs bg-blue-50 text-blue-600 px-2 py-1 rounded hover:bg-blue-100\"><i class=\"fas fa-magic mr-1\"></i>抽出結果</button>" : '') + "<button onclick=\"deleteDocument('" + d.id + "')\" class=\"text-xs bg-red-50 text-red-600 px-2 py-1 rounded hover:bg-red-100\"><i class=\"fas fa-trash\"></i></button></div></div></div>";
+          var viewBtn = hasExtraction ? '<button data-action="view-extraction" data-doc-id="' + d.id + '" class="text-xs bg-blue-50 text-blue-600 px-2 py-1 rounded hover:bg-blue-100"><i class="fas fa-magic mr-1"></i>抽出結果</button>' : '';
+          var delBtn = '<button data-action="delete-doc" data-doc-id="' + d.id + '" class="text-xs bg-red-50 text-red-600 px-2 py-1 rounded hover:bg-red-100"><i class="fas fa-trash"></i></button>';
+          return '<div class="p-4 hover:bg-gray-50"><div class="flex justify-between items-start"><div class="flex items-start gap-3"><i class="fas fa-file-pdf text-red-400 text-xl mt-1"></i><div><p class="font-medium">' + (d.original_filename || '書類') + '</p><div class="flex gap-2 mt-1"><span class="px-2 py-0.5 text-xs rounded bg-blue-50 text-blue-700">' + typeLabel + '</span>' + (hasExtraction ? '<span class="px-2 py-0.5 text-xs rounded bg-emerald-50 text-emerald-700"><i class="fas fa-check mr-1"></i>抽出済み</span>' : '') + (extractionPending ? '<span class="px-2 py-0.5 text-xs rounded bg-yellow-50 text-yellow-700"><i class="fas fa-spinner fa-spin mr-1"></i>処理中</span>' : '') + '</div><p class="text-xs text-gray-500 mt-1">' + new Date(d.created_at).toLocaleString('ja-JP') + '</p>' + (d.notes ? '<p class="text-xs text-gray-400 mt-0.5">' + d.notes + '</p>' : '') + '</div></div><div class="flex gap-1">' + viewBtn + delBtn + '</div></div></div>';
         }).join('');
+        // Event delegation for document action buttons
+        document.getElementById('documents-list').addEventListener('click', function(e) {
+          var btn = e.target.closest('[data-action]');
+          if (!btn) return;
+          var action = btn.getAttribute('data-action');
+          var docId = btn.getAttribute('data-doc-id');
+          if (action === 'view-extraction') viewExtraction(docId);
+          else if (action === 'delete-doc') deleteDocument(docId);
+        });
       }
       
       // ===== Tab 4: ファクト =====
@@ -2232,7 +2243,7 @@ agencyPages.get('/agency/clients/:id', (c) => {
         const client = clientData.client;
         const d = { ...company, ...profile };
         initCompanyEditSelects();
-        document.getElementById('edit-company-name').value = d.name || client.name || '';
+        document.getElementById('edit-company-name').value = d.name || client.client_name || '';
         document.getElementById('edit-company-prefecture').value = d.prefecture || client.prefecture || '';
         document.getElementById('edit-company-city').value = d.city || client.city || '';
         document.getElementById('edit-company-industry').value = d.industry_major || client.industry_major || client.industry || '';
