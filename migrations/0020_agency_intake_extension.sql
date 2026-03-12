@@ -63,7 +63,7 @@ INSERT OR IGNORE INTO intake_field_mappings (id, field_key, label_ja, input_type
   ('ifm_022', 'products_services', '主な製品・サービス', 'textarea', 'company_profile', 'products_services', 'business', 100, '{"maxLength":2000}'),
   ('ifm_023', 'target_customers', 'ターゲット顧客', 'textarea', 'company_profile', 'target_customers', 'business', 110, '{"maxLength":1000}'),
   ('ifm_030', 'capital', '資本金', 'number', 'companies', 'capital', 'financial', 120, '{"min":0}'),
-  ('ifm_031', 'annual_revenue', '年間売上高', 'number', 'company_profile', 'annual_revenue', 'financial', 130, '{"min":0}'),
+  ('ifm_031', 'annual_revenue', '年間売上高', 'number', 'companies', 'annual_revenue', 'financial', 130, '{"min":0}'),
   ('ifm_032', 'fiscal_year_end', '決算期', 'select', 'company_profile', 'fiscal_year_end', 'financial', 140, NULL),
   ('ifm_040', 'contact_name', '担当者名', 'text', 'company_profile', 'contact_name', 'contact', 150, '{"maxLength":100}'),
   ('ifm_041', 'contact_email', 'メールアドレス', 'text', 'company_profile', 'contact_email', 'contact', 160, '{"pattern":"email"}'),

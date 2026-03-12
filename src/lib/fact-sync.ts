@@ -123,12 +123,14 @@ const FACT_TO_PROFILE_MAP: Record<string, {
       return null; // false の場合は更新しない
     },
   },
-  'is_wage_raise_planned': {
-    table: 'company_profile',
-    column: 'plans_to_hire',
-    type: 'boolean',
-    transform: (v) => v === 'true' ? 1 : 0,
-  },
+  // BUG-2 修正（2026-03-12）: is_wage_raise_planned → plans_to_hire は semantic mismatch
+  // 「賃上げ予定」と「採用予定」は別概念。company_profile.plans_to_hire を汚染していた。
+  // is_wage_raise_planned は chat_facts にのみ保持し、screening-v2.ts が
+  // company.facts.plans_wage_raise として直接参照する。company_profile への同期は行わない。
+  // 
+  // 'is_wage_raise_planned': REMOVED — 賃上げ予定は採用予定ではない
+  //   旧: { table: 'company_profile', column: 'plans_to_hire', type: 'boolean' }
+  //   正: chat_facts のみ（screening が facts.plans_wage_raise で読む）
   'tax_arrears': {
     table: 'company_profile',
     column: 'constraints_json',
