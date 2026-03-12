@@ -3,7 +3,7 @@
 ## 📋 プロジェクト概要
 
 - **Name**: subsidy-matching (hojyokin)
-- **Version**: 7.4.0 (Agency Phase 3a - approve マッピング駆動 SSOT)
+- **Version**: 7.5.0 (Agency Phase 3b - extract/apply 共通ヘルパー)
 - **Goal**: 企業情報を登録するだけで、最適な補助金・助成金を自動でマッチング＆申請書ドラフト作成
 - **管理者**: モギモギ（関屋紘之）
 - **本番URL**: https://hojyokin.pages.dev
@@ -59,7 +59,48 @@
 
 ---
 
-### 🎉 最新: Agency Phase 3a - approve マッピング駆動 SSOT (v7.4.0)
+### 🎉 最新: Agency Phase 3b - extract/apply 共通ヘルパー (v7.5.0)
+
+**Agency Phase 3b 成果 (2026-03-12)**:
+- **`src/lib/document-apply.ts` 新規作成 (428行)**: extracted_json を companies/company_profile に反映する共通ヘルパー
+  - **doc_type ごとの抽出キー allowlist** (3段フィルタの第1段):
+    - `corp_registry`: company_name, address, representative_name/title, established_date, capital, business_purpose, corp_number, prefecture, city
+    - `financials`: fiscal_year_end, sales/annual_revenue, employee_count, is_profitable, capital
+    - `tax_return`: annual_revenue/sales, is_profitable, fiscal_year_end
+    - `business_plan`: business_summary, employee_count, products_services, target_customers, competitive_advantage
+    - `other` / 未知の doc_type: 全キーがフィルタされる（安全策）
+  - **extracted → field_key ブリッジマッピング**: extracted_json のキー名（sales, business_purpose 等）を intake_field_mappings の field_key（annual_revenue, business_summary 等）に変換
+  - **`isFieldEmpty()` 定義**: null/undefined/空文字/'[]'/'{}'のみ「未入力扱い」、0/false は「入力済み」
+  - **`applyExtractedToCompany()`**: extracted_json → allowlist → mapping → fill_empty/overwrite → UPDATE (+ INSERT fallback for company_profile) → ドキュメントステータスを 'applied' に更新
+  - **`buildApplyMapping()`**: GET extracted 用の表示マッピング生成（current_value, is_empty 付き）
+  - employee_count → employee_band 自動計算維持
+- **`clients.ts` に Phase 3b エンドポイント追加**:
+  - `GET /api/agency/clients/:id/documents/:docId/extracted`: 抽出結果表示（extracted_json + apply_mapping + current_value/is_empty）
+  - `POST /api/agency/clients/:id/documents/:docId/apply`: 抽出結果反映（fill_empty/overwrite）
+  - 監査ログ二重記録: `agency_client_history` (action=DOCUMENT_APPLY) + `audit_log` (action=DOCUMENT_EXTRACTION_APPLIED)
+- **テスト 39 件全通過** + 既存 43 件も全通過（合計 82 件）:
+  - T1: GET extracted (no extraction) / T2: POST apply (no extraction → error)
+  - T3: corp_registry full flow (fill_empty) / T4: financials + overwrite + doc_type filter
+  - T5: doc_type "other" → all filtered / T6: fill_empty skips existing values
+  - T7: business_plan doc_type filter / T8: Document status after apply / T9: Audit log (dual)
+- **影響範囲**: profile.ts, submissions.ts, portal.ts は一切変更なし
+
+**Agency 全フェーズ進捗 (Phase 0 〜 3b)**:
+| Phase | 内容 | 状態 | コミット |
+|-------|------|------|--------|
+| 0/0.5 | BUG-1/BUG-2 修正 + canonical write matrix | ✅ | 4233cb6 |
+| 1a | agency PUT /company を companies + company_profile 全フィールド対応 | ✅ | 44c170c |
+| 1b | GET/PUT /clients/:id/facts (agency chat_facts CRUD) | ✅ | fece8a1 |
+| 1c | 0020 カラム対応 + canonical fact keys 統一 | ✅ | d66b867 |
+| 2a | GET /clients/:id 構造化レスポンス + 共通 completeness 関数 | ✅ | c888b93 |
+| 2b | agency documents CRUD (GET/POST/DELETE /clients/:id/documents) | ✅ | 648b89c |
+| 3a | approve をマッピング駆動に置き換え (intake_field_mappings SSOT) | ✅ | 6117e55 |
+| **3b** | **agency 側 extract/apply（doc_type allowlist + 共通ヘルパー）** | **✅** | **a502fcd** |
+
+**Phase 3b 新規ファイル**: `src/lib/document-apply.ts`
+**Phase 3b 変更ファイル**: `src/routes/agency/clients.ts`
+
+### Agency Phase 3a - approve マッピング駆動 SSOT (v7.4.0)
 
 **Agency Phase 3a 成果 (2026-03-12)**:
 - **`src/lib/intake-field-mappings.ts` 新規作成**: intake_field_mappings テーブルをランタイム SSOT として読み取る共通モジュール

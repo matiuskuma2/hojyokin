@@ -13,6 +13,8 @@
  * GET    /clients/:id/documents  - 顧客の書類一覧（Phase 2b）
  * POST   /clients/:id/documents  - 顧客の書類アップロード（Phase 2b）
  * DELETE /clients/:id/documents/:docId - 顧客の書類削除（Phase 2b）
+ * GET    /clients/:id/documents/:docId/extracted - 抽出結果表示（Phase 3b）
+ * POST   /clients/:id/documents/:docId/apply     - 抽出結果反映（Phase 3b）
  */
 
 
@@ -23,6 +25,9 @@ import { getUserAgency, generateId, parseIntWithLimits, safeParseJsonBody, calcu
 import { sendClientInviteEmail } from '../../services/email';
 import { CANONICAL_FACT_KEYS, FACT_KEY_LABELS_JA, normalizeBooleanFactValue, isCanonicalFactKey } from '../../lib/canonical-facts';
 import { calculateCompleteness, calculateSimpleCompleteness } from '../../lib/completeness';
+import { getIntakeFieldMappings } from '../../lib/intake-field-mappings';
+import { applyExtractedToCompany, buildApplyMapping, isFieldEmpty } from '../../lib/document-apply';
+import type { ApplyMode, DocumentApplyResult } from '../../lib/document-apply';
 
 const clients = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -1495,8 +1500,270 @@ clients.delete('/clients/:id/documents/:docId', async (c) => {
   }
 });
 
+// ============================================================
+// Phase 3b: 抽出結果表示 / 反映
+// ============================================================
+
 /**
- * POST /api/agency/links - リンク発行
+ * GET /api/agency/clients/:id/documents/:docId/extracted
+ * 
+ * 書類の抽出結果 (extracted_json) を表示する。
+ * - extracted_json の内容
+ * - doc_type に応じた apply 可能フィールドのマッピング情報
+ * - 現在の companies/company_profile の値（fill_empty 判定用）
  */
+clients.get('/clients/:id/documents/:docId/extracted', async (c) => {
+  const db = c.env.DB;
+  const user = getCurrentUser(c);
+  const clientId = c.req.param('id');
+  const docId = c.req.param('docId');
+
+  const agencyInfo = await getUserAgency(db, user.id);
+  if (!agencyInfo) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'NOT_AGENCY', message: 'Agency account required' },
+    }, 403);
+  }
+
+  const resolved = await resolveClientCompanyId(db, clientId, agencyInfo.agency.id as string);
+  if (!resolved.ok) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: resolved.code, message: resolved.message },
+    }, resolved.status as any);
+  }
+
+  try {
+    const doc = await db.prepare(`
+      SELECT id, doc_type, original_filename, status, extracted_json, confidence, updated_at
+      FROM company_documents
+      WHERE id = ? AND company_id = ?
+    `).bind(docId, resolved.companyId).first<{
+      id: string;
+      doc_type: string;
+      original_filename: string;
+      status: string;
+      extracted_json: string | null;
+      confidence: number | null;
+      updated_at: string;
+    }>();
+
+    if (!doc) {
+      return c.json<ApiResponse<null>>({
+        success: false,
+        error: { code: 'NOT_FOUND', message: 'Document not found' },
+      }, 404);
+    }
+
+    let extracted: Record<string, unknown> | null = null;
+    if (doc.extracted_json) {
+      try {
+        extracted = JSON.parse(doc.extracted_json);
+      } catch (e) {
+        console.error('[Agency Extract] Failed to parse extracted_json:', e);
+      }
+    }
+
+    // intake_field_mappings を取得して apply_mapping を構築
+    const { mappings } = await getIntakeFieldMappings(db);
+    const applyMapping = buildApplyMapping(doc.doc_type, extracted, mappings);
+
+    // 現在の会社情報を取得（fill_empty 判定用）
+    const company = await db.prepare(
+      'SELECT * FROM companies WHERE id = ?'
+    ).bind(resolved.companyId).first<Record<string, unknown>>();
+
+    const profile = await db.prepare(
+      'SELECT * FROM company_profile WHERE company_id = ?'
+    ).bind(resolved.companyId).first<Record<string, unknown>>();
+
+    // 各フィールドの現在値と空かどうかを付与
+    const enrichedMapping = applyMapping.map(entry => {
+      const [table, col] = entry.target.split('.');
+      const currentRow = table === 'companies' ? company : profile;
+      const currentValue = currentRow ? currentRow[col] : null;
+      return {
+        ...entry,
+        current_value: currentValue ?? null,
+        is_empty: isFieldEmpty(currentValue),
+      };
+    });
+
+    return c.json<ApiResponse<any>>({
+      success: true,
+      data: {
+        document_id: doc.id,
+        doc_type: doc.doc_type,
+        original_filename: doc.original_filename,
+        status: doc.status,
+        extracted,
+        confidence: doc.confidence,
+        apply_mapping: enrichedMapping,
+        updated_at: doc.updated_at,
+      },
+    });
+  } catch (error) {
+    console.error('[Agency Extract] GET extracted error:', error);
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'INTERNAL_ERROR', message: 'Failed to get extraction result' },
+    }, 500);
+  }
+});
+
+/**
+ * POST /api/agency/clients/:id/documents/:docId/apply
+ * 
+ * 抽出結果 (extracted_json) を companies/company_profile に反映する。
+ * 
+ * Body:
+ * - apply_mode: 'fill_empty' (default) | 'overwrite'
+ * 
+ * 安全装置:
+ * - target_table は companies / company_profile のみ（Phase 3a と同じ制限）
+ * - doc_type ごとの抽出キー allowlist でフィルタ
+ * - intake_field_mappings (DB + fallback) でマッピング
+ * - fill_empty: null/undefined/空文字/空配列のみ上書き可
+ * - 監査ログ: agency_client_history + audit_log の二重記録
+ */
+clients.post('/clients/:id/documents/:docId/apply', async (c) => {
+  const db = c.env.DB;
+  const user = getCurrentUser(c);
+  const clientId = c.req.param('id');
+  const docId = c.req.param('docId');
+
+  const agencyInfo = await getUserAgency(db, user.id);
+  if (!agencyInfo) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'NOT_AGENCY', message: 'Agency account required' },
+    }, 403);
+  }
+
+  const resolved = await resolveClientCompanyId(db, clientId, agencyInfo.agency.id as string);
+  if (!resolved.ok) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: resolved.code, message: resolved.message },
+    }, resolved.status as any);
+  }
+
+  // P1-9: JSON parse例外ハンドリング
+  const parseResult = await safeParseJsonBody<{ apply_mode?: string }>(c);
+  if (!parseResult.ok) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'INVALID_JSON', message: parseResult.error },
+    }, 400);
+  }
+
+  const applyMode: ApplyMode = (parseResult.data.apply_mode === 'overwrite') ? 'overwrite' : 'fill_empty';
+
+  try {
+    // ドキュメント取得
+    const doc = await db.prepare(`
+      SELECT id, doc_type, extracted_json, confidence, status
+      FROM company_documents
+      WHERE id = ? AND company_id = ?
+    `).bind(docId, resolved.companyId).first<{
+      id: string;
+      doc_type: string;
+      extracted_json: string | null;
+      confidence: number | null;
+      status: string;
+    }>();
+
+    if (!doc) {
+      return c.json<ApiResponse<null>>({
+        success: false,
+        error: { code: 'NOT_FOUND', message: 'Document not found' },
+      }, 404);
+    }
+
+    if (!doc.extracted_json) {
+      return c.json<ApiResponse<null>>({
+        success: false,
+        error: { code: 'NO_EXTRACTION', message: 'No extraction data available. Document must be extracted first.' },
+      }, 400);
+    }
+
+    let extracted: Record<string, unknown>;
+    try {
+      extracted = JSON.parse(doc.extracted_json);
+    } catch (e) {
+      return c.json<ApiResponse<null>>({
+        success: false,
+        error: { code: 'INVALID_DATA', message: 'Invalid extraction data in document' },
+      }, 500);
+    }
+
+    // 共通ヘルパーで apply 実行
+    const applyResult = await applyExtractedToCompany({
+      db,
+      companyId: resolved.companyId,
+      documentId: docId,
+      docType: doc.doc_type,
+      extracted,
+      applyMode,
+    });
+
+    // 監査ログ 1: agency_client_history
+    const now = new Date().toISOString();
+    const historyId = crypto.randomUUID();
+    await db.prepare(`
+      INSERT INTO agency_client_history (id, agency_id, company_id, user_id, action, changes_json, created_at)
+      VALUES (?, ?, ?, ?, 'DOCUMENT_APPLY', ?, ?)
+    `).bind(
+      historyId,
+      agencyInfo.agency.id,
+      resolved.companyId,
+      user.id,
+      JSON.stringify({
+        document_id: docId,
+        doc_type: doc.doc_type,
+        apply_mode: applyMode,
+        applied_companies: applyResult.applied_companies,
+        applied_profile: applyResult.applied_profile,
+        skipped_existing: applyResult.skipped_existing,
+        skipped_unmapped: applyResult.skipped_unmapped,
+        skipped_doc_type_filtered: applyResult.skipped_doc_type_filtered,
+        mapping_source: applyResult.mapping_source,
+      }),
+      now,
+    ).run();
+
+    // 監査ログ 2: audit_log
+    await db.prepare(`
+      INSERT INTO audit_log (id, actor_user_id, target_company_id, target_resource_type, target_resource_id, action, action_category, severity, details_json, created_at)
+      VALUES (?, ?, ?, 'document', ?, 'DOCUMENT_EXTRACTION_APPLIED', 'document', 'info', ?, ?)
+    `).bind(
+      crypto.randomUUID(),
+      user.id,
+      resolved.companyId,
+      docId,
+      JSON.stringify({
+        applied_companies: applyResult.applied_companies,
+        applied_profile: applyResult.applied_profile,
+        skipped_existing: applyResult.skipped_existing,
+        apply_mode: applyMode,
+        mapping_source: applyResult.mapping_source,
+        source: 'agency',
+      }),
+      now,
+    ).run();
+
+    return c.json<ApiResponse<DocumentApplyResult>>({
+      success: true,
+      data: applyResult,
+    });
+  } catch (error) {
+    console.error('[Agency Apply] POST apply error:', error);
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'INTERNAL_ERROR', message: 'Failed to apply extraction result' },
+    }, 500);
+  }
+});
 
 export default clients;
