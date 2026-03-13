@@ -1672,26 +1672,37 @@ agencyPages.get('/agency/clients/:id', (c) => {
       </div>
     </div>
     
-    <!-- Company Edit Modal (企業情報) -->
+    <!-- Company Edit Modal (企業情報) - 企業UIと完全同期 -->
     <div id="company-edit-modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center hidden z-50">
-      <div class="bg-white rounded-lg shadow-xl w-full max-w-2xl mx-4 max-h-[90vh] overflow-y-auto">
+      <div class="bg-white rounded-lg shadow-xl w-full max-w-3xl mx-4 max-h-[90vh] overflow-y-auto">
         <div class="p-6">
-          <h2 class="text-xl font-bold mb-4"><i class="fas fa-building mr-2"></i>企業情報を編集</h2>
+          <div class="flex items-center justify-between mb-4">
+            <h2 class="text-xl font-bold"><i class="fas fa-building mr-2"></i>企業情報を編集</h2>
+            <button type="button" onclick="hideCompanyEditModal()" class="text-gray-400 hover:text-gray-600"><i class="fas fa-times text-xl"></i></button>
+          </div>
           <form id="company-edit-form" class="space-y-6">
+            {/* === Section 1: 基本情報（必須） === */}
             <div class="border-b pb-4">
-              <h3 class="text-sm font-semibold text-gray-600 mb-3"><i class="fas fa-info-circle mr-1"></i>基本情報（必須）</h3>
+              <h3 class="text-sm font-semibold text-gray-600 mb-3 flex items-center">
+                <span class="inline-flex items-center px-2 py-0.5 bg-red-100 text-red-700 rounded text-xs mr-2"><i class="fas fa-asterisk text-red-500 mr-1"></i>必須</span>
+                基本情報
+              </h3>
               <div class="grid grid-cols-2 gap-4">
                 <div class="col-span-2">
                   <label class="block text-sm font-medium text-gray-700 mb-1">会社名 <span class="text-red-500">*</span></label>
                   <input type="text" name="companyName" id="edit-company-name" required class="w-full border rounded-lg px-3 py-2">
                 </div>
                 <div>
+                  <label class="block text-sm font-medium text-gray-700 mb-1">郵便番号</label>
+                  <input type="text" name="postal_code" id="edit-company-postal" class="w-full border rounded-lg px-3 py-2" placeholder="123-4567">
+                </div>
+                <div>
                   <label class="block text-sm font-medium text-gray-700 mb-1">都道府県 <span class="text-red-500">*</span></label>
                   <select name="prefecture" id="edit-company-prefecture" required class="w-full border rounded-lg px-3 py-2"><option value="">選択してください</option></select>
                 </div>
                 <div>
-                  <label class="block text-sm font-medium text-gray-700 mb-1">市区町村</label>
-                  <input type="text" name="city" id="edit-company-city" class="w-full border rounded-lg px-3 py-2">
+                  <label class="block text-sm font-medium text-gray-700 mb-1">市区町村・番地</label>
+                  <input type="text" name="city" id="edit-company-city" class="w-full border rounded-lg px-3 py-2" placeholder="○○市△△区□□町1-2-3">
                 </div>
                 <div>
                   <label class="block text-sm font-medium text-gray-700 mb-1">業種 <span class="text-red-500">*</span></label>
@@ -1701,60 +1712,225 @@ agencyPages.get('/agency/clients/:id', (c) => {
                   <label class="block text-sm font-medium text-gray-700 mb-1">従業員数 <span class="text-red-500">*</span></label>
                   <input type="number" name="employee_count" id="edit-company-employees" required min="1" class="w-full border rounded-lg px-3 py-2" placeholder="例: 10">
                 </div>
-              </div>
-            </div>
-            <div class="border-b pb-4">
-              <h3 class="text-sm font-semibold text-gray-600 mb-3"><i class="fas fa-chart-line mr-1"></i>追加情報（推奨）</h3>
-              <div class="grid grid-cols-2 gap-4">
                 <div>
                   <label class="block text-sm font-medium text-gray-700 mb-1">資本金（万円）</label>
                   <input type="number" name="capital" id="edit-company-capital" class="w-full border rounded-lg px-3 py-2" placeholder="例: 1000">
                 </div>
                 <div>
+                  <label class="block text-sm font-medium text-gray-700 mb-1">年商（万円）</label>
+                  <input type="number" name="annual_revenue" id="edit-company-revenue" class="w-full border rounded-lg px-3 py-2" placeholder="例: 50000">
+                </div>
+                <div>
                   <label class="block text-sm font-medium text-gray-700 mb-1">設立年月</label>
                   <input type="month" name="established_date" id="edit-company-established" class="w-full border rounded-lg px-3 py-2">
                 </div>
-                <div>
-                  <label class="block text-sm font-medium text-gray-700 mb-1">直近売上高（万円）</label>
-                  <input type="number" name="annual_revenue" id="edit-company-revenue" class="w-full border rounded-lg px-3 py-2" placeholder="例: 50000">
-                </div>
+              </div>
+            </div>
+
+            {/* === Section 2: 会社詳細情報 === */}
+            <div class="border-b pb-4">
+              <h3 class="text-sm font-semibold text-gray-600 mb-3 flex items-center">
+                <i class="fas fa-building text-blue-500 mr-2"></i>会社詳細情報
+              </h3>
+              <div class="grid grid-cols-2 gap-4">
                 <div>
                   <label class="block text-sm font-medium text-gray-700 mb-1">法人形態</label>
                   <select name="corp_type" id="edit-company-corptype" class="w-full border rounded-lg px-3 py-2">
                     <option value="">選択してください</option>
                     <option value="株式会社">株式会社</option>
                     <option value="合同会社">合同会社</option>
+                    <option value="有限会社">有限会社</option>
                     <option value="合名会社">合名会社</option>
                     <option value="合資会社">合資会社</option>
                     <option value="個人事業主">個人事業主</option>
                     <option value="NPO法人">NPO法人</option>
-                    <option value="社団法人">社団法人</option>
+                    <option value="一般社団法人">一般社団法人</option>
                     <option value="その他">その他</option>
                   </select>
                 </div>
                 <div>
-                  <label class="block text-sm font-medium text-gray-700 mb-1">代表者名</label>
-                  <input type="text" name="representative_name" id="edit-company-rep" class="w-full border rounded-lg px-3 py-2">
+                  <label class="block text-sm font-medium text-gray-700 mb-1">法人番号（13桁）</label>
+                  <input type="text" name="corp_number" id="edit-company-corpnum" maxlength={13} class="w-full border rounded-lg px-3 py-2" placeholder="1234567890123">
                 </div>
                 <div>
-                  <label class="block text-sm font-medium text-gray-700 mb-1">直近期の利益</label>
-                  <select name="is_profitable" id="edit-company-profitable" class="w-full border rounded-lg px-3 py-2">
+                  <label class="block text-sm font-medium text-gray-700 mb-1">代表者名</label>
+                  <input type="text" name="representative_name" id="edit-company-rep" class="w-full border rounded-lg px-3 py-2" placeholder="山田 太郎">
+                </div>
+                <div>
+                  <label class="block text-sm font-medium text-gray-700 mb-1">代表者役職</label>
+                  <input type="text" name="representative_title" id="edit-company-reptitle" class="w-full border rounded-lg px-3 py-2" placeholder="代表取締役">
+                </div>
+                <div>
+                  <label class="block text-sm font-medium text-gray-700 mb-1">創業年</label>
+                  <input type="number" name="founding_year" id="edit-company-foundingyear" min="1800" max="2030" class="w-full border rounded-lg px-3 py-2" placeholder="2020">
+                </div>
+                <div>
+                  <label class="block text-sm font-medium text-gray-700 mb-1">決算月</label>
+                  <select name="fiscal_year_end" id="edit-company-fiscal" class="w-full border rounded-lg px-3 py-2">
                     <option value="">選択してください</option>
-                    <option value="1">黒字</option>
-                    <option value="0">赤字</option>
+                    <option value="1">1月</option><option value="2">2月</option><option value="3">3月</option>
+                    <option value="4">4月</option><option value="5">5月</option><option value="6">6月</option>
+                    <option value="7">7月</option><option value="8">8月</option><option value="9">9月</option>
+                    <option value="10">10月</option><option value="11">11月</option><option value="12">12月</option>
                   </select>
                 </div>
                 <div class="col-span-2">
                   <label class="block text-sm font-medium text-gray-700 mb-1">Webサイト</label>
                   <input type="url" name="website_url" id="edit-company-website" class="w-full border rounded-lg px-3 py-2" placeholder="https://example.com">
                 </div>
-                <div class="col-span-2">
-                  <label class="block text-sm font-medium text-gray-700 mb-1">事業概要</label>
-                  <textarea name="business_summary" id="edit-company-summary" rows="3" class="w-full border rounded-lg px-3 py-2" placeholder="事業の内容を簡潔に記載"></textarea>
+              </div>
+            </div>
+
+            {/* === Section 3: 申請関連情報 === */}
+            <div class="border-b pb-4">
+              <h3 class="text-sm font-semibold text-gray-600 mb-3 flex items-center">
+                <i class="fas fa-file-signature text-blue-500 mr-2"></i>申請関連情報
+                <span class="ml-2 text-xs font-normal text-gray-400">補助金マッチングに重要</span>
+              </h3>
+              <div class="grid grid-cols-2 gap-4">
+                <div>
+                  <label class="block text-sm font-medium text-gray-700 mb-1">直近決算の収益性</label>
+                  <select name="is_profitable" id="edit-company-profitable" class="w-full border rounded-lg px-3 py-2">
+                    <option value="">選択してください</option>
+                    <option value="1">黒字</option>
+                    <option value="0">赤字</option>
+                  </select>
+                </div>
+                <div>
+                  <label class="block text-sm font-medium text-gray-700 mb-1">借入有無</label>
+                  <select name="has_debt" id="edit-company-debt" class="w-full border rounded-lg px-3 py-2">
+                    <option value="">選択してください</option>
+                    <option value="1">あり</option>
+                    <option value="0">なし</option>
+                  </select>
                 </div>
               </div>
             </div>
-            <div class="flex gap-2 pt-2">
+
+            {/* === Section 4: 連絡先情報 === */}
+            <div class="border-b pb-4">
+              <h3 class="text-sm font-semibold text-gray-600 mb-3 flex items-center">
+                <i class="fas fa-address-book text-green-500 mr-2"></i>連絡先情報
+              </h3>
+              <div class="grid grid-cols-2 gap-4">
+                <div>
+                  <label class="block text-sm font-medium text-gray-700 mb-1">連絡担当者名</label>
+                  <input type="text" name="contact_name" id="edit-company-contactname" class="w-full border rounded-lg px-3 py-2" placeholder="担当 花子">
+                </div>
+                <div>
+                  <label class="block text-sm font-medium text-gray-700 mb-1">連絡先メール</label>
+                  <input type="email" name="contact_email" id="edit-company-contactemail" class="w-full border rounded-lg px-3 py-2" placeholder="contact@example.com">
+                </div>
+                <div>
+                  <label class="block text-sm font-medium text-gray-700 mb-1">連絡先電話</label>
+                  <input type="tel" name="contact_phone" id="edit-company-contactphone" class="w-full border rounded-lg px-3 py-2" placeholder="03-1234-5678">
+                </div>
+              </div>
+            </div>
+
+            {/* === Section 5: 事業内容 === */}
+            <div class="border-b pb-4">
+              <h3 class="text-sm font-semibold text-gray-600 mb-3 flex items-center">
+                <i class="fas fa-briefcase text-purple-500 mr-2"></i>事業内容
+              </h3>
+              <div class="grid grid-cols-1 gap-4">
+                <div>
+                  <label class="block text-sm font-medium text-gray-700 mb-1">事業概要</label>
+                  <textarea name="business_summary" id="edit-company-summary" rows="2" class="w-full border rounded-lg px-3 py-2" placeholder="事業の内容を簡潔に記載"></textarea>
+                </div>
+                <div class="grid grid-cols-2 gap-4">
+                  <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">主要製品・サービス</label>
+                    <textarea name="main_products" id="edit-company-products" rows="2" class="w-full border rounded-lg px-3 py-2" placeholder="主力となる製品やサービス"></textarea>
+                  </div>
+                  <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">主要取引先</label>
+                    <textarea name="main_customers" id="edit-company-customers" rows="2" class="w-full border rounded-lg px-3 py-2" placeholder="主な顧客層や取引先"></textarea>
+                  </div>
+                </div>
+                <div class="grid grid-cols-2 gap-4">
+                  <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">競合優位性</label>
+                    <textarea name="competitive_advantage" id="edit-company-advantage" rows="2" class="w-full border rounded-lg px-3 py-2" placeholder="自社の強み・差別化要因"></textarea>
+                  </div>
+                  <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">ターゲット顧客</label>
+                    <textarea name="target_customers" id="edit-company-target" rows="2" class="w-full border rounded-lg px-3 py-2" placeholder="主なターゲット層"></textarea>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* === Section 6: 加点要素 === */}
+            <div class="border-b pb-4">
+              <h3 class="text-sm font-semibold text-gray-600 mb-3 flex items-center">
+                <i class="fas fa-star text-yellow-500 mr-2"></i>加点要素
+                <span class="ml-2 text-xs font-normal text-gray-400">審査で有利になる可能性があります</span>
+              </h3>
+              <div class="grid grid-cols-2 gap-6">
+                <div>
+                  <label class="block text-sm font-medium text-gray-700 mb-2">従業員の状況</label>
+                  <div class="space-y-2">
+                    <label class="flex items-center">
+                      <input type="checkbox" name="has_young_employees" id="edit-company-young" value="true" class="mr-2 rounded text-emerald-600" />
+                      <span class="text-sm text-gray-700">若年者（34歳以下）を雇用</span>
+                    </label>
+                    <label class="flex items-center">
+                      <input type="checkbox" name="has_female_executives" id="edit-company-female" value="true" class="mr-2 rounded text-emerald-600" />
+                      <span class="text-sm text-gray-700">女性役員がいる</span>
+                    </label>
+                    <label class="flex items-center">
+                      <input type="checkbox" name="has_senior_employees" id="edit-company-senior" value="true" class="mr-2 rounded text-emerald-600" />
+                      <span class="text-sm text-gray-700">シニア（60歳以上）を雇用</span>
+                    </label>
+                    <label class="flex items-center">
+                      <input type="checkbox" name="plans_to_hire" id="edit-company-hire" value="true" class="mr-2 rounded text-emerald-600" />
+                      <span class="text-sm text-gray-700">今後採用を予定している</span>
+                    </label>
+                  </div>
+                </div>
+                <div>
+                  <label class="block text-sm font-medium text-gray-700 mb-2">取得済み認証・計画</label>
+                  <div class="space-y-2">
+                    <label class="flex items-center">
+                      <input type="checkbox" name="cert_keiei_kakushin" id="edit-company-keiei" value="true" class="mr-2 rounded text-emerald-600" />
+                      <span class="text-sm text-gray-700">経営革新計画承認</span>
+                    </label>
+                    <label class="flex items-center">
+                      <input type="checkbox" name="cert_jigyou_keizoku" id="edit-company-jigyou" value="true" class="mr-2 rounded text-emerald-600" />
+                      <span class="text-sm text-gray-700">事業継続力強化計画認定</span>
+                    </label>
+                    <label class="flex items-center">
+                      <input type="checkbox" name="cert_senryaku" id="edit-company-senryaku" value="true" class="mr-2 rounded text-emerald-600" />
+                      <span class="text-sm text-gray-700">地域経済牽引事業計画承認</span>
+                    </label>
+                    <label class="flex items-center">
+                      <input type="checkbox" name="cert_iso" id="edit-company-iso" value="true" class="mr-2 rounded text-emerald-600" />
+                      <span class="text-sm text-gray-700">ISO認証取得</span>
+                    </label>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* === Section 7: 任意（補助金・認証） === */}
+            <div class="border-b pb-4">
+              <h3 class="text-sm font-semibold text-gray-600 mb-3 flex items-center">
+                <i class="fas fa-puzzle-piece text-gray-500 mr-2"></i>その他の情報（任意）
+              </h3>
+              <div class="grid grid-cols-1 gap-4">
+                <div>
+                  <label class="block text-sm font-medium text-gray-700 mb-1">過去の補助金受給歴</label>
+                  <textarea name="past_subsidies_json" id="edit-company-pastsubsidies" rows="2" class="w-full border rounded-lg px-3 py-2" placeholder="例: ものづくり補助金 2024年 500万円"></textarea>
+                </div>
+                <div>
+                  <label class="block text-sm font-medium text-gray-700 mb-1">取得済み認証・資格</label>
+                  <textarea name="certifications_json" id="edit-company-certifications" rows="2" class="w-full border rounded-lg px-3 py-2" placeholder="例: ISO9001, Pマーク"></textarea>
+                </div>
+              </div>
+            </div>
+
+            <div class="flex gap-2 pt-2 sticky bottom-0 bg-white pb-2">
               <button type="button" onclick="hideCompanyEditModal()" class="flex-1 border border-gray-300 text-gray-700 px-4 py-2 rounded-lg hover:bg-gray-50">キャンセル</button>
               <button type="submit" class="flex-1 bg-emerald-600 text-white px-4 py-2 rounded-lg hover:bg-emerald-700"><i class="fas fa-save mr-1"></i>保存</button>
             </div>
@@ -1949,25 +2125,31 @@ agencyPages.get('/agency/clients/:id', (c) => {
         const company = clientData.company || {};
         const profile = clientData.profile || {};
         const data = { ...company, ...profile };
+        const fiscalLabels = {'1':'1月','2':'2月','3':'3月','4':'4月','5':'5月','6':'6月','7':'7月','8':'8月','9':'9月','10':'10月','11':'11月','12':'12月'};
         const recommendedFields = [
           { label: '資本金', value: formatMoney(data.capital) },
           { label: '設立年月', value: data.established_date },
-          { label: '直近売上高', value: formatMoney(data.annual_revenue) },
+          { label: '年商', value: formatMoney(data.annual_revenue) },
           { label: '法人形態', value: data.corp_type },
           { label: '代表者名', value: data.representative_name },
-          { label: '直近期の利益', value: data.is_profitable != null ? (Number(data.is_profitable) ? '黒字' : '赤字') : null },
+          { label: '直近決算の収益性', value: data.is_profitable != null ? (Number(data.is_profitable) ? '黒字' : '赤字') : null },
           { label: 'Webサイト', value: data.website_url, isLink: true },
           { label: '事業概要', value: data.business_summary, fullWidth: true },
         ];
         const detailFields = [
+          { label: '郵便番号', value: data.postal_code },
           { label: '法人番号', value: data.corp_number },
-          { label: '代表者肩書', value: data.representative_title },
+          { label: '代表者役職', value: data.representative_title },
+          { label: '創業年', value: data.founding_year },
+          { label: '決算月', value: data.fiscal_year_end ? fiscalLabels[String(data.fiscal_year_end)] || (data.fiscal_year_end + '月') : null },
+          { label: '借入有無', value: data.has_debt != null ? (Number(data.has_debt) ? 'あり' : 'なし') : null },
+          { label: '連絡担当者名', value: data.contact_name },
           { label: '連絡先メール', value: data.contact_email },
           { label: '連絡先電話', value: data.contact_phone },
           { label: '主要製品/サービス', value: data.main_products, fullWidth: true },
-          { label: '主要顧客', value: data.main_customers, fullWidth: true },
+          { label: '主要取引先', value: data.main_customers, fullWidth: true },
           { label: '競合優位性', value: data.competitive_advantage, fullWidth: true },
-          { label: '対象顧客', value: data.target_customers, fullWidth: true },
+          { label: 'ターゲット顧客', value: data.target_customers, fullWidth: true },
         ];
         const optionalFields = [
           { label: '過去の補助金', value: data.past_subsidies_json ? '入力済み' : null },
@@ -1987,22 +2169,16 @@ agencyPages.get('/agency/clients/:id', (c) => {
           return '<div class="' + (f.fullWidth ? 'col-span-2' : '') + ' p-2"><span class="text-xs text-gray-500">' + f.label + '</span><p class="text-gray-900 mt-0.5">' + (val || '<span class="text-gray-400 text-sm">未入力</span>') + '</p></div>';
         }).join('');
         html += '</div></div>';
-        // Detail
-        const filledDetail = detailFields.filter(f => f.value);
-        if (filledDetail.length > 0) {
-          html += '<div class="mb-6"><h4 class="text-sm font-semibold text-gray-600 mb-3 border-b pb-2"><i class="fas fa-info-circle mr-1 text-blue-500"></i>詳細情報</h4>';
-          html += '<div class="grid grid-cols-1 md:grid-cols-2 gap-4">';
-          html += filledDetail.map(f => '<div class="' + (f.fullWidth ? 'col-span-2' : '') + ' p-2"><span class="text-xs text-gray-500">' + f.label + '</span><p class="text-gray-900 mt-0.5">' + f.value + '</p></div>').join('');
-          html += '</div></div>';
-        }
-        // Optional
-        const filledOptional = optionalFields.filter(f => f.value);
-        if (filledOptional.length > 0) {
-          html += '<div><h4 class="text-sm font-semibold text-gray-600 mb-3 border-b pb-2"><i class="fas fa-puzzle-piece mr-1 text-green-500"></i>任意情報</h4>';
-          html += '<div class="grid grid-cols-1 md:grid-cols-3 gap-4">';
-          html += filledOptional.map(f => '<div class="p-2"><span class="text-xs text-gray-500">' + f.label + '</span><p class="text-gray-900 mt-0.5">' + f.value + '</p></div>').join('');
-          html += '</div></div>';
-        }
+        // Detail - show all fields (not just filled ones)
+        html += '<div class="mb-6"><h4 class="text-sm font-semibold text-gray-600 mb-3 border-b pb-2"><i class="fas fa-info-circle mr-1 text-blue-500"></i>詳細情報</h4>';
+        html += '<div class="grid grid-cols-1 md:grid-cols-2 gap-4">';
+        html += detailFields.map(f => '<div class="' + (f.fullWidth ? 'col-span-2' : '') + ' p-2"><span class="text-xs text-gray-500">' + f.label + '</span><p class="text-gray-900 mt-0.5">' + (f.value || '<span class="text-gray-400 text-sm">未入力</span>') + '</p></div>').join('');
+        html += '</div></div>';
+        // Optional - show all fields (not just filled ones)
+        html += '<div><h4 class="text-sm font-semibold text-gray-600 mb-3 border-b pb-2"><i class="fas fa-puzzle-piece mr-1 text-green-500"></i>加点・任意情報</h4>';
+        html += '<div class="grid grid-cols-1 md:grid-cols-3 gap-4">';
+        html += optionalFields.map(f => '<div class="p-2"><span class="text-xs text-gray-500">' + f.label + '</span><p class="text-gray-900 mt-0.5">' + (f.value || '<span class="text-gray-400 text-sm">未入力</span>') + '</p></div>').join('');
+        html += '</div></div>';
         document.getElementById('profile-content').innerHTML = html || '<p class="text-gray-500">詳細プロフィール情報はまだ入力されていません。</p>';
       }
       
@@ -2243,19 +2419,54 @@ agencyPages.get('/agency/clients/:id', (c) => {
         const client = clientData.client;
         const d = { ...company, ...profile };
         initCompanyEditSelects();
+        // 基本情報
         document.getElementById('edit-company-name').value = d.name || client.client_name || '';
+        document.getElementById('edit-company-postal').value = d.postal_code || '';
         document.getElementById('edit-company-prefecture').value = d.prefecture || client.prefecture || '';
         document.getElementById('edit-company-city').value = d.city || client.city || '';
         document.getElementById('edit-company-industry').value = d.industry_major || client.industry_major || client.industry || '';
         document.getElementById('edit-company-employees').value = d.employee_count || client.employee_count || '';
         document.getElementById('edit-company-capital').value = d.capital || '';
-        document.getElementById('edit-company-established').value = d.established_date || '';
         document.getElementById('edit-company-revenue').value = d.annual_revenue || '';
+        document.getElementById('edit-company-established').value = d.established_date || '';
+        // 会社詳細
         document.getElementById('edit-company-corptype').value = d.corp_type || '';
+        document.getElementById('edit-company-corpnum').value = d.corp_number || '';
         document.getElementById('edit-company-rep').value = d.representative_name || '';
-        document.getElementById('edit-company-profitable').value = d.is_profitable != null ? String(Number(d.is_profitable)) : '';
+        document.getElementById('edit-company-reptitle').value = d.representative_title || '';
+        document.getElementById('edit-company-foundingyear').value = d.founding_year || '';
+        document.getElementById('edit-company-fiscal').value = d.fiscal_year_end != null ? String(d.fiscal_year_end) : '';
         document.getElementById('edit-company-website').value = d.website_url || '';
+        // 申請関連
+        document.getElementById('edit-company-profitable').value = d.is_profitable != null ? String(Number(d.is_profitable)) : '';
+        document.getElementById('edit-company-debt').value = d.has_debt != null ? String(Number(d.has_debt)) : '';
+        // 連絡先
+        document.getElementById('edit-company-contactname').value = d.contact_name || '';
+        document.getElementById('edit-company-contactemail').value = d.contact_email || '';
+        document.getElementById('edit-company-contactphone').value = d.contact_phone || '';
+        // 事業内容
         document.getElementById('edit-company-summary').value = d.business_summary || '';
+        document.getElementById('edit-company-products').value = d.main_products || '';
+        document.getElementById('edit-company-customers').value = d.main_customers || '';
+        document.getElementById('edit-company-advantage').value = d.competitive_advantage || '';
+        document.getElementById('edit-company-target').value = d.target_customers || '';
+        // 加点要素 checkboxes
+        document.getElementById('edit-company-young').checked = !!Number(d.has_young_employees);
+        document.getElementById('edit-company-female').checked = !!Number(d.has_female_executives);
+        document.getElementById('edit-company-senior').checked = !!Number(d.has_senior_employees);
+        document.getElementById('edit-company-hire').checked = !!Number(d.plans_to_hire);
+        // 認証 checkboxes
+        var certs = {};
+        try { certs = d.certifications_json ? (typeof d.certifications_json === 'string' ? JSON.parse(d.certifications_json) : d.certifications_json) : {}; } catch(e) { certs = {}; }
+        document.getElementById('edit-company-keiei').checked = !!certs.keiei_kakushin || !!Number(d.has_keiei_kakushin);
+        document.getElementById('edit-company-jigyou').checked = !!certs.jigyou_keizoku || !!Number(d.has_jigyou_keizoku);
+        document.getElementById('edit-company-senryaku').checked = !!certs.senryaku;
+        document.getElementById('edit-company-iso').checked = !!certs.iso;
+        // 任意 textarea
+        var pastSub = d.past_subsidies_json;
+        document.getElementById('edit-company-pastsubsidies').value = pastSub ? (typeof pastSub === 'string' ? pastSub : JSON.stringify(pastSub)) : '';
+        var certsText = d.certifications_json;
+        document.getElementById('edit-company-certifications').value = certsText ? (typeof certsText === 'string' ? certsText : JSON.stringify(certsText)) : '';
         document.getElementById('company-edit-modal').classList.remove('hidden');
       }
       function hideCompanyEditModal() { document.getElementById('company-edit-modal').classList.add('hidden'); }
@@ -2268,19 +2479,56 @@ agencyPages.get('/agency/clients/:id', (c) => {
         const submitBtn = form.querySelector('button[type="submit"]');
         submitBtn.disabled = true;
         submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>保存中...';
+        // Build certifications_json from checkboxes + textarea
+        var certsObj = {};
+        if (form.cert_keiei_kakushin.checked) certsObj.keiei_kakushin = true;
+        if (form.cert_jigyou_keizoku.checked) certsObj.jigyou_keizoku = true;
+        if (form.cert_senryaku.checked) certsObj.senryaku = true;
+        if (form.cert_iso.checked) certsObj.iso = true;
+        var certsText = form.certifications_json.value.trim();
+        var certificationsValue = certsText || (Object.keys(certsObj).length > 0 ? JSON.stringify(certsObj) : null);
         const data = await apiCall('/api/agency/clients/' + clientId + '/company', {
           method: 'PUT',
           body: JSON.stringify({
-            companyName: form.companyName.value, prefecture: form.prefecture.value, city: form.city.value,
-            industry_major: form.industry_major.value, employee_count: employeeCount,
+            // 基本情報
+            companyName: form.companyName.value,
+            postal_code: form.postal_code.value || null,
+            prefecture: form.prefecture.value,
+            city: form.city.value,
+            industry_major: form.industry_major.value,
+            employee_count: employeeCount,
             capital: form.capital.value ? parseInt(form.capital.value) : null,
             established_date: form.established_date.value || null,
             annual_revenue: form.annual_revenue.value ? parseInt(form.annual_revenue.value) : null,
+            // 会社詳細
             corp_type: form.corp_type.value || null,
+            corp_number: form.corp_number.value || null,
             representative_name: form.representative_name.value || null,
-            is_profitable: form.is_profitable.value !== '' ? parseInt(form.is_profitable.value) : null,
+            representative_title: form.representative_title.value || null,
+            founding_year: form.founding_year.value ? parseInt(form.founding_year.value) : null,
+            fiscal_year_end: form.fiscal_year_end.value ? parseInt(form.fiscal_year_end.value) : null,
             website_url: form.website_url.value || null,
+            // 申請関連
+            is_profitable: form.is_profitable.value !== '' ? parseInt(form.is_profitable.value) : null,
+            has_debt: form.has_debt.value !== '' ? parseInt(form.has_debt.value) : null,
+            // 連絡先
+            contact_name: form.contact_name.value || null,
+            contact_email: form.contact_email.value || null,
+            contact_phone: form.contact_phone.value || null,
+            // 事業内容
             business_summary: form.business_summary.value || null,
+            main_products: form.main_products.value || null,
+            main_customers: form.main_customers.value || null,
+            competitive_advantage: form.competitive_advantage.value || null,
+            target_customers: form.target_customers.value || null,
+            // 加点要素
+            has_young_employees: form.has_young_employees.checked ? 1 : 0,
+            has_female_executives: form.has_female_executives.checked ? 1 : 0,
+            has_senior_employees: form.has_senior_employees.checked ? 1 : 0,
+            plans_to_hire: form.plans_to_hire.checked ? 1 : 0,
+            // 任意
+            past_subsidies_json: form.past_subsidies_json.value.trim() || null,
+            certifications_json: certificationsValue,
           }),
         });
         submitBtn.disabled = false;
