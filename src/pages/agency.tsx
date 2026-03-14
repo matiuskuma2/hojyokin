@@ -1673,15 +1673,17 @@ agencyPages.get('/agency/clients/:id', (c) => {
     </div>
     
     <!-- Company Edit Modal (企業情報) - 企業UIと完全同期 -->
-    <div id="company-edit-modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center hidden z-50">
-      <div class="bg-white rounded-lg shadow-xl w-full max-w-3xl mx-4 max-h-[90vh] overflow-y-auto">
-        <div class="p-6">
-          <div class="flex items-center justify-between mb-4">
-            <h2 class="text-xl font-bold"><i class="fas fa-building mr-2"></i>企業情報を編集</h2>
-            <button type="button" onclick="hideCompanyEditModal()" class="text-gray-400 hover:text-gray-600"><i class="fas fa-times text-xl"></i></button>
-          </div>
+    <div id="company-edit-modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center hidden z-50" style="-webkit-overflow-scrolling: touch;">
+      <div class="bg-white rounded-lg shadow-xl w-full max-w-3xl mx-4" style="max-height: calc(100vh - 2rem); max-height: calc(100dvh - 2rem); display: flex; flex-direction: column;">
+        <!-- Fixed header -->
+        <div class="flex items-center justify-between p-4 border-b bg-white rounded-t-lg flex-shrink-0">
+          <h2 class="text-lg font-bold"><i class="fas fa-building mr-2"></i>企業情報を編集</h2>
+          <button type="button" onclick="hideCompanyEditModal()" class="text-gray-400 hover:text-gray-600 p-2 -mr-2"><i class="fas fa-times text-xl"></i></button>
+        </div>
+        <!-- Scrollable body -->
+        <div class="overflow-y-auto flex-1 px-4 pt-4 pb-0" style="-webkit-overflow-scrolling: touch;">
           <form id="company-edit-form" class="space-y-6">
-            {/* === Section 1: 基本情報（必須） === */}
+            <!-- Section 1: 基本情報（必須） -->
             <div class="border-b pb-4">
               <h3 class="text-sm font-semibold text-gray-600 mb-3 flex items-center">
                 <span class="inline-flex items-center px-2 py-0.5 bg-red-100 text-red-700 rounded text-xs mr-2"><i class="fas fa-asterisk text-red-500 mr-1"></i>必須</span>
@@ -1727,7 +1729,8 @@ agencyPages.get('/agency/clients/:id', (c) => {
               </div>
             </div>
 
-            {/* === Section 2: 会社詳細情報 === */}
+
+            <!-- Section 2: 会社詳細情報 -->
             <div class="border-b pb-4">
               <h3 class="text-sm font-semibold text-gray-600 mb-3 flex items-center">
                 <i class="fas fa-building text-blue-500 mr-2"></i>会社詳細情報
@@ -1750,7 +1753,7 @@ agencyPages.get('/agency/clients/:id', (c) => {
                 </div>
                 <div>
                   <label class="block text-sm font-medium text-gray-700 mb-1">法人番号（13桁）</label>
-                  <input type="text" name="corp_number" id="edit-company-corpnum" maxlength={13} class="w-full border rounded-lg px-3 py-2" placeholder="1234567890123">
+                  <input type="text" name="corp_number" id="edit-company-corpnum" maxlength="13" pattern="[0-9]{13}" inputmode="numeric" class="w-full border rounded-lg px-3 py-2" placeholder="1234567890123">
                 </div>
                 <div>
                   <label class="block text-sm font-medium text-gray-700 mb-1">代表者名</label>
@@ -1781,7 +1784,8 @@ agencyPages.get('/agency/clients/:id', (c) => {
               </div>
             </div>
 
-            {/* === Section 3: 申請関連情報 === */}
+
+            <!-- Section 3: 申請関連情報 -->
             <div class="border-b pb-4">
               <h3 class="text-sm font-semibold text-gray-600 mb-3 flex items-center">
                 <i class="fas fa-file-signature text-blue-500 mr-2"></i>申請関連情報
@@ -1807,10 +1811,12 @@ agencyPages.get('/agency/clients/:id', (c) => {
               </div>
             </div>
 
-            {/* === Section 4: 連絡先情報 === */}
+
+            <!-- Section 4: 連絡先情報（参考情報） -->
             <div class="border-b pb-4">
               <h3 class="text-sm font-semibold text-gray-600 mb-3 flex items-center">
                 <i class="fas fa-address-book text-green-500 mr-2"></i>連絡先情報
+                <span class="ml-2 text-xs font-normal text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded">参考情報</span>
               </h3>
               <div class="grid grid-cols-2 gap-4">
                 <div>
@@ -1828,7 +1834,8 @@ agencyPages.get('/agency/clients/:id', (c) => {
               </div>
             </div>
 
-            {/* === Section 5: 事業内容 === */}
+
+            <!-- Section 5: 事業内容 -->
             <div class="border-b pb-4">
               <h3 class="text-sm font-semibold text-gray-600 mb-3 flex items-center">
                 <i class="fas fa-briefcase text-purple-500 mr-2"></i>事業内容
@@ -1861,7 +1868,8 @@ agencyPages.get('/agency/clients/:id', (c) => {
               </div>
             </div>
 
-            {/* === Section 6: 加点要素 === */}
+
+            <!-- Section 6: 加点要素 -->
             <div class="border-b pb-4">
               <h3 class="text-sm font-semibold text-gray-600 mb-3 flex items-center">
                 <i class="fas fa-star text-yellow-500 mr-2"></i>加点要素
@@ -1913,8 +1921,9 @@ agencyPages.get('/agency/clients/:id', (c) => {
               </div>
             </div>
 
-            {/* === Section 7: 任意（補助金・認証） === */}
-            <div class="border-b pb-4">
+
+            <!-- Section 7: その他の情報（任意） -->
+            <div class="pb-4">
               <h3 class="text-sm font-semibold text-gray-600 mb-3 flex items-center">
                 <i class="fas fa-puzzle-piece text-gray-500 mr-2"></i>その他の情報（任意）
               </h3>
@@ -1930,11 +1939,12 @@ agencyPages.get('/agency/clients/:id', (c) => {
               </div>
             </div>
 
-            <div class="flex gap-2 pt-2 sticky bottom-0 bg-white pb-2">
-              <button type="button" onclick="hideCompanyEditModal()" class="flex-1 border border-gray-300 text-gray-700 px-4 py-2 rounded-lg hover:bg-gray-50">キャンセル</button>
-              <button type="submit" class="flex-1 bg-emerald-600 text-white px-4 py-2 rounded-lg hover:bg-emerald-700"><i class="fas fa-save mr-1"></i>保存</button>
-            </div>
           </form>
+        </div>
+        <!-- Fixed footer -->
+        <div class="flex gap-2 p-4 border-t bg-white rounded-b-lg flex-shrink-0">
+          <button type="button" onclick="hideCompanyEditModal()" class="flex-1 border border-gray-300 text-gray-700 px-4 py-2.5 rounded-lg hover:bg-gray-50 text-sm font-medium">キャンセル</button>
+          <button type="submit" form="company-edit-form" class="flex-1 bg-emerald-600 text-white px-4 py-2.5 rounded-lg hover:bg-emerald-700 text-sm font-medium"><i class="fas fa-save mr-1"></i>保存</button>
         </div>
       </div>
     </div>
@@ -2125,7 +2135,10 @@ agencyPages.get('/agency/clients/:id', (c) => {
         const company = clientData.company || {};
         const profile = clientData.profile || {};
         const data = { ...company, ...profile };
+        const facts = clientData.facts || {};
+        const factValues = facts.values || {};
         const fiscalLabels = {'1':'1月','2':'2月','3':'3月','4':'4月','5':'5月','6':'6月','7':'7月','8':'8月','9':'9月','10':'10月','11':'11月','12':'12月'};
+        // B項目: 企業UIに実在する推奨情報
         const recommendedFields = [
           { label: '資本金', value: formatMoney(data.capital) },
           { label: '設立年月', value: data.established_date },
@@ -2133,52 +2146,87 @@ agencyPages.get('/agency/clients/:id', (c) => {
           { label: '法人形態', value: data.corp_type },
           { label: '代表者名', value: data.representative_name },
           { label: '直近決算の収益性', value: data.is_profitable != null ? (Number(data.is_profitable) ? '黒字' : '赤字') : null },
-          { label: 'Webサイト', value: data.website_url, isLink: true },
           { label: '事業概要', value: data.business_summary, fullWidth: true },
         ];
+        // B項目: 企業UIに実在する詳細情報
         const detailFields = [
           { label: '郵便番号', value: data.postal_code },
           { label: '法人番号', value: data.corp_number },
           { label: '代表者役職', value: data.representative_title },
           { label: '創業年', value: data.founding_year },
           { label: '決算月', value: data.fiscal_year_end ? fiscalLabels[String(data.fiscal_year_end)] || (data.fiscal_year_end + '月') : null },
-          { label: '借入有無', value: data.has_debt != null ? (Number(data.has_debt) ? 'あり' : 'なし') : null },
-          { label: '連絡担当者名', value: data.contact_name },
-          { label: '連絡先メール', value: data.contact_email },
-          { label: '連絡先電話', value: data.contact_phone },
           { label: '主要製品/サービス', value: data.main_products, fullWidth: true },
           { label: '主要取引先', value: data.main_customers, fullWidth: true },
-          { label: '競合優位性', value: data.competitive_advantage, fullWidth: true },
-          { label: 'ターゲット顧客', value: data.target_customers, fullWidth: true },
         ];
-        const optionalFields = [
-          { label: '過去の補助金', value: data.past_subsidies_json ? '入力済み' : null },
-          { label: '認証・資格', value: data.certifications_json ? '入力済み' : null },
+        // B項目: 加点・認証（企業UIにも存在）
+        const scoringFields = [
           { label: '若年従業員', value: data.has_young_employees != null ? (Number(data.has_young_employees) ? 'あり' : 'なし') : null },
           { label: '女性役員', value: data.has_female_executives != null ? (Number(data.has_female_executives) ? 'あり' : 'なし') : null },
           { label: 'シニア従業員', value: data.has_senior_employees != null ? (Number(data.has_senior_employees) ? 'あり' : 'なし') : null },
           { label: '採用予定', value: data.plans_to_hire != null ? (Number(data.plans_to_hire) ? 'あり' : 'なし') : null },
+          { label: '過去の補助金', value: data.past_subsidies_json ? (typeof data.past_subsidies_json === 'string' ? data.past_subsidies_json : '入力済み') : null },
         ];
-        let html = '';
-        // Recommended
-        html += '<div class="mb-6"><h4 class="text-sm font-semibold text-gray-600 mb-3 border-b pb-2"><i class="fas fa-chart-line mr-1 text-yellow-500"></i>推奨情報</h4>';
-        html += '<div class="grid grid-cols-1 md:grid-cols-2 gap-4">';
-        html += recommendedFields.map(f => {
+        // 認証フラグ — chat_facts (正本) を優先表示、profile は参考表示
+        var certs = {};
+        try { certs = data.certifications_json ? (typeof data.certifications_json === 'string' ? JSON.parse(data.certifications_json) : data.certifications_json) : {}; } catch(e) { certs = {}; }
+        const certFields = [
+          { label: '経営革新計画承認', factKey: 'has_keiei_kakushin', certKey: 'keiei_kakushin' },
+          { label: '事業継続力強化計画認定', factKey: 'has_jigyou_keizoku', certKey: 'jigyou_keizoku' },
+          { label: '地域経済牽引事業計画承認', factKey: null, certKey: 'senryaku' },
+          { label: 'ISO認証取得', factKey: null, certKey: 'iso' },
+        ];
+        // D項目: 士業独自の参考情報（企業UIに存在しないフィールド）
+        const refFields = [
+          { label: 'Webサイト', value: data.website_url, isLink: true },
+          { label: '借入有無', value: data.has_debt != null ? (Number(data.has_debt) ? 'あり' : 'なし') : null },
+          { label: '連絡担当者名', value: data.contact_name },
+          { label: '連絡先メール', value: data.contact_email },
+          { label: '連絡先電話', value: data.contact_phone },
+          { label: '競合優位性', value: data.competitive_advantage, fullWidth: true },
+          { label: 'ターゲット顧客', value: data.target_customers, fullWidth: true },
+          { label: '認証・資格(テキスト)', value: (typeof data.certifications_json === 'string' && !data.certifications_json.startsWith('{')) ? data.certifications_json : null },
+        ];
+        const fieldHtml = (f) => {
           let val = f.value;
           if (f.isLink && val) val = '<a href="' + val + '" target="_blank" class="text-blue-600 hover:underline text-sm break-all">' + val + '</a>';
           return '<div class="' + (f.fullWidth ? 'col-span-2' : '') + ' p-2"><span class="text-xs text-gray-500">' + f.label + '</span><p class="text-gray-900 mt-0.5">' + (val || '<span class="text-gray-400 text-sm">未入力</span>') + '</p></div>';
-        }).join('');
-        html += '</div></div>';
-        // Detail - show all fields (not just filled ones)
-        html += '<div class="mb-6"><h4 class="text-sm font-semibold text-gray-600 mb-3 border-b pb-2"><i class="fas fa-info-circle mr-1 text-blue-500"></i>詳細情報</h4>';
+        };
+        let html = '';
+        // Section: 推奨情報 (B)
+        html += '<div class="mb-6"><h4 class="text-sm font-semibold text-gray-600 mb-3 border-b pb-2"><i class="fas fa-chart-line mr-1 text-yellow-500"></i>推奨情報 <span class="text-xs font-normal text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded ml-1">企業UI同期</span></h4>';
         html += '<div class="grid grid-cols-1 md:grid-cols-2 gap-4">';
-        html += detailFields.map(f => '<div class="' + (f.fullWidth ? 'col-span-2' : '') + ' p-2"><span class="text-xs text-gray-500">' + f.label + '</span><p class="text-gray-900 mt-0.5">' + (f.value || '<span class="text-gray-400 text-sm">未入力</span>') + '</p></div>').join('');
+        html += recommendedFields.map(fieldHtml).join('');
         html += '</div></div>';
-        // Optional - show all fields (not just filled ones)
-        html += '<div><h4 class="text-sm font-semibold text-gray-600 mb-3 border-b pb-2"><i class="fas fa-puzzle-piece mr-1 text-green-500"></i>加点・任意情報</h4>';
-        html += '<div class="grid grid-cols-1 md:grid-cols-3 gap-4">';
-        html += optionalFields.map(f => '<div class="p-2"><span class="text-xs text-gray-500">' + f.label + '</span><p class="text-gray-900 mt-0.5">' + (f.value || '<span class="text-gray-400 text-sm">未入力</span>') + '</p></div>').join('');
+        // Section: 詳細情報 (B)
+        html += '<div class="mb-6"><h4 class="text-sm font-semibold text-gray-600 mb-3 border-b pb-2"><i class="fas fa-info-circle mr-1 text-blue-500"></i>詳細情報 <span class="text-xs font-normal text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded ml-1">企業UI同期</span></h4>';
+        html += '<div class="grid grid-cols-1 md:grid-cols-2 gap-4">';
+        html += detailFields.map(fieldHtml).join('');
         html += '</div></div>';
+        // Section: 加点・認証 (B)
+        html += '<div class="mb-6"><h4 class="text-sm font-semibold text-gray-600 mb-3 border-b pb-2"><i class="fas fa-star mr-1 text-yellow-500"></i>加点要素 <span class="text-xs font-normal text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded ml-1">企業UI同期</span></h4>';
+        html += '<div class="grid grid-cols-2 md:grid-cols-3 gap-3">';
+        html += scoringFields.map(f => '<div class="p-2"><span class="text-xs text-gray-500">' + f.label + '</span><p class="text-gray-900 mt-0.5">' + (f.value || '<span class="text-gray-400 text-sm">未入力</span>') + '</p></div>').join('');
+        html += '</div>';
+        // Certifications with dual-source display
+        html += '<div class="mt-3 grid grid-cols-2 md:grid-cols-4 gap-3">';
+        for (const cf of certFields) {
+          const factVal = cf.factKey ? factValues[cf.factKey] : undefined;
+          const certVal = cf.certKey ? !!certs[cf.certKey] : false;
+          const hasValue = factVal === true || factVal === 'true' || certVal;
+          const display = hasValue ? '<span class="text-emerald-600 font-medium">あり</span>' : (factVal === false || factVal === 'false' ? '<span class="text-gray-600">なし</span>' : '<span class="text-gray-400 text-sm">未設定</span>');
+          const sourceTag = cf.factKey && factVal != null ? '<span class="text-xs text-blue-400 block mt-0.5">fact</span>' : (certVal ? '<span class="text-xs text-gray-400 block mt-0.5">profile</span>' : '');
+          html += '<div class="p-2 rounded bg-gray-50"><span class="text-xs text-gray-500">' + cf.label + '</span><p class="mt-0.5">' + display + sourceTag + '</p></div>';
+        }
+        html += '</div></div>';
+        // Section: 参考情報 (D項目) — 業務ロジック未接続
+        const filledRef = refFields.filter(f => f.value);
+        if (filledRef.length > 0) {
+          html += '<div class="mb-6"><h4 class="text-sm font-semibold text-gray-600 mb-3 border-b pb-2"><i class="fas fa-bookmark mr-1 text-gray-400"></i>参考情報 <span class="text-xs font-normal text-gray-500 bg-gray-100 px-1.5 py-0.5 rounded ml-1">士業独自</span></h4>';
+          html += '<p class="text-xs text-gray-400 mb-2">この項目は士業向けUIの参考情報です。マッチング・完成度計算には使用されません。</p>';
+          html += '<div class="grid grid-cols-1 md:grid-cols-2 gap-3 opacity-90">';
+          html += filledRef.map(fieldHtml).join('');
+          html += '</div></div>';
+        }
         document.getElementById('profile-content').innerHTML = html || '<p class="text-gray-500">詳細プロフィール情報はまだ入力されていません。</p>';
       }
       
@@ -2455,11 +2503,16 @@ agencyPages.get('/agency/clients/:id', (c) => {
         document.getElementById('edit-company-female').checked = !!Number(d.has_female_executives);
         document.getElementById('edit-company-senior').checked = !!Number(d.has_senior_employees);
         document.getElementById('edit-company-hire').checked = !!Number(d.plans_to_hire);
-        // 認証 checkboxes
+        // 認証 checkboxes — chat_facts (正本) を優先、certifications_json を fallback
+        var factVals = {};
+        try {
+          var factsData = clientData.facts || {};
+          factVals = factsData.values || {};
+        } catch(e) {}
         var certs = {};
         try { certs = d.certifications_json ? (typeof d.certifications_json === 'string' ? JSON.parse(d.certifications_json) : d.certifications_json) : {}; } catch(e) { certs = {}; }
-        document.getElementById('edit-company-keiei').checked = !!certs.keiei_kakushin || !!Number(d.has_keiei_kakushin);
-        document.getElementById('edit-company-jigyou').checked = !!certs.jigyou_keizoku || !!Number(d.has_jigyou_keizoku);
+        document.getElementById('edit-company-keiei').checked = factVals.has_keiei_kakushin === true || factVals.has_keiei_kakushin === 'true' || !!certs.keiei_kakushin;
+        document.getElementById('edit-company-jigyou').checked = factVals.has_jigyou_keizoku === true || factVals.has_jigyou_keizoku === 'true' || !!certs.jigyou_keizoku;
         document.getElementById('edit-company-senryaku').checked = !!certs.senryaku;
         document.getElementById('edit-company-iso').checked = !!certs.iso;
         // 任意 textarea
@@ -2476,7 +2529,7 @@ agencyPages.get('/agency/clients/:id', (c) => {
         const form = e.target;
         const employeeCount = parseInt(form.employee_count.value);
         if (!employeeCount || employeeCount < 1) { alert('従業員数は1以上の数値を入力してください'); return; }
-        const submitBtn = form.querySelector('button[type="submit"]');
+        const submitBtn = form.querySelector('button[type="submit"]') || document.querySelector('button[form="company-edit-form"][type="submit"]');
         submitBtn.disabled = true;
         submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>保存中...';
         // Build certifications_json from checkboxes + textarea
@@ -2531,6 +2584,14 @@ agencyPages.get('/agency/clients/:id', (c) => {
             certifications_json: certificationsValue,
           }),
         });
+        // 認証フラグを chat_facts にも同期（正本 = chat_facts）
+        const certFacts = {
+          has_keiei_kakushin: form.cert_keiei_kakushin.checked ? true : false,
+          has_jigyou_keizoku: form.cert_jigyou_keizoku.checked ? true : false,
+        };
+        try {
+          await apiCall('/api/agency/clients/' + clientId + '/facts', { method: 'PUT', body: JSON.stringify({ facts: certFacts }) });
+        } catch(e) { console.warn('認証フラグのfact同期に失敗:', e); }
         submitBtn.disabled = false;
         submitBtn.innerHTML = '<i class="fas fa-save mr-1"></i>保存';
         if (data.success) { hideCompanyEditModal(); loadClientDetail(); alert('企業情報を更新しました'); }
