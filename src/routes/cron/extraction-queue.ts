@@ -17,6 +17,19 @@ import { recordCostGuardFailure } from '../../lib/failures/feed-failure-writer';
 
 const extractionQueue = new Hono<{ Bindings: Env; Variables: Variables }>();
 
+// =====================================================
+// キュー基盤定義（pdf-operations.ts から移動）
+// =====================================================
+
+type EnqueueJobType = 'extract_forms' | 'enrich_jgrants' | 'enrich_shigoto';
+
+// job_type別に優先度（小さいほど先）
+const JOB_PRIORITY: Record<EnqueueJobType, number> = {
+  extract_forms: 50,     // 壁打ち成立の核
+  enrich_shigoto: 60,    // HTML埋め
+  enrich_jgrants: 70,    // 毎日少量で増やす
+};
+
 extractionQueue.post('/enqueue-extractions', async (c) => {
   const db = c.env.DB;
 
@@ -141,7 +154,7 @@ type ConsumeJob = {
   id: string;
   subsidy_id: string;
   shard_key: number;
-  job_type: EnqueueJobType;
+  job_type: string; // EnqueueJobType or any future job type
   attempts: number;
   max_attempts: number;
 };

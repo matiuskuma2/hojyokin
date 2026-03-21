@@ -823,25 +823,4 @@ async function resolveFailure(db: D1Database, subsidyId: string, url: string): P
   }
 }
 
-// =====================================================
-// キュー基盤（17,000件運用向け shard/queue）
-// =====================================================
-
-type EnqueueJobType = 'extract_forms' | 'enrich_jgrants' | 'enrich_shigoto';
-
-// job_type別に優先度（小さいほど先）
-const JOB_PRIORITY: Record<EnqueueJobType, number> = {
-  extract_forms: 50,     // 壁打ち成立の核
-  enrich_shigoto: 60,    // HTML埋め
-  enrich_jgrants: 70,    // 毎日少量で増やす
-};
-
-/**
- * POST /api/cron/enqueue-extractions
- * 
- * extraction_queue にジョブを投入
- * 1回で入れすぎない（MAX_ENQUEUE_PER_TYPE で制限）
- */
-
-
 export default pdfOperations;
