@@ -391,6 +391,74 @@ resource "aws_lambda_permission" "api_gateway" {
 }
 
 # -----------------------------------------------------------------------------
+# Lambda: tokyo-fetcher（日本国内IPからのHTMLフェッチ）
+# Phase B1: geo-blockされたドメイン向けの東京リージョンフェッチャー
+# -----------------------------------------------------------------------------
+resource "aws_lambda_function" "tokyo_fetcher" {
+  filename         = "${path.module}/../lambda/tokyo-fetcher/dist/function.zip"
+  function_name    = "${local.prefix}-tokyo-fetcher"
+  role             = aws_iam_role.lambda_execution.arn
+  handler          = "index.handler"
+  runtime          = "nodejs20.x"
+  timeout          = 60    # 最大60秒（バッチ処理用）
+  memory_size      = 256   # HTMLフェッチのみなので最小限
+
+  environment {
+    variables = {
+      ENVIRONMENT         = var.environment
+      INTERNAL_JWT_SECRET = var.internal_jwt_secret
+    }
+  }
+
+  tags = merge(local.common_tags, {
+    Purpose = "tokyo-fetcher"
+    Phase   = "B1"
+  })
+}
+
+resource "aws_cloudwatch_log_group" "tokyo_fetcher" {
+  name              = "/aws/lambda/${aws_lambda_function.tokyo_fetcher.function_name}"
+  retention_in_days = 14
+  tags              = local.common_tags
+}
+
+# API Gateway -> tokyo-fetcher 統合
+resource "aws_apigatewayv2_integration" "tokyo_fetcher" {
+  api_id                 = aws_apigatewayv2_api.main.id
+  integration_type       = "AWS_PROXY"
+  integration_uri        = aws_lambda_function.tokyo_fetcher.invoke_arn
+  payload_format_version = "2.0"
+}
+
+# tokyo-fetcher ルート定義
+resource "aws_apigatewayv2_route" "fetch" {
+  api_id    = aws_apigatewayv2_api.main.id
+  route_key = "POST /fetch"
+  target    = "integrations/${aws_apigatewayv2_integration.tokyo_fetcher.id}"
+}
+
+resource "aws_apigatewayv2_route" "fetch_batch" {
+  api_id    = aws_apigatewayv2_api.main.id
+  route_key = "POST /fetch/batch"
+  target    = "integrations/${aws_apigatewayv2_integration.tokyo_fetcher.id}"
+}
+
+resource "aws_apigatewayv2_route" "fetch_health" {
+  api_id    = aws_apigatewayv2_api.main.id
+  route_key = "GET /fetch/health"
+  target    = "integrations/${aws_apigatewayv2_integration.tokyo_fetcher.id}"
+}
+
+# Lambda permission for API Gateway (tokyo-fetcher)
+resource "aws_lambda_permission" "api_gateway_tokyo_fetcher" {
+  statement_id  = "AllowAPIGatewayInvokeTF"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.tokyo_fetcher.function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${aws_apigatewayv2_api.main.execution_arn}/*/*"
+}
+
+# -----------------------------------------------------------------------------
 # Outputs
 # -----------------------------------------------------------------------------
 output "api_endpoint" {
@@ -416,4 +484,14 @@ output "lambda_job_submit_arn" {
 output "lambda_worker_arn" {
   description = "Worker Lambda ARN"
   value       = aws_lambda_function.worker.arn
+}
+
+output "lambda_tokyo_fetcher_arn" {
+  description = "Tokyo Fetcher Lambda ARN"
+  value       = aws_lambda_function.tokyo_fetcher.arn
+}
+
+output "tokyo_fetcher_endpoint" {
+  description = "Tokyo Fetcher API endpoint"
+  value       = "${aws_apigatewayv2_api.main.api_endpoint}/fetch"
 }

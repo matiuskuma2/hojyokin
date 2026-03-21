@@ -413,4 +413,93 @@ misc.post('/cleanup-stuck-runs', async (c) => {
   }
 });
 
+// =====================================================
+// POST /api/cron/test-tokyo-fetcher
+// 
+// Phase B1: Tokyo Fetcher のテスト用エンドポイント
+// geo-blockドメインへのfetch結果を確認
+// =====================================================
+misc.post('/test-tokyo-fetcher', async (c) => {
+  const authResult = verifyCronSecret(c);
+  if (!authResult.valid) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: authResult.error!.code, message: authResult.error!.message },
+    }, authResult.error!.status);
+  }
+
+  let body: { urls?: string[]; mode?: 'single' | 'batch' } = {};
+  try {
+    body = await c.req.json();
+  } catch {
+    // デフォルトのテストURL
+  }
+
+  const testUrls = body.urls || [
+    'https://www.meti.go.jp/',
+    'https://www.chusho.meti.go.jp/',
+    'https://jgrants-portal.go.jp/',
+    'https://www.toyama-sien.jp/',
+    'https://www.fukushima-iri.jp/',
+  ];
+
+  const env = c.env as any;
+  const awsBase = env.AWS_JOB_API_BASE_URL;
+  const jwtSecret = env.INTERNAL_JWT_SECRET;
+
+  if (!awsBase || !jwtSecret) {
+    return c.json<ApiResponse<null>>({
+      success: false,
+      error: { code: 'NOT_CONFIGURED', message: 'AWS_JOB_API_BASE_URL or INTERNAL_JWT_SECRET not set' },
+    }, 500);
+  }
+
+  // 動的 import でサービスを読み込み
+  const { TokyoFetcherClient, isGeoBlockedDomain, GEO_BLOCKED_DOMAINS } = await import('../../services/tokyo-fetcher');
+
+  const client = new TokyoFetcherClient({
+    baseUrl: awsBase,
+    jwtSecret,
+  });
+
+  // ヘルスチェック
+  const health = await client.health();
+
+  // 各URLをテスト
+  const results: any[] = [];
+  for (const url of testUrls.slice(0, 10)) {
+    const isGeoBlocked = isGeoBlockedDomain(url);
+    const result = await client.fetch({ url, timeout: 15000, extract_pdfs: true });
+    results.push({
+      url,
+      is_geo_blocked: isGeoBlocked,
+      ...result,
+      // HTMLは大きいので除外
+      html: undefined,
+    });
+  }
+
+  const successCount = results.filter(r => r.success).length;
+
+  return c.json<ApiResponse<{
+    tokyo_fetcher_health: typeof health;
+    geo_blocked_domains: readonly string[];
+    test_results: typeof results;
+    summary: { total: number; success: number; failed: number; success_rate: string };
+  }>>({
+    success: true,
+    data: {
+      tokyo_fetcher_health: health,
+      geo_blocked_domains: GEO_BLOCKED_DOMAINS,
+      test_results: results,
+      summary: {
+        total: results.length,
+        success: successCount,
+        failed: results.length - successCount,
+        success_rate: `${Math.round(successCount / results.length * 100)}%`,
+      },
+    },
+  });
+});
+
 export default misc;

@@ -1,0 +1,21 @@
+{
+  "name": "subsidy-tokyo-fetcher",
+  "version": "1.0.0",
+  "description": "Minimal Tokyo-based HTML fetcher for geo-blocked Japanese domains",
+  "main": "dist/index.js",
+  "type": "module",
+  "scripts": {
+    "build": "esbuild src/index.ts --bundle --platform=node --target=node20 --outfile=dist/index.js --external:@aws-sdk/*",
+    "package": "npm run build && cd dist && zip -r function.zip index.js",
+    "deploy": "npm run package && aws lambda update-function-code --function-name subsidy-app-dev-tokyo-fetcher --zip-file fileb://dist/function.zip"
+  },
+  "dependencies": {
+    "jose": "^5.2.0"
+  },
+  "devDependencies": {
+    "@types/aws-lambda": "^8.10.131",
+    "@types/node": "^20.11.0",
+    "esbuild": "^0.20.0",
+    "typescript": "^5.3.3"
+  }
+}
