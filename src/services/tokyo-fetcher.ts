@@ -65,13 +65,22 @@ export interface TokyoBatchResult {
 
 // =============================================================================
 // 日本IP必須ドメインリスト
-// Consumer blocked_domains から確認されたgeo-blockドメイン
+// Phase B1 テスト結果 (2026-03-21):
+//   - meti.go.jp, chusho.meti.go.jp, jgrants-portal.go.jp → Tokyo Lambda で解決
+//   - toyama-sien.jp 等5件 → DNS不存在（サイト閉鎖）→ consumer のblockを解除せず維持
 // =============================================================================
 
 export const GEO_BLOCKED_DOMAINS = [
   'meti.go.jp',
   'chusho.meti.go.jp',
   'jgrants-portal.go.jp',
+] as const;
+
+/**
+ * 閉鎖確認済みドメイン（DNS不存在）
+ * blocked_domains から削除不要（自然にブロック維持）
+ */
+export const DEFUNCT_DOMAINS = [
   'kumamoto-isshin.jp',
   'torisankou.jp',
   'fukushima-iri.jp',
